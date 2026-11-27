@@ -1,0 +1,82 @@
+{
+  "source": "RTX 4080 D3D12 original room/field/axis failure; before source-bounds fix",
+  "engine": "3392b5bae10fbcb5e7e543a015189befc3b49c31",
+  "tapeSha256": "02a8c0526f4998703987c0618739df37d17f845cf532c0d72adcd173eb7d98d8",
+  "originalWorkIndex": 9,
+  "sourceBounds": {
+    "lo": [-2.625, -1, -0.45],
+    "hi": [-2.375, 1, 1.05]
+  },
+  "cases": [
+    {
+      "name": "recorded-room-ray-14025",
+      "id": 44,
+      "origin": [-0.5, -0.5, -2.5],
+      "direction": [-0.7383022904396057, -0.10526586323976517, 0.6662046909332275],
+      "min": 0,
+      "max": 100,
+      "expected": 0,
+      "originalRadiance": [4, 1.19921875, 2.798828125]
+    },
+    {
+      "name": "recorded-room-ray-14481",
+      "id": 44,
+      "origin": [-1.5, 0.5, -2.5],
+      "direction": [-0.47741904854774475, 0.1256450116634369, 0.8696461319923401],
+      "min": 0,
+      "max": 100,
+      "expected": 0,
+      "originalRadiance": [4, 1.19921875, 2.798828125]
+    },
+    {
+      "name": "recorded-room-ray-14540",
+      "id": 44,
+      "origin": [-0.5, 0.5, -2.5],
+      "direction": [-0.6066082119941711, 0.20354828238487244, 0.7685014605522156],
+      "min": 0,
+      "max": 100,
+      "expected": 0,
+      "originalRadiance": [4, 1.19921875, 2.798828125]
+    },
+    {
+      "name": "recorded-room-ray-18052",
+      "id": 44,
+      "origin": [-1.5, -0.5, -1.5],
+      "direction": [-0.6834933757781982, 0.3780130445957184, 0.6244539618492126],
+      "min": 0,
+      "max": 100,
+      "expected": 0,
+      "originalRadiance": [4, 1.19921875, 2.798828125]
+    },
+    {
+      "name": "recorded-room-ray-18129",
+      "id": 44,
+      "origin": [-0.5, -0.5, -1.5],
+      "direction": [-0.6839648485183716, 0.5948754549026489, 0.4222738444805145],
+      "min": 0,
+      "max": 100,
+      "expected": 0,
+      "originalRadiance": [4, 1.19921875, 2.798828125]
+    },
+    {
+      "name": "recorded-room-ray-18612",
+      "id": 44,
+      "origin": [-1.5, 0.5, -1.5],
+      "direction": [-0.6662660241127014, -0.5210931301116943, 0.5334336757659912],
+      "min": 0,
+      "max": 100,
+      "expected": 0,
+      "originalRadiance": [4, 1.19921875, 2.798828125]
+    },
+    {
+      "name": "recorded-room-ray-18680",
+      "id": 44,
+      "origin": [-0.5, 0.5, -1.5],
+      "direction": [-0.8961281180381775, 0.1200440526008606, 0.4272514581680298],
+      "min": 0,
+      "max": 100,
+      "expected": 0,
+      "originalRadiance": [4, 1.19921875, 2.798828125]
+    }
+  ]
+}

@@ -234,21 +234,21 @@ function validateObservationSurface(
   return undefined;
 }
 
-/** Recognize complete committed output routes while retaining the float-intermediate oracle. */
+/** Recognize complete committed output routes for encoded float or UNORM8 input. */
 export function isDarkGradientFxaaGraph(observation: {
   readonly passNames: readonly string[];
   readonly standardOutputColor?: { readonly format: string; readonly domain?: string };
 }): boolean {
   return DARK_GRADIENT_FIXTURE.outputGraphs.some((route) =>
     route.passes.every((pass) => observation.passNames.includes(pass)) &&
-    observation.standardOutputColor?.format === route.format &&
-    observation.standardOutputColor.domain === route.domain,
+    route.formats.includes(observation.standardOutputColor?.format ?? '') &&
+    observation.standardOutputColor?.domain === route.domain,
   );
 }
 
 function validateFxaaObservationGraph(observation: DarkGradientObservationRef): FixtureCheck {
   if (!isDarkGradientFxaaGraph(observation)) {
-    return failure('observation output graph', observation, 'a committed FXAA route with rgba16float/display-encoded input');
+    return failure('observation output graph', observation, 'a committed FXAA route with display-encoded input');
   }
   return undefined;
 }
@@ -277,8 +277,8 @@ function validateObservationPair(report: DarkGradientFixtureReport): FixtureChec
 }
 
 function validateSurfaceFacts(report: DarkGradientFixtureReport): FixtureCheck {
-  if (report.surface.intermediateFormat !== 'rgba16float') {
-    return failure('surface.intermediateFormat', report.surface.intermediateFormat, 'rgba16float');
+  if (report.surface.intermediateFormat !== report.observation.standardOutputColor?.format) {
+    return failure('surface.intermediateFormat', report.surface.intermediateFormat, 'the committed FXAA input format');
   }
   if (report.surface.domain !== 'display-encoded' || report.surface.endpoint !== 'surface.storage.raw') {
     return failure('surface domain/endpoint', report.surface, 'display-encoded inspection facts through surface.storage.raw');

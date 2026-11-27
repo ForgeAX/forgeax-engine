@@ -1,11 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "effb3023-73a3-53cf-b592-48b2f10d59e4",
+  "schemaVersion": "3.0.0",
+  "packageId": "01ddc8b4-b2ec-5f15-8c03-b54b60931fa4",
+  "assets": {
+    "outline-solid.wgsl": {
       "kind": "material",
-      "sourceKey": "outline-solid.wgsl",
       "payload": {
         "kind": "material",
         "passes": [
@@ -27,5 +25,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

@@ -10,6 +10,7 @@ export function engineMaterialGBuffer(file: {
     case 'forgeax::default-standard-pbr':
     case 'forgeax::pbr-skin':
     case 'forgeax::default-standard-pbr-skin':
+    case 'forgeax::standard-terrain-detail':
     case 'forgeax::standard-terrain':
     case 'forgeax::standard-terrain-ids':
       return 'standard-gbuffer/2';

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { App } from '../App';
+import zh from '../locales/zh.json';
 
 if (typeof globalThis.ResizeObserver === 'undefined') {
   class TestResizeObserver {
@@ -12,6 +13,32 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
 }
 
 describe('Dockview workspace shell', () => {
+  it('changes locale without replacing panels, layout, open menus, or focus', async () => {
+    const { container, rerender, unmount } = render(<App locale="en" />);
+    const resourceTab = await screen.findByRole('tab', { name: 'Resource Inspector' });
+    fireEvent.click(screen.getByRole('button', { name: 'Layout menu' }));
+    const menu = screen.getByRole('menu', { name: 'Layout actions' });
+    const item = within(menu).getByRole('menuitem', { name: /float resource/i });
+    item.focus();
+    const panel = container.querySelector('[data-forgeax-panel="resource-inspector"]');
+    const groups = [...container.querySelectorAll('.dv-groupview')];
+
+    rerender(<App locale="zh" />);
+    await screen.findByRole('tab', { name: zh.eventBrowser });
+    expect(screen.getByRole('menu', { name: zh.layoutActions })).toBe(menu);
+    expect(within(menu).getByRole('menuitem', { name: new RegExp(zh.floatResource) })).toBe(item);
+    expect(document.activeElement).toBe(item);
+    expect(container.querySelector('[data-forgeax-panel="resource-inspector"]')).toBe(panel);
+    expect([...container.querySelectorAll('.dv-groupview')]).toEqual(groups);
+    expect(
+      screen.getByRole('tab', { name: zh.resourceInspector }).getAttribute('aria-selected'),
+    ).toBe('false');
+
+    rerender(<App locale="en" />);
+    expect(await screen.findByRole('tab', { name: 'Resource Inspector' })).toBe(resourceTab);
+    unmount();
+  });
+
   it('captures file drags at the window boundary and exposes a stable drop target', async () => {
     const { container, unmount } = render(<App />);
     fireEvent.dragEnter(window, { dataTransfer: { types: ['Files'] } });

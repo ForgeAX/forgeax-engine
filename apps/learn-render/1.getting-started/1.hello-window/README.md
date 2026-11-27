@@ -1,24 +1,27 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # Hello Window (LearnOpenGL §1.1)
 
 > [!NOTE]
-> **对应 LO 原章节**：[LearnOpenGL §1.1 Hello Window](https://learnopengl.com/Getting-started/Hello-Window)
+> **Original chapter**: [LearnOpenGL 1.1 Hello Window](https://learnopengl.com/Getting-started/Hello-Window)
 >
-> **对应引擎能力**：feat-20260515-learn-render-getting-started — `@forgeax/engine-runtime` `Engine.create({ canvas })`
+> **Engine capability**: feat-20260515-learn-render-getting-started -- `@forgeax/engine-runtime` `Engine.create({ canvas })`
 >
-> 该示例属于「占位」形态（plan-strategy §2.9 / D-3 锁定）。LO §1.1 在 C++/GLFW 中的 `glfwInit() + glfwCreateWindow() + glClear` 在 forgeax 中由 `Engine.create({ canvas })` 单行覆盖；因此本 README 不再重复 LO 文本，仅提供顶部 callout + 简短理由 + 直接链接到 [`src/index.ts`](./src/index.ts) 最薄代码段。本占位 README 显式豁免 AC-23（LO 折叠块）+ AC-24（`err.code` 差异行）。
+> This is a placeholder example (plan-strategy 2.9 / D-3). One `Engine.create({ canvas })` replaces C++/GLFW `glfwInit() + glfwCreateWindow() + glClear`, so this README provides a callout, rationale and direct link to the minimal [`src/index.ts`](./src/index.ts) rather than repeating LO. It is explicitly exempt from AC-23 (LO collapsible block) and AC-24 (`err.code` comparison row).
 
-## 为何占位
+## Why a Placeholder
 
-LO §1.1 的核心信息量是「能开一个窗口 + 把它清成统一颜色」。forgeax 的 `Engine.create({ canvas, clearColor })` 一行等价完成 GLFW + 渲染循环 + `glClearColor` + `glClear` 四件事，所以本示例无需重述 LO 教程；AI 用户只需读一遍 `src/index.ts`（约 80 行含注释）即可拿到整套 LO §1.1 → forgeax 的最薄映射。
+LO 1.1 teaches opening a window and clearing it to one color. `Engine.create({ canvas, clearColor })` performs GLFW setup, the render loop, `glClearColor` and `glClear` in one line. Read `src/index.ts` (about 80 lines including comments) for the complete minimal mapping.
 
-完整示例（§1.3 shaders / §1.4 textures / §1.5 transformations / §1.6 coordinate-systems / §1.7 camera）严格遵循 wiki §7.4 7 段 MUST 模板（含 mermaid 渲染流程图 + 与 LO 差异表 + LO 折叠块）。
+The full examples (1.3 shaders, 1.4 textures, 1.5 transformations, 1.6 coordinate systems, 1.7 camera) follow wiki 7.4's mandatory seven-section template, including a Mermaid rendering flow, comparison table and collapsible LO source.
 
-## 入口代码
+## Entry Code
 
-最薄实现见 [`src/index.ts`](./src/index.ts)，三段式注释（AC-06）一目了然：
+See [`src/index.ts`](./src/index.ts), organized by three comment markers (AC-06):
 
-1. `// 1. engine usage` — 仅 import `Engine` + `EngineEnvironmentError` + `World` + `Camera` + `Transform`
-2. `// 2. example-specific glue` — `clearColor = [0.2, 0.3, 0.3, 1.0]`（与 LO §1.1 同色）+ 单个 Camera 实体。引擎 `RenderSystem` 在 `renderables.length === 0` 时仍执行 swap-chain clear pass（Case E 软化，AGENTS.md §Breaking changes 2026-05-17 行；镜像 D-Q7 case C 0-Light 软化），所以 LO §1.1 不需要任何 mesh / material 占位，单个 Camera 足以触发清屏。
-3. `// 3. bootstrap` — `Engine.create({ canvas, clearColor })` + `await renderer.ready` + `requestAnimationFrame` 渲染循环
+1. `// 1. engine usage`: import only `Engine`, `EngineEnvironmentError`, `World`, `Camera` and `Transform`.
+2. `// 2. example-specific glue`: `clearColor = [0.2, 0.3, 0.3, 1.0]` matches LO 1.1, with one Camera entity. `RenderSystem` clears the swap chain even when `renderables.length === 0` (Case E relaxation, AGENTS.md breaking changes 2026-05-17; mirrored D-Q7 case C zero-light relaxation). No placeholder mesh/material is needed; one Camera triggers clearing.
+3. `// 3. bootstrap`: `Engine.create({ canvas, clearColor })`, `await renderer.ready` and a `requestAnimationFrame` render loop.
 
-运行：`pnpm --filter '@forgeax/app-learn-render-1-getting-started-1-hello-window' dev`（vite dev port 5180）。
+Run `pnpm --filter '@forgeax/app-learn-render-1-getting-started-1-hello-window' dev` (Vite port 5180).

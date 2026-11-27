@@ -20,8 +20,10 @@ import type {
   PersistentRenderScene,
 } from '../scene/render-scene';
 import { RenderScenePublishOrder, RenderViewFrameOrder } from '../system-order';
+import { viewRecordHistory } from './record-history';
 import {
   composedViewCamera,
+  RenderView,
   type RenderViewFrameSource,
   RenderViewInput,
   ViewRecorder,
@@ -29,7 +31,7 @@ import {
 } from './render-views';
 import { RenderPrepare, renderSubmission } from './render-world';
 import { type RenderSceneAdoption, RenderSceneDelta, RenderSceneInput } from './scene-systems';
-import { requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import { recordContext } from './view-record-context';
 import { adoptViewRecordAttempt } from './view-record-systems';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
@@ -133,10 +135,8 @@ export function viewFrameOf(
   world: World,
   entity: EntityHandle | undefined,
 ): ViewFrameState | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewFrame)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-    .unwrap();
+  const state = readViewState<ViewFrameState>(world, entity, ViewFrame);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state : undefined;
 }
 
@@ -266,7 +266,15 @@ export function stageRenderScene(
   source.staged = true;
   source.publication = publication;
   source.captureFeatures = undefined;
-  if (publication !== undefined) return;
+  if (publication !== undefined) {
+    // Terrain sections are projected on the receiving device from cooked materials.
+    const { device, standardProfile } = owner.internals;
+    owner.scene.materialSnapshotCacheStore(
+      renderMaterialContext(device.caps, device.limits, standardProfile?.visibleSurface === true)
+        .materialContext,
+    );
+    return;
+  }
   source.world = sourceWorld;
   source.lease = lease;
   if (sourceWorld === undefined || lease === undefined)
@@ -327,12 +335,16 @@ export function candidateFrameBuilder(
     internals.device.limits,
     internals.standardProfile?.visibleSurface === true,
   );
+  const cameraSource = world.getResource(RenderViewInput)?.cameraSource;
   const materialCaches = scene.materialSnapshotCacheStore(materialContext.materialContext);
   const build = (renderables: PersistentRenderCandidateRequest) =>
     captureViewFrame(
       internals,
       extractSource(sourceWorld, internals.assets, materialCaches, {
         ...materialContext,
+        environmentGate: scene.shared.localLightingGate(sourceWorld, internals.assets),
+        environmentLightingOnly: true,
+        ...(cameraSource === undefined ? {} : { cameraSource }),
         ...(cameraEntityKey === undefined ? {} : { cameraEntityKey }),
         cull: 'none',
         ...(view === undefined ? {} : { view }),
@@ -413,6 +425,12 @@ function prepareViewFrame(
     const publication = viewPublication(source, owner.scene);
     state.publication = publication;
     ViewFrameRecord.owned(world, state)?.reset();
+    const history = viewRecordHistory(world, entity);
+    if (history !== undefined) {
+      const params = owner.postProcess.params;
+      params.beginRecording();
+      history.finishUniformWrites = params.finishRecording;
+    }
     owner.skin.beginRecording();
     retireSwappedPipelineGraph(owner, publication);
     const adoption = world.getResource(RenderSceneDelta);
@@ -422,9 +440,16 @@ function prepareViewFrame(
         return followRecordPublication(world, owner, entity, adoption, publication, state.mode);
       const inputs = viewFrameScopes(world, state);
       if (inputs.world === undefined) throw new Error('A local view requires its source World');
+      if (
+        adoption.localFrame !== undefined &&
+        inputs.cameraEntityKey === source.opts.cameraEntityKey &&
+        readViewField(world, entity, RenderView, 'primary') === true
+      )
+        return owner.scene.followAdoption(adoption, undefined, session);
       return owner.scene.followAdoption(
         adoption,
         candidateFrameBuilder(world, owner, entity, inputs.world, inputs.cameraEntityKey, session),
+        session,
       );
     });
     return { ok: true, value };
@@ -461,6 +486,7 @@ export function registerViewFrameSystem(world: World): void {
         const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
         state.result = prepareViewFrame(world, owner, entity, source, state);
       });
+      world.getResource(RenderSceneDelta).localFrame = undefined;
     },
   });
   world.addSystem(RenderPrepare, systemToken1).unwrap();

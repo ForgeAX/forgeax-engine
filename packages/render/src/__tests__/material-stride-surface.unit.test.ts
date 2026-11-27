@@ -7,11 +7,17 @@ const rendererFactorySource = readFileSync(
   new URL('../assembly/webgpu-ready-resources.ts', import.meta.url),
   'utf8',
 );
-const recordSources = [
-  readFileSync(new URL('../record/main-pass.ts', import.meta.url), 'utf8'),
-  readFileSync(new URL('../record/main-pass-geometry.ts', import.meta.url), 'utf8'),
-  readFileSync(new URL('../record/main-pass-sprite-draws.ts', import.meta.url), 'utf8'),
+// The physical uniform write resolves every draw's dynamic offset; pass recorders
+// consume its result and never see the stride. Consumers of the stride itself:
+const strideConsumers = [
+  readFileSync(new URL('../record/material-uniforms.ts', import.meta.url), 'utf8'),
   rendererFactorySource,
+];
+const recordSources = [
+  ...strideConsumers,
+  readFileSync(new URL('../record/main-pass.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../record/main-pass-material.ts', import.meta.url), 'utf8'),
+  readFileSync(new URL('../record/shadow-pass.ts', import.meta.url), 'utf8'),
 ];
 
 describe('material dynamic-offset stride surface', () => {
@@ -23,10 +29,9 @@ describe('material dynamic-offset stride surface', () => {
       ),
     ).toHaveLength(1);
 
-    for (const source of recordSources) {
-      expect(source).toContain('MATERIAL_PER_ENTITY_STRIDE');
+    for (const source of strideConsumers) expect(source).toContain('MATERIAL_PER_ENTITY_STRIDE');
+    for (const source of recordSources)
       expect(source).not.toMatch(/const MATERIAL_PER_ENTITY_STRIDE\s*=/);
-    }
   });
 
   it('routes shared renderer allocation through the owner', () => {

@@ -89,6 +89,7 @@ afterEach(() => vi.restoreAllMocks());
     const intensityBuffer = { __brand: 'fallback-intensity', value: 0 } as unknown as Buffer;
     return {
       irradianceTexture: tex,
+      skySh: {} as Buffer,
       irradianceView: irrView,
       prefilterTexture: tex,
       prefilterView: prefView,
@@ -101,7 +102,7 @@ afterEach(() => vi.restoreAllMocks());
 
   function makeActive(): SkylightBindGroupResources {
     return {
-      irradianceView: { __brand: 'active-irrView' } as unknown as TextureView,
+      skySh: { __brand: 'active-sky-sh' } as unknown as Buffer,
       irradianceSampler: { __brand: 'active-irrSampler' } as unknown as Sampler,
       prefilterView: { __brand: 'active-prefView' } as unknown as TextureView,
       prefilterSampler: { __brand: 'active-prefSampler' } as unknown as Sampler,
@@ -111,11 +112,11 @@ afterEach(() => vi.restoreAllMocks());
   }
 
   describe('t58 (M4 round-4) -- material BG fallback path', () => {
-    it('(a) assemble with fallback returns 16 entries; binding 7..13 reference fallback resources', () => {
+    it('(a) assemble with fallback returns 15 entries; bindings 7..12 reference fallback resources', () => {
       const materialEntries = makeMaterialBindGroupEntries();
       const fallback = makeFallback();
       const fallbackAsActive: SkylightBindGroupResources = {
-        irradianceView: fallback.irradianceView,
+        skySh: fallback.skySh,
         irradianceSampler: fallback.sampler,
         prefilterView: fallback.prefilterView,
         prefilterSampler: fallback.sampler,
@@ -123,9 +124,12 @@ afterEach(() => vi.restoreAllMocks());
         intensityBuffer: fallback.intensityBuffer,
       };
       const merged = assembleMaterialWithSkylightEntries(materialEntries, fallbackAsActive);
-      expect(merged).toHaveLength(16);
+      expect(merged).toHaveLength(15);
       expect(merged[7]?.binding).toBe(7);
-      expect((merged[7]?.resource as { value: unknown }).value).toBe(fallback.irradianceView);
+      expect(merged[7]?.resource).toEqual({
+        kind: 'buffer',
+        value: { buffer: fallback.skySh, size: 112 },
+      });
       expect((merged[8]?.resource as { value: unknown }).value).toBe(fallback.sampler);
       expect((merged[9]?.resource as { value: unknown }).value).toBe(fallback.prefilterView);
       expect((merged[10]?.resource as { value: unknown }).value).toBe(fallback.sampler);
@@ -135,12 +139,15 @@ afterEach(() => vi.restoreAllMocks());
       );
     });
 
-    it('(b) assemble with active returns 16 entries; binding 7..13 reference active IblPipelineCache resources', () => {
+    it('(b) assemble with active returns 15 entries; bindings 7..12 reference active IblPipelineCache resources', () => {
       const materialEntries = makeMaterialBindGroupEntries();
       const active = makeActive();
       const merged = assembleMaterialWithSkylightEntries(materialEntries, active);
-      expect(merged).toHaveLength(16);
-      expect((merged[7]?.resource as { value: unknown }).value).toBe(active.irradianceView);
+      expect(merged).toHaveLength(15);
+      expect(merged[7]?.resource).toEqual({
+        kind: 'buffer',
+        value: { buffer: active.skySh, size: 112 },
+      });
       expect((merged[8]?.resource as { value: unknown }).value).toBe(active.irradianceSampler);
       expect((merged[9]?.resource as { value: unknown }).value).toBe(active.prefilterView);
       expect((merged[10]?.resource as { value: unknown }).value).toBe(active.prefilterSampler);
@@ -158,7 +165,7 @@ afterEach(() => vi.restoreAllMocks());
   // `setBindGroup(4,` call site. Round-4 D-5 forbids the slot entirely.
 
   describe('t58 (M4 round-4) -- recordFrame never binds @group(4)', () => {
-    it('(c)+(d) render-system-record.ts contains zero setBindGroup(4, ...) call sites', async () => {
+    it('(c)+(d) main pass contains zero setBindGroup(4, ...) call sites', async () => {
       const fsId = 'node:fs';
       const pathId = 'node:path';
       const urlId = 'node:url';
@@ -173,8 +180,6 @@ afterEach(() => vi.restoreAllMocks());
         fileURLToPath: (u: string) => string;
       };
       const here = url.fileURLToPath(import.meta.url);
-      // feat-20260704 M5/w31: main-pass draw code split across main-pass.ts +
-      // main-pass-geometry.ts + main-pass-sprite-draws.ts; scan the set.
       const recordDir = pathMod.resolve(
         pathMod.dirname(here),
         '..',
@@ -184,7 +189,12 @@ afterEach(() => vi.restoreAllMocks());
         'src',
         'record',
       );
-      const source = ['main-pass.ts', 'main-pass-geometry.ts', 'main-pass-sprite-draws.ts']
+      const source = [
+        'main-pass.ts',
+        'main-pass-geometry.ts',
+        'main-pass-material.ts',
+        'main-pass-sprite-draws.ts',
+      ]
         .map((name) => fs.readFileSync(pathMod.resolve(recordDir, name), 'utf8'))
         .join('\n');
       // Match either `setBindGroup(4, ...)` or `setBindGroup( 4 ,`.
@@ -192,7 +202,7 @@ afterEach(() => vi.restoreAllMocks());
       expect(matches).toBeNull();
     });
 
-    it('(d) render-system-record.ts contains setBindGroup(1, ...) for PBR drawCalls (per-entity post-bug-20260522)', async () => {
+    it('(d) main pass contains setBindGroup(1, ...) for PBR drawCalls (per-entity post-bug-20260522)', async () => {
       const fsId = 'node:fs';
       const pathId = 'node:path';
       const urlId = 'node:url';
@@ -207,8 +217,6 @@ afterEach(() => vi.restoreAllMocks());
         fileURLToPath: (u: string) => string;
       };
       const here = url.fileURLToPath(import.meta.url);
-      // feat-20260704 M5/w31: main-pass draw code split across main-pass.ts +
-      // main-pass-geometry.ts + main-pass-sprite-draws.ts; scan the set.
       const recordDir = pathMod.resolve(
         pathMod.dirname(here),
         '..',
@@ -218,14 +226,16 @@ afterEach(() => vi.restoreAllMocks());
         'src',
         'record',
       );
-      const source = ['main-pass.ts', 'main-pass-geometry.ts', 'main-pass-sprite-draws.ts']
+      const source = [
+        'main-pass.ts',
+        'main-pass-geometry.ts',
+        'main-pass-material.ts',
+        'main-pass-sprite-draws.ts',
+      ]
         .map((name) => fs.readFileSync(pathMod.resolve(recordDir, name), 'utf8'))
         .join('\n');
-      // Confirm the PBR drawCall binds material BG at slot 1. Post
-      // bug-20260522, the variable name changed from `materialBindGroup`
-      // to `perSubmeshBg` (rename anticipates M4 per-submesh BG construction;
-      // this commit still builds per-entity).
-      const matches = source.match(/setBindGroup\s*\(\s*1\s*,\s*perSubmeshBg\b/g);
+      // The recorder binds the resolved physical material group at slot 1.
+      const matches = source.match(/setBindGroup\s*\(\s*1\s*,\s*binding\s*,/g);
       expect(matches).not.toBeNull();
       expect((matches ?? []).length).toBeGreaterThanOrEqual(1);
     });

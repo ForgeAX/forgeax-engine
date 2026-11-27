@@ -79,6 +79,48 @@ describe('visibility extract orchestration', () => {
     ).toEqual([produced]);
   });
 
+  it('keeps a partially assembled row independent of a nested source extraction', () => {
+    const assets = new AssetRegistry();
+    const mesh = assets.create(createPrimitiveMesh('cube').unwrap()).unwrap();
+    const world = new World({ assets });
+    const components = [
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: { assetHandle: mesh } },
+      { component: MeshRenderer, data: {} },
+    ] as const;
+    const inner = world.spawn(...components).unwrap();
+    const outer = world
+      .spawn(...components, {
+        component: GpuMeshVertexSource,
+        data: { feature: 'water', resource: 'surface' },
+      })
+      .unwrap();
+    const get = world.get.bind(world);
+    const hook = vi.spyOn(world, 'get').mockImplementation((entity, component) => {
+      if (component === GpuMeshVertexSource) {
+        const nested = extractSource(world, assets, undefined, {
+          renderables: { kind: 'partial', entities: new Set([inner]) },
+        });
+        expect(nested.renderables.map((row) => row.entityKey)).toEqual([inner]);
+      }
+      return get(entity, component);
+    });
+    try {
+      const frame = extractSource(world, assets, undefined, {
+        renderables: { kind: 'partial', entities: new Set([outer]) },
+      });
+      expect(frame.renderables).toHaveLength(1);
+      expect(frame.renderables[0]).toMatchObject({
+        entityKey: outer,
+        gpuVertexSource: { feature: 'water', resource: 'surface' },
+      });
+      expect(frame.dispatch.length).toBeGreaterThan(0);
+      expect(frame.dispatch.every((entry) => entry.entityIndex === outer)).toBe(true);
+    } finally {
+      hook.mockRestore();
+    }
+  });
+
   it('selects Fog once from the source and never queries an unrelated World', () => {
     const cameraWorld = new World();
     const resourceWorld = new World();

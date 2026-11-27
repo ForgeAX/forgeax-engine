@@ -34,7 +34,7 @@ import {
   type ExecutionFaultMessage,
   type ExecutionFrameMessage,
   FrameCreditLedger,
-  forwardPipelineLibraries,
+  forwardPipelinePreparation,
   forwardResourceBudgets,
   renderPipelineCapacityOf,
 } from './protocol';
@@ -83,7 +83,7 @@ function runtimeError(message: ExecutionFaultMessage): AppErrorType {
       expected: APP_EXPECTED['app-execution-kernel-failed'],
       hint: APP_ERROR_HINTS['app-execution-kernel-failed'],
       detail: {
-        kernelName: (message.detail as { kernelName?: string })?.kernelName ?? 'unknown',
+        kernelName: message.kernelName ?? 'unknown',
         worldIdentity: message.worldIdentity,
         cause: message.detail,
       },
@@ -93,7 +93,7 @@ function runtimeError(message: ExecutionFaultMessage): AppErrorType {
     code: 'app-system-update-failed',
     expected: APP_EXPECTED['app-system-update-failed'],
     hint: APP_ERROR_HINTS['app-system-update-failed'],
-    detail: { cause: message.detail },
+    detail: { cause: message.detail, systemName: message.systemName },
   });
 }
 
@@ -174,7 +174,7 @@ export async function createWorkerExecutionApp(
         ? {}
         : { diagnostics: executionOptions.diagnostics }),
       ...forwardGpuStub(options.appOptions),
-      ...forwardPipelineLibraries(options.appOptions),
+      ...forwardPipelinePreparation(options.appOptions),
       ...(options.appOptions.outputColorSpace === undefined
         ? {}
         : { outputColorSpace: options.appOptions.outputColorSpace }),
@@ -534,6 +534,8 @@ export async function createWorkerExecutionApp(
         expected: message.expected,
         hint: message.hint,
         detail: message.detail,
+        ...(message.systemName === undefined ? {} : { systemName: message.systemName }),
+        ...(message.kernelName === undefined ? {} : { kernelName: message.kernelName }),
         partialWrite: message.partialWrite,
         retryable: message.retryable,
       },
@@ -590,9 +592,9 @@ export async function createWorkerExecutionApp(
   // Source frame IDs are monotonic across renderer replacement. A lost epoch
   // retires its outstanding frames; a new baseline starts at this floor.
   let renderRecoveryFloor = 0;
-  // Ascending ids of issued update-only steps, which the Render Worker never
-  // completes; render back-pressure counts only the pictures still in flight.
-  let updateOnlyFrames: number[] = [];
+  // Only issued pictures own Render Worker capacity. Simulation-only ticks
+  // never enter this bounded roster, even if the GPU stops returning credit.
+  const pendingRenderFrames: number[] = [];
   const renderPipelineCapacity = renderPipelineCapacityOf(
     options.appOptions.startup?.settings.execution?.renderPipelineCapacity ??
       executionOptions.diagnostics?.renderPipelineCapacity,
@@ -640,13 +642,11 @@ export async function createWorkerExecutionApp(
   };
   // Admitted pictures not yet GPU-complete; without split rendering only the
   // simulation credit is in flight.
-  const pipelineDepth = (): number => {
-    const frame = ledger.inspect();
-    if (report.render === undefined) return frame.inFlight;
-    const floor = Math.max(renderRecoveryFloor, report.render.completedFrame);
-    const settled = updateOnlyFrames.findIndex((frameId) => frameId > floor);
-    updateOnlyFrames.splice(0, settled === -1 ? updateOnlyFrames.length : settled);
-    return Math.max(frame.inFlight, frame.submitted - floor - updateOnlyFrames.length);
+  const pipelineDepth = (): number =>
+    Math.max(ledger.inspect().inFlight, pendingRenderFrames.length);
+  const retireRenderFrames = (completedFrame: number): void => {
+    while (pendingRenderFrames[0] !== undefined && pendingRenderFrames[0] <= completedFrame)
+      pendingRenderFrames.shift();
   };
   const renderBlocked = (): boolean => {
     if (report.render === undefined) return false;
@@ -663,10 +663,12 @@ export async function createWorkerExecutionApp(
       traceAdmission('host-admission', 'simulation-in-flight');
       return false;
     }
-    if (renderBlocked()) {
+    if (report.render?.state === 'rebuilding') {
       traceAdmission('host-admission', 'render-blocked');
       return false;
     }
+    // A healthy but full Render Worker only limits picture publication.
+    const render = !renderBlocked();
     // Sample input and native platform time at admission, including when an
     // ACK releases a tick that became due while a Worker still owned credit.
     const time = platform.now();
@@ -686,7 +688,7 @@ export async function createWorkerExecutionApp(
     // display tick falling inside a long update would be lost.
     scheduleFrame();
     // A lease the platform refused has already faulted the session.
-    if (state === 'running') postFrame(deltaSeconds, timestamp / 1_000);
+    if (state === 'running') postFrame(deltaSeconds, timestamp / 1_000, render);
     return true;
   };
   /**
@@ -708,13 +710,15 @@ export async function createWorkerExecutionApp(
       temporalResetAfterFrame !== undefined,
       render,
     );
-    ledger.observeDepth(pipelineDepth());
-    report = { ...report, frame: ledger.inspect() };
     if (frame === undefined) {
       traceAdmission('host-admission', 'not-issued');
       return false;
     }
-    traceAdmission('host-admission', 'issued', frame);
+    if (!render) temporalResetAfterFrame = frame.frameId;
+    else if (report.render !== undefined) pendingRenderFrames.push(frame.frameId);
+    ledger.observeDepth(pipelineDepth());
+    report = { ...report, frame: ledger.inspect() };
+    traceAdmission('host-admission', render ? 'issued' : 'simulation-only', frame);
     frameProfile = profiler?.activeSession();
     profileFrameOpen = frameProfile?.beginFrame().ok ?? false;
     hostFrameOpen = profileFrameOpen
@@ -749,15 +753,7 @@ export async function createWorkerExecutionApp(
           : ledger.hasCreditInFlight || (render && renderBlocked())
             ? 'credit'
             : undefined;
-    if (reason === undefined && postFrame(deltaSeconds, undefined, render)) {
-      if (!render) {
-        // The next drawn picture follows skipped ones: it carries a temporal reset.
-        const frameId = ledger.inspect().submitted;
-        updateOnlyFrames.push(frameId);
-        temporalResetAfterFrame = frameId;
-      }
-      return ok(undefined);
-    }
+    if (reason === undefined && postFrame(deltaSeconds, undefined, render)) return ok(undefined);
     return err(
       new AppError({
         code: 'app-frame-step-invalid',
@@ -1041,6 +1037,7 @@ export async function createWorkerExecutionApp(
     if (message.epoch <= renderEpoch || state === 'stopped' || state === 'faulted') return;
     renderEpoch = message.epoch;
     renderRecoveryFloor = ledger.inspect().completed;
+    retireRenderFrames(renderRecoveryFloor);
     clearFrameAdmissionWatchdog();
     report = {
       ...report,
@@ -1058,7 +1055,7 @@ export async function createWorkerExecutionApp(
         kind: 'render-replace',
         epoch: renderEpoch,
         canvas: offscreen,
-        ...forwardPipelineLibraries(options.appOptions),
+        ...forwardPipelinePreparation(options.appOptions),
       },
       [offscreen],
     );
@@ -1092,6 +1089,7 @@ export async function createWorkerExecutionApp(
     traceAdmission('host-ack-entry', 'callback', message);
     if (!acceptsRenderFrame(message)) return;
     if (message.frame.frameId <= (report.render?.completedFrame ?? 0)) return;
+    retireRenderFrames(message.frame.frameId);
     report = {
       ...report,
       render: {
@@ -1311,7 +1309,7 @@ export async function createWorkerExecutionApp(
     if (!replaceHostAudio(message)) return;
     ledger = new FrameCreditLedger(message.worldIdentity);
     renderRecoveryFloor = 0;
-    updateOnlyFrames = [];
+    pendingRenderFrames.length = 0;
     hostFrameMeasurements.clear();
     engineMeasurements.clear();
     kernelMeasurements.clear();

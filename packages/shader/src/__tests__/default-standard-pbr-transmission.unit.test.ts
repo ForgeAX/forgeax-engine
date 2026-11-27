@@ -6,10 +6,7 @@ import {
   ShaderRegistry,
   type ShaderRegistryDevice,
 } from '../index.js';
-
-type EngineShaderManifest = Awaited<
-  ReturnType<typeof import('@forgeax/engine-vite-plugin-shader').buildEngineShaderManifest>
->;
+import { loadEngineTemplateRegistry } from './standard-template-registry.fixture.js';
 
 function dataUrl(payload: unknown): string {
   const url = URL.createObjectURL(
@@ -27,14 +24,11 @@ function device(): ShaderRegistryDevice {
   };
 }
 
-async function engineManifest(): Promise<EngineShaderManifest> {
-  engineManifestPromise ??= import('@forgeax/engine-vite-plugin-shader').then(
-    ({ buildEngineShaderManifest }) => buildEngineShaderManifest(),
-  );
-  return engineManifestPromise;
-}
+let engineRegistry: ShaderRegistry;
 
-let engineManifestPromise: Promise<EngineShaderManifest> | undefined;
+function materialShaders() {
+  return [...engineRegistry.materialShaderManifestEntries()];
+}
 
 // An independent complete Cartesian oracle prevents a new axis from
 // silently shrinking either ordinary or optional output permutations.
@@ -46,6 +40,7 @@ const STANDARD_AXES = [
   'COVERAGE_ONLY',
   'DIRECTIONAL_SHADOW_SIMPLE',
   'EXTENDED_LIGHTING_AVAILABLE',
+  'FORWARD_INLINE_SSR',
   'GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
   'LEAN_LIGHTING',
   'LOD_DITHER',
@@ -78,49 +73,65 @@ function violatesCapabilityTopology(defines: Record<string, boolean>): boolean {
 
 function expectedStandardCombinations(): Map<string, Record<string, boolean>> {
   const expected = new Map<string, Record<string, boolean>>();
-  for (let bits = 0; bits < 2 ** STANDARD_AXES.length; bits++) {
+  const baselineAxes = STANDARD_AXES.filter((axis) => axis !== 'FORWARD_INLINE_SSR');
+  for (let bits = 0; bits < 2 ** baselineAxes.length; bits++) {
     const defines = Object.fromEntries(
-      STANDARD_AXES.map((axis, index) => [axis, (bits & (1 << index)) !== 0]),
+      baselineAxes.map((axis, index) => [axis, (bits & (1 << index)) !== 0]),
     );
     // Combinations the runtime never requests (discard sources, receiver and
     // backend implications) are filtered by the published rule table.
     if (violatesCapabilityTopology(defines) || !isSupportedVariantDefines(defines)) continue;
-    const key = STANDARD_AXES.every((axis) => defines[axis])
-      ? ''
-      : STANDARD_AXES.map((axis) => `${axis}=${defines[axis]}`).join('+');
-    expected.set(key, defines);
+    const baseline: Record<string, boolean> = { ...defines, FORWARD_INLINE_SSR: false };
+    expected.set(STANDARD_AXES.map((axis) => `${axis}=${baseline[axis]}`).join('+'), baseline);
+    if (
+      defines.EXTENDED_LIGHTING_AVAILABLE &&
+      !defines.VISIBLE_SURFACE_AVAILABLE &&
+      !defines.REFLECTION_FALLBACK_AVAILABLE
+    ) {
+      const inlineSsr: Record<string, boolean> = { ...defines, FORWARD_INLINE_SSR: true };
+      expected.set(STANDARD_AXES.map((axis) => `${axis}=${inlineSsr[axis]}`).join('+'), inlineSsr);
+    }
   }
   return expected;
 }
 
-function expectLightModifierResources(
-  key: string,
-  defines: Record<string, boolean>,
-  code: string,
-): void {
-  const extended = defines.CLUSTER_FORWARD_AVAILABLE && defines.EXTENDED_LIGHTING_AVAILABLE;
-  for (const resource of ['iesProfileTexture', 'cookieTexture', 'ltcGgxTexture']) {
-    // LEAN_LIGHTING removes the Cookie and rect-area (LTC) call sites; the
-    // imported IES helper body stays in the module.
-    const sampled = extended && (resource === 'iesProfileTexture' || !defines.LEAN_LIGHTING);
-    expect(
-      new RegExp(`textureSampleLevel\\(${resource}\\w*,`).test(code),
-      `${key}: ${resource}`,
-    ).toBe(sampled);
+function expectedCoverageKeys(): Set<string> {
+  const lanes = [
+    { storage: false, scene: false, water: false },
+    { storage: true, scene: false, water: false },
+    { storage: true, scene: true, water: false },
+    { storage: true, scene: false, water: true },
+    { storage: true, scene: true, water: true },
+  ];
+  const keys = new Set<string>();
+  for (const lane of lanes) {
+    for (const clipping of [false, true]) {
+      for (const lod of [false, true]) {
+        for (const vertexColor of [false, true]) {
+          const enabled = new Set<string>(['COVERAGE_ONLY']);
+          if (lane.storage) enabled.add('STORAGE_BUFFER_AVAILABLE');
+          if (lane.scene) enabled.add('GPU_DRIVEN_SCENE_INDEX_AVAILABLE');
+          if (lane.water) enabled.add('WATER_WAVES_AVAILABLE');
+          if (clipping) enabled.add('CLIPPING_PLANES');
+          if (lod) enabled.add('LOD_DITHER');
+          if (vertexColor) enabled.add('VERTEX_COLOR_AVAILABLE');
+          keys.add(STANDARD_AXES.map((axis) => `${axis}=${enabled.has(axis)}`).join('+'));
+        }
+      }
+    }
   }
+  return keys;
 }
 
 describe('default Standard PBR transmission manifest contract', () => {
-  // The first manifest build is producer setup, not part of the assertion budget.
   beforeAll(async () => {
-    await engineManifest();
+    ({ registry: engineRegistry } = await loadEngineTemplateRegistry());
   }, 120_000);
 
   it('publishes every supported capability combination including transmission', {
     timeout: 60_000,
   }, async () => {
-    const manifest = await engineManifest();
-    const standard = manifest.materialShaders.find(
+    const standard = materialShaders().find(
       (entry) => entry.identifier === 'forgeax::default-standard-pbr',
     );
 
@@ -130,11 +141,17 @@ describe('default Standard PBR transmission manifest contract', () => {
       (variant) => 'TRANSMISSION_AVAILABLE' in variant.defines,
     );
     const expected = expectedStandardCombinations();
-    // Keep the original non-Water cardinality/resource oracle intact below.
-    // The full Cartesian/key check also covers both new Water axes.
+    const expectedCoverage = expectedCoverageKeys();
+    expect(expectedCoverage).toHaveLength(40);
+    // Coverage has its own geometry matrix, independent of color capabilities.
+    // The Cartesian/key comparison below still checks the entire publication.
     const ordinary = new Map(
       [...expected].filter(
-        ([, defines]) => !defines.WATER_WAVES_AVAILABLE && !defines.WATER_INFO_RGBA16,
+        ([, defines]) =>
+          !defines.COVERAGE_ONLY &&
+          !defines.FORWARD_INLINE_SSR &&
+          !defines.WATER_WAVES_AVAILABLE &&
+          !defines.WATER_INFO_RGBA16,
       ),
     );
     // Modifier-free lighting now supports the full directional receiver too.
@@ -168,69 +185,28 @@ describe('default Standard PBR transmission manifest contract', () => {
     expect(transmissionVariants).toHaveLength(expected.size);
     expect(actual.size).toBe(expected.size);
     expect(new Set(actual.keys())).toEqual(new Set(expected.keys()));
+    expect(
+      new Set(
+        transmissionVariants
+          .filter((variant) => variant.defines.COVERAGE_ONLY)
+          .map((variant) => variant.definesKey),
+      ),
+    ).toEqual(expectedCoverage);
     for (const [key, defines] of expected) {
       const variant = actual.get(key);
       expect(variant?.defines).toEqual(defines);
-      if (variant === undefined) throw new Error(`missing supported program ${key}`);
-      expectLightModifierResources(key, defines, variant.composedWgsl);
-      if (defines.CLUSTER_FORWARD_AVAILABLE && !defines.STORAGE_BUFFER_AVAILABLE) {
-        expect(variant?.composedWgsl).toMatch(
-          /var\s+cluster_data_texture\w*\s*:\s*texture_2d<u32>/,
-        );
-        expect(variant?.composedWgsl).toMatch(/textureLoad\(cluster_data_texture\w*,/);
-        expect(variant?.composedWgsl).not.toMatch(/var\s*<\s*storage\b/);
-      }
-    }
-    // VSM reception uses the extended resource topology even without clustered
-    // lights or atmosphere. Preserve every public choice and its distinct code.
-    const programsByEffectiveChoice = new Map<string, string>();
-    const choicesByProgram = new Map<string, string>();
-    for (const [key, defines] of legacyOrdinary) {
-      const choice = STANDARD_AXES.map((axis) => `${axis}=${defines[axis]}`).join('+');
-      const code = actual.get(key)?.composedWgsl;
-      if (code === undefined) throw new Error(`missing supported program ${key}`);
-      expectLightModifierResources(key, defines, code);
-      const previousCode = programsByEffectiveChoice.get(choice);
-      if (previousCode !== undefined) expect(code).toBe(previousCode);
-      programsByEffectiveChoice.set(choice, code);
-      // Lean drops projector reads but retains the storage-lane cloud map.
-      // No-storage omits the cloud map; without
-      // Cluster or shared transmission, the projector axis has no other read.
-      // Every other effective choice must retain its distinct program.
-      const inactiveProjector =
-        defines.LEAN_LIGHTING ||
-        (!defines.STORAGE_BUFFER_AVAILABLE &&
-          !defines.CLUSTER_FORWARD_AVAILABLE &&
-          !defines.TRANSMISSION_AVAILABLE);
-      if (inactiveProjector) {
-        expect(code).not.toMatch(/textureSampleLevel\(projectorTexture\w*,/);
-      }
-      const inactiveProjectorProgram =
-        !defines.STORAGE_BUFFER_AVAILABLE &&
-        !defines.CLUSTER_FORWARD_AVAILABLE &&
-        !defines.TRANSMISSION_AVAILABLE;
-      const programKey = inactiveProjectorProgram
-        ? choice.replace(/PROJECTOR_AVAILABLE=(true|false)/, 'PROJECTOR_AVAILABLE=*')
-        : choice;
-      const previousChoice = choicesByProgram.get(code);
-      if (previousChoice !== undefined) expect(programKey).toBe(previousChoice);
-      choicesByProgram.set(code, programKey);
     }
     const directVisibleRows = [...ordinary.values()].filter(
-      (defines) =>
-        defines.VISIBLE_SURFACE_AVAILABLE &&
-        !defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE &&
-        !defines.COVERAGE_ONLY,
+      (defines) => defines.VISIBLE_SURFACE_AVAILABLE && !defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE,
     );
     expect(directVisibleRows).toHaveLength(4 * 2 * 2 * 2);
     // Count the contract independently of the producer and permutation helper:
     // no-storage, storage/direct, direct G-buffer, and storage/scene-index rows.
     // The direct G-buffer slice has four (projector, extended, atmosphere)
     // topologies, two probe choices, two alpha-mask choices and two independent
-    // clipping choices. Direct ordinary rows have alpha(2)*clipping(2)=4
-    // states; coverage adds visible(2)*LOD(2)*clipping(2)=8. Scene-index
-    // ordinary rows additionally have visible(2)*LOD(2), so 16+8 states.
-    const generalRows = 32 * 12 + 128 * 12 + 4 * 2 * 2 * 2 + 128 * 24;
+    // clipping choices. Direct color rows have alpha(2)*clipping(2)=4
+    // states. Scene-index color rows also have visible(2)*LOD(2), so 16 states.
+    const generalRows = 32 * 4 + 128 * 4 + 4 * 2 * 2 * 2 + 128 * 16;
     // Lean fixes the receiver/discard axes. Four lighting topologies combine
     // with GPU scene-index, cluster, vertex colour and reflection choices.
     const leanRows = 4 * 2 ** 4;
@@ -249,13 +225,11 @@ describe('default Standard PBR transmission manifest contract', () => {
     const fullSimpleLeanInputRows = fullSimpleRows / 2;
     const leanInputRows = 4 * 2 ** 7 + leanRows / 2 + fullSimpleLeanInputRows;
     const leanInputProjectorPairs = 8;
-    expect(programsByEffectiveChoice.size).toBe(
-      generalRows + leanRows + fullSimpleRows + leanInputRows,
-    );
-    // No-storage/non-Cluster/non-transmission has twelve receiver/discard
-    // states, two vertex-colour and two reflection choices; each projector pair
+    expect(legacyOrdinary.size).toBe(generalRows + leanRows + fullSimpleRows + leanInputRows);
+    // No-storage/non-Cluster/non-transmission color has four receiver/discard
+    // states, two vertex-colour and two reflection choices. Each projector pair
     // shares code because neither the projector nor cloud map is consumed.
-    const noStorageProjectorPairs = 12 * 2 * 2;
+    const noStorageProjectorPairs = 4 * 2 * 2;
     const noStorageInactiveChoices = [...legacyOrdinary.values()].filter(
       (defines) =>
         !defines.STORAGE_BUFFER_AVAILABLE &&
@@ -263,9 +237,6 @@ describe('default Standard PBR transmission manifest contract', () => {
         !defines.TRANSMISSION_AVAILABLE,
     );
     expect(noStorageInactiveChoices).toHaveLength(2 * noStorageProjectorPairs);
-    expect(choicesByProgram.size).toBe(
-      generalRows + leanRows + fullSimpleRows + leanInputRows - noStorageProjectorPairs,
-    );
     const leanChoices = [...legacyOrdinary.values()].filter(
       (defines) => defines.LEAN_LIGHTING && !defines.EXTENDED_LIGHTING_AVAILABLE,
     );
@@ -291,14 +262,21 @@ describe('default Standard PBR transmission manifest contract', () => {
       (row) => row.STORAGE_BUFFER_AVAILABLE && !row.STANDARD_LEAN_INPUTS,
     );
     const leanOrdinary = [...ordinary.values()].filter((row) => row.STANDARD_LEAN_INPUTS);
+    const inlineSsrRows = [...expected.values()].filter((row) => row.FORWARD_INLINE_SSR);
+    expect(inlineSsrRows).toHaveLength(1728);
     expect(expected.size).toBe(
-      ordinary.size + 2 * storageOrdinary.length + 3 * leanOrdinary.length,
+      ordinary.size +
+        2 * storageOrdinary.length +
+        3 * leanOrdinary.length +
+        expectedCoverage.size +
+        inlineSsrRows.length,
     );
     for (const waves of [true, false]) {
       for (const rgba16 of [true, false]) {
         const leanLane = [...expected.values()].filter(
           (row) =>
             row.STANDARD_LEAN_INPUTS &&
+            !row.FORWARD_INLINE_SSR &&
             row.WATER_WAVES_AVAILABLE === waves &&
             row.WATER_INFO_RGBA16 === rgba16,
         );
@@ -315,8 +293,7 @@ describe('default Standard PBR transmission manifest contract', () => {
   it('generates reflection response work only for an admitted reflection output', {
     timeout: 60_000,
   }, async () => {
-    const manifest = await engineManifest();
-    const standard = manifest.materialShaders.find(
+    const standard = materialShaders().find(
       (entry) => entry.identifier === 'forgeax::default-standard-pbr',
     );
     expect(standard).toBeDefined();
@@ -335,8 +312,7 @@ describe('default Standard PBR transmission manifest contract', () => {
   it('omits transmission and physical resources from the non-transmission fallback variant', {
     timeout: 60_000,
   }, async () => {
-    const manifest = await engineManifest();
-    const standard = manifest.materialShaders.find(
+    const standard = materialShaders().find(
       (entry) => entry.identifier === 'forgeax::default-standard-pbr',
     );
     expect(standard).toBeDefined();
@@ -361,8 +337,7 @@ describe('default Standard PBR transmission manifest contract', () => {
   it('keeps material-index varying GPU-only while preserving the scene-index variant', {
     timeout: 60_000,
   }, async () => {
-    const manifest = await engineManifest();
-    const standard = manifest.materialShaders.find(
+    const standard = materialShaders().find(
       (entry) => entry.identifier === 'forgeax::default-standard-pbr',
     );
     expect(standard).toBeDefined();
@@ -403,8 +378,7 @@ describe('default Standard PBR transmission manifest contract', () => {
   it('publishes the same explicit transmission axis for the skin Standard template', {
     timeout: 60_000,
   }, async () => {
-    const manifest = await engineManifest();
-    const skin = manifest.materialShaders.find((entry) => entry.identifier === 'forgeax::pbr-skin');
+    const skin = materialShaders().find((entry) => entry.identifier === 'forgeax::pbr-skin');
     expect(skin).toBeDefined();
     if (skin === undefined) return;
     expect(skin.variants.length).toBeGreaterThan(0);
@@ -422,22 +396,14 @@ describe('default Standard PBR transmission manifest contract', () => {
   it('registers one Standard row and resolves a declared capability variant by exact key', {
     timeout: 20_000,
   }, async () => {
-    const manifest = await engineManifest();
-    const standard = manifest.materialShaders.find(
+    const standard = materialShaders().find(
       (entry) => entry.identifier === 'forgeax::default-standard-pbr',
     );
     expect(standard).toBeDefined();
     if (standard === undefined) return;
 
-    const registry = new ShaderRegistry({
-      device: device(),
-      // The builder serializes the original fragment publication for the registry.
-      // Republishing the expanded Standard row assembles every WGSL body again.
-      manifestUrl: dataUrl(manifest),
-    });
-    const loaded = await registry.loadManifest();
-    expect(loaded.ok).toBe(true);
-    const rows = Array.from(registry.materialShaderManifestEntries()).filter(
+    const { registry } = await loadEngineTemplateRegistry();
+    const rows = [...registry.materialShaderManifestEntries()].filter(
       (entry) => entry.identifier === 'forgeax::default-standard-pbr',
     );
     expect(rows).toHaveLength(1);

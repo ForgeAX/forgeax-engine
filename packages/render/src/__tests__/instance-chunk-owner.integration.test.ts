@@ -219,6 +219,40 @@ it('retains exact opaque LOD permutations across views without rewriting source 
   disposeInstanceBufferChunks(owners);
 });
 
+it.each([
+  true,
+  false,
+])('seeds every physical window when a generation repeats outside the window (shared column %s)', async (shared) => {
+  const { device, makeRow, resolve, owners } = await fixture();
+  const row = makeRow();
+  const inst = row.source.instances;
+  const ids = Uint32Array.from({ length: 32 }, (_, ordinal) => ordinal + 1);
+  ids[31] = ids[0] as number;
+  const priorIds = shared ? ids : Uint32Array.from({ length: 32 }, (_, ordinal) => ordinal + 1);
+  const old = new Float32Array(inst.transforms);
+  for (let i = 0; i < 32; i++) old[i * 16 + 12] = 1000 + i;
+  Object.assign(inst, { generations: ids });
+  Object.assign(row.source, {
+    temporal: { previousInstances: { ...inst, generations: priorIds, transforms: old } },
+  });
+  const matrices: number[] = [];
+  const write = device.queue.writeBuffer.bind(device.queue);
+  vi.spyOn(device.queue, 'writeBuffer').mockImplementation((buffer, offset, data, start, size) => {
+    if (!(data instanceof Float32Array)) throw Error('expected an instance matrix upload');
+    for (let i = 0; i < data.length; i += 32) matrices.push(data[i + 28] as number);
+    return write(buffer, offset, data, start, size);
+  });
+  expect(resolve(row)).toHaveLength(4);
+  expect(matrices).toEqual(Array.from({ length: 32 }, (_, i) => i));
+  ids[31] = 32;
+  if (!shared) priorIds.reverse();
+  Object.assign(inst, { revision: 2 });
+  matrices.length = 0;
+  expect(resolve(row)).toHaveLength(4);
+  expect(matrices).toEqual(Array.from({ length: 32 }, (_, i) => 1000 + (shared ? i : 31 - i)));
+  disposeInstanceBufferChunks(owners);
+});
+
 it('retains exact chunk bindings and uploads no unchanged instance bytes', async () => {
   const { device, makeRow, resolve, owners } = await fixture();
   const row = makeRow();

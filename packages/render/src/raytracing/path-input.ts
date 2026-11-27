@@ -140,11 +140,41 @@ export function packSettings(s: RayPathSettings): Result<Uint8Array, RayReferenc
   new Float32Array(bytes.buffer).set(floats);
   return ok(bytes);
 }
+const ANALYTIC_LIGHT_WORDS = 16;
+const ANALYTIC_LIGHT_KIND_WORD = 3;
+const ANALYTIC_LIGHT_DIRECTIONAL = 1;
+
+/** The packed light projection owns the transport fields for a Card relight. */
+export function onlyPrimaryDirectionalColorChanged(
+  previous: Uint8Array,
+  current: Uint8Array,
+): boolean {
+  if (previous.byteLength !== current.byteLength) return false;
+  const count = current.byteLength / Float32Array.BYTES_PER_ELEMENT;
+  const before = new Float32Array(previous.buffer, previous.byteOffset, count);
+  const after = new Float32Array(current.buffer, current.byteOffset, count);
+  const kind = before.findIndex(
+    (word, index) =>
+      index % ANALYTIC_LIGHT_WORDS === ANALYTIC_LIGHT_KIND_WORD &&
+      word === ANALYTIC_LIGHT_DIRECTIONAL,
+  );
+  if (kind < 0) return false;
+  let changed = false;
+  for (let index = 0; index < count; index++) {
+    if (before[index] === after[index]) continue;
+    if (index <= kind || index > kind + 3) return false;
+    changed = true;
+  }
+  return changed;
+}
+
 export function packLights(
   lights: readonly LightSnapshot[],
 ): Result<Uint8Array, RayReferenceError> {
   if (lights.length > 32) return rayReferenceFailure('at most 32 analytic lights', true);
-  const bytes = new Uint8Array(Math.max(1, lights.length) * 64);
+  const bytes = new Uint8Array(
+    Math.max(1, lights.length) * ANALYTIC_LIGHT_WORDS * Float32Array.BYTES_PER_ELEMENT,
+  );
   const out = new Float32Array(bytes.buffer);
   for (let i = 0; i < lights.length; i++) {
     const l = lights[i];
@@ -163,7 +193,7 @@ export function packLights(
     const decay = l.kind === 'directional' ? 0 : (l.decay ?? 2);
     const row = [
       ...position,
-      l.kind === 'directional' ? 1 : l.kind === 'point' ? 2 : 3,
+      l.kind === 'directional' ? ANALYTIC_LIGHT_DIRECTIONAL : l.kind === 'point' ? 2 : 3,
       ...color,
       analyticDecayWord(l.kind, decay),
       ...direction,
@@ -177,10 +207,11 @@ export function packLights(
       color.some((v) => v < 0) ||
       range < 0 ||
       decay < 0 ||
-      (l.kind === 'spot' && (!(l.cosInner > l.cosOuter) || l.cosInner > 1 || l.cosOuter < -1))
+      // Equal cones are the authored hard-edge case handled by evalSpotCone.
+      (l.kind === 'spot' && (!(l.cosInner >= l.cosOuter) || l.cosInner > 1 || l.cosOuter < -1))
     )
       return rayReferenceFailure('invalid analytic light');
-    out.set(row, i * 16);
+    out.set(row, i * ANALYTIC_LIGHT_WORDS);
   }
   return ok(bytes);
 }

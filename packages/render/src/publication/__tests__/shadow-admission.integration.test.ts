@@ -21,6 +21,7 @@ import {
   GpuDrivenMaterialProgramProjection,
 } from '../../gpu-driven/material-artifacts';
 import { meshGeometryDraws } from '../../gpu-driven/mesh-batches';
+import { issuedSectionIndex } from '../../gpu-driven/source-draw-indices';
 import { InstanceProjectionStore } from '../../instances';
 import { Materials } from '../../materials';
 import type { RenderableSnapshot } from '../../render-system-extract';
@@ -49,14 +50,21 @@ function artifact(material: string, pass: 'forward' | 'shadow'): MaterialShaderA
   };
 }
 
-function fixture(materialAsset: MaterialAsset = Materials.standard({ baseColor: [1, 1, 1, 1] })) {
+function fixture(
+  materialAsset: MaterialAsset = Materials.standard({ baseColor: [1, 1, 1, 1] }),
+  prepareWorkerRows = false,
+) {
   const assets = new AssetRegistry();
   const world = new World({ assets });
   const identity = { source: 'shadow-admission', epoch: 1 };
   const publisher = createRenderPublisher(world, assets, identity);
-  const receiver = new RenderPublicationReceiver(identity);
-  const scene = new PersistentRenderScene({ assets });
   const instances = new InstanceProjectionStore();
+  const receiver = new RenderPublicationReceiver(
+    identity,
+    undefined,
+    prepareWorkerRows ? (rows) => preparePublicationGeometry(rows, assets, instances) : undefined,
+  );
+  const scene = new PersistentRenderScene({ assets });
   const material = assets.create(materialAsset).unwrap();
   const mesh = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
   const entity = world
@@ -83,7 +91,9 @@ function fixture(materialAsset: MaterialAsset = Materials.standard({ baseColor: 
     candidate.accept();
     const replay = structuredClone(packet);
     const received = receiver.accept(encodeRenderPublication(packet)).unwrap();
-    const prepared = preparePublicationGeometry(received, assets, instances);
+    const prepared = prepareWorkerRows
+      ? received
+      : preparePublicationGeometry(received, assets, instances);
     const frame = scene.consumePublication(prepared);
     publisher
       .recycle(packet.revision, renderPublicationTransfers(encodeRenderPublication(packet)))
@@ -99,7 +109,7 @@ function fixture(materialAsset: MaterialAsset = Materials.standard({ baseColor: 
     const dispatch = new MaterialDispatch();
     for (const slot of slots) dispatch.bind(slot.slot, slot.snapshot);
     dispatch.prepare(retained.meshes);
-    const plan = topology.query(topology.sourcePlan(), retained.meshes);
+    const plan = topology.query(topology.sourcePlan(), retained.meshes).active;
     const selected = collectGpuDrivenMaterialArtifacts({
       batches: plan.batches,
       programs: new GpuDrivenMaterialProgramProjection().project(
@@ -126,7 +136,7 @@ function fixture(materialAsset: MaterialAsset = Materials.standard({ baseColor: 
       clustered: false,
       reflectionFallback: false,
       probeBlend: false,
-      shadowViews: true,
+      demand: 'forward-and-shadow' as const,
     });
     const batches = plan.batches.filter(
       (batch) =>
@@ -540,6 +550,29 @@ it('rejects stale prepared publications before geometry or persistent scene muta
     expect(f.scene.compositionRetainedScene()?.identity).toBe(current.identity);
     expect(f.scene.shadowCasterProjection()).toBe(projection);
     expect([...projection.dispatch]).toEqual(work);
+  } finally {
+    f.close();
+  }
+});
+
+it('retains issued section addresses across Worker admission and native mesh binding', () => {
+  const f = fixture(undefined, true);
+  try {
+    const { received } = f.publish();
+    const worker = received.frame.renderables.at(0);
+    const retained = f.scene.compositionSlots().at(0)?.snapshot;
+    assert(worker && retained);
+    expect(retained.gpuDrivenDraws).toBe(worker.gpuDrivenDraws);
+    for (const source of [worker, retained, f.actualSource(retained)]) {
+      const table = source.gpuDrivenDraws;
+      assert(table && table.length > 0);
+      expect(Object.isFrozen(table)).toBe(true);
+      for (const [section, draw] of table.entries()) {
+        expect(issuedSectionIndex(table, section)).toBe(section);
+        expect(Object.isFrozen(draw)).toBe(true);
+      }
+      expect(issuedSectionIndex(table, table.length)).toBe(-1);
+    }
   } finally {
     f.close();
   }

@@ -37,8 +37,8 @@ const cases: readonly {
     invalid: [
       { renderPath: 'unknown' },
       { config: { clusterGrid: { x: 1, y: 0, z: 1 } } },
-      { config: { ssao: { enabled: true, radius: -1 } } },
-      { config: { ssao: { enabled: false, directLightingStrength: 2 } } },
+      { config: { ambientOcclusion: { enabled: true, radius: -1 } } },
+      { config: { ambientOcclusion: { enabled: false, directLightingStrength: 2 } } },
     ],
   },
   {

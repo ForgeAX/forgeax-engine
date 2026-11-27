@@ -131,4 +131,48 @@ describe('observeViteHttpReadiness', () => {
     await assert.rejects(readiness.wait(), /Vite did not become HTTP-ready/);
     await assert.rejects(readiness.wait(), /"lastStatus":503/);
   });
+
+  it('continues probing when retiring a response never settles', { timeout: 2_000 }, async (t) => {
+    const signals = [];
+    t.mock.method(globalThis, 'fetch', async (_url, { signal }) => {
+      signals.push(signal);
+      return new Response(
+        new ReadableStream({
+          cancel() {
+            return new Promise(() => {});
+          },
+        }),
+        { status: signals.length === 1 ? 503 : 200 },
+      );
+    });
+    const vite = new FakeViteProcess();
+    const readiness = observeViteHttpReadiness(vite, {
+      timeoutEnvName: 'FORGEAX_TEST_VITE_CANCEL_TIMEOUT_MS',
+      defaultTimeoutMs: 500,
+      pollIntervalMs: 5,
+    });
+    vite.stdout.write('Local: http://127.0.0.1:12000/\n');
+    assert.equal((await readiness.wait()).origin, 'http://127.0.0.1:12000');
+    assert.equal(signals.length, 2);
+    assert.ok(signals.every((signal) => signal.aborted));
+  });
+
+  it('ends a probe when fetch never settles after abort', { timeout: 2_000 }, async (t) => {
+    const signals = [];
+    t.mock.method(globalThis, 'fetch', (_url, { signal }) => {
+      signals.push(signal);
+      return new Promise(() => {});
+    });
+    const vite = new FakeViteProcess();
+    const readiness = observeViteHttpReadiness(vite, {
+      timeoutEnvName: 'FORGEAX_TEST_VITE_PROBE_TIMEOUT_MS',
+      defaultTimeoutMs: 100,
+      requestTimeoutMs: 15,
+      pollIntervalMs: 5,
+    });
+    vite.stdout.write('Local: http://127.0.0.1:12000/\n');
+    await assert.rejects(readiness.wait(), /Vite did not become HTTP-ready/);
+    assert.ok(signals.length > 1);
+    assert.ok(signals.every((signal) => signal.aborted));
+  });
 });

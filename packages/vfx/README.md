@@ -586,3 +586,18 @@ their existing simulation-space behavior.
 Code-first `pool.control` names an authored `fn(VfxSpawnContext)` called by the managed single-invocation allocator after scheduled initialization/acquire and before update/compaction. A control-only pool declares no command pairs. Managed `vfx_pool_load_particle/custom` and `vfx_pool_store_particle/custom` expose only that emitter's bounded storage; writes maintain the managed alive scratch. Out-of-range reads return zero, writes are rejected. This supports coupled secondary emissions without concurrent per-particle slot mutation or CPU simulation.
 
 `acquireVfxGpuEventChannel(world, channel, capacity)` borrows an existing World output owner through a Result and returns an explicit release/subscribe lease. The one binding-21 buffer reserves disjoint quotas for at most 16 channels (1024 total records). Primary channel 1 retains the original owner's quota. Layout changes advance the output epoch; portable publication, native allocation, three-slot receipt-bound readback and zero-capacity recovery sinks share the same header contract. `vfx_emit_event` appends within its channel quota. An authored single controller may instead call `vfx_write_observation(channel, ordinal, position, strength, id)` to replace a bounded aggregate observation with the latest submitted GPU tick. Consumers observe derived render facts; they must not integrate a CPU particle mirror. Source generation IDs reject reset-era observations. These additions are implemented but not yet validated in the current migration batch.
+
+## Structured author observations
+
+`createVfxStructuredInputBank({ recordStrideBytes, capacity }).unwrap()` owns a bounded
+CPU observation bank. The positive record stride is 16-byte aligned; total storage is
+16..65536 bytes. `write(index, Uint8Array)` requires exactly one record, `clear(index?)`
+zeros one or all records, and `dispose()` makes future snapshots unavailable. Writes
+copy their input and `snapshot()` returns detached bytes, so later edits cannot change
+submitted inputs. These records contain author observations, never mirrored GPU particles.
+
+Import `structured_input` from `forgeax_vfx::data` to read the bank as
+`array<vec4<u32>>` at compute group 0, binding 26. There is no implicit header.
+Use `bitcast<vec4<f32>>` for float fields; integer keys retain their exact bits.
+A small Player parameter can select a record without expanding the 32-parameter limit.
+The author owns record layout and semantic numeric validation.

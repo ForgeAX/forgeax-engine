@@ -4,8 +4,14 @@ One native boat experience combines R4 and R5 on port 5384.
 Worker async buoyancy is a readable mode in the shared settings panel, alongside
 synchronous buoyancy and GPU/CPU WaterMesh. The same scene and source authorities
 serve this application through its `window.__waterR5` evidence object.
+The open Lake harbor, tidal River reach and Ocean share the zero-metre mean level;
+independent mean levels would leave a step between their rendered surfaces.
+The harbor footprint includes the tidal reach, so River transition tiles retain
+River flow while sampling the harbor's wave field. WaterInfo uses RGBA32F to
+keep its mapped River height coincident with the flat harbor plane. Water coverage
+extends below dry land; Terrain determines the visible banks and coast.
 
-Lake/Ocean materials reuse the Showcase porous foam texture author with real
+River/Lake/Ocean materials reuse the Showcase porous foam texture author with real
 Water contact/crest/scene-depth inputs. No white-sphere foam particle consumer
 runs in this experience. Pontoon spheres remain hidden unless the explicit
 advanced debug control is enabled.
@@ -26,7 +32,11 @@ water/shore depth clearance. The porous texture is shared with Showcase.
 Its power, boost, contrast and
 neutral foam lighting use Showcase's authored response; crest amount is lower
 for this sheltered harbor. Five directional waves span 4.8–18 m, with summed
-amplitude 0.203 m and a conservative 0.23 m WaveSet height envelope. Default Q1
+amplitude 0.203 m and a conservative 0.23 m WaveSet height envelope. The 0.12 m
+depth mask retains motion at shallow shoreline contacts. Foam texture details
+advect at `[0.18, -0.12] m/s`; the scene-depth band is 0.35 m wide. Wave-driven
+shore clearance changes its position while texture advection changes its shape.
+Default Q1
 uses 32 quads per LOD0 edge and LOD scale 2.4; Q0–Q3 retain real source settings.
 The mesh overlay remains opt-in. These changes require actual pixel acceptance.
 Calm remains an explicit no-wave comparison, where fixed-camera

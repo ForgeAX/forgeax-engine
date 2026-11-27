@@ -52,6 +52,32 @@ function configureOutputMaterial(
   }
 }
 
+async function verifyTextureReplacement(
+  renderer: THREE.WebGPURenderer,
+  scene: THREE.Scene,
+  camera: THREE.Camera,
+  material: THREE.MeshStandardMaterial,
+  previous: Uint8Array,
+): Promise<void> {
+  const map = material.map;
+  const replacement = new THREE.DataTexture(Uint8Array.of(16, 192, 240, 255), 1, 1);
+  replacement.needsUpdate = true;
+  material.map = replacement;
+  try {
+    await readyFrames(renderer, scene, camera);
+    const capture = await renderer.captureFrame(scene, camera);
+    const expected = await renderReference(scene, camera);
+    await saveBrowserEvidence('material-output-standard-opaque-map-rebound', capture, expected);
+    const pixels = displayPixels(capture);
+    comparePixels(pixels, expected);
+    expect(pixels).not.toEqual(previous);
+    await verifyReplay(capture);
+  } finally {
+    material.map = map;
+    replacement.dispose();
+  }
+}
+
 // Every declared case belongs to exactly one browser process, including new cases.
 export function testMaterialOutputPartition(partition: 0 | 1 | 2 | 3): void {
   const rendererFor = browserRendererFixture();
@@ -111,6 +137,35 @@ export function testMaterialOutputPartition(partition: 0 | 1 | 2 | 3): void {
         true,
       );
       await verifyReplay(capture);
+      let editedParameter: 'rgb' | 'emissive' | undefined;
+      if (caseName === 'opaque-map' && material instanceof THREE.MeshBasicMaterial) {
+        const color = material.color;
+        color.r = 0.1;
+        color.g = 0.7;
+        editedParameter = 'rgb';
+      } else if (
+        caseName === 'standard-opaque-map' &&
+        material instanceof THREE.MeshStandardMaterial
+      ) {
+        material.emissive.setRGB(0.05, 0.25, 0.08);
+        material.emissiveIntensity = 1.25;
+        editedParameter = 'emissive';
+      }
+      if (editedParameter !== undefined) {
+        await readyFrames(renderer, scene, camera);
+        const edited = await renderer.captureFrame(scene, camera);
+        const expected = await renderReference(scene, camera);
+        await saveBrowserEvidence(
+          `material-output-${caseName}-edited-${editedParameter}`,
+          edited,
+          expected,
+        );
+        comparePixels(displayPixels(edited), expected);
+        expect(displayPixels(edited)).not.toEqual(pixels);
+        await verifyReplay(edited);
+        if (editedParameter === 'emissive' && material instanceof THREE.MeshStandardMaterial)
+          await verifyTextureReplacement(renderer, scene, camera, material, displayPixels(edited));
+      }
       if (name === 'double-sided') {
         material.forceSinglePass = true;
         await readyFrames(renderer, scene, camera);

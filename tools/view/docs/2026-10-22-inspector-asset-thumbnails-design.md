@@ -3,9 +3,7 @@
 Date: 2026-10-22. Product branch: `codex/inspector-asset-thumbnails`, based on
 View main `825f1d3`. Engine remains read-only.
 
-Implementation: product commit `8cae88e`. See the
-[delivery report](evidence/2026-10-22-inspector-asset-thumbnails/README.md) for checks,
-screenshots and native acceptance limits.
+Implementation: product commit `8cae88e`.
 
 ## User Behavior
 

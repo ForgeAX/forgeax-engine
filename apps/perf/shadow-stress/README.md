@@ -13,7 +13,7 @@ Deterministic shadow-cache pressure workload for the shadow cache and performanc
 | Point lights | Opt-in `0` shadowed `PointLight`s (`points`, `0..4`); each adds six cube-face shadow views |
 | Capsule shadows | Opt-in `capsuleShadow=1` gives every character a `CapsuleShadow`; with `renderPath=deferred` the characters leave the directional cascades and shade from their authored skeleton capsules |
 | Render path | `renderPath=forward` (default) or `renderPath=deferred`; compare capsule shadows against `renderPath=deferred&capsuleShadow=0` |
-| HZB occlusion | `gpuOcclusion=1` (default) runs the main view's two-phase GPU occlusion cull; `gpuOcclusion=0` is the frustum-only A/B baseline |
+| HZB occlusion | `gpuOcclusion=1` (default) runs the Deferred view's two-phase GPU occlusion cull; `gpuOcclusion=0` is the frustum-only A/B baseline |
 | Camera | `camera=static` (default), `camera=orbit`, or `camera=low`; the orbit moves the main view and cascade fit every frame, and `low` orbits at eye height (`1.5`) from radius `56` so the near casters occlude most of the field (the HZB occlusion A/B view); its ground plane extends to half-extent `256` so the horizon shows ground rather than a void |
 | Occasional movers | Opt-in `0` individual (non-instanced) boxes (`occasional`, `0..4096`) on a ring; each gets exactly one `Transform` push per `occasionalPeriod` frames (`16..4000`, default `300`), staggered so at most a few move per frame; a period near the `100`-frame shadow settle threshold exercises the settle backoff |
 | Spawn storm | Opt-in `0` boxes (`spawnStorm`, `0..1024`) spawned every Update while the previous frame's set is despawned |

@@ -1,0 +1,1480 @@
+{
+  "runId": 44905218358,
+  "head": "44667b7b427d7bc983f71db34c741840bafb2753",
+  "executionPolicy": {
+    "profile": "pull-request-core-lightweight",
+    "groupConcurrency": 2,
+    "maxWorkers": 1
+  },
+  "scope": "All 151 successful complete Browser children across four physical jobs. Each elapsed process includes its exact files, startup/import and cleanup. Runtime Pack and CSM serial tails are separate owners. These observations are planning forecasts.",
+  "completeChildren": 151,
+  "fileCount": 434,
+  "groups": [
+    {
+      "index": 1,
+      "jobId": 136850684567,
+      "files": ["packages/audio-webaudio/src/__tests__/pcm-stream.browser.test.ts"],
+      "processSeconds": 8.898,
+      "reportedTestSeconds": 4.813200000762939
+    },
+    {
+      "index": 2,
+      "jobId": 136850684586,
+      "files": ["packages/ui/src/preview/__tests__/capture-determinism.browser.test.ts"],
+      "processSeconds": 2.341,
+      "reportedTestSeconds": 0.271
+    },
+    {
+      "index": 3,
+      "jobId": 136850684586,
+      "files": [
+        "packages/audio-webaudio/src/__tests__/acoustic-regions.browser.test.ts",
+        "packages/audio-webaudio/src/__tests__/audio-webaudio.browser.test.ts",
+        "packages/audio-webaudio/src/__tests__/configurable-buses.browser.test.ts",
+        "packages/audio-webaudio/src/__tests__/control-ordering.browser.test.ts",
+        "packages/audio-webaudio/src/__tests__/first-gesture.browser.test.ts",
+        "packages/audio-webaudio/src/__tests__/music-transport.browser.test.ts",
+        "packages/audio-webaudio/src/__tests__/playback-controls.browser.test.ts",
+        "packages/audio-webaudio/src/__tests__/seek.browser.test.ts",
+        "packages/audio-webaudio/src/__tests__/source-pose.browser.test.ts",
+        "packages/audio-webaudio/src/__tests__/web-audio-engine-decode-recovery.browser.test.ts",
+        "packages/input/src/__tests__/browser-edge-latch.browser.test.ts",
+        "packages/input/src/__tests__/gamepad-feedback.browser.test.ts",
+        "packages/input/src/__tests__/pointer-lock.browser.test.ts",
+        "packages/net-websocket/__tests__/browser-endpoint.browser.test.ts",
+        "packages/net-websocket/__tests__/connector-contract.browser.test.ts",
+        "packages/net-websocket/__tests__/endpoint-contract.browser.test.ts"
+      ],
+      "processSeconds": 13.655,
+      "reportedTestSeconds": 9.215499998092652
+    },
+    {
+      "index": 4,
+      "jobId": 136850684586,
+      "files": [
+        "packages/ui/src/localization/__tests__/localization.browser.test.ts",
+        "packages/ui/src/preview/__tests__/host-guard.browser.test.ts",
+        "packages/ui/src/preview/__tests__/scenario.browser.test.ts",
+        "packages/ui/src/preview/__tests__/session-integration.browser.test.ts",
+        "packages/ui/src/preview/__tests__/session-state.browser.test.ts",
+        "packages/ui/src/preview/__tests__/target-refresh.browser.test.ts"
+      ],
+      "processSeconds": 2.492,
+      "reportedTestSeconds": 0.045299999237060545
+    },
+    {
+      "index": 5,
+      "jobId": 136850684584,
+      "files": ["apps/preview/__tests__/preview.browser.test.ts"],
+      "processSeconds": 51.348,
+      "reportedTestSeconds": 40.50919999885559
+    },
+    {
+      "index": 6,
+      "jobId": 136850684567,
+      "files": ["apps/hello/topology/src/__tests__/topology.browser.test.ts"],
+      "processSeconds": 29.047,
+      "reportedTestSeconds": 15.823
+    },
+    {
+      "index": 7,
+      "jobId": 136850684586,
+      "files": [
+        "apps/parity/color-lighting/cases/direct-light/__tests__/direct-light.browser.test.ts"
+      ],
+      "processSeconds": 55.265,
+      "reportedTestSeconds": 46.05470000076294
+    },
+    {
+      "index": 8,
+      "jobId": 136850684586,
+      "files": ["apps/parity/instancing-static/src/__tests__/instances.browser.test.ts"],
+      "processSeconds": 115.269,
+      "reportedTestSeconds": 104.96069999885559
+    },
+    {
+      "index": 9,
+      "jobId": 136850684567,
+      "files": ["packages/app/__tests__/editor-assistance.browser.test.ts"],
+      "processSeconds": 108.456,
+      "reportedTestSeconds": 94.42189999771118
+    },
+    {
+      "index": 10,
+      "jobId": 136850684612,
+      "files": ["packages/app/__tests__/engine-worker-asset-loss.browser.test.ts"],
+      "processSeconds": 41.153,
+      "reportedTestSeconds": 33.795220001220706
+    },
+    {
+      "index": 11,
+      "jobId": 136850684612,
+      "files": ["packages/app/__tests__/level-runtime-split.browser.test.ts"],
+      "processSeconds": 150.047,
+      "reportedTestSeconds": 142.06070000076295
+    },
+    {
+      "index": 12,
+      "jobId": 136850684612,
+      "files": ["packages/app/__tests__/render-worker-contract.browser.test.ts"],
+      "processSeconds": 100.309,
+      "reportedTestSeconds": 92.4335
+    },
+    {
+      "index": 13,
+      "jobId": 136850684612,
+      "files": ["packages/app/__tests__/render-worker-deformation.browser.test.ts"],
+      "processSeconds": 114.081,
+      "reportedTestSeconds": 106.27310000038148
+    },
+    {
+      "index": 14,
+      "jobId": 136850684586,
+      "files": ["packages/app/__tests__/render-worker-environment.browser.test.ts"],
+      "processSeconds": 78.815,
+      "reportedTestSeconds": 69.0885
+    },
+    {
+      "index": 15,
+      "jobId": 136850684586,
+      "files": ["packages/app/__tests__/render-worker-geometry.browser.test.ts"],
+      "processSeconds": 97.208,
+      "reportedTestSeconds": 87.7848000011444
+    },
+    {
+      "index": 16,
+      "jobId": 136850684567,
+      "files": ["packages/app/__tests__/render-worker-media.browser.test.ts"],
+      "processSeconds": 100.573,
+      "reportedTestSeconds": 87.26090000152588
+    },
+    {
+      "index": 17,
+      "jobId": 136850684567,
+      "files": ["packages/app/__tests__/render-worker-multi-camera.browser.test.ts"],
+      "processSeconds": 77.664,
+      "reportedTestSeconds": 63.809100002288815
+    },
+    {
+      "index": 18,
+      "jobId": 136850684586,
+      "files": ["packages/app/__tests__/render-worker-pressure.browser.test.ts"],
+      "processSeconds": 42.27,
+      "reportedTestSeconds": 33.1055
+    },
+    {
+      "index": 19,
+      "jobId": 136850684584,
+      "files": ["packages/app/__tests__/render-worker-tiles.browser.test.ts"],
+      "processSeconds": 54.615,
+      "reportedTestSeconds": 47.15389999961853
+    },
+    {
+      "index": 20,
+      "jobId": 136850684567,
+      "files": ["packages/app/__tests__/render-worker.browser.test.ts"],
+      "processSeconds": 192.943,
+      "reportedTestSeconds": 179.13959999847413
+    },
+    {
+      "index": 21,
+      "jobId": 136850684584,
+      "files": ["packages/app/__tests__/subsurface.browser.test.ts"],
+      "processSeconds": 80.531,
+      "reportedTestSeconds": 72.27970000076294
+    },
+    {
+      "index": 22,
+      "jobId": 136850684584,
+      "files": ["packages/app/__tests__/thin-wrapper-throw.browser.test.ts"],
+      "processSeconds": 7.785,
+      "reportedTestSeconds": 0.6666000003814697
+    },
+    {
+      "index": 23,
+      "jobId": 136850684586,
+      "files": ["packages/app/__tests__/thin-wrapper.browser.test.ts"],
+      "processSeconds": 30.995,
+      "reportedTestSeconds": 21.126300001144408
+    },
+    {
+      "index": 24,
+      "jobId": 136850684612,
+      "files": ["packages/app/__tests__/worker-policy.browser.test.ts"],
+      "processSeconds": 85.312,
+      "reportedTestSeconds": 74.00028999900817
+    },
+    {
+      "index": 25,
+      "jobId": 136850684612,
+      "files": ["packages/app/src/__tests__/render-worker-preload-errors.browser.test.ts"],
+      "processSeconds": 5.273,
+      "reportedTestSeconds": 3.7826999988555907
+    },
+    {
+      "index": 26,
+      "jobId": 136850684584,
+      "files": ["packages/render/src/__tests__/managed-material-runtime.browser.test.ts"],
+      "processSeconds": 32.843,
+      "reportedTestSeconds": 25.649
+    },
+    {
+      "index": 27,
+      "jobId": 136850684584,
+      "files": ["packages/render/src/__tests__/ssr-gpu-dispatch.browser.test.ts"],
+      "processSeconds": 8.555,
+      "reportedTestSeconds": 2.1282999992370604
+    },
+    {
+      "index": 28,
+      "jobId": 136850684586,
+      "files": ["packages/runtime/src/__tests__/atmosphere-full-webgl2.browser.test.ts"],
+      "processSeconds": 63.478,
+      "reportedTestSeconds": 53.97129999923706
+    },
+    {
+      "index": 29,
+      "jobId": 136850684612,
+      "files": ["packages/runtime/src/__tests__/barrel-distortion-output.browser.test.ts"],
+      "processSeconds": 47.681,
+      "reportedTestSeconds": 40.47580000114441
+    },
+    {
+      "index": 30,
+      "jobId": 136850684584,
+      "files": ["packages/runtime/src/__tests__/barrel-distortion-zero-size.browser.test.ts"],
+      "processSeconds": 12.924,
+      "reportedTestSeconds": 5.72720000076294
+    },
+    {
+      "index": 31,
+      "jobId": 136850684612,
+      "files": ["packages/runtime/src/__tests__/canvas-texture.browser.test.ts"],
+      "processSeconds": 58.696,
+      "reportedTestSeconds": 50.88680000114441
+    },
+    {
+      "index": 32,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/clamp-to-last.e2e.browser.test.ts"],
+      "processSeconds": 28.169,
+      "reportedTestSeconds": 14.73490000152588
+    },
+    {
+      "index": 33,
+      "jobId": 136850684586,
+      "files": ["packages/runtime/src/__tests__/compatibility-scene.browser.test.ts"],
+      "processSeconds": 63.792,
+      "reportedTestSeconds": 54.21179999923706
+    },
+    {
+      "index": 34,
+      "jobId": 136850684612,
+      "files": [
+        "packages/runtime/src/__tests__/cube-plane-shadow-contact-deferred.browser.test.ts"
+      ],
+      "processSeconds": 80.567,
+      "reportedTestSeconds": 71.25109999847412
+    },
+    {
+      "index": 35,
+      "jobId": 136850684586,
+      "files": ["packages/runtime/src/__tests__/cube-plane-shadow-contact.browser.test.ts"],
+      "processSeconds": 62.101,
+      "reportedTestSeconds": 52.61690000152588
+    },
+    {
+      "index": 36,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/curved-shadow-receiver.browser.test.ts"],
+      "processSeconds": 71.942,
+      "reportedTestSeconds": 57.99
+    },
+    {
+      "index": 37,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/external-texture-perf.browser.test.ts"],
+      "processSeconds": 56.362,
+      "reportedTestSeconds": 42.79959999847412
+    },
+    {
+      "index": 38,
+      "jobId": 136850684584,
+      "files": ["packages/runtime/src/__tests__/framebuffer-snapshot.browser.test.ts"],
+      "processSeconds": 28.555,
+      "reportedTestSeconds": 21.18289999961853
+    },
+    {
+      "index": 39,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/generated-lod.browser.test.ts"],
+      "processSeconds": 110.334,
+      "reportedTestSeconds": 96.65909999847412
+    },
+    {
+      "index": 40,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/image-environment-presentation.browser.test.ts"],
+      "processSeconds": 169.771,
+      "reportedTestSeconds": 156.21920000076295
+    },
+    {
+      "index": 41,
+      "jobId": 136850684584,
+      "files": ["packages/runtime/src/__tests__/light-casters-9-light.browser.test.ts"],
+      "processSeconds": 36.371,
+      "reportedTestSeconds": 25.516399999618532
+    },
+    {
+      "index": 42,
+      "jobId": 136850684584,
+      "files": ["packages/runtime/src/__tests__/lighting-channels-views-world.browser.test.ts"],
+      "processSeconds": 38.778,
+      "reportedTestSeconds": 31.41689999961853
+    },
+    {
+      "index": 43,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/lod-transition.browser.test.ts"],
+      "processSeconds": 113.025,
+      "reportedTestSeconds": 98.37390000152588
+    },
+    {
+      "index": 44,
+      "jobId": 136850684586,
+      "files": ["packages/runtime/src/__tests__/material-mrt.browser.test.ts"],
+      "processSeconds": 17.186,
+      "reportedTestSeconds": 7.40360000038147
+    },
+    {
+      "index": 45,
+      "jobId": 136850684612,
+      "files": ["packages/runtime/src/__tests__/material-publication.browser.test.ts"],
+      "processSeconds": 22.593,
+      "reportedTestSeconds": 15.19
+    },
+    {
+      "index": 46,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/multi-camera-publication.browser.test.ts"],
+      "processSeconds": 98.233,
+      "reportedTestSeconds": 84.9225
+    },
+    {
+      "index": 47,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/multi-camera-vfx.browser.test.ts"],
+      "processSeconds": 49.269,
+      "reportedTestSeconds": 35.842200000762936
+    },
+    {
+      "index": 48,
+      "jobId": 136850684612,
+      "files": ["packages/runtime/src/__tests__/multi-camera.browser.test.ts"],
+      "processSeconds": 54.673,
+      "reportedTestSeconds": 46.5985
+    },
+    {
+      "index": 49,
+      "jobId": 136850684584,
+      "files": ["packages/runtime/src/__tests__/pixel-parity-capture.browser.test.ts"],
+      "processSeconds": 36.975,
+      "reportedTestSeconds": 26.96789999961853
+    },
+    {
+      "index": 50,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/point-light-decay.browser.test.ts"],
+      "processSeconds": 127.277,
+      "reportedTestSeconds": 112.063
+    },
+    {
+      "index": 51,
+      "jobId": 136850684612,
+      "files": ["packages/runtime/src/__tests__/point-light-shadow.browser.test.ts"],
+      "processSeconds": 19.703,
+      "reportedTestSeconds": 12.24230000114441
+    },
+    {
+      "index": 52,
+      "jobId": 136850684584,
+      "files": ["packages/runtime/src/__tests__/point-sprites.browser.test.ts"],
+      "processSeconds": 13.547,
+      "reportedTestSeconds": 6.38420000076294
+    },
+    {
+      "index": 53,
+      "jobId": 136850684586,
+      "files": ["packages/runtime/src/__tests__/render-publication.browser.test.ts"],
+      "processSeconds": 37.663,
+      "reportedTestSeconds": 28.23520000076294
+    },
+    {
+      "index": 54,
+      "jobId": 136850684584,
+      "files": ["packages/runtime/src/__tests__/shadow-contact-centimeter-1024.browser.test.ts"],
+      "processSeconds": 43.042,
+      "reportedTestSeconds": 35.69070000076294
+    },
+    {
+      "index": 55,
+      "jobId": 136850684612,
+      "files": ["packages/runtime/src/__tests__/shadow-contact-centimeter-2048.browser.test.ts"],
+      "processSeconds": 38.544,
+      "reportedTestSeconds": 31.0815
+    },
+    {
+      "index": 56,
+      "jobId": 136850684584,
+      "files": ["packages/runtime/src/__tests__/shadow-contact-column.browser.test.ts"],
+      "processSeconds": 41.99,
+      "reportedTestSeconds": 34.49089999961853
+    },
+    {
+      "index": 57,
+      "jobId": 136850684586,
+      "files": ["packages/runtime/src/__tests__/shadow-contact-webgl2-centimeter.browser.test.ts"],
+      "processSeconds": 16.281,
+      "reportedTestSeconds": 6.3
+    },
+    {
+      "index": 58,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/shadow-contact-webgl2-column.browser.test.ts"],
+      "processSeconds": 25.739,
+      "reportedTestSeconds": 12.277
+    },
+    {
+      "index": 59,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/single-source-skybox.browser.test.ts"],
+      "processSeconds": 32.483,
+      "reportedTestSeconds": 17.522099998474122
+    },
+    {
+      "index": 60,
+      "jobId": 136850684586,
+      "files": ["packages/runtime/src/__tests__/solar-atmosphere-calibration.browser.test.ts"],
+      "processSeconds": 19.52,
+      "reportedTestSeconds": 10.30039999961853
+    },
+    {
+      "index": 61,
+      "jobId": 136850684612,
+      "files": ["packages/runtime/src/__tests__/solar-atmosphere-fog-time.browser.test.ts"],
+      "processSeconds": 37.916,
+      "reportedTestSeconds": 30.88960000038147
+    },
+    {
+      "index": 62,
+      "jobId": 136850684586,
+      "files": ["packages/runtime/src/__tests__/solar-atmosphere-mesh-occlusion.browser.test.ts"],
+      "processSeconds": 28.369,
+      "reportedTestSeconds": 19.40559999847412
+    },
+    {
+      "index": 63,
+      "jobId": 136850684567,
+      "files": [
+        "packages/runtime/src/__tests__/solar-atmosphere-transparent-deferred.browser.test.ts"
+      ],
+      "processSeconds": 68.063,
+      "reportedTestSeconds": 54.49990000152588
+    },
+    {
+      "index": 64,
+      "jobId": 136850684567,
+      "files": [
+        "packages/runtime/src/__tests__/solar-atmosphere-transparent-forward.browser.test.ts"
+      ],
+      "processSeconds": 67.437,
+      "reportedTestSeconds": 54.272900001525876
+    },
+    {
+      "index": 65,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/standard-gbuffer-replay.browser.test.ts"],
+      "processSeconds": 143.452,
+      "reportedTestSeconds": 129.81219999694824
+    },
+    {
+      "index": 66,
+      "jobId": 136850684584,
+      "files": ["packages/runtime/src/__tests__/subsurface.browser.test.ts"],
+      "processSeconds": 35.627,
+      "reportedTestSeconds": 27.54959999847412
+    },
+    {
+      "index": 67,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/surface-standard-lifecycle.browser.test.ts"],
+      "processSeconds": 84.73,
+      "reportedTestSeconds": 69.72770000076294
+    },
+    {
+      "index": 68,
+      "jobId": 136850684586,
+      "files": ["packages/runtime/src/__tests__/surface-standard-pipeline.browser.test.ts"],
+      "processSeconds": 71.477,
+      "reportedTestSeconds": 61.3705
+    },
+    {
+      "index": 69,
+      "jobId": 136850684612,
+      "files": ["packages/runtime/src/__tests__/vfx-mesh-lighting-publication.browser.test.ts"],
+      "processSeconds": 78.909,
+      "reportedTestSeconds": 71.31210000038146
+    },
+    {
+      "index": 70,
+      "jobId": 136850684584,
+      "files": ["packages/runtime/src/__tests__/vfx-mesh-lighting.browser.test.ts"],
+      "processSeconds": 64.224,
+      "reportedTestSeconds": 56.4175
+    },
+    {
+      "index": 71,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/volumetric-fog-world-time.browser.test.ts"],
+      "processSeconds": 127.909,
+      "reportedTestSeconds": 114.97539999771118
+    },
+    {
+      "index": 72,
+      "jobId": 136850684584,
+      "files": ["packages/runtime/src/__tests__/wave1-dynamic-geometry.browser.test.ts"],
+      "processSeconds": 44.998,
+      "reportedTestSeconds": 37.33229999923706
+    },
+    {
+      "index": 73,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/wave1-rendering-recovery.browser.test.ts"],
+      "processSeconds": 124.142,
+      "reportedTestSeconds": 110.94390000152588
+    },
+    {
+      "index": 74,
+      "jobId": 136850684584,
+      "files": ["packages/runtime/src/__tests__/wave1-shadow-diagnostic.browser.test.ts"],
+      "processSeconds": 38.817,
+      "reportedTestSeconds": 31.53010000038147
+    },
+    {
+      "index": 75,
+      "jobId": 136850684586,
+      "files": ["packages/runtime/src/__tests__/weapon-spirit-material.browser.test.ts"],
+      "processSeconds": 46.4,
+      "reportedTestSeconds": 37.056
+    },
+    {
+      "index": 76,
+      "jobId": 136850684567,
+      "files": ["packages/three/src/__tests__/interop.browser.test.ts"],
+      "processSeconds": 107.852,
+      "reportedTestSeconds": 93.02820000076294
+    },
+    {
+      "index": 77,
+      "jobId": 136850684612,
+      "files": ["packages/three/src/__tests__/node-inputs.browser.test.ts"],
+      "processSeconds": 129.38,
+      "reportedTestSeconds": 112.29009999847412
+    },
+    {
+      "index": 78,
+      "jobId": 136850684612,
+      "files": ["packages/three/src/__tests__/node-material-instance.browser.test.ts"],
+      "processSeconds": 78.278,
+      "reportedTestSeconds": 69.788
+    },
+    {
+      "index": 79,
+      "jobId": 136850684567,
+      "files": ["packages/three/src/__tests__/render.browser.test.ts"],
+      "processSeconds": 123.06,
+      "reportedTestSeconds": 107.44590000152589
+    },
+    {
+      "index": 80,
+      "jobId": 136850684612,
+      "files": ["packages/three/src/__tests__/shadow-directional.browser.test.ts"],
+      "processSeconds": 108.099,
+      "reportedTestSeconds": 99.83739999961853
+    },
+    {
+      "index": 81,
+      "jobId": 136850684567,
+      "files": ["packages/three/src/__tests__/surface-expression-roughness.browser.test.ts"],
+      "processSeconds": 113.861,
+      "reportedTestSeconds": 98.71489999771119
+    },
+    {
+      "index": 82,
+      "jobId": 136850684584,
+      "files": ["packages/three/src/__tests__/surface-expression-unlit.browser.test.ts"],
+      "processSeconds": 57.0,
+      "reportedTestSeconds": 48.05629999923706
+    },
+    {
+      "index": 83,
+      "jobId": 136850684586,
+      "files": ["packages/three/src/__tests__/surface-expression.browser.test.ts"],
+      "processSeconds": 70.599,
+      "reportedTestSeconds": 59.850199998855594
+    },
+    {
+      "index": 84,
+      "jobId": 136850684612,
+      "files": [
+        "apps/parity/color-lighting/cases/extended-lighting/__tests__/probe.browser.test.ts",
+        "apps/parity/color-lighting/cases/extended-lighting/__tests__/recovery.browser.test.ts"
+      ],
+      "processSeconds": 60.822,
+      "reportedTestSeconds": 52.71410000038147
+    },
+    {
+      "index": 85,
+      "jobId": 136850684584,
+      "files": [
+        "apps/parity/color-lighting/cases/extended-lighting/__tests__/rect-area.browser.test.ts",
+        "apps/parity/color-lighting/cases/extended-lighting/__tests__/spot-modifiers.browser.test.ts",
+        "apps/parity/color-lighting/cases/ibl/__tests__/ibl.browser.test.ts"
+      ],
+      "processSeconds": 53.504,
+      "reportedTestSeconds": 45.526
+    },
+    {
+      "index": 86,
+      "jobId": 136850684612,
+      "files": [
+        "apps/parity/color-lighting/cases/material-alpha/__tests__/alpha.browser.test.ts",
+        "apps/parity/color-lighting/cases/transparency-post/__tests__/transparency-post.browser.test.ts"
+      ],
+      "processSeconds": 51.132,
+      "reportedTestSeconds": 42.86500000190735
+    },
+    {
+      "index": 87,
+      "jobId": 136850684612,
+      "files": [
+        "packages/render/src/__tests__/raytracing/material-publication.browser.test.ts",
+        "packages/runtime/src/__tests__/asset-registry.browser.test.ts",
+        "packages/runtime/src/__tests__/atmosphere-background.browser.test.ts",
+        "packages/runtime/src/__tests__/backend-selection.browser.test.ts"
+      ],
+      "processSeconds": 71.992,
+      "reportedTestSeconds": 61.99479999923706
+    },
+    {
+      "index": 88,
+      "jobId": 136850684612,
+      "files": [
+        "packages/runtime/src/__tests__/barrel-distortion-resource-lifecycle-probe.browser.test.ts",
+        "packages/runtime/src/__tests__/candidate-pipeline-readiness.browser.test.ts",
+        "packages/runtime/src/__tests__/capsule-shadow-webgl2.browser.test.ts",
+        "packages/runtime/src/__tests__/cpu-ui.browser.test.ts"
+      ],
+      "processSeconds": 108.35,
+      "reportedTestSeconds": 97.2675
+    },
+    {
+      "index": 89,
+      "jobId": 136850684567,
+      "files": [
+        "packages/runtime/src/__tests__/display-p3.browser.test.ts",
+        "packages/runtime/src/__tests__/empty-instances-presentation.browser.test.ts",
+        "packages/runtime/src/__tests__/external-texture.browser.test.ts"
+      ],
+      "processSeconds": 114.635,
+      "reportedTestSeconds": 97.844
+    },
+    {
+      "index": 90,
+      "jobId": 136850684584,
+      "files": [
+        "packages/runtime/src/__tests__/forward-contact-shadow.browser.test.ts",
+        "packages/runtime/src/__tests__/forward-decals.browser.test.ts"
+      ],
+      "processSeconds": 109.759,
+      "reportedTestSeconds": 101.91510000038147
+    },
+    {
+      "index": 91,
+      "jobId": 136850684612,
+      "files": [
+        "packages/runtime/src/__tests__/forward-gtao-cross-backend.browser.test.ts",
+        "packages/runtime/src/__tests__/forward-gtao-surface-semantics.browser.test.ts",
+        "packages/runtime/src/__tests__/forward-gtao-webgl2.browser.test.ts",
+        "packages/runtime/src/__tests__/forward-gtao-webgpu.browser.test.ts"
+      ],
+      "processSeconds": 80.077,
+      "reportedTestSeconds": 69.09089999771118
+    },
+    {
+      "index": 92,
+      "jobId": 136850684586,
+      "files": [
+        "packages/runtime/src/__tests__/hidden-pipeline-preparation.browser.test.ts",
+        "packages/runtime/src/__tests__/ies-local-lights-performance.browser.test.ts"
+      ],
+      "processSeconds": 82.227,
+      "reportedTestSeconds": 71.65410000038148
+    },
+    {
+      "index": 93,
+      "jobId": 136850684584,
+      "files": ["packages/runtime/src/__tests__/ies-local-lights.browser.test.ts"],
+      "processSeconds": 62.616,
+      "reportedTestSeconds": 54.15369999885559
+    },
+    {
+      "index": 94,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/instance-lod-webgl2.browser.test.ts"],
+      "processSeconds": 33.98,
+      "reportedTestSeconds": 20.398599998474122
+    },
+    {
+      "index": 95,
+      "jobId": 136850684586,
+      "files": ["packages/runtime/src/__tests__/lighting-channels-lifecycle.browser.test.ts"],
+      "processSeconds": 84.166,
+      "reportedTestSeconds": 69.5025
+    },
+    {
+      "index": 96,
+      "jobId": 136850684584,
+      "files": [
+        "packages/runtime/src/__tests__/lighting-channels-publication-rigid-forward.browser.test.ts",
+        "packages/runtime/src/__tests__/lighting-channels-world-instances.browser.test.ts"
+      ],
+      "processSeconds": 68.854,
+      "reportedTestSeconds": 60.87939999961853
+    },
+    {
+      "index": 97,
+      "jobId": 136850684586,
+      "files": ["packages/runtime/src/__tests__/lighting-channels-world-physical.browser.test.ts"],
+      "processSeconds": 65.436,
+      "reportedTestSeconds": 55.98590000152588
+    },
+    {
+      "index": 98,
+      "jobId": 136850684584,
+      "files": [
+        "packages/runtime/src/__tests__/lighting-channels-world-rigid-deferred.browser.test.ts"
+      ],
+      "processSeconds": 23.923,
+      "reportedTestSeconds": 16.588299999237062
+    },
+    {
+      "index": 99,
+      "jobId": 136850684586,
+      "files": [
+        "packages/runtime/src/__tests__/lighting-channels-world-rigid-forward.browser.test.ts",
+        "packages/runtime/src/__tests__/lighting-channels-world-sections.browser.test.ts",
+        "packages/runtime/src/__tests__/lighting-channels-world-skin-deferred.browser.test.ts"
+      ],
+      "processSeconds": 104.898,
+      "reportedTestSeconds": 93.37189999771118
+    },
+    {
+      "index": 100,
+      "jobId": 136850684612,
+      "files": [
+        "packages/runtime/src/__tests__/lighting-channels-world-skin-forward.browser.test.ts",
+        "packages/runtime/src/__tests__/lighting-channels-world-transparent.browser.test.ts",
+        "packages/runtime/src/__tests__/managed-shadow-topology.browser.test.ts"
+      ],
+      "processSeconds": 34.241,
+      "reportedTestSeconds": 26.12860000038147
+    },
+    {
+      "index": 101,
+      "jobId": 136850684612,
+      "files": [
+        "packages/runtime/src/__tests__/material-emission-default.browser.test.ts",
+        "packages/runtime/src/__tests__/material-programs.browser.test.ts",
+        "packages/runtime/src/__tests__/material-visibility-topology.browser.test.ts"
+      ],
+      "processSeconds": 71.556,
+      "reportedTestSeconds": 62.83189999961853
+    },
+    {
+      "index": 102,
+      "jobId": 136850684567,
+      "files": ["packages/runtime/src/__tests__/morph-surface.browser.test.ts"],
+      "processSeconds": 161.863,
+      "reportedTestSeconds": 148.70010000228882
+    },
+    {
+      "index": 103,
+      "jobId": 136850684586,
+      "files": [
+        "packages/runtime/src/__tests__/msaa-webgl2.browser.test.ts",
+        "packages/runtime/src/__tests__/offscreen-shadow-caster.browser.test.ts",
+        "packages/runtime/src/__tests__/oit-webgl2.browser.test.ts",
+        "packages/runtime/src/__tests__/optional-pipeline-library.browser.test.ts"
+      ],
+      "processSeconds": 44.324,
+      "reportedTestSeconds": 32.59480000305176
+    },
+    {
+      "index": 104,
+      "jobId": 136850684586,
+      "files": [
+        "packages/runtime/src/__tests__/ordinary-lit-depth.browser.test.ts",
+        "packages/runtime/src/__tests__/paged-2d-webgl2.browser.test.ts",
+        "packages/runtime/src/__tests__/physical-sky-ibl.browser.test.ts"
+      ],
+      "processSeconds": 99.759,
+      "reportedTestSeconds": 87.78610000038147
+    },
+    {
+      "index": 105,
+      "jobId": 136850684584,
+      "files": [
+        "packages/runtime/src/__tests__/portable-pcss.browser.test.ts",
+        "packages/runtime/src/__tests__/recovery-candidate-discard.browser.test.ts",
+        "packages/runtime/src/__tests__/render-bundle-stress.browser.test.ts",
+        "packages/runtime/src/__tests__/render-bundle-wasm.browser.test.ts"
+      ],
+      "processSeconds": 86.409,
+      "reportedTestSeconds": 76.11390000343323
+    },
+    {
+      "index": 106,
+      "jobId": 136850684612,
+      "files": [
+        "packages/runtime/src/__tests__/render-feature-prepared-graphics.browser.test.ts",
+        "packages/runtime/src/__tests__/render-target-layered-rhi.browser.test.ts",
+        "packages/runtime/src/__tests__/render-target-layered.browser.test.ts",
+        "packages/runtime/src/__tests__/runtime-content.browser.test.ts"
+      ],
+      "processSeconds": 73.334,
+      "reportedTestSeconds": 62.75259999847412
+    },
+    {
+      "index": 107,
+      "jobId": 136850684584,
+      "files": [
+        "packages/runtime/src/__tests__/shader-boot-retention.browser.test.ts",
+        "packages/runtime/src/__tests__/shadow-csm-viewport.browser.test.ts",
+        "packages/runtime/src/__tests__/shadow-receive-webgl2.browser.test.ts",
+        "packages/runtime/src/__tests__/shared-mesh-shadow.browser.test.ts"
+      ],
+      "processSeconds": 104.149,
+      "reportedTestSeconds": 94.935
+    },
+    {
+      "index": 108,
+      "jobId": 136850684612,
+      "files": [
+        "packages/runtime/src/__tests__/sky-sh.browser.test.ts",
+        "packages/runtime/src/__tests__/smaa.browser.test.ts",
+        "packages/runtime/src/__tests__/standard-cluster-webgl2.browser.test.ts",
+        "packages/runtime/src/__tests__/standard-default-light-budget.browser.test.ts"
+      ],
+      "processSeconds": 58.386,
+      "reportedTestSeconds": 49.482
+    },
+    {
+      "index": 109,
+      "jobId": 136850684612,
+      "files": [
+        "packages/runtime/src/__tests__/standard-effects-webgl2.browser.test.ts",
+        "packages/runtime/src/__tests__/standard-parallax.browser.test.ts"
+      ],
+      "processSeconds": 75.586,
+      "reportedTestSeconds": 65.30839999961853
+    },
+    {
+      "index": 110,
+      "jobId": 136850684586,
+      "files": [
+        "packages/runtime/src/__tests__/surface-material-publication.browser.test.ts",
+        "packages/runtime/src/__tests__/temporal-quality-webgl2.browser.test.ts",
+        "packages/runtime/src/__tests__/terrain-portable.browser.test.ts",
+        "packages/runtime/src/__tests__/texture-dimensions.browser.test.ts"
+      ],
+      "processSeconds": 111.648,
+      "reportedTestSeconds": 98.92830000114441
+    },
+    {
+      "index": 111,
+      "jobId": 136850684567,
+      "files": [
+        "packages/runtime/src/__tests__/tsr-renderer.browser.test.ts",
+        "packages/runtime/src/__tests__/tsr-webgl2.browser.test.ts",
+        "packages/runtime/src/__tests__/unlit-ao.browser.test.ts",
+        "packages/runtime/src/__tests__/view-ubo-layout.browser.test.ts"
+      ],
+      "processSeconds": 193.782,
+      "reportedTestSeconds": 176.05519999694823
+    },
+    {
+      "index": 112,
+      "jobId": 136850684584,
+      "files": [
+        "packages/runtime/src/__tests__/volumetric-fog-multiple.browser.test.ts",
+        "packages/runtime/src/__tests__/volumetric-fog-stability.browser.test.ts",
+        "packages/runtime/src/__tests__/volumetric-fog-tonemap.browser.test.ts"
+      ],
+      "processSeconds": 94.373,
+      "reportedTestSeconds": 83.95419999885559
+    },
+    {
+      "index": 113,
+      "jobId": 136850684584,
+      "files": [
+        "packages/runtime/src/__tests__/water-mesh-visibility.browser.test.ts",
+        "packages/runtime/src/__tests__/wave1-rendering-materials.browser.test.ts"
+      ],
+      "processSeconds": 122.894,
+      "reportedTestSeconds": 111.87779999923706
+    },
+    {
+      "index": 114,
+      "jobId": 136850684612,
+      "files": [
+        "packages/runtime/src/__tests__/wave1-rendering-p0.browser.test.ts",
+        "packages/runtime/src/__tests__/webgl-context-loss.browser.test.ts"
+      ],
+      "processSeconds": 76.748,
+      "reportedTestSeconds": 68.1485
+    },
+    {
+      "index": 115,
+      "jobId": 136850684612,
+      "files": [
+        "apps/game-capability-lab/__tests__/hud-ui.browser.test.ts",
+        "apps/game-capability-lab/__tests__/settings-ui.browser.test.ts",
+        "apps/hello/boss-lightning/src/__tests__/advanced-renderers.browser.test.ts",
+        "apps/hello/boss-lightning/src/__tests__/data-interface.browser.test.ts",
+        "apps/hello/boss-lightning/src/__tests__/event-sub-emitter.browser.test.ts",
+        "apps/hello/boss-lightning/src/__tests__/stage-turbulence.browser.test.ts",
+        "apps/hello/deep-agent-feedback/src/__tests__/pack-repeat-transform.browser.test.ts",
+        "apps/hello/fxaa/src/__tests__/dark-gradient.browser.test.ts",
+        "apps/hello/gltf/src/__tests__/load-by-guid.browser.test.ts",
+        "apps/hello/lod-occlusion/src/__tests__/lod-occlusion.browser.test.ts",
+        "apps/hello/room/src/__tests__/onerror-gate.browser.test.ts",
+        "apps/hello/scene-nesting/__tests__/scene-nesting.browser.test.ts",
+        "apps/hello/ssr/src/__tests__/cube-camera.browser.test.ts",
+        "apps/hello/ssr/src/__tests__/falsification.browser.test.ts",
+        "apps/hello/ssr/src/__tests__/onerror-gate.browser.test.ts",
+        "apps/hello/ssr/src/__tests__/paired-fallback.browser.test.ts"
+      ],
+      "processSeconds": 41.262,
+      "reportedTestSeconds": 16.26799999809265
+    },
+    {
+      "index": 116,
+      "jobId": 136850684584,
+      "files": [
+        "apps/hello/ssr/src/__tests__/reflection-probe.browser.test.ts",
+        "apps/hello/taa/src/__tests__/taa-carrier.browser.test.ts",
+        "apps/learn-render/5.advanced-lighting/1.advanced-lighting/src/__tests__/lit-pixels.browser.test.ts",
+        "apps/learn-render/5.advanced-lighting/9.ssao/src/__tests__/room.browser.test.ts",
+        "apps/learn-render/6.pbr/4.render-target-reflection/src/__tests__/cube-camera.browser.test.ts",
+        "apps/learn-render/6.pbr/4.render-target-reflection/src/__tests__/falsification.browser.test.ts",
+        "apps/learn-render/6.pbr/4.render-target-reflection/src/__tests__/paired-fallback.browser.test.ts",
+        "apps/learn-render/6.pbr/4.render-target-reflection/src/__tests__/reflection-probe.browser.test.ts",
+        "apps/parity/color-lighting/src/visual/__tests__/auto-exposure-forgeax.browser.test.ts",
+        "apps/parity/color-lighting/src/visual/__tests__/auto-exposure-three-r184.browser.test.ts",
+        "apps/parity/color-lighting/src/visual/__tests__/vertex-color-forgeax.browser.test.ts",
+        "apps/parity/color-lighting/src/visual/__tests__/vertex-color-three.browser.test.ts",
+        "apps/parity/color-lighting/src/visual/__tests__/vertex-color-visual.browser.test.ts",
+        "apps/tetris/src/__tests__/onerror-gate.browser.test.ts",
+        "packages/animation/src/__tests__/animation-target-id.browser.test.ts",
+        "packages/app/__tests__/configuration.browser.test.ts"
+      ],
+      "processSeconds": 160.384,
+      "reportedTestSeconds": 146.14950000190734
+    },
+    {
+      "index": 117,
+      "jobId": 136850684586,
+      "files": [
+        "packages/app/__tests__/device-lost.browser.test.ts",
+        "packages/app/__tests__/execution-bootstrap-url.browser.test.ts",
+        "packages/app/__tests__/gamepad-feedback.browser.test.ts",
+        "packages/app/__tests__/input-attach.browser.test.ts"
+      ],
+      "processSeconds": 69.813,
+      "reportedTestSeconds": 54.74
+    },
+    {
+      "index": 118,
+      "jobId": 136850684584,
+      "files": ["packages/app/__tests__/lighting-channels.browser.test.ts"],
+      "processSeconds": 49.546,
+      "reportedTestSeconds": 41.8895
+    },
+    {
+      "index": 119,
+      "jobId": 136850684567,
+      "files": [
+        "packages/app/__tests__/render-worker-basis.browser.test.ts",
+        "packages/app/__tests__/render-worker-capture.browser.test.ts",
+        "packages/app/__tests__/runtime-mesh-two-renderers.browser.test.ts"
+      ],
+      "processSeconds": 167.03,
+      "reportedTestSeconds": 149.93380000305177
+    },
+    {
+      "index": 120,
+      "jobId": 136850684612,
+      "files": [
+        "packages/app/__tests__/worker-policy-fallback.browser.test.ts",
+        "packages/app/__tests__/worker-resize.browser.test.ts",
+        "packages/app/src/__tests__/auto-exposure-webgl2.browser.test.ts",
+        "packages/app/src/__tests__/browser-frame-signal.browser.test.ts",
+        "packages/app/src/__tests__/canvas-display.browser.test.ts",
+        "packages/app/src/__tests__/closed-level-row-transport.browser.test.ts",
+        "packages/app/src/__tests__/gpu-texture-workers.browser.test.ts",
+        "packages/app/src/__tests__/material-template-workers.browser.test.ts",
+        "packages/app/src/__tests__/rhi-capture.browser.test.ts"
+      ],
+      "processSeconds": 110.671,
+      "reportedTestSeconds": 96.75390000152588
+    },
+    {
+      "index": 121,
+      "jobId": 136850684567,
+      "files": [
+        "packages/app/src/__tests__/rhi-debug-webgl2-fallback.browser.test.ts",
+        "packages/app/src/__tests__/shader-template-task.browser.test.ts",
+        "packages/app/src/__tests__/worker-pointer-lock-gate.browser.test.ts",
+        "packages/assets-runtime/src/__tests__/decode-image-bytes.browser.test.ts",
+        "packages/assets-runtime/src/__tests__/normal-roughness-mips.browser.test.ts",
+        "packages/assets-runtime/src/__tests__/pack-reader-abort.browser.test.ts",
+        "packages/audio-webaudio/src/__tests__/clip-preparation-owner.browser.test.ts",
+        "packages/audio-webaudio/src/__tests__/managed-audio.browser.test.ts",
+        "packages/audio-webaudio/src/__tests__/music-admission.browser.test.ts",
+        "packages/devkit/src/__tests__/play-click-target.browser.test.ts",
+        "packages/devkit/src/__tests__/play-look.browser.test.ts",
+        "packages/modeling/src/__tests__/determinism.browser.test.ts",
+        "packages/pack/src/__tests__/runtime.browser.test.ts",
+        "packages/picking/src/__tests__/morph-triangle.browser.test.ts"
+      ],
+      "processSeconds": 158.173,
+      "reportedTestSeconds": 135.7389000091553
+    },
+    {
+      "index": 122,
+      "jobId": 136850684584,
+      "files": [
+        "packages/picking/src/__tests__/profile-sweep.browser.test.ts",
+        "packages/picking/src/__tests__/skinned-triangle.browser.test.ts",
+        "packages/platform-browser/src/__tests__/platform.browser.test.ts",
+        "packages/platform-wechat/src/__tests__/audio.browser.test.ts",
+        "packages/plugin/src/__tests__/composition.browser.test.ts",
+        "packages/profiler/src/__tests__/published-entry.browser.test.ts",
+        "packages/remote/src/__tests__/execute-profiler-root.browser.test.ts",
+        "packages/render/src/__tests__/atmosphere-fog-background.browser.test.ts",
+        "packages/render/src/__tests__/atmosphere-sun-tint.browser.test.ts",
+        "packages/render/src/__tests__/atmosphere-tables.browser.test.ts",
+        "packages/render/src/__tests__/auto-exposure.browser.test.ts",
+        "packages/render/src/__tests__/completed-pipeline-library-admission.browser.test.ts",
+        "packages/render/src/__tests__/controls-workflow.browser.test.ts",
+        "packages/render/src/__tests__/depth-pyramid.browser.test.ts",
+        "packages/render/src/__tests__/dispersive-dispersion.browser.test.ts",
+        "packages/render/src/__tests__/extended-lighting-recovery.browser.test.ts"
+      ],
+      "processSeconds": 72.42,
+      "reportedTestSeconds": 60.79020000076294
+    },
+    {
+      "index": 123,
+      "jobId": 136850684612,
+      "files": [
+        "packages/render/src/__tests__/fog-three-laws.browser.test.ts",
+        "packages/render/src/__tests__/forward-raster-batching.browser.test.ts",
+        "packages/render/src/__tests__/forward-resolve-placement.browser.test.ts",
+        "packages/render/src/__tests__/glyph-geometry-versions.browser.test.ts",
+        "packages/render/src/__tests__/gpu-driven-indirect-raster.browser.test.ts",
+        "packages/render/src/__tests__/gpu-driven-shadow-views.browser.test.ts",
+        "packages/render/src/__tests__/gpu-driven-stable-command-addresses.browser.test.ts",
+        "packages/render/src/__tests__/gpu-driven-view.browser.test.ts",
+        "packages/render/src/__tests__/gpu-lod-silhouette.browser.test.ts",
+        "packages/render/src/__tests__/gpu-pass-timing.browser.test.ts",
+        "packages/render/src/__tests__/gpu-scene-render-graph.browser.test.ts",
+        "packages/render/src/__tests__/gpu-ui-blitz-parity.browser.test.ts",
+        "packages/render/src/__tests__/gpu-ui-checkable-intrinsic.browser.test.ts",
+        "packages/render/src/__tests__/gpu-ui-parity.browser.test.ts",
+        "packages/render/src/__tests__/gpu-ui-webgl2.browser.test.ts",
+        "packages/render/src/__tests__/gpu-view-skin-demand.browser.test.ts"
+      ],
+      "processSeconds": 94.813,
+      "reportedTestSeconds": 83.0793000011444
+    },
+    {
+      "index": 124,
+      "jobId": 136850684584,
+      "files": [
+        "packages/render/src/__tests__/light-texture-resample.browser.test.ts",
+        "packages/render/src/__tests__/managed-glyph.browser.test.ts",
+        "packages/render/src/__tests__/managed-material-versions.browser.test.ts",
+        "packages/render/src/__tests__/managed-mesh-range.browser.test.ts",
+        "packages/render/src/__tests__/managed-mesh-structure.browser.test.ts",
+        "packages/render/src/__tests__/managed-shadow-recording.browser.test.ts",
+        "packages/render/src/__tests__/managed-terrain.browser.test.ts",
+        "packages/render/src/__tests__/managed-texture-range.browser.test.ts",
+        "packages/render/src/__tests__/managed-tilemap.browser.test.ts"
+      ],
+      "processSeconds": 94.777,
+      "reportedTestSeconds": 82.74510000038147
+    },
+    {
+      "index": 125,
+      "jobId": 136850684584,
+      "files": [
+        "packages/render/src/__tests__/material-first-use.browser.test.ts",
+        "packages/render/src/__tests__/material-uniform-versions.browser.test.ts",
+        "packages/render/src/__tests__/pending-surface.browser.test.ts",
+        "packages/render/src/__tests__/portable-kernel-expansion.browser.test.ts",
+        "packages/render/src/__tests__/post-process-depth.browser.test.ts",
+        "packages/render/src/__tests__/postprocess-pixel-grid.browser.test.ts",
+        "packages/render/src/__tests__/render-feature-depth-feedback.browser.test.ts",
+        "packages/render/src/__tests__/render-graph-compute-raster.browser.test.ts",
+        "packages/render/src/__tests__/render-graph-conditional-storage.browser.test.ts",
+        "packages/render/src/__tests__/render-graph-hzb.browser.test.ts",
+        "packages/render/src/__tests__/render-graph-storage-indirect.browser.test.ts",
+        "packages/render/src/__tests__/render-temporal-environment-consumer.browser.test.ts",
+        "packages/render/src/__tests__/scene-sdf.browser.test.ts",
+        "packages/render/src/__tests__/standard-output.browser.test.ts",
+        "packages/render/src/__tests__/surface-standard-pipeline.browser.test.ts",
+        "packages/render/src/__tests__/taa-stability-feedback.browser.test.ts"
+      ],
+      "processSeconds": 82.46,
+      "reportedTestSeconds": 67.68719999885559
+    },
+    {
+      "index": 126,
+      "jobId": 136850684586,
+      "files": [
+        "packages/render/src/__tests__/terrain/array-copy-render.browser.test.ts",
+        "packages/render/src/__tests__/terrain-layers.browser.test.ts",
+        "packages/render/src/__tests__/texture-generations.browser.test.ts",
+        "packages/render/src/__tests__/texture-generators.browser.test.ts",
+        "packages/render/src/__tests__/transient-scene-taa.browser.test.ts",
+        "packages/render/src/__tests__/tsr-feedback.browser.test.ts",
+        "packages/render/src/__tests__/tsr-raster-webgl2.browser.test.ts",
+        "packages/render/src/__tests__/volumetric-fog-composite-tile-edges.browser.test.ts",
+        "packages/render/src/__tests__/webgl-compressed-texture.browser.test.ts",
+        "packages/render/src/__tests__/white-balance.browser.test.ts",
+        "packages/render/src/cloud/__tests__/cloud-layer.browser.test.ts",
+        "packages/render/src/features/__tests__/shared-graph-textures.browser.test.ts",
+        "packages/render/src/publication/__tests__/canvas.browser.test.ts",
+        "packages/render/src/publication/__tests__/video.browser.test.ts",
+        "packages/render/src/record/__tests__/cpu-instance-lod.browser.test.ts",
+        "packages/render/src/record/__tests__/indirect-bundle-retirement.browser.test.ts"
+      ],
+      "processSeconds": 45.264,
+      "reportedTestSeconds": 31.77739999961853
+    },
+    {
+      "index": 127,
+      "jobId": 136850684612,
+      "files": [
+        "packages/render/src/record/__tests__/prepared-material-layout.browser.test.ts",
+        "packages/render/src/water/__tests__/visual-normal-detail-publish.browser.test.ts",
+        "packages/rhi-debug/src/__tests__/blob-identity.browser.test.ts",
+        "packages/rhi-debug/src/__tests__/compressed-snapshot.browser.test.ts",
+        "packages/rhi-debug/src/__tests__/e2e.browser.test.ts",
+        "packages/rhi-debug/src/__tests__/index-buffer-webgl2.browser.test.ts",
+        "packages/rhi-debug/src/__tests__/msaa-webgl2.browser.test.ts",
+        "packages/rhi-debug/src/__tests__/snapshot-memory.browser.test.ts",
+        "packages/rhi-debug/src/__tests__/tape-gzip.browser.test.ts",
+        "packages/rhi-debug/src/__tests__/texture-extent.browser.test.ts",
+        "packages/rhi-debug/src/__tests__/webgl2-texture-seed.browser.test.ts",
+        "packages/rhi-debug/src/__tests__/wgpu-depth-readback.browser.test.ts",
+        "packages/rhi-debug/src/__tests__/wgpu-texture-readback.browser.test.ts",
+        "packages/rhi-webgpu/src/__tests__/buffer-compatibility.browser.test.ts",
+        "packages/rhi-webgpu/src/__tests__/compatibility-profile.browser.test.ts",
+        "packages/rhi-webgpu/src/__tests__/depth32float-comparison.browser.test.ts"
+      ],
+      "processSeconds": 11.321,
+      "reportedTestSeconds": 3.5467999973297117
+    },
+    {
+      "index": 128,
+      "jobId": 136850684567,
+      "files": [
+        "packages/rhi-webgpu/src/__tests__/mip-dispatch.browser.test.ts",
+        "packages/rhi-webgpu/src/__tests__/pipeline-binding-state.browser.test.ts",
+        "packages/rhi-webgpu/src/__tests__/pipeline-library.browser.test.ts",
+        "packages/rhi-webgpu/src/__tests__/r32float-format-capability.browser.test.ts",
+        "packages/rhi-webgpu/src/__tests__/render-bundle-validation.browser.test.ts",
+        "packages/rhi-webgpu/src/__tests__/rgba16float-live-probe.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/clip-depth.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/depth-plain-read.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/external-image-copy.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/index-readback.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/mapped-buffer.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/multisample-profile.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/native-binding-lifetime.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/native-copy-completion.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/native-queue-completion.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/native-queue-failure.browser.test.ts"
+      ],
+      "processSeconds": 26.623,
+      "reportedTestSeconds": 16.649299995422364
+    },
+    {
+      "index": 129,
+      "jobId": 136850684584,
+      "files": [
+        "packages/rhi-wgpu/src/__tests__/render-pipeline-error-fanout.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/reverse-z.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/submit-error-fanout.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/surface-resolution.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/temporary-pass-lifetime.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/texture-compatibility.browser.test.ts",
+        "packages/rhi-wgpu/src/__tests__/texture-copy-origin.browser.test.ts",
+        "packages/runtime/__tests__/renderer-wgpu-wasm.browser.test.ts",
+        "packages/runtime/__tests__/renderer.browser.test.ts",
+        "packages/runtime/__tests__/swap-chain-format.browser.test.ts",
+        "packages/shader-compiler/src/__tests__/direct-dfg-lut.browser.test.ts",
+        "packages/shader-compiler/src/__tests__/prepared-program.browser.test.ts",
+        "packages/three/src/__tests__/authoring-addons-render.browser.test.ts"
+      ],
+      "processSeconds": 39.981,
+      "reportedTestSeconds": 28.883499996185304
+    },
+    {
+      "index": 130,
+      "jobId": 136850684567,
+      "files": [
+        "packages/three/src/__tests__/bound-reference-inputs.browser.test.ts",
+        "packages/three/src/__tests__/canvas-target.browser.test.ts"
+      ],
+      "processSeconds": 236.739,
+      "reportedTestSeconds": 219.0456000022888
+    },
+    {
+      "index": 131,
+      "jobId": 136850684584,
+      "files": [
+        "packages/three/src/__tests__/composer.browser.test.ts",
+        "packages/three/src/__tests__/control-addons.browser.test.ts"
+      ],
+      "processSeconds": 67.637,
+      "reportedTestSeconds": 57.75710000038147
+    },
+    {
+      "index": 132,
+      "jobId": 136850684586,
+      "files": [
+        "packages/three/src/__tests__/cpu-addons-render.browser.test.ts",
+        "packages/three/src/__tests__/data-addons-render.browser.test.ts"
+      ],
+      "processSeconds": 45.911,
+      "reportedTestSeconds": 34.52730000114441
+    },
+    {
+      "index": 133,
+      "jobId": 136850684586,
+      "files": ["packages/three/src/__tests__/eager-texture.browser.test.ts"],
+      "processSeconds": 23.117,
+      "reportedTestSeconds": 12.751599998474122
+    },
+    {
+      "index": 134,
+      "jobId": 136850684612,
+      "files": ["packages/three/src/__tests__/features-0.browser.test.ts"],
+      "processSeconds": 60.068,
+      "reportedTestSeconds": 51.58179999923706
+    },
+    {
+      "index": 135,
+      "jobId": 136850684567,
+      "files": ["packages/three/src/__tests__/features-1.browser.test.ts"],
+      "processSeconds": 130.675,
+      "reportedTestSeconds": 114.80570000076294
+    },
+    {
+      "index": 136,
+      "jobId": 136850684612,
+      "files": [
+        "packages/three/src/__tests__/features-2.browser.test.ts",
+        "packages/three/src/__tests__/features-3.browser.test.ts"
+      ],
+      "processSeconds": 72.889,
+      "reportedTestSeconds": 64.48239999771118
+    },
+    {
+      "index": 137,
+      "jobId": 136850684586,
+      "files": [
+        "packages/three/src/__tests__/features.browser.test.ts",
+        "packages/three/src/__tests__/gltf-export-addon.browser.test.ts"
+      ],
+      "processSeconds": 67.722,
+      "reportedTestSeconds": 55.76670000267029
+    },
+    {
+      "index": 138,
+      "jobId": 136850684586,
+      "files": [
+        "packages/three/src/__tests__/interfaces.browser.test.ts",
+        "packages/three/src/__tests__/loading.browser.test.ts"
+      ],
+      "processSeconds": 58.026,
+      "reportedTestSeconds": 46.32920000076294
+    },
+    {
+      "index": 139,
+      "jobId": 136850684567,
+      "files": [
+        "packages/three/src/__tests__/material-reference-inputs.browser.test.ts",
+        "packages/three/src/__tests__/node-family.browser.test.ts"
+      ],
+      "processSeconds": 146.692,
+      "reportedTestSeconds": 126.19120000076293
+    },
+    {
+      "index": 140,
+      "jobId": 136850684612,
+      "files": [
+        "packages/three/src/__tests__/node-materials.browser.test.ts",
+        "packages/three/src/__tests__/opaque-order.browser.test.ts"
+      ],
+      "processSeconds": 58.177,
+      "reportedTestSeconds": 49.27160000038147
+    },
+    {
+      "index": 141,
+      "jobId": 136850684586,
+      "files": [
+        "packages/three/src/__tests__/output.browser.test.ts",
+        "packages/three/src/__tests__/point-colors.browser.test.ts"
+      ],
+      "processSeconds": 113.636,
+      "reportedTestSeconds": 101.04439999961853
+    },
+    {
+      "index": 142,
+      "jobId": 136850684584,
+      "files": [
+        "packages/three/src/__tests__/portable-addons.browser.test.ts",
+        "packages/three/src/__tests__/procedural-addons-render.browser.test.ts"
+      ],
+      "processSeconds": 25.405,
+      "reportedTestSeconds": 15.34719999885559
+    },
+    {
+      "index": 143,
+      "jobId": 136850684586,
+      "files": [
+        "packages/three/src/__tests__/procedural-dom-addons.browser.test.ts",
+        "packages/three/src/__tests__/renderer-events.browser.test.ts"
+      ],
+      "processSeconds": 28.629,
+      "reportedTestSeconds": 17.56579999923706
+    },
+    {
+      "index": 144,
+      "jobId": 136850684567,
+      "files": [
+        "packages/three/src/__tests__/renderer-target-state.browser.test.ts",
+        "packages/three/src/__tests__/scene-format-addons-render.browser.test.ts"
+      ],
+      "processSeconds": 109.828,
+      "reportedTestSeconds": 93.02489999771119
+    },
+    {
+      "index": 145,
+      "jobId": 136850684612,
+      "files": [
+        "packages/three/src/__tests__/special-lights.browser.test.ts",
+        "packages/three/src/__tests__/svg-addon.browser.test.ts"
+      ],
+      "processSeconds": 37.764,
+      "reportedTestSeconds": 27.1325
+    },
+    {
+      "index": 146,
+      "jobId": 136850684567,
+      "files": [
+        "packages/three/src/__tests__/target-surface.browser.test.ts",
+        "packages/three/src/__tests__/target-vertex-colors.browser.test.ts"
+      ],
+      "processSeconds": 103.606,
+      "reportedTestSeconds": 84.83630000305176
+    },
+    {
+      "index": 147,
+      "jobId": 136850684586,
+      "files": ["packages/three/src/__tests__/targets-environment.browser.test.ts"],
+      "processSeconds": 30.566,
+      "reportedTestSeconds": 20.50569999885559
+    },
+    {
+      "index": 148,
+      "jobId": 136850684584,
+      "files": ["packages/three/src/__tests__/texture.browser.test.ts"],
+      "processSeconds": 94.682,
+      "reportedTestSeconds": 86.13380000114441
+    },
+    {
+      "index": 149,
+      "jobId": 136850684586,
+      "files": [
+        "packages/three/src/__tests__/xml-scene-addons.browser.test.ts",
+        "packages/ui/src/__tests__/mount-input.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/accent-color.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/browser-extension.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/composed-images.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/control-layout.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/controls-workflow.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/disabled-controls.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/dom.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/focus-scroll.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/focus-visible.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/font-fallback.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/form-reset.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/game-guide-keyboard.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/input-client-scroll.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/inventory-focus.browser.test.ts"
+      ],
+      "processSeconds": 67.786,
+      "reportedTestSeconds": 54.91270000076294
+    },
+    {
+      "index": 150,
+      "jobId": 136850684586,
+      "files": [
+        "packages/ui-blitz/src/__tests__/localized-form.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/native-controls.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/number-defaults.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/range.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/select-defaults.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/select.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/settings-responsive.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/startup-responsive.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/text-stroke.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/textarea-validation.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/trailing-scroll-margin.browser.test.ts",
+        "packages/ui-blitz/src/__tests__/transformed-form-scroll.browser.test.ts",
+        "packages/vfx-render/src/__tests__/force-fields-fixed-ticks.browser.test.ts",
+        "packages/vfx-render/src/__tests__/particle-pass-order.browser.test.ts",
+        "packages/vfx-render/src/__tests__/structured-input.browser.test.ts",
+        "packages/wgpu-wasm/src/__tests__/native-external-image.browser.test.ts"
+      ],
+      "processSeconds": 31.944,
+      "reportedTestSeconds": 20.628599994659425
+    },
+    {
+      "index": 151,
+      "jobId": 136850684612,
+      "files": [
+        "packages/wgpu-wasm/src/__tests__/production-csp.browser.test.ts",
+        "packages/rhi-webgpu/src/__tests__/r32float-capability-generation.integration.test.ts"
+      ],
+      "processSeconds": 5.108,
+      "reportedTestSeconds": 0.3971999988555908
+    }
+  ]
+}

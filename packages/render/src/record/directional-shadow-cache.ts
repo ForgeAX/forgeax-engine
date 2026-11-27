@@ -4,8 +4,7 @@ import { type MeshChange, type MeshChanges, ShadowMeshReads } from '../device/me
 import type { ShadowViewInvalidationReason } from '../inspection-types';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { RenderableSnapshot } from '../render-system-extract';
-import { renderableDrawKey } from '../scene/draw-key';
-import type { FrameList } from '../scene/frame-list';
+import { sparseRowsOf } from '../scene/frame-list';
 import {
   type ShadowMaterialContent,
   sameShadowMaterialFrames,
@@ -14,6 +13,7 @@ import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import { terrainDrawSection } from '../terrain/source';
 import type { ViewLights } from '../world/render-lights';
 import {
+  captureDirectionalMatrices,
   currentDirectionalShadowPublication,
   directionalShadowSourceChanged,
 } from './directional-cascade-cadence';
@@ -41,11 +41,14 @@ export function shadowMeshReadsForQuery(
   sourceScope: RenderResourceScope,
   casters: PersistentShadowCasterProjection,
   changes: MeshChanges,
+  directMeshDomain?: object | null,
 ): ShadowMeshInput {
   const old = cached?.meshReads;
   if (
     old?.fixed &&
     old.changes === changes &&
+    directMeshDomain !== null &&
+    old.directMeshDomain === directMeshDomain &&
     cached?.casterContent?.owner === casters.content.owner &&
     cached.casterContent.dispatchRevision === casters.content.dispatchRevision &&
     cached.casterContent.publicationSource?.resources ===
@@ -55,7 +58,11 @@ export function shadowMeshReadsForQuery(
     const change = changes.query(cached.meshEpoch, old.generation, old.tokens);
     if (change !== 'invalidated') return { reads: old.retain(), epoch: changes.epoch, change };
   }
-  return { reads: new ShadowMeshReads(changes), epoch: changes.epoch, change: 'invalidated' };
+  return {
+    reads: new ShadowMeshReads(changes, directMeshDomain),
+    epoch: changes.epoch,
+    change: 'invalidated',
+  };
 }
 
 export interface DirectionalShadowCacheDecision {
@@ -95,17 +102,14 @@ function sameWorldState(
   }
 }
 
-const deformingCasterMemo = new WeakMap<FrameList<RenderableSnapshot>, boolean>();
-
-// Receiver-resolved skin poses read joint Transforms that no renderable
-// snapshot carries, so the scene revision cannot prove their depth unchanged.
-function hasDeformingCaster(renderables: FrameList<RenderableSnapshot>): boolean {
-  let deforming = deformingCasterMemo.get(renderables);
-  if (deforming === undefined) {
-    deforming = renderables.some((source) => source.skinBinding !== undefined);
-    deformingCasterMemo.set(renderables, deforming);
-  }
-  return deforming;
+// Joint poses can change without a renderable mutation. Borrow the fixed scene's
+// membership, or inspect this frame's actual sources where no owner can prove it.
+function hasDeformingCaster(casters: PersistentShadowCasterProjection): boolean {
+  const deforming = casters.hasDeformingCaster;
+  if (deforming !== undefined) return deforming;
+  for (const source of sparseRowsOf(casters.renderables, 'skin'))
+    if (source.skinBinding !== undefined) return true;
+  return false;
 }
 
 /**
@@ -135,55 +139,51 @@ function sameCasterContent(
     if (previous.publicationSource?.resources !== publicationSource.resources) return false;
   } else if (lease === undefined || cached.worldStateToken?.worldIdentity !== lease.worldIdentity)
     return false;
-  return !hasDeformingCaster(casters.renderables);
+  return !hasDeformingCaster(casters);
 }
 
 function sameTerrainShadowContent(
   previous: PersistentShadowCasterProjection['content'] | undefined,
   current: PersistentShadowCasterProjection['content'] | undefined,
 ): boolean {
-  const a = previous?.viewDraws?.filter((source) => source.terrainSection !== undefined) ?? [],
-    b = current?.viewDraws?.filter((source) => source.terrainSection !== undefined) ?? [];
-  if (a.length !== b.length) return false;
-  return a.every((source, index) => {
-    const next = b[index],
-      section = source.terrainSection,
-      nextSection = next?.terrainSection;
-    return (
-      next !== undefined &&
-      section !== undefined &&
-      nextSection !== undefined &&
-      renderableDrawKey(source) === renderableDrawKey(next) &&
-      source.assetHandle === next.assetHandle &&
-      section.source.asset.columns === nextSection.source.asset.columns &&
-      section.source.asset.rows === nextSection.source.asset.rows &&
-      section.source.asset.spacing === nextSection.source.asset.spacing &&
-      section.source.asset.subsectionVertices === nextSection.source.asset.subsectionVertices &&
-      terrainDrawSection(section.source, section.index).heights ===
-        terrainDrawSection(nextSection.source, nextSection.index).heights &&
-      section.lod === nextSection.lod &&
-      section.neighbors.every((lod, edge) => lod === nextSection.neighbors[edge]) &&
-      [12, 13, 14].every((axis) => source.transform.world[axis] === next.transform.world[axis])
-    );
-  });
-}
-
-function sameLightViewProj(
-  cached: DirectionalShadowCache,
-  current: readonly Float32Array[],
-): boolean {
-  if (cached.lightViewProj.length !== current.length) return false;
-  for (let matrixIndex = 0; matrixIndex < current.length; matrixIndex += 1) {
-    const previous = cached.lightViewProj[matrixIndex];
-    const next = current[matrixIndex];
-    if (previous === undefined || next === undefined || previous.length !== next.length) {
+  const before = previous?.viewDraws,
+    now = current?.viewDraws;
+  let i = 0,
+    j = 0;
+  for (;;) {
+    let a: RenderableSnapshot | undefined, b: RenderableSnapshot | undefined;
+    while (i < (before?.length ?? 0)) {
+      a = before?.at(i++);
+      if (a?.terrainSection !== undefined) break;
+    }
+    while (j < (now?.length ?? 0)) {
+      b = now?.at(j++);
+      if (b?.terrainSection !== undefined) break;
+    }
+    const section = a?.terrainSection,
+      next = b?.terrainSection;
+    if (a === undefined || b === undefined || section === undefined || next === undefined)
+      return section === undefined && next === undefined;
+    if (
+      a.entityKey !== b.entityKey ||
+      section.index !== next.index ||
+      a.assetHandle !== b.assetHandle ||
+      section.source.asset.columns !== next.source.asset.columns ||
+      section.source.asset.rows !== next.source.asset.rows ||
+      section.source.asset.spacing !== next.source.asset.spacing ||
+      section.source.asset.subsectionVertices !== next.source.asset.subsectionVertices ||
+      terrainDrawSection(section.source, section.index).heights !==
+        terrainDrawSection(next.source, next.index).heights ||
+      section.lod !== next.lod ||
+      section.neighbors.length !== next.neighbors.length
+    )
       return false;
-    }
-    for (let valueIndex = 0; valueIndex < next.length; valueIndex += 1) {
-      if (previous[valueIndex] !== next[valueIndex]) return false;
-    }
+    for (let edge = 0; edge < section.neighbors.length; edge++)
+      if (section.neighbors[edge] !== next.neighbors[edge]) return false;
+    // Terrain admits translation-only transforms.
+    for (let axis = 12; axis <= 14; axis++)
+      if (a.transform.world[axis] !== b.transform.world[axis]) return false;
   }
-  return true;
 }
 
 function sameDirectionalShadowQuality(
@@ -191,8 +191,7 @@ function sameDirectionalShadowQuality(
   next: DirectionalShadowQuality,
 ): boolean {
   if (previous.kind !== next.kind) return false;
-  if (previous.kind === 'pcf-vogel' || previous.kind === 'pcf-soft' || previous.kind === 'variance')
-    return true;
+  if (previous.kind === 'pcf-vogel' || previous.kind === 'pcf-soft') return true;
   if (previous.kind === 'pcf' && next.kind === 'pcf') return previous.kernel === next.kernel;
   if (previous.kind !== 'pcss' || next.kind !== 'pcss') return false;
   return (
@@ -264,6 +263,12 @@ export function prepareDirectionalShadowCache(
           casterContent: casters?.content,
         }
       : undefined;
+  const matrices = captureDirectionalMatrices(lightViewProj, cached?.lightViewProj);
+  const graph = frameState.compiledFrameGraph;
+  const target =
+    graph.directionalShadowViewCount === 'current'
+      ? frameState.shadowDepthLayers?.allocation('directional-shadow-depth')
+      : graph.topologyKey;
   const sourceChanged =
     cached !== null &&
     cadenceSource !== undefined &&
@@ -280,7 +285,8 @@ export function prepareDirectionalShadowCache(
             lights.cascades?.directionalShadowQuality,
           ) ||
           cached.pipelineHandle !== frameState.installedPipelineHandle ||
-          cached.graphTopologyKey !== frameState.compiledFrameGraph.topologyKey
+          target === undefined ||
+          cached.depthTarget !== target
         ? 'configuration-changed'
         : sourceChanged
           ? 'source-changed'
@@ -297,13 +303,14 @@ export function prepareDirectionalShadowCache(
               mesh.change !== 'quiet' ||
               cached.meshReads !== meshReads ||
               cached.lodSelection !== lodSelection ||
-              !sameTerrainShadowContent(cached.casterContent, casters?.content) ||
+              (cadenceSource === undefined &&
+                !sameTerrainShadowContent(cached.casterContent, casters?.content)) ||
               !(
                 sameWorldState(cached, sourceScope, lease) ||
                 sameCasterContent(cached, sourceScope, lease, casters, publicationSource)
               )
             ? 'content-changed'
-            : !sameLightViewProj(cached, lightViewProj)
+            : matrices !== cached.lightViewProj
               ? 'view-changed'
               : undefined;
   if (miss === undefined)
@@ -326,11 +333,11 @@ export function prepareDirectionalShadowCache(
       worldStateToken,
       shadowMaterials,
       pipelineHandle: frameState.installedPipelineHandle,
-      graphTopologyKey: frameState.compiledFrameGraph.topologyKey,
+      depthTarget: target,
       shadowMapSize,
       cascadeCount,
       directionalShadowQuality: lights.cascades?.directionalShadowQuality,
-      lightViewProj: lightViewProj.map((matrix) => new Float32Array(matrix)),
+      lightViewProj: matrices,
       meshReads,
       meshEpoch: mesh.epoch,
       lodSelection,

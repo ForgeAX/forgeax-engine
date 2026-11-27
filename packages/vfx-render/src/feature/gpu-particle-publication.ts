@@ -78,10 +78,17 @@ export interface GpuParticleFeatureOptions {
   };
 }
 
-export interface ExtractedMaterial {
-  readonly asset: MaterialAsset;
-  readonly projection?: MaterialRenderProjection;
-}
+export type ExtractedMaterial =
+  | {
+      readonly asset: MaterialAsset;
+      readonly projection?: MaterialRenderProjection;
+      readonly reference?: never;
+    }
+  | {
+      readonly reference: { readonly handle: number; readonly revision: number };
+      readonly asset?: never;
+      readonly projection?: never;
+    };
 
 export interface ExtractedEmitterState {
   readonly renderLayers?: number;
@@ -256,7 +263,7 @@ export function resolveIntent(
   return { ...tick, ...definition, ...(forceFields === undefined ? {} : { forceFields }) };
 }
 
-export function planFailure(cause?: unknown): RenderFeatureStageFailedError {
+export function planFailure(cause: unknown): RenderFeatureStageFailedError {
   return new RenderFeatureStageFailedError(IDENTITY, -1, 'plan', 'next-frame', cause);
 }
 

@@ -127,7 +127,11 @@ export async function verifyNormalBump(
     })
     .unwrap();
   const lease = renderValue(renderer.attach(world));
-  const cases: readonly { name: string; options: Partial<StandardOptions> }[] = [
+  const cases: readonly {
+    name: string;
+    options: Partial<StandardOptions>;
+    captureOperation?: string;
+  }[] = [
     { name: 'flat', options: {} },
     { name: 'normal-zero', options: { normalTexture, normalScale: [0, 0] } },
     {
@@ -140,10 +144,18 @@ export async function verifyNormalBump(
     { name: 'normal-x', options: { normalTexture, normalScale: [2, 0] } },
     { name: 'normal-oracle', options: { normalTexture: normalOracle, normalScale: [1, 0] } },
     { name: 'normal-y', options: { normalTexture, normalScale: [0, 2] } },
-    { name: 'normal-xy', options: { normalTexture, normalScale: [0.5, -1] } },
+    {
+      name: 'normal-xy',
+      options: { normalTexture, normalScale: [0.5, -1] },
+      captureOperation: 'decodeTangentSpaceNormalRg',
+    },
     { name: 'bump-zero', options: { bumpTexture, bumpScale: 0 } },
     { name: 'bump-constant', options: { bumpTexture: constantBump, bumpScale: 20 } },
-    { name: 'bump', options: { bumpTexture, bumpScale: 8 } },
+    {
+      name: 'bump',
+      options: { bumpTexture, bumpScale: 8 },
+      captureOperation: 'perturbBumpNormal',
+    },
     { name: 'bump-negative', options: { bumpTexture, bumpScale: -8 } },
     {
       name: 'bump-uv1',
@@ -169,7 +181,9 @@ export async function verifyNormalBump(
   const replayDevices: GPUDevice[] = [];
   try {
     for (const renderPath of ['forward', 'deferred'] as const) {
-      renderValue(renderer.setProfile({ ...original, renderPath, ssao: false }));
+      renderValue(
+        renderer.setProfile({ ...original, renderPath, ambientOcclusion: { enabled: false } }),
+      );
       for (const entry of cases) {
         const authored = Materials.standard({
           baseColor: [0.5, 0.5, 0.5, 1],
@@ -197,9 +211,10 @@ export async function verifyNormalBump(
           return receipt;
         };
         for (let frame = 0; frame < frames - 1; frame++) await draw();
-        const capture = ['normal-xy', 'bump'].includes(entry.name)
-          ? recorder.captureFrame()
-          : undefined;
+        const capture =
+          entry.captureOperation === undefined
+            ? undefined
+            : { operation: entry.captureOperation, frame: recorder.captureFrame() };
         if (capture !== undefined) (await recorder.frameBoundary()).unwrap();
         const receipt = await draw(['linear-hdr']);
         if (capture !== undefined) (await recorder.frameBoundary()).unwrap();
@@ -219,7 +234,7 @@ export async function verifyNormalBump(
           live,
         };
         if (capture !== undefined) {
-          const encoded = (await capture).unwrap();
+          const encoded = (await capture.frame).unwrap();
           const name = `${renderPath}-${entry.name}`;
           await save(`${name}.rhitape`, compactTape(encoded).bytes);
           const tape = decodeTape(encoded.bytes).unwrap();
@@ -243,7 +258,7 @@ export async function verifyNormalBump(
             throw new Error('production normal/bump draw missing');
           expect(
             geometryWork.pipeline.shaders.some((shader) =>
-              shader.source?.includes('perturbBumpNormal'),
+              shader.source?.includes(capture.operation),
             ),
           ).toBe(true);
           const adapter = (await webgpu.rhi.requestAdapter()).unwrap();

@@ -16,7 +16,11 @@ import {
   GlobalCardCandidateFlags,
   type GlobalSdfCardLookupInputs,
 } from '../../raytracing/global-card-lookup';
-import { createGlobalSdfComposition, packGlobalSdfComposition } from '../../raytracing/global-sdf';
+import {
+  createGlobalSdfComposition,
+  GLOBAL_SDF_SETTINGS_BYTES,
+  packGlobalSdfComposition,
+} from '../../raytracing/global-sdf';
 import { createGlobalSdfQuery, GlobalSdfQueryStatus } from '../../raytracing/global-sdf-query';
 import type { SdfMeshInstance } from '../../raytracing/sdf-query';
 import {
@@ -183,7 +187,7 @@ export async function verifyGlobalCards(fixture: SdfCardsFixture) {
         },
         fields: { buffer: composition.buffers.fields, size: packed.data.fields.byteLength },
         bounds: { buffer: composition.buffers.bounds, size: packed.data.bounds.byteLength },
-        grid: { buffer: composition.buffers.settings, size: 48 },
+        grid: { buffer: composition.buffers.settings, size: GLOBAL_SDF_SETTINGS_BYTES },
         candidates: makeBorrowed(
           'global-cards.borrowed-candidates',
           new Uint8Array(query.rayCount * GLOBAL_CARD_CANDIDATE_STRIDE),
@@ -204,11 +208,13 @@ export async function verifyGlobalCards(fixture: SdfCardsFixture) {
           ]),
         ) as GlobalSdfCardLookupInputs['textures'],
       };
-      const borrowed = createGlobalSdfCardLookupRecorder(
-        device,
-        (
-          await recorder.backend.createShaderModule(device, { code: GLOBAL_SDF_CARD_LOOKUP_WGSL })
-        ).unwrap(),
+      const borrowed = (
+        await createGlobalSdfCardLookupRecorder(
+          device,
+          (
+            await recorder.backend.createShaderModule(device, { code: GLOBAL_SDF_CARD_LOOKUP_WGSL })
+          ).unwrap(),
+        )
       ).unwrap();
       const statuses = [1, 1, 2, 0, 3, 4, 5, 1, 1];
       if (mode !== 'live') {

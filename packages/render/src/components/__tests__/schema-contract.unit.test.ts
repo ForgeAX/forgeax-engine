@@ -15,7 +15,6 @@ describe('canonical render schema owners', () => {
       pcssHigh: 5,
       pcfVogel: 6,
       pcfSoft: 7,
-      variance: 8,
     });
     expect(DirectionalLight.fields.shadowAngularRadius.default).toBeCloseTo(0.00465, 8);
     expect(DirectionalLight.fields.maxPenumbraTexels.default).toBe(32);

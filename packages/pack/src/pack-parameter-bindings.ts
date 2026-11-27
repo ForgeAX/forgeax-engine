@@ -6,6 +6,7 @@ import type {
   PackOutputMap,
   PackParameterDefinition,
   PackParameterValue,
+  ScriptablePackRuntimeOutputs,
 } from './pack-authoring.js';
 
 /** Only opted-in live parameters are withheld. Legacy contexts retain their exact shape. */
@@ -83,22 +84,70 @@ export function applyPackParameterBindings(
   return ok(result);
 }
 
+export function validatePhaseOutputs(
+  generated: PackOutputMap,
+  declared: ScriptablePackRuntimeOutputs,
+  phase: 'build' | 'runtime',
+): Result<PackOutputMap, PackAuthoringError> {
+  if (!object(generated) || Array.isArray(generated)) {
+    return err({
+      code: 'pack-parameter-invalid',
+      expected: 'an asset output record',
+      hint: 'return the generated assets in the successful Result value',
+      detail: { phase },
+    });
+  }
+  const mismatch =
+    Object.keys(generated).find((key) => Object.hasOwn(declared, key) === (phase === 'build')) ??
+    (phase === 'runtime'
+      ? Object.keys(declared).find(
+          (key) => !Object.hasOwn(generated, key) || generated[key]?.kind !== declared[key],
+        )
+      : undefined);
+  if (mismatch === undefined) return ok(generated);
+  return err({
+    code: 'pack-parameter-invalid',
+    expected:
+      phase === 'build'
+        ? 'build output keys distinct from runtime output declarations'
+        : 'the exact declared runtime output keys and asset kinds',
+    hint: 'keep each output key in its declared generation phase',
+    detail: { sourceKey: mismatch, phase },
+  });
+}
+
 /** Shared by offline and runtime producers; user build functions stay unchanged. */
 export async function executePackBuild(
   definition: AnyScriptablePackDefinition,
   context: PackBuildContextWithoutParameters & {
     readonly values?: Readonly<Record<string, PackParameterValue>>;
   },
+  phase: 'build' | 'runtime' = 'build',
 ): Promise<Result<PackOutputMap, unknown>> {
   const parameters = 'parameters' in definition ? definition.parameters : [];
-  if (!parameters.some((parameter) => typeof parameter.apply === 'object')) {
-    return definition.build(context as never);
-  }
+  const declared = definition.runtime?.outputs;
+  const hasBindings = parameters.some((parameter) => typeof parameter.apply === 'object');
+  if (!hasBindings && declared === undefined) return definition.build(context as never);
+
   const values = context.values ?? {};
-  const generated = await definition.build({
-    ...context,
-    values: packGenerationValues(parameters, values),
-  } as never);
+  const generated = await definition.build(
+    (hasBindings
+      ? { ...context, values: packGenerationValues(parameters, values) }
+      : context) as never,
+  );
   if (!generated?.ok) return generated;
-  return applyPackParameterBindings(parameters, generated.value, values);
+  if (declared !== undefined) {
+    const checked = validatePhaseOutputs(generated.value, declared, phase);
+    if (!checked.ok) return checked;
+  }
+  if (!hasBindings) return generated;
+  const bindings =
+    declared === undefined
+      ? parameters
+      : parameters.filter(
+          (parameter) =>
+            typeof parameter.apply === 'object' &&
+            Object.hasOwn(declared, parameter.apply.asset) === (phase === 'runtime'),
+        );
+  return applyPackParameterBindings(bindings, generated.value, values);
 }

@@ -76,7 +76,7 @@ try {
         standardProfile: {
           ...DEFAULT_STANDARD_PROFILE,
           renderPath,
-          ssao: renderPath === 'deferred',
+          ambientOcclusion: { enabled: renderPath === 'deferred' },
         },
       },
     });

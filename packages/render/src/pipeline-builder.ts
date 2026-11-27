@@ -1,5 +1,8 @@
+import { findMaterialShaderEntry, STANDARD_TEXTURE_MASK_OVERRIDE } from '@forgeax/engine-shader';
 import { isStripTopology } from '@forgeax/engine-types';
+import { markPositionOnlyMeshPipeline } from './device/mesh-vertex-streams';
 import { pipelineVertexConstants } from './material-stage-constants';
+import { standardMaskDisplacesVertices } from './standard-displacement-bounds';
 // pipeline-builder.ts -- runtime-internal helper for building per-MaterialShader
 // render pipelines (feat-20260523-shader-template-instance-split M9-T01).
 //
@@ -55,10 +58,11 @@ import {
   RhiError,
   type ShaderModule,
 } from '@forgeax/engine-rhi';
-import type {
-  MaterialShaderEntry,
-  MaterialShaderProgram,
-  RegisteredMaterialShaderEntry,
+import {
+  type MaterialShaderEntry,
+  type MaterialShaderProgram,
+  type RegisteredMaterialShaderEntry,
+  SCENE_VELOCITY_WITH_DEPTH_OVERRIDE,
 } from '@forgeax/engine-shader';
 import type { MaterialRenderState, PassKind, PrimitiveTopology } from '@forgeax/engine-types';
 import { materialColorTarget, materialDepthStencil } from './material-render-state';
@@ -101,6 +105,12 @@ export interface PipelineBuilderShaderModuleFactory {
   }): Result<ShaderModule, RhiError>;
   /** True only when this live factory owns the exact pending module request. */
   isPending?(error: RhiError): boolean;
+  /** Non-allocating original-owner evidence used by off-frame native preparation. */
+  peekShaderModule?(desc: {
+    readonly code: string;
+    readonly label?: string | undefined;
+  }): ShaderModule | undefined;
+  pendingShaderModuleCompletion?(signal: RhiError): Promise<Result<void, RhiError>> | undefined;
 }
 
 /**
@@ -147,6 +157,8 @@ export interface PipelineBuilderContext {
   readonly constants?: Readonly<Record<string, number>> | undefined;
   /** Explicit vertex-stage values; omitted uses the common overrides. */
   readonly vertexConstants?: Readonly<Record<string, number>> | undefined;
+  /** The selected stock Standard WGSL projects its resources from the material mask. */
+  readonly projectSurfaceResources?: boolean | undefined;
   /** Depth attachment format, or `undefined` for a color-only pass. */
   readonly depthFormat: GPUTextureFormat | undefined;
   /**
@@ -156,6 +168,8 @@ export interface PipelineBuilderContext {
    * feat).
    */
   readonly vertexBuffers: readonly GPUVertexBufferLayout[];
+  /** Renderer-resolved identity for the engine's rigid Standard vertex program. */
+  readonly stockStandardVertexProgram?: boolean | undefined;
   /** Explicit layout family selected by the renderer assembly. */
   readonly layoutKind?: 'pbr-skin' | 'gpu-driven-skin' | 'gpu-driven-cluster-skin' | undefined;
   /** Pipeline label (for GPU debug captures); defaults to `pbr-pipeline-${id}`. */
@@ -187,6 +201,14 @@ export interface PipelineBuilderContext {
   readonly coverageOnly?: boolean | undefined;
 }
 
+function hasStandardCoverageEntries(source: string | MaterialShaderProgram): boolean {
+  if (typeof source !== 'string' && source.entryPoints !== undefined) {
+    return findMaterialShaderEntry(source.entryPoints, 'fs_coverage', 'fragment') !== undefined;
+  }
+  const code = typeof source === 'string' ? source : source.source;
+  return code.includes('fn vs_coverage') && code.includes('fn fs_coverage');
+}
+
 /**
  * Validate the temporal material contract at the PSO creation boundary.
  *
@@ -203,22 +225,30 @@ export function validateTemporalPipelineContract(
     PipelineBuilderContext,
     'colorFormat' | 'depthFormat' | 'capabilities' | 'coverageOnly'
   >,
+  fragmentEntry?: string,
 ): Result<void, RhiError> {
-  if (
-    !(typeof source === 'string'
+  const standardCoverage = fragmentEntry === 'fs_coverage' && ctx.coverageOnly === true;
+  const hasEntries = standardCoverage
+    ? hasStandardCoverageEntries(source)
+    : typeof source === 'string'
       ? source.includes('fn vs_temporal') && source.includes('fn fs_temporal')
-      : source.hasTemporalEntries)
-  ) {
+      : source.hasTemporalEntries;
+  if (!hasEntries) {
     return err(
       new RhiError({
         code: 'shader-compile-failed',
-        expected: 'temporal material source declares vs_temporal and fs_temporal entry points',
+        expected: standardCoverage
+          ? 'Standard material source declares coverage entry points'
+          : 'temporal material source declares vs_temporal and fs_temporal entry points',
         hint: 'compile the temporal material variant that owns the temporal producer ABI',
       }),
     );
   }
   const validCoverageTarget = ctx.coverageOnly === true && ctx.colorFormat === 'r8unorm';
-  if (ctx.colorFormat !== 'rgba16float' && !validCoverageTarget) {
+  const validVelocityTarget =
+    fragmentEntry === 'fs_scene_velocity' &&
+    (ctx.colorFormat === 'r32uint' || ctx.colorFormat === 'rg32uint');
+  if (ctx.colorFormat !== 'rgba16float' && !validCoverageTarget && !validVelocityTarget) {
     return err(
       new RhiError({
         code: 'shader-compile-failed',
@@ -286,12 +316,29 @@ function pipelineCreationHint(error: RhiError): string {
   return `inspect compiler messages on the shader module; verify pipeline layout matches shader bindings (cause: ${error.code}; underlying hint: ${error.hint}; raw: ${error.message})`;
 }
 
-function pipelineVertexEntry(
+export function defaultMaterialVertexEntry(passKind: PassKind): string {
+  return passKind === 'temporal' ? 'vs_temporal' : 'vs_main';
+}
+
+export function defaultMaterialFragmentEntry(passKind: PassKind): string {
+  switch (passKind) {
+    case 'temporal':
+      return 'fs_temporal';
+    case 'deferred':
+      return 'fs_gbuffer';
+    case 'shadow-caster':
+      return 'fs_shadow';
+    default:
+      return 'fs_main';
+  }
+}
+
+export function pipelineVertexEntry(
   vertexEntry: string | undefined,
   passKind: PassKind,
   buffers: PipelineBuilderContext['vertexBuffers'],
 ): string {
-  const requestedVertexEntry = vertexEntry ?? (passKind === 'temporal' ? 'vs_temporal' : 'vs_main');
+  const requestedVertexEntry = vertexEntry ?? defaultMaterialVertexEntry(passKind);
   for (const buffer of buffers) {
     for (const attribute of buffer.attributes) {
       if (attribute.shaderLocation === 14 && attribute.format === 'uint32')
@@ -326,6 +373,94 @@ function pipelineVertexEntry(
  * }
  * ```
  */
+const materialRasterSources = new WeakMap<
+  RenderPipeline,
+  {
+    readonly descriptor: RenderPipelineDescriptor;
+    readonly fragmentSource: string | MaterialShaderProgram;
+    readonly fragmentEffects: import('@forgeax/engine-types').ShaderEntryPointEffects | undefined;
+  }
+>();
+
+/** Exact admitted vertex state and rasterization facts for requested editor observations. */
+export function materialRasterSource(pipeline: RenderPipeline) {
+  return materialRasterSources.get(pipeline);
+}
+
+function materialPipelineSource(
+  entry: MaterialShaderEntry,
+  defines: Record<string, string> | undefined,
+): Result<string | MaterialShaderProgram, RhiError> {
+  const source = (entry as Partial<RegisteredMaterialShaderEntry>).program ?? entry.source;
+  if (defines === undefined || Object.keys(defines).length === 0) return ok(source);
+  const defineKeyRe = /^[A-Z_][A-Z0-9_]*$/;
+  for (const key of Object.keys(defines)) {
+    if (!defineKeyRe.test(key)) {
+      return err(
+        new RhiError({
+          code: 'rhi-descriptor-invalid',
+          expected: `define key matching /^[A-Z_][A-Z0-9_]*$/`,
+          hint: `illegal define key '${key}' — use uppercase letters, digits, and underscores, starting with a letter or underscore`,
+        }),
+      );
+    }
+  }
+  const prefix = `${Object.entries(defines)
+    .map(([k, v]) => `#define ${k} ${v}`)
+    .join('\n')}\n`;
+  return ok(prefix + (typeof source === 'string' ? source : source.source));
+}
+
+function materialVertexInput(
+  entry: MaterialShaderEntry,
+  ctx: PipelineBuilderContext,
+  renderState: MaterialRenderState | undefined,
+  vertexEntry: string | undefined,
+  fragmentEntry: string | null | undefined,
+  passKind: PassKind,
+  colorAttachmentCount: number,
+) {
+  const position = positionOnlyMaterialBuffer(
+    entry,
+    ctx,
+    renderState,
+    vertexEntry,
+    fragmentEntry,
+    passKind,
+    colorAttachmentCount,
+  );
+  if (position === undefined)
+    return {
+      vsEntry: pipelineVertexEntry(vertexEntry, passKind, ctx.vertexBuffers),
+      vertexBuffers: ctx.vertexBuffers,
+      vertexContext: ctx,
+      positionOnly: false,
+    };
+  const vertexBuffers = [position];
+  return {
+    vsEntry: 'vs_position_only',
+    vertexBuffers,
+    vertexContext: { ...ctx, vertexBuffers },
+    positionOnly: true,
+  };
+}
+
+function materialFragmentConstants(
+  source: string | MaterialShaderProgram,
+  entry: string,
+  format: GPUTextureFormat | undefined,
+  constants: PipelineBuilderContext['constants'],
+): PipelineBuilderContext['constants'] {
+  if (entry !== 'fs_scene_velocity' || format !== 'rg32uint') return constants;
+  const supportsExtendedVelocity =
+    typeof source === 'string'
+      ? source.includes('override sceneVelocityWithDepthOutput')
+      : source.overrideIds.includes(SCENE_VELOCITY_WITH_DEPTH_OVERRIDE);
+  return supportsExtendedVelocity
+    ? { ...constants, [SCENE_VELOCITY_WITH_DEPTH_OVERRIDE]: 1 }
+    : constants;
+}
+
 export function buildPipelineForMaterialShader(
   id: string,
   entry: MaterialShaderEntry,
@@ -346,50 +481,31 @@ export function buildPipelineForMaterialShader(
   sampleCount: number = 1,
 ): Result<RenderPipeline, RhiError> {
   const label = ctx.label ?? `pbr-pipeline-${id}`;
-  const vsEntry = pipelineVertexEntry(vertexEntry, passKind, ctx.vertexBuffers);
-  const fsEntry =
-    fragmentEntry ??
-    (passKind === 'temporal'
-      ? 'fs_temporal'
-      : passKind === 'deferred'
-        ? 'fs_gbuffer'
-        : passKind === 'shadow-caster'
-          ? 'fs_shadow'
-          : 'fs_main');
 
-  let source: string | MaterialShaderProgram =
-    (entry as Partial<RegisteredMaterialShaderEntry>).program ?? entry.source;
-  if (defines !== undefined && Object.keys(defines).length > 0) {
-    const defineKeyRe = /^[A-Z_][A-Z0-9_]*$/;
-    for (const key of Object.keys(defines)) {
-      if (!defineKeyRe.test(key)) {
-        return err(
-          new RhiError({
-            code: 'rhi-descriptor-invalid',
-            expected: `define key matching /^[A-Z_][A-Z0-9_]*$/`,
-            hint: `illegal define key '${key}' — use uppercase letters, digits, and underscores, starting with a letter or underscore`,
-          }),
-        );
-      }
-    }
-    const prefix = `${Object.entries(defines)
-      .map(([k, v]) => `#define ${k} ${v}`)
-      .join('\n')}\n`;
-    source = prefix + (typeof source === 'string' ? source : source.source);
-  }
+  const fsEntry = fragmentEntry ?? defaultMaterialFragmentEntry(passKind);
 
-  const moduleResult = createVertexCompatibleModule(id, source, vsEntry, ctx);
-  if (!moduleResult.ok) {
-    return moduleResult;
-  }
+  const resolvedSource = materialPipelineSource(entry, defines);
+  if (!resolvedSource.ok) return resolvedSource;
+  const source = resolvedSource.value;
+  const attachmentFormats = ctx.colorFormats ?? colorFormatsForPassKind(passKind, ctx.colorFormat);
+  const { positionOnly, vertexBuffers, vsEntry, vertexContext } = materialVertexInput(
+    entry,
+    ctx,
+    renderState,
+    vertexEntry,
+    fragmentEntry,
+    passKind,
+    attachmentFormats.length,
+  );
+  const moduleResult = createVertexCompatibleModule(id, source, vsEntry, vertexContext);
+  if (!moduleResult.ok) return moduleResult;
   const shaderModule = moduleResult.value;
 
   if (passKind === 'temporal') {
-    const temporalContract = validateTemporalPipelineContract(source, ctx);
+    const temporalContract = validateTemporalPipelineContract(source, ctx, fsEntry);
     if (!temporalContract.ok) return temporalContract;
   }
 
-  const attachmentFormats = ctx.colorFormats ?? colorFormatsForPassKind(passKind, ctx.colorFormat);
   const hasFragmentStage =
     attachmentFormats.length > 0 ||
     (fragmentEntry !== null &&
@@ -401,14 +517,20 @@ export function buildPipelineForMaterialShader(
   };
   // One projection defines both equality against warmup state and cold admission.
   // A hit visits one field at a time, without building the complete dictionary.
-  const vertexConstants = pipelineVertexConstants(ctx);
+  const vertexConstants = positionOnly ? undefined : pipelineVertexConstants(ctx);
+  const fragmentConstants = materialFragmentConstants(
+    source,
+    fsEntry,
+    attachmentFormats[0],
+    ctx.constants,
+  );
   const fields = function* (): Iterable<readonly [string, unknown]> {
     yield [
       'vertex',
       {
         entryPoint: vsEntry,
         ...(vertexConstants === undefined ? {} : { constants: vertexConstants }),
-        buffers: ctx.vertexBuffers,
+        buffers: vertexBuffers,
       },
     ];
     if (hasFragmentStage)
@@ -416,7 +538,7 @@ export function buildPipelineForMaterialShader(
         'fragment',
         {
           entryPoint: fsEntry,
-          ...(ctx.constants === undefined ? {} : { constants: ctx.constants }),
+          ...(fragmentConstants === undefined ? {} : { constants: fragmentConstants }),
           targets: attachmentFormats.map((format, index) =>
             materialColorTarget(format, renderState, index),
           ),
@@ -508,5 +630,90 @@ export function buildPipelineForMaterialShader(
       }),
     );
   }
+  if (positionOnly) markPositionOnlyMeshPipeline(pipelineResult.value);
+  retainMaterialRasterSource(
+    pipelineResult.value,
+    passKind,
+    attachmentFormats.length,
+    materialize,
+    source,
+    entry,
+    fsEntry,
+  );
   return pipelineResult;
+}
+
+/** A known stock vertex path, with no per-material vertex displacement. */
+export function positionOnlyMaterialBuffer(
+  entry: MaterialShaderEntry,
+  ctx: Pick<
+    PipelineBuilderContext,
+    'device' | 'vertexBuffers' | 'stockStandardVertexProgram' | 'constants'
+  >,
+  renderState: MaterialRenderState | undefined,
+  vertex: string | undefined,
+  fragment: string | null | undefined,
+  passKind: PassKind,
+  colorCount: number,
+): GPUVertexBufferLayout | undefined {
+  return fragment === null &&
+    passKind === 'forward' &&
+    colorCount === 0 &&
+    renderState?.alphaToCoverageEnabled !== true
+    ? positionOnlyBuffer(entry, ctx, vertex)
+    : undefined;
+}
+
+function positionOnlyBuffer(
+  entry: MaterialShaderEntry,
+  ctx: Pick<
+    PipelineBuilderContext,
+    'device' | 'vertexBuffers' | 'stockStandardVertexProgram' | 'constants'
+  >,
+  vertexEntry: string | undefined,
+): GPUVertexBufferLayout | undefined {
+  if (
+    ctx.stockStandardVertexProgram !== true ||
+    (ctx.device.caps.backendKind !== 'webgpu' && ctx.device.caps.backendKind !== 'wgpu-native') ||
+    entry.receipt?.positionBounds !== 'standard-input' ||
+    entry.receipt.surface !== undefined ||
+    (vertexEntry !== undefined && vertexEntry !== 'vs_main' && vertexEntry !== 'vs_scene_index')
+  )
+    return undefined;
+  const mask = ctx.constants?.[STANDARD_TEXTURE_MASK_OVERRIDE];
+  if (mask === undefined || standardMaskDisplacesVertices(mask)) return undefined;
+  // Terrain, Water and older cooked variants do not publish this entry.
+  const entries =
+    (entry as Partial<RegisteredMaterialShaderEntry>).program?.entryPoints ?? entry.entryPoints;
+  if (!entries?.some(({ stage, name }) => stage === 'vertex' && name === 'vs_position_only'))
+    return undefined;
+  const buffer = ctx.vertexBuffers[0];
+  if (buffer === undefined || buffer.stepMode === 'instance') return undefined;
+  for (const attribute of buffer.attributes) {
+    if (attribute.shaderLocation === 0 && attribute.format === 'float32x3') {
+      return { ...buffer, attributes: [attribute] };
+    }
+  }
+  return undefined;
+}
+
+function retainMaterialRasterSource(
+  pipeline: RenderPipeline,
+  passKind: PassKind,
+  colorTargets: number,
+  materialize: () => RenderPipelineDescriptor,
+  source: string | MaterialShaderProgram,
+  entry: MaterialShaderEntry,
+  fragmentEntry: string,
+): void {
+  if ((passKind !== 'forward' && passKind !== 'deferred') || colorTargets === 0) return;
+  if (materialRasterSources.has(pipeline)) return;
+  const entries =
+    (typeof source === 'string' ? entry.entryPoints : source.entryPoints) ??
+    entry.receipt?.entryPoints;
+  materialRasterSources.set(pipeline, {
+    descriptor: materialize(),
+    fragmentSource: source,
+    fragmentEffects: findMaterialShaderEntry(entries, fragmentEntry, 'fragment')?.effects,
+  });
 }

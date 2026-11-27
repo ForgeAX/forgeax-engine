@@ -10,6 +10,7 @@ import { FrameSet } from '../../scene/frame-set';
 import { RowContents } from '../../scene/row-contents';
 import { SkinInputs } from '../../scene/skin-inputs';
 import { type Roster, RosterCursor, rosterMerge, rosterPut } from '../../scene/slot-roster';
+import * as dependencies from '../dependencies';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 import {
@@ -112,13 +113,17 @@ function firstPublication(count: number) {
     'acquireKeyed',
   );
   const message = encodeRenderPublication(packet);
+  const closure = vi.spyOn(dependencies, 'publicationDependencies');
   const admitted = countTypedArrays(() => receiver.accept(message).unwrap());
+  const assetClosures = closure.mock.calls.length;
+  closure.mockRestore();
   const contentKeys = keyed.mock.calls.length;
   keyed.mockRestore();
   return {
     templates: packet.templates.length,
     keyDerivations,
     contentKeys,
+    assetClosures,
     typedArrays: admitted.count,
     rows: admitted.value.frame.renderables.length,
   };
@@ -133,8 +138,91 @@ it('admits a first publication with per-template keys and typed-array growth onl
   expect(large.templates).toBe(small.templates);
   expect(large.keyDerivations).toBe(small.keyDerivations);
   expect(large.contentKeys).toBeLessThanOrEqual(large.templates);
+  expect(large.assetClosures).toBe(large.templates);
   // Columns grow by pages; a per-row page copy would construct >= 1 array per row.
   expect(large.typedArrays - small.typedArrays).toBeLessThan((2048 - 256) / 8);
+});
+
+it('owns addressed pose pages across a recycled publication and a retained single row', () => {
+  const { assets, world } = scene(257);
+  const identity = { source: 'addressed-publication-poses', epoch: 1 };
+  const publisher = createRenderPublisher(world, assets, identity);
+  const receiver = new RenderPublicationReceiver(identity);
+  try {
+    world.update(1 / 60).unwrap();
+    const candidate = publisher.prepare(0).unwrap();
+    const message = structuredClone(candidate.message);
+    candidate.accept();
+    const windows = vi.spyOn(Float32Array.prototype, 'subarray');
+    const accepted = receiver.accept(message).unwrap();
+    const eagerPoses = windows.mock.calls.filter(
+      ([first, end]) => first !== undefined && end !== undefined && end - first === 16,
+    ).length;
+    windows.mockRestore();
+    const rows = accepted.frame.renderables;
+    expect(rows).toHaveLength(257);
+    expect(eagerPoses).toBe(0);
+    const expected = new Map<number, number>();
+    for (const [i, entity] of accepted.packet.transformEntities.entries())
+      expected.set(entity, accepted.packet.transforms[i * 16 + 12] as number);
+    accepted.packet.transforms.fill(-99);
+    receiver.dispose();
+    for (const i of [0, 63, 64, 256]) {
+      const row = rows[i];
+      assert(row);
+      expect(Object.keys(row.transform)).toContain('world');
+      const pose = row.transform.world;
+      expect(pose).toBe(row.transform.world);
+      expect(pose[12]).toBe(expected.get(row.entityKey));
+      expect(pose.buffer.byteLength).toBeLessThanOrEqual(4096);
+    }
+  } finally {
+    receiver.dispose();
+    publisher.dispose();
+    assets.dispose();
+  }
+});
+
+it('binds each changed draw template to one accepted material list across its entities', () => {
+  const { assets, world } = scene(128);
+  const identity = { source: 'changing-template-bindings', epoch: 1 };
+  const publisher = createRenderPublisher(world, assets, identity);
+  const receiver = new RenderPublicationReceiver(identity);
+  const publish = () => {
+    world.update(1 / 60).unwrap();
+    const candidate = publisher.prepare(0).unwrap();
+    const packet = structuredClone(candidate.packet);
+    candidate.accept();
+    const admitted = receiver.accept(encodeRenderPublication(packet)).unwrap();
+    publisher.recycle(packet.revision, renderPublicationTransfers(candidate.message)).unwrap();
+    return admitted;
+  };
+  try {
+    const first = publish();
+    const original = first.frame.renderables[0]?.material;
+    assert(original);
+    // Each change reauthors every draw row while it retains the shared material.
+    for (let frame = 0; frame < 6; frame++) {
+      for (const row of world.query({ read: [MeshRenderer] }).unwrap())
+        world.set(row.entity, MeshRenderer, { renderLayers: 1 << (frame + 1) }).unwrap();
+      const changed = publish();
+      expect(changed.frame.renderables).toHaveLength(128);
+      expect(changed.packet.templates).toHaveLength(1);
+      const slots = changed.frame.renderables[0]?.materials;
+      expect(changed.frame.renderables.every((row) => row.materials === slots)).toBe(true);
+      expect(Object.isFrozen(slots)).toBe(true);
+      expect(changed.frame.renderables.every((row) => row.material === original)).toBe(true);
+      expect(
+        changed.operations.every(
+          (op, i) => op.kind === 'update' && op.snapshot === changed.frame.renderables[i],
+        ),
+      ).toBe(true);
+    }
+  } finally {
+    receiver.dispose();
+    publisher.dispose();
+    assets.dispose();
+  }
 });
 
 it('merges a bulk roster batch page by page and agrees with single insertions', () => {

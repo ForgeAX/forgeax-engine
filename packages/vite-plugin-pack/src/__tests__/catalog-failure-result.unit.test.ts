@@ -1,11 +1,12 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildCatalogResult } from '@forgeax/engine-import';
+import { catalogImporterPolicyFor } from '@forgeax/engine-import';
+import { buildCatalogProjection } from '@forgeax/engine-pack/build';
 import type { PackIndexEntry } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 
-const roots: string[] = [];
+const scratch = temporaryDirectories();
 const GOOD_GUID = '018e7a4d-1234-7abc-8def-000000000010';
 const BAD_GUID = '018e7a4d-1234-7abc-8def-000000000011';
 
@@ -19,14 +20,13 @@ const meta = (importer: string, kind: string, guid = GOOD_GUID) => ({
 });
 
 const pack = (guid: string) => ({
-  schemaVersion: '1.0.0',
-  kind: 'internal-text-package',
-  assets: [{ guid, kind: 'host/blob', payload: {}, refs: [] }],
+  schemaVersion: '3.0.0',
+  packageId: guid,
+  assets: { blob: { kind: 'host/blob', payload: {}, refs: [] } },
 });
 
 async function makeRoot(name: string): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), `forgeax-catalog-failure-${name}-`));
-  roots.push(root);
+  const root = await scratch.make(`forgeax-catalog-failure-${name}-`);
   return root;
 }
 
@@ -35,15 +35,15 @@ async function writeMeta(root: string, value: unknown, name = 'asset.bin.meta.js
   await writeFile(join(root, name), JSON.stringify(value));
 }
 
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+afterEach(scratch.clear);
 
 describe('catalog failure result', () => {
   it('allows a registered importer to produce an engine-owned asset schema', async () => {
     const root = await makeRoot('native-output');
     await writeMeta(root, meta('host-provider', 'texture'));
-    const result = await buildCatalogResult([root], '/', new Set(['host-provider']));
+    const result = await buildCatalogProjection([root], {
+      importerPolicy: catalogImporterPolicyFor(new Set(['host-provider'])),
+    });
     expect(result.authority).toBe('authoritative');
     expect(result.diagnostics).toEqual([]);
     expect(result.entries).toMatchObject([
@@ -55,7 +55,9 @@ describe('catalog failure result', () => {
     const root = await makeRoot('unregistered');
     await writeMeta(root, meta('missing-provider', 'host/blob'));
 
-    const result = await buildCatalogResult([root]);
+    const result = await buildCatalogProjection([root], {
+      importerPolicy: catalogImporterPolicyFor(),
+    });
 
     expect(result.authority).toBe('degraded');
     expect(result.entries).toEqual([]);
@@ -70,7 +72,9 @@ describe('catalog failure result', () => {
   it('keeps browser-safe recovery fields after JSON roundtrip', async () => {
     const root = await makeRoot('json-roundtrip');
     await writeMeta(root, meta('missing-provider', 'host/blob'));
-    const result = await buildCatalogResult([root]);
+    const result = await buildCatalogProjection([root], {
+      importerPolicy: catalogImporterPolicyFor(),
+    });
     const diagnostic = result.diagnostics[0];
     const response = JSON.parse(JSON.stringify(diagnostic));
 
@@ -87,7 +91,9 @@ describe('catalog failure result', () => {
     const root = await makeRoot('shader-source');
     await writeMeta(root, meta('shader', 'shader'));
 
-    const result = await buildCatalogResult([root]);
+    const result = await buildCatalogProjection([root], {
+      importerPolicy: catalogImporterPolicyFor(),
+    });
 
     expect(result.authority).toBe('degraded');
     expect(result.entries).toEqual([]);
@@ -103,7 +109,9 @@ describe('catalog failure result', () => {
     const root = await makeRoot('schema-failure');
     await writeMeta(root, { ...meta('gltf', 'mesh'), importSettings: 'invalid' });
 
-    const result = await buildCatalogResult([root]);
+    const result = await buildCatalogProjection([root], {
+      importerPolicy: catalogImporterPolicyFor(),
+    });
 
     expect(result.authority).toBe('degraded');
     expect(result.diagnostics).toMatchObject([
@@ -125,7 +133,9 @@ describe('catalog failure result', () => {
     await writeFile(join(badRoot, 'first.pack.json'), JSON.stringify(pack(BAD_GUID)));
     await writeFile(join(badRoot, 'second.pack.json'), JSON.stringify(pack(BAD_GUID)));
 
-    const result = await buildCatalogResult([goodRoot, badRoot]);
+    const result = await buildCatalogProjection([goodRoot, badRoot], {
+      importerPolicy: catalogImporterPolicyFor(),
+    });
 
     expect(result.authority).toBe('degraded');
     expect(result.entries).toEqual([]);
@@ -143,7 +153,7 @@ describe('catalog failure result', () => {
       guid: GOOD_GUID,
       kind: 'scene',
       sourcePath: 'generated.pack.ts',
-      packageUrl: '/__forgeax-ddc/new.pack.json',
+      packageUrl: '/__forgeax-ddc/new.runtime-pack.json',
       subject: 'imported-output',
       execution: 'cooked',
       lifecycle: 'failed',
@@ -152,12 +162,11 @@ describe('catalog failure result', () => {
         execution: 'cooked',
         lifecycle: 'failed',
         operations: [],
-        lastKnownGood: { packageUrl: '/__forgeax-ddc/old.pack.json' },
+        lastKnownGood: { packageUrl: '/__forgeax-ddc/old.runtime-pack.json' },
       },
     } as unknown as PackIndexEntry;
 
     const projected = {
-      schemaVersion: 'catalog-legacy-v1' as const,
       entries: [row],
       authority: 'degraded' as const,
       diagnostics: [
@@ -172,10 +181,10 @@ describe('catalog failure result', () => {
     expect(projected.authority).toBe('degraded');
     expect(projected.entries[0]).toMatchObject({
       lifecycle: 'failed',
-      packageUrl: '/__forgeax-ddc/new.pack.json',
+      packageUrl: '/__forgeax-ddc/new.runtime-pack.json',
       projection: {
         lifecycle: 'failed',
-        lastKnownGood: { packageUrl: '/__forgeax-ddc/old.pack.json' },
+        lastKnownGood: { packageUrl: '/__forgeax-ddc/old.runtime-pack.json' },
       },
     });
   });

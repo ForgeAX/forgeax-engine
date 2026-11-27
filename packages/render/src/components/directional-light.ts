@@ -100,7 +100,8 @@ export {
  * toward the light that darkens small-scale occlusion the shadow map cannot
  * resolve (grass blades, pebbles, feet on the ground). It is independent of
  * castShadow, so geometry excluded from shadow maps still self-shadows.
- * Deferred-path only; forward-lit surfaces ignore it. Typical values: 0.1-0.5.
+ * The render profile can veto the effect with contactShadows=false.
+ * Typical values: 0.1-0.5.
  *
  * sourceAngle (degrees, finite, >= 0, default 0.5357 = the sun's apparent
  * diameter) gives the light an angular size. Direct specular then follows
@@ -154,6 +155,8 @@ export const DirectionalLight = defineComponent('DirectionalLight', {
   // the array layer-3 fallback is all-zero, so the default MUST be explicit.
   direction: { type: 'array<f32, 3>' },
   color: { type: 'array<f32, 3>', default: new Float32Array([1, 1, 1]) },
+  /** Sample solar transmittance at each surface instead of using the ground reference. */
+  perPixelAtmosphereTransmittance: { type: 'bool', default: false },
   intensity: { type: 'f32', default: 1 },
   // Shadow opt-in gate; the game template enables its sun explicitly.
   castShadow: { type: 'bool', default: false },
@@ -190,7 +193,6 @@ export const DirectionalLight = defineComponent('DirectionalLight', {
   shadowBiasMode: { type: 'enum', labels: { receiverPlane: 0, constant: 1 }, default: 0 },
   shadowRadius: { type: 'f32', default: 1 },
   shadowIntensity: { type: 'f32', default: 1 },
-  shadowBlurSamples: { type: 'f32', default: 8 },
   staggerCascades: { type: 'bool', default: false },
   // Retained static cascade layer for GPU-driven casters (see doc above).
   staticShadowCache: { type: 'bool', default: false },

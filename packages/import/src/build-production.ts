@@ -1,56 +1,49 @@
 import { createHash } from 'node:crypto';
 import { availableParallelism, freemem } from 'node:os';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { getHeapStatistics } from 'node:v8';
 import {
+  bindRuntimePackPublication,
   type CatalogBuildResult,
-  createRuntimePackPublication,
-  finalizePackageTransportSource,
+  catalogSourcePathFor,
   metaPathForGuid,
+  type PackageFinalizePolicy,
+  RUNTIME_PACK_SUFFIX,
 } from '@forgeax/engine-pack/build';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
-import {
-  type LegacyPackInventoryDocument,
-  resolvePackSourceSubjects,
-  type ScriptablePackSourceDeclaration,
-} from '@forgeax/engine-pack/scanner';
+import { declaredRuntimePackGuids } from '@forgeax/engine-pack/scanner';
 import { PackageId, projectDirectPackJson } from '@forgeax/engine-pack/source';
 import {
-  createLazyScriptablePackDefinition,
   createScriptablePackModuleExecutorPool,
   createScriptablePackSourceSnapshot,
   type ScriptablePackSourceSnapshot,
 } from '@forgeax/engine-pack/source-node';
-import type {
-  AssetPublicationEnvelope,
-  AssetPublicationOutput,
-  CookReceipt,
-  Importer,
-  PackIndexEntry,
-  RuntimeAssetBinding,
-} from '@forgeax/engine-types';
+import type { CookReceipt, PackIndexEntry, RuntimeAssetBinding } from '@forgeax/engine-types';
 import type { ImportRunnerFs } from './import-runner.js';
 import type { ImporterRegistry } from './importer-registry.js';
 import { projectMaterialPackTransport } from './material-pack-transport.js';
 import { packBuildConcurrency } from './pack-build-concurrency.js';
-import { projectImportProductForBuild, projectPackBuildCatalog } from './pack-projection.js';
+import {
+  importSourceKeys,
+  type PublishedImportRows,
+  projectPackBuildCatalog,
+  publishImportedCatalogRows,
+} from './pack-projection.js';
 import type { ScriptablePackBuildProduct } from './scriptable-pack-build.js';
 import {
   canonicalScriptableSourcePath,
   createDeclaredPackAssetSnapshotSource,
+  type DirectPackTransport,
   type PreparedScriptablePack,
+  planScriptablePackInputs,
   prepareDirectPackTransport,
-  prepareLegacyPackTransport,
   produceScriptablePackProducts,
+  projectPreparedPackPublication,
   type ScriptablePackInput,
   type ScriptablePackProductionOptions,
 } from './scriptable-pack-host.js';
-import {
-  finalizeSourcePackage,
-  produceSourcePackage,
-  sourcePackageAssetsByGuid,
-} from './source-package.js';
+import { prepareImportedPackPublication, produceSourcePackage } from './source-package.js';
 import {
   createSourcePackageBuildDdc,
   type SourcePackageBuildDdc,
@@ -79,7 +72,8 @@ export interface BuildProductionSink {
   fileUrl(fileName: string): string;
 }
 
-export interface BuildProductionOptions {
+export interface BuildProductionOptions
+  extends Pick<PackageFinalizePolicy, 'materialProgramTransport'> {
   readonly inventory: CatalogBuildResult;
   readonly cwd: string;
   readonly basePrefix: string;
@@ -88,58 +82,23 @@ export interface BuildProductionOptions {
   readonly importerRegistry: ImporterRegistry;
   readonly fsForImport: ImportRunnerFs;
   readonly cookedCurrentProjection: Record<string, unknown>;
-  readonly directCurrentProjection: Record<string, unknown>;
   readonly authoredCookedCurrentProjection: Record<string, unknown>;
   readonly runtimeBinding?: Pick<RuntimeAssetBinding, 'scopeId' | 'generation'>;
   readonly sourceSnapshot?: ScriptablePackSourceSnapshot;
+  readonly enginePackageRoot?: string;
   /** Reuse producer-verified immutable products; publication remains current-generation work. */
   readonly buildCacheRoot?: string;
+  readonly buildCacheSeedRoot?: string;
   readonly producerIdentity?: string;
   readonly sink: BuildProductionSink;
   readonly fail: (failure: BuildProductionFailure) => Error;
 }
 
-function runtimePublicationFor(
-  context: BuildProductionOptions,
-  input: {
-    readonly pack: Parameters<typeof createRuntimePackPublication>[0]['pack'];
-    readonly sourcePath: string;
-    readonly sourceRevision: string;
-    readonly packageUrl: string;
-    readonly digest?: string;
-    readonly inputFingerprint?: string;
-    /** Preserve producer-declared semantic keys on generic publication output rows. */
-    readonly sourceKeys?: ReadonlyMap<string, string>;
-    readonly outputs?: readonly AssetPublicationOutput[];
-    readonly externalEvidence?: readonly import('@forgeax/engine-types').AssetPublicationExternalEvidence[];
-  },
-) {
-  const publicationInput = {
-    pack: input.pack,
-    scopeId: context.runtimeBinding?.scopeId ?? 'asset-runtime',
-    sourcePath: input.sourcePath,
-    sourceRevision: input.sourceRevision,
-    packageUrl: input.packageUrl,
-    ...(input.digest === undefined ? {} : { digest: input.digest }),
-    ...(input.inputFingerprint === undefined ? {} : { inputFingerprint: input.inputFingerprint }),
-    ...(input.outputs === undefined ? {} : { outputs: input.outputs }),
-    ...(input.sourceKeys === undefined ? {} : { sourceKeys: input.sourceKeys }),
-    ...(input.externalEvidence === undefined ? {} : { externalEvidence: input.externalEvidence }),
-    generation: context.runtimeBinding?.generation ?? context.generation,
-  };
-  return createRuntimePackPublication(publicationInput);
-}
-
-function sourceKeysFor(
-  declarations: readonly { readonly guid: string; readonly sourceKey?: string }[],
-): ReadonlyMap<string, string> {
-  return new Map(
-    declarations.flatMap((declaration) =>
-      declaration.sourceKey === undefined
-        ? []
-        : [[declaration.guid.toLowerCase(), declaration.sourceKey] as const],
-    ),
-  );
+function materialProgramTransport(
+  context: Pick<BuildProductionOptions, 'materialProgramTransport'>,
+): Pick<PackageFinalizePolicy, 'materialProgramTransport'> {
+  const { materialProgramTransport } = context;
+  return materialProgramTransport === undefined ? {} : { materialProgramTransport };
 }
 
 interface PackBuildBundle {
@@ -170,26 +129,15 @@ function dynamicFailure(context: BuildProductionOptions, value: unknown): never 
   });
 }
 
-function packCatalogSourcePath(context: BuildProductionOptions, sourcePath: string): string {
-  const projected = context.fsForImport.sourceIdentityFor?.(sourcePath);
-  const logical =
-    projected === undefined || isAbsolute(projected)
-      ? relative(context.cwd, sourcePath)
-      : projected;
-  return canonicalScriptableSourcePath(logical).replaceAll('\\', '/');
-}
-
 /** Build ScriptablePack roots and Pack JSON instances before normal emission. */
 async function buildPackSources(context: BuildProductionOptions): Promise<PackBuildBundle[]> {
-  const subjects = await resolvePackSourceSubjects(context.inventory.sourceDeclarations);
-  if (!subjects.ok) dynamicFailure(context, subjects.error);
+  // NativeCookerRegistry serializes calls to each serial cooker across Packs.
+  // Independent Pack preparation can still use the host's available lanes.
   const maxConcurrency = packBuildConcurrency(
     {
       parallelism: availableParallelism(),
       freeBytes: process.availableMemory?.() ?? freemem(),
       heapHeadroomBytes: getHeapStatistics().heap_size_limit - process.memoryUsage().heapUsed,
-      concurrentCookers:
-        context.cookers?.every((cooker) => cooker.concurrency === 'parallel') ?? true,
     },
     process.env.FORGEAX_BUILD_CONCURRENCY,
   );
@@ -200,14 +148,7 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
     maxTasksPerWorker: 1,
   });
   const sourceSnapshot = context.sourceSnapshot ?? createScriptablePackSourceSnapshot();
-  const definitionFor = (source: ScriptablePackSourceDeclaration) =>
-    createLazyScriptablePackDefinition({
-      sourcePath: source.sourcePath,
-      definition: source.definition,
-      sourceClosure: source.sourceClosure,
-      sourceSnapshot,
-      executors,
-    });
+  const programTransport = materialProgramTransport(context);
   try {
     const artifactPaths = new WeakMap<Uint8Array, string>();
     const artifactPath = (bytes: Uint8Array): string => {
@@ -228,8 +169,9 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
         ),
       );
       return {
+        ...programTransport,
         base: context.basePrefix === '' ? '/' : context.basePrefix,
-        packagePath: `assets/${PackageId.format(packageId)}.pack.json`,
+        packagePath: `assets/${PackageId.format(packageId)}${RUNTIME_PACK_SUFFIX}`,
         artifactPath: (guid: string, key: string) => {
           const path = paths.get(`${guid.toLowerCase()}/${key}`);
           if (path === undefined) throw new Error(`missing produced artifact: ${guid}/${key}`);
@@ -237,39 +179,27 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
         },
       };
     };
-    const inputs: ScriptablePackInput[] = [];
-    for (const source of subjects.value.sources) {
-      inputs.push({
-        sourcePath: source.sourcePath,
-        displaySourcePath: packCatalogSourcePath(context, source.sourcePath),
-        definition: definitionFor(source),
-        sourceClosure: source.sourceClosure,
-        publicationGeneration: context.generation,
-        policy: policy(source.definition.packageId),
-        transportIdentity: JSON.stringify([
-          'shared-binary/1',
-          context.basePrefix || '/',
-          PackageId.format(source.definition.packageId),
-        ]),
-      });
-    }
-    for (const instance of subjects.value.instances) {
-      inputs.push({
-        sourcePath: instance.sourcePath,
-        displaySourcePath: packCatalogSourcePath(context, instance.sourcePath),
-        definition: definitionFor(instance.root),
-        sourceClosure: instance.root.sourceClosure,
-        subjectPackageId: instance.packageId,
-        values: instance.values,
-        publicationGeneration: context.generation,
-        policy: policy(instance.packageId),
-        transportIdentity: JSON.stringify([
-          'shared-binary/1',
-          context.basePrefix || '/',
-          PackageId.format(instance.packageId),
-        ]),
-      });
-    }
+    const inputs = planScriptablePackInputs(
+      context.inventory.sourceDeclarations,
+      context.inventory.packInstances,
+      {
+        sourceSnapshot,
+        executors,
+        enginePackageRoot: context.enginePackageRoot,
+        displayPath: (sourcePath) =>
+          catalogSourcePathFor(context.cwd, sourcePath, context.fsForImport.sourceIdentityFor),
+        generationFor: () => context.generation,
+        policy,
+        transportIdentity: (packageId) =>
+          JSON.stringify([
+            'shared-binary/1',
+            RUNTIME_PACK_SUFFIX,
+            context.materialProgramTransport ?? 'bytes',
+            context.basePrefix || '/',
+            PackageId.format(packageId),
+          ]),
+      },
+    );
     if (inputs.length === 0) return [];
 
     const requiredGuids = context.inventory.entries.flatMap((entry) => {
@@ -323,6 +253,9 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
       ...(context.buildCacheRoot === undefined
         ? {}
         : { buildCacheRoot: context.buildCacheRoot, cacheIdentityRoot: context.cwd }),
+      ...(context.buildCacheSeedRoot === undefined
+        ? {}
+        : { buildCacheSeedRoot: context.buildCacheSeedRoot }),
     });
     if (!built.ok) dynamicFailure(context, built.error);
 
@@ -351,36 +284,6 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
   }
 }
 
-function updateImportedEntries(
-  entries: PackIndexEntry[],
-  guids: readonly string[],
-  packageUrl: string,
-  projection: Record<string, unknown> = {},
-  refsByGuid?: ReadonlyMap<string, readonly string[]>,
-  publication?: AssetPublicationEnvelope,
-  sourcePath?: string,
-  receiptUrls?: ReadonlyMap<string, string>,
-  revision?: PackIndexEntry['revision'],
-): void {
-  const selected = new Set(guids.map((guid) => guid.toLowerCase()));
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index];
-    if (entry === undefined || !selected.has(entry.guid.toLowerCase())) continue;
-    const refs = refsByGuid?.get(entry.guid.toLowerCase());
-    const cookReceiptUrl = receiptUrls?.get(entry.guid.toLowerCase());
-    entries[index] = {
-      ...entry,
-      packageUrl,
-      ...projection,
-      ...(sourcePath === undefined ? {} : { sourcePath }),
-      ...(publication === undefined ? {} : { publication }),
-      ...(refs === undefined ? {} : { refs }),
-      ...(cookReceiptUrl === undefined ? {} : { cookReceiptUrl }),
-      ...(revision === undefined ? {} : { revision }),
-    };
-  }
-}
-
 interface BuildEmissionWork {
   readonly importedEntries: PackIndexEntry[];
   readonly context: BuildProductionOptions;
@@ -388,19 +291,13 @@ interface BuildEmissionWork {
   readonly sourcePackageDdc?: SourcePackageBuildDdc;
 }
 
-interface PackEmissionOptions {
+interface PackEmissionOptions extends PublishedImportRows {
   readonly pack: unknown;
   readonly artifacts: readonly { readonly path: string; readonly bytes: Uint8Array }[];
   readonly packageName: string;
   readonly originalFileName: string;
-  readonly guids: readonly string[];
-  readonly projection?: Record<string, unknown>;
-  readonly refsByGuid?: ReadonlyMap<string, readonly string[]>;
   readonly receipts?: readonly CookReceipt[];
   readonly receiptOutputDigest?: string;
-  readonly publication?: AssetPublicationEnvelope;
-  readonly sourcePath?: string;
-  readonly revision?: PackIndexEntry['revision'];
 }
 
 const CONTENT_ADDRESSED_PROGRAM = /^materials\/programs\/[a-f0-9]{64}\.wgsl$/;
@@ -476,17 +373,7 @@ async function emitPackDocument(
       work.context.sink.fileUrl(work.context.sink.getFileName(receiptReferenceId)),
     );
   }
-  updateImportedEntries(
-    work.importedEntries,
-    options.guids,
-    packageUrl,
-    options.projection,
-    options.refsByGuid,
-    options.publication,
-    options.sourcePath,
-    receiptUrls,
-    options.revision,
-  );
+  publishImportedCatalogRows(work.importedEntries, { ...options, packageUrl }, receiptUrls);
   return packageUrl;
 }
 
@@ -512,118 +399,39 @@ async function emitAuthoredPack(
       detail: { stage: 'scan', sourcePath: packPath },
     });
   }
-  if (declaration.value.schemaVersion === '3.0.0') {
-    const parsed = declaration.value;
-    if (parsed.format !== 'direct') {
-      dynamicFailure(work.context, {
-        code: 'catalog-declaration-missing',
-        expected: 'a direct v3 Pack declaration for an indexed authored output',
-        hint: 'instances are built from their ScriptablePack parent and do not have direct Catalog rows',
-        detail: { stage: 'scan', sourcePath: packPath },
-      });
-    }
-    const projected = projectDirectPackJson(parsed);
-    const prepared = await prepareDirectPackTransport({
-      projected,
-      sourcePath: packPath,
-      sourceRevision: declaration.sourceRevision,
-      availableGuids,
-      cookers: work.context.cookers,
-      policy: {
-        base: work.context.basePrefix === '' ? '/' : work.context.basePrefix,
-        packagePath: `assets/${projected.packageId}.pack.json`,
-        artifactPath: (assetGuid, key) => `${assetGuid}/${key}.bin`,
-      },
+  const parsed = declaration.value;
+  if (parsed.format !== 'direct') {
+    dynamicFailure(work.context, {
+      code: 'catalog-declaration-missing',
+      expected: 'a direct v3 Pack declaration for an indexed authored output',
+      hint: 'instances are built from their ScriptablePack parent and do not have direct Catalog rows',
+      detail: { stage: 'scan', sourcePath: packPath },
     });
-    if (!prepared.ok) dynamicFailure(work.context, prepared.error);
-    const { product, finalized, facts, revision } = prepared.value;
-    const publication = runtimePublicationFor(work.context, {
-      pack: finalized.pack,
-      sourcePath: entry.sourcePath,
-      sourceRevision: product.inputFingerprint,
-      packageUrl: finalized.packageUrl,
-      digest: finalized.digest,
-      inputFingerprint: product.inputFingerprint,
-      outputs: facts.outputs,
-      externalEvidence: product.externalEvidence,
-    });
-    await emitPackDocument(work, {
-      pack: publication.pack,
-      artifacts: finalized.artifacts,
-      packageName: `${prepared.value.projected.packageId}.pack.json`,
-      originalFileName: packPath,
-      guids: product.product.assets.map((asset) => asset.guid),
-      projection: work.context.authoredCookedCurrentProjection,
-      refsByGuid: facts.refs,
-      receipts: product.product.receipts,
-      receiptOutputDigest: finalized.digest,
-      publication: publication.publication,
-      sourcePath: entry.sourcePath,
-      revision,
-    });
-    for (const asset of product.product.assets) guidSeen.add(asset.guid.toLowerCase());
-    return;
   }
-  // Legacy array-shaped documents are runtime Pack transport, not an
-  // authoring input anymore. Preserve the explicit v2 native-cooker seam for
-  // cooked transport while keeping source evaluation out of this path.
-  const legacy = declaration.value as LegacyPackInventoryDocument;
-  const prepared = await prepareLegacyPackTransport(
-    legacy,
-    work.context.cookers,
-    (guid) => ({
-      base: work.context.basePrefix === '' ? '/' : work.context.basePrefix,
-      packagePath: `assets/${guid}.pack.json`,
-      artifactPath: (assetGuid, key) => `${assetGuid}/${key}.bin`,
-    }),
-    packPath,
-  );
-  const outputGuid = prepared.firstGuid ?? entry.guid;
-  const authoredPack = prepared.finalized?.pack ?? {
-    schemaVersion: '2.0.0' as const,
-    kind: 'internal-text-package' as const,
-    assets: legacy.assets.map((asset) => ({
-      guid: asset.guid,
-      kind: asset.kind,
-      ...(asset.name === undefined ? {} : { name: asset.name }),
-      payload: asset.payload,
-      refs: asset.refs,
-      artifacts: asset.artifacts ?? {},
-    })),
-  };
-  const runtimePublication = runtimePublicationFor(work.context, {
-    pack: authoredPack,
-    sourceKeys: sourceKeysFor(legacy.assets),
-    sourcePath: entry.sourcePath,
+  const projected = projectDirectPackJson(parsed);
+  const prepared = await prepareDirectPackTransport({
+    projected,
+    sourcePath: packPath,
     sourceRevision: declaration.sourceRevision,
-    packageUrl:
-      prepared.finalized?.packageUrl ??
-      `${work.context.basePrefix === '/' ? '' : work.context.basePrefix}/assets/${outputGuid}.pack.json`,
-    ...(prepared.finalized?.digest === undefined ? {} : { digest: prepared.finalized.digest }),
+    availableGuids,
+    cookers: work.context.cookers,
+    policy: {
+      ...materialProgramTransport(work.context),
+      base: work.context.basePrefix === '' ? '/' : work.context.basePrefix,
+      packagePath: `assets/${projected.packageId}${RUNTIME_PACK_SUFFIX}`,
+      artifactPath: (assetGuid, key) => `${assetGuid}/${key}.bin`,
+    },
   });
-  await emitPackDocument(work, {
-    pack: runtimePublication.pack,
-    artifacts: prepared.finalized?.artifacts ?? [],
-    packageName: `${outputGuid}.pack.json`,
-    originalFileName: packPath,
-    guids: authoredPack.assets.map((asset) => asset.guid),
-    projection:
-      prepared.finalized === undefined
-        ? work.context.directCurrentProjection
-        : work.context.authoredCookedCurrentProjection,
-    refsByGuid: new Map(authoredPack.assets.map((asset) => [asset.guid.toLowerCase(), asset.refs])),
-    ...(prepared.finalized?.receipts === undefined
-      ? {}
-      : {
-          receipts: prepared.finalized.receipts,
-          receiptOutputDigest: prepared.finalized.digest,
-        }),
-    publication: runtimePublication.publication,
-    sourcePath: entry.sourcePath,
-  });
-  for (const guid of authoredPack.assets.map((asset) => asset.guid)) {
-    guidSeen.add(guid.toLowerCase());
-  }
+  if (!prepared.ok) dynamicFailure(work.context, prepared.error);
+  await emitCookedPack(
+    work,
+    guidSeen,
+    prepared.value,
+    prepared.value.projected.packageId,
+    packPath,
+    entry.sourcePath,
+    work.context.generation,
+  );
 }
 
 async function emitScriptablePack(
@@ -633,50 +441,64 @@ async function emitScriptablePack(
 ): Promise<void> {
   const { input, prepared } = bundle;
   const packageId = PackageId.format(input.subjectPackageId ?? input.definition.packageId);
-  const runtimePublication = createRuntimePackPublication({
-    pack: { assets: prepared.finalized.pack.assets },
-    scopeId: work.context.runtimeBinding?.scopeId ?? 'asset-runtime',
-    sourcePath: input.displaySourcePath,
-    sourceRevision: prepared.product.inputFingerprint,
-    packageUrl: prepared.finalized.packageUrl,
-    inputFingerprint: prepared.product.inputFingerprint,
-    digest: prepared.finalized.digest,
-    generation: work.context.runtimeBinding?.generation ?? prepared.publication.generation,
-    outputs: prepared.facts.outputs,
-    externalEvidence: prepared.product.externalEvidence,
-  });
-  await emitPackDocument(work, {
-    pack: runtimePublication.pack,
-    artifacts: prepared.finalized.artifacts,
-    packageName: `${packageId}.pack.json`,
-    originalFileName: input.sourcePath,
-    guids: prepared.product.product.assets.map((asset) => asset.guid),
-    projection: work.context.authoredCookedCurrentProjection,
-    refsByGuid: prepared.facts.refs,
-    receipts: prepared.product.product.receipts,
-    receiptOutputDigest: prepared.finalized.digest,
-    publication: runtimePublication.publication,
-    sourcePath: input.displaySourcePath,
-    revision: prepared.revision,
-  });
-  for (const asset of prepared.product.product.assets) guidSeen.add(asset.guid.toLowerCase());
+  await emitCookedPack(
+    work,
+    guidSeen,
+    prepared,
+    packageId,
+    input.sourcePath,
+    input.displaySourcePath,
+    prepared.publication.generation,
+  );
 }
 
-async function emitFinalizedOwner(
+async function emitCookedPack(
+  work: BuildEmissionWork,
+  guidSeen: Set<string>,
+  prepared: PreparedScriptablePack | DirectPackTransport,
+  packageId: string,
+  originalFileName: string,
+  sourcePath: string,
+  generation: number,
+): Promise<void> {
+  const { product, finalized, revision } = prepared;
+  const deliveryGeneration = work.context.runtimeBinding?.generation ?? generation;
+  const publication =
+    'publication' in prepared && prepared.publication.generation === deliveryGeneration
+      ? prepared.publication
+      : projectPreparedPackPublication(prepared, sourcePath, deliveryGeneration);
+  const guids = product.product.assets.map((asset) => asset.guid);
+  await emitPackDocument(work, {
+    pack: bindRuntimePackPublication(
+      finalized.pack,
+      work.context.runtimeBinding?.scopeId ?? 'asset-runtime',
+      publication,
+    ),
+    artifacts: finalized.artifacts,
+    packageName: `${packageId}${RUNTIME_PACK_SUFFIX}`,
+    originalFileName,
+    guids,
+    projection: work.context.authoredCookedCurrentProjection,
+    receipts: product.product.receipts,
+    receiptOutputDigest: finalized.digest,
+    publication,
+    sourcePath,
+    revision,
+  });
+  for (const guid of guids) guidSeen.add(guid.toLowerCase());
+}
+
+function emitOwnerArtifactPaths(
   work: BuildEmissionWork,
   metaPath: string,
-  sourcePath: string,
-  subAssets: readonly { readonly guid: string }[],
-  sourcePackage: Extract<
+  guid: string,
+  product: Extract<
     Awaited<ReturnType<typeof produceSourcePackage>>,
     { readonly ok: true }
-  >['value'],
-  ownerFinalizer: NonNullable<Importer['finalize']>,
-): Promise<void> {
-  const ownerGuid = subAssets[0]?.guid;
-  if (ownerGuid === undefined) return;
+  >['value']['product'],
+) {
   const artifactPaths = new Map<string, string>();
-  const sourceAsset = sourcePackage.product.assets[0];
+  const sourceAsset = product.assets[0];
   for (const [path, artifact] of Object.entries(sourceAsset?.artifacts ?? {})) {
     const ref = work.context.sink.emitFile({
       type: 'asset',
@@ -686,57 +508,25 @@ async function emitFinalizedOwner(
     });
     artifactPaths.set(path, work.context.sink.getFileName(ref));
   }
-  const ownerProduct = await finalizeSourcePackage(
-    sourcePackage.product,
-    ownerFinalizer,
-    (artifact) => work.context.sink.fileUrl(artifactPaths.get(artifact.path) ?? artifact.path),
-  );
-  if (!ownerProduct.ok) throw work.context.fail(ownerProduct.error);
-  const ownerPackage = await finalizePackageTransportSource(
-    projectImportProductForBuild(ownerProduct.value),
-    {
+  return {
+    artifactUrl: ({ path }: { readonly path: string }) =>
+      work.context.sink.fileUrl(artifactPaths.get(path) ?? path),
+    policy: {
       base: work.context.basePrefix,
-      packagePath: `assets/${ownerGuid}.pack.json`,
+      packagePath: `assets/${guid}${RUNTIME_PACK_SUFFIX}`,
       artifactPath: (_guid, key) => {
         const emittedPath = artifactPaths.get(key);
-        if (emittedPath === undefined) {
+        if (emittedPath === undefined)
           throw work.context.fail({
             code: 'producer-artifact-missing',
             expected: `producer artifact ${key} to be emitted before Pack finalization`,
             hint: 'repair the importer finalizer artifact closure and rebuild',
             detail: { stage: 'finalize', metaPath, artifact: key },
           });
-        }
         return emittedPath.replace(/^assets\//, '');
       },
-    },
-  );
-  const runtimePublication = runtimePublicationFor(work.context, {
-    pack: { assets: ownerPackage.pack.assets },
-    // The Catalog entry identifies the imported source, while metaPath is the
-    // sidecar declaration that drove the import. Keep publication fences on
-    // the Catalog identity in production just as the dev importer does.
-    sourcePath,
-    sourceRevision: ownerPackage.sourceRevision,
-    packageUrl: ownerPackage.packageUrl,
-    digest: ownerPackage.digest,
-  });
-  await emitPackDocument(work, {
-    pack: runtimePublication.pack,
-    artifacts: ownerPackage.artifacts,
-    packageName: `${ownerGuid}.pack.json`,
-    originalFileName: metaPath,
-    guids: subAssets.map((sub) => sub.guid),
-    projection: work.context.cookedCurrentProjection,
-    refsByGuid: new Map(
-      ownerProduct.value.assets.map((asset) => [
-        asset.guid.toLowerCase(),
-        asset.refs.map((ref) => ref.guid),
-      ]),
-    ),
-    publication: runtimePublication.publication,
-    sourcePath,
-  });
+    } satisfies PackageFinalizePolicy,
+  };
 }
 
 async function emitBuildEntry(
@@ -762,7 +552,7 @@ async function emitBuildEntry(
       detail: { metaPath },
     });
   }
-  const runMeta = { ...declaration, buildPack: false };
+  const runMeta = declaration;
   const subAssets = runMeta.subAssets;
   for (const sub of subAssets) guidSeen.add(sub.guid.toLowerCase());
   const sourcePackage = await produceSourcePackage({
@@ -774,49 +564,41 @@ async function emitBuildEntry(
   });
   if (!sourcePackage.ok) throw work.context.fail(sourcePackage.error);
   const ownerFinalizer = work.context.importerRegistry.get(runMeta.importer)?.finalize;
-  if (ownerFinalizer !== undefined) {
-    await emitFinalizedOwner(
-      work,
-      metaPath,
-      canonicalScriptableSourcePath(entry.sourcePath),
-      subAssets,
-      sourcePackage.value,
-      ownerFinalizer,
-    );
-    return;
-  }
-  const finalized = await finalizePackageTransportSource(
-    projectImportProductForBuild(sourcePackage.value.product),
-    {
+  const ownerGuid = subAssets[0]?.guid;
+  if (ownerFinalizer !== undefined && ownerGuid === undefined) return;
+  const packageName = `${ownerGuid ?? 'pack'}${RUNTIME_PACK_SUFFIX}`;
+  const product = sourcePackage.value.product;
+  const owner =
+    ownerFinalizer && ownerGuid
+      ? emitOwnerArtifactPaths(work, metaPath, ownerGuid, product)
+      : undefined;
+  const sourcePath = canonicalScriptableSourcePath(entry.sourcePath);
+  const prepared = await prepareImportedPackPublication(
+    product,
+    owner?.policy ?? {
+      ...materialProgramTransport(work.context),
       base: work.context.basePrefix,
-      packagePath: `assets/${subAssets[0]?.guid ?? 'pack'}.pack.json`,
+      packagePath: `assets/${packageName}`,
       artifactPath: importedArtifactPath,
     },
+    () => ({
+      scopeId: work.context.runtimeBinding?.scopeId ?? 'asset-runtime',
+      generation: work.context.runtimeBinding?.generation ?? work.context.generation,
+      sourcePath,
+      ...(ownerFinalizer === undefined ? { sourceKeys: importSourceKeys(subAssets) } : {}),
+    }),
+    owner && ownerFinalizer
+      ? { finalize: ownerFinalizer, artifactUrl: owner.artifactUrl }
+      : undefined,
   );
-  const productByGuid = sourcePackageAssetsByGuid(sourcePackage.value);
-  const canonicalSourcePath = canonicalScriptableSourcePath(entry.sourcePath);
-  const runtimePublication = runtimePublicationFor(work.context, {
-    pack: { assets: finalized.pack.assets },
-    // See emitFinalizedOwner: the sidecar path is an import driver, not the
-    // stable source identity carried by the Catalog row.
-    sourcePath: canonicalSourcePath,
-    sourceRevision: finalized.sourceRevision,
-    packageUrl: finalized.packageUrl,
-    digest: finalized.digest,
-    sourceKeys: sourceKeysFor(subAssets),
-  });
+  if (!prepared.ok) throw work.context.fail(prepared.error);
   await emitPackDocument(work, {
-    pack: runtimePublication.pack,
-    artifacts: finalized.artifacts,
-    packageName: `${subAssets[0]?.guid ?? 'pack'}.pack.json`,
+    ...prepared.value,
+    packageName,
     originalFileName: metaPath,
     guids: subAssets.map((sub) => sub.guid),
     projection: work.context.cookedCurrentProjection,
-    refsByGuid: new Map(
-      [...productByGuid].map(([guid, asset]) => [guid, asset.refs.map((ref) => ref.guid)]),
-    ),
-    publication: runtimePublication.publication,
-    sourcePath: canonicalSourcePath,
+    sourcePath,
   });
 }
 
@@ -828,7 +610,10 @@ export async function produceBuildAssets(
     ...context.inventory.entries,
     ...dynamicBundles.flatMap((bundle) => bundle.entries),
   ];
-  const availableGuids = new Set(entries.map((entry) => entry.guid.toLowerCase()));
+  const availableGuids = new Set([
+    ...entries.map((entry) => entry.guid.toLowerCase()),
+    ...declaredRuntimePackGuids(context.inventory.sourceDeclarations.values()),
+  ]);
   const importedEntries = [...entries];
   const guidSeen = new Set<string>();
   const sourcePackageDdc = await createSourcePackageBuildDdc({

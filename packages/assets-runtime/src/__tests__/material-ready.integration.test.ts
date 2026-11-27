@@ -1,17 +1,13 @@
 import { type CookedMaterialRecord, serializeCookedMaterialRecord } from '@forgeax/engine-pack';
 import { finalizePackageTransportSource } from '@forgeax/engine-pack/build';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import {
-  createRuntimePackPublication,
-  encodeMaterialProgramWire,
-} from '@forgeax/engine-pack/runtime';
+import { encodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import type { ArtifactDescriptor, MaterialAsset, MaterialParameter } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { materialContribution } from '../../../render/src/assets/asset-decoders';
 import { AssetRegistry } from '../asset-registry';
 import { runtimeAssetReference, runtimeAssets } from '../internal';
-import { MaterialGenerationCache } from '../material/generation-cache';
 import { inspectMaterialRuntime } from '../material/inspection.js';
 import { createMaterialLoader, type MaterialPublication } from '../material/loader.js';
 import {
@@ -20,6 +16,7 @@ import {
   projectMaterialRecord,
   selectMaterialPassProgram,
 } from '../material/runtime-shader.js';
+import { catalogPack } from './fixtures/catalog-pack';
 import {
   MATERIAL_CONTEXT,
   materialPublicationFixture,
@@ -129,12 +126,10 @@ async function withPackRecords(
           )
         ).pack
       : inlinePack;
-  const publication = createRuntimePackPublication({
-    scopeId: 'asset-runtime',
+  const publication = catalogPack(pack.assets, {
     sourcePath: 'materials.pack',
     sourceRevision: 'fixture',
     packageUrl,
-    pack: { assets: pack.assets },
   });
   const body =
     transport === 'shared' ? encodeMaterialProgramWire(publication.pack) : publication.pack;
@@ -142,18 +137,7 @@ async function withPackRecords(
     expect(body).toMatchObject({ schemaVersion: 'pack-material-programs/2' });
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.endsWith('/pack-index.json'))
-      return new Response(
-        JSON.stringify(
-          records.map((record) => ({
-            guid: record.guid,
-            packageUrl,
-            kind: 'material',
-            sourcePath: 'materials.pack',
-            publication: publication.publication,
-          })),
-        ),
-      );
+    if (url.endsWith('/pack-index.json')) return Response.json(publication.rows);
     if (url.endsWith('.pack.json')) return new Response(JSON.stringify(body));
     const program = records
       .flatMap((record) => record.programs)
@@ -383,45 +367,19 @@ describe('material runtime readiness', () => {
       artifactDigest: record.artifactDigest,
       sourceClosure: record.sourceClosure,
     });
-    const referenced = { ...record, refs: { ...record.refs, textures: ['texture/missing'] } };
-    expect(await load(materialPublicationFixture(referenced), false)).toMatchObject({
-      status: 'Error',
-      error: { code: 'material-reference-not-ready' },
-    });
-    expect(await load(undefined)).toMatchObject({
-      status: 'Error',
-      error: { code: 'material-specialization-not-cooked' },
-    });
-  });
-
-  it('rejects missing bytes, corrupt bytes and incomplete publication identities', async () => {
-    const record = materialRecordFixture();
     const publication = materialPublicationFixture(record);
-    expect(await load({ ...publication, artifacts: {} })).toMatchObject({
-      status: 'Error',
-      error: { code: 'asset-artifact-missing' },
-    });
-    const artifacts = Object.fromEntries(
-      record.programs.map(({ artifact }) => [
-        artifact.path,
-        { bytes: new TextEncoder().encode('tampered'), digest: `sha256:${'0'.repeat(64)}` },
-      ]),
-    );
-    expect(await load({ ...publication, artifacts })).toMatchObject({
-      status: 'Error',
-      error: { code: 'asset-artifact-integrity-mismatch' },
-    });
-    expect(
-      await load({ ...publication, record: { ...record, publicationGeneration: undefined } }),
-    ).toMatchObject({ status: 'Error', error: { code: 'material-cook-record-invalid' } });
-  });
-
-  it('keeps publication generations distinct in the cache', async () => {
-    const cache = new MaterialGenerationCache();
-    let calls = 0;
-    const loader = async () => ++calls;
-    expect(await cache.resolve('material', 'program', loader, 7)).toBe(1);
-    expect(await cache.resolve('material', 'program', loader, 8)).toBe(2);
+    const { publicationGeneration: _generation, ...incomplete } = record;
+    const referenced = { ...record, refs: { ...record.refs, textures: ['texture/missing'] } };
+    const failures = [
+      [{ ...publication, record: incomplete }, true, 'material-cook-record-invalid'],
+      [materialPublicationFixture(referenced), false, 'material-reference-not-ready'],
+      [undefined, true, 'material-specialization-not-cooked'],
+    ] as const;
+    for (const [candidate, referencesReady, code] of failures)
+      expect(await load(candidate, referencesReady)).toMatchObject({
+        status: 'Error',
+        error: { code },
+      });
   });
 
   it.each([
@@ -476,35 +434,22 @@ describe('material runtime readiness', () => {
       maxBindings: 1,
       maxEventsPerSample: 4,
     } as const;
-    const first = materialRecordFixture({
-      guid: '019f0000-0000-7000-8000-000000000702',
-      passes: [{ name: 'color', program: { module: 'forgeax::single-layer-medium' } }],
-      surface: {
-        model: 'single-layer-medium',
-        module: 'game::water_surface_a',
-        dynamicInput,
-      },
-    });
-    const second = materialRecordFixture({
-      guid: '019f0000-0000-7000-8000-000000000703',
-      passes: [{ name: 'color', program: { module: 'forgeax::single-layer-medium' } }],
-      surface: {
-        model: 'single-layer-medium',
-        module: 'game::water_surface_b',
-        dynamicInput,
-      },
-    });
-    await withPackRecords([first, second], 'inline', async (registry) => {
-      expect(await registry.load(first.guid, 'material')).toMatchObject({ ok: true });
-      expect(await registry.load(second.guid, 'material')).toMatchObject({ ok: true });
-      expect(projection(registry, first.guid)?.surface).toMatchObject({
-        model: 'single-layer-medium',
-        module: 'game::water_surface_a',
-      });
-      expect(projection(registry, second.guid)?.surface).toMatchObject({
-        model: 'single-layer-medium',
-        module: 'game::water_surface_b',
-      });
+    const modules = ['game::water_surface_a', 'game::water_surface_b'];
+    const records = modules.map((module, index) =>
+      materialRecordFixture({
+        guid: `019f0000-0000-7000-8000-${String(702 + index).padStart(12, '0')}`,
+        passes: [{ name: 'color', program: { module: 'forgeax::single-layer-medium' } }],
+        surface: { model: 'single-layer-medium', module, dynamicInput },
+      }),
+    );
+    await withPackRecords(records, 'inline', async (registry) => {
+      for (const [index, record] of records.entries()) {
+        expect(await registry.load(record.guid, 'material')).toMatchObject({ ok: true });
+        expect(projection(registry, record.guid)?.surface).toMatchObject({
+          model: 'single-layer-medium',
+          module: modules[index],
+        });
+      }
     });
   });
 
@@ -547,33 +492,7 @@ describe('material runtime readiness', () => {
     const { address: _address, ...undirected } = program.selections[0];
     const projection = projectMaterialRecord({
       ...record,
-      programs: [
-        {
-          ...program,
-          selections: [
-            {
-              ...undirected,
-              entry: 'vs_main',
-              abi: {
-                directEntry: 'vs_main',
-                sceneIndexEntry: 'vs_scene_index',
-                materialRow: { addressUnitBytes: 16, byteLength: 16, fields: [] },
-                resourceSlots: [],
-                uvSets: [],
-                vertexInputs: [{ semantic: 'position', location: 0, format: 'float32x3' }],
-                alphaMask: { cutoff: 'alphaCutoff', source: 'baseColor.a' },
-                reflection: {
-                  layoutIdentity: 'layout',
-                  resourceSlots: [],
-                  vertexInputs: [{ semantic: 'position', location: 0, format: 'float32x3' }],
-                },
-                receiptIdentity: 'layout',
-                generation: 1,
-              },
-            },
-          ],
-        },
-      ],
+      programs: [{ ...program, selections: [undirected] }],
     });
     expect(() => selectMaterialPassProgram(projection, 'Forward', MATERIAL_CONTEXT)).toThrow(
       'no unique published program',

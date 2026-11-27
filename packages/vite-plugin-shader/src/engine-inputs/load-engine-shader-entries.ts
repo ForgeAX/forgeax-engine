@@ -4,6 +4,10 @@ import { readdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import {
+  FIELD_VISIBILITY_BOUNDS_WGSL,
+  SCREEN_PROBE_RECONSTRUCTION_WGSL,
+} from '@forgeax/engine-shader';
+import {
   SURFACE_SLOT_MODULE,
   terrainProgramSource,
   waterDeformationAbiSource,
@@ -149,14 +153,20 @@ export async function loadEngineShaderEntries(readText = readShaderText) {
       ...file,
       id: `${file.id}?portable-fragment`,
     }));
-  const gbufferEntry = (file: EngineShaderFile): EngineShaderFile => ({
+  const gbufferEntry = (
+    file: EngineShaderFile,
+    compactGbuffer?: ShaderProgramContract['compactGbuffer'],
+  ): EngineShaderFile => ({
     ...file,
     programContract: {
       ...file.programContract,
       schemaVersion: 'shader-program-contract/1',
       gbuffer: 'standard-gbuffer/2',
+      ...(compactGbuffer === undefined ? {} : { compactGbuffer }),
     },
   });
+  const compactGbufferEntry = (file: EngineShaderFile): EngineShaderFile =>
+    gbufferEntry(file, 'standard-gbuffer/4');
   const readGBufferEntry = (...args: Parameters<typeof readEntry>) =>
     readEntry(...args).then(gbufferEntry);
   const readGBufferFragmentEntry = (...args: Parameters<typeof readFragmentEntry>) =>
@@ -179,10 +189,10 @@ const CLOUD_DETAIL: bool = ${detail};
     }),
   );
   const terrainEntries = Promise.all(
-    [false, true].flatMap((ids) =>
+    ['', '-ids', '-detail'].flatMap((suffix) =>
       [false, true].map(async (shadow) => {
         const file = await readEntry(shadow ? 'shadow_caster.wgsl' : 'default-standard-pbr.wgsl');
-        const identifier = `forgeax::standard-terrain${ids ? '-ids' : ''}${shadow ? '-shadow' : ''}`;
+        const identifier = `forgeax::standard-terrain${suffix}${shadow ? '-shadow' : ''}`;
         const composition = terrainProgramSource(identifier);
         if (composition === undefined)
           throw new Error(`Unknown Terrain composition: ${identifier}`);
@@ -196,7 +206,7 @@ const CLOUD_DETAIL: bool = ${detail};
           : { ...composition.defines, ALPHA_MASK: false, LOD_DITHER: true, CLIPPING_PLANES: true };
         return {
           ...file,
-          id: `${file.id}?terrain=${ids ? 'ids' : 'weights'}${shadow ? '-shadow' : ''}`,
+          id: `${file.id}?terrain=${suffix === '' ? 'weights' : suffix.slice(1)}${shadow ? '-shadow' : ''}`,
           reservedIdentifier: identifier,
           surfaceModule: composition.surface,
           source: file.source.replace(/^#pragma variant_axis (\w+)\s*$/gm, (line, axis: string) =>
@@ -299,7 +309,6 @@ const CLOUD_DETAIL: bool = ${detail};
     spriteLit: readEntry('sprite-lit.wgsl', 'forgeax::sprite-lit'),
     msdfText: readEntry('msdf-text.wgsl', 'forgeax::msdf-text'),
     iblEquirectToCube: readEntry('ibl-equirect-to-cube.wgsl'),
-    iblIrradiance: readEntry('ibl-irradiance.wgsl'),
     iblPrefilter: readEntry('ibl-prefilter.wgsl'),
     iblBrdfLut: readEntry('ibl-brdf-lut.wgsl'),
     probeBackground: readEntry('ibl-probe-background.wgsl'),
@@ -316,7 +325,6 @@ const CLOUD_DETAIL: bool = ${detail};
     atmosphereBackground: readEntry('atmosphere-background.wgsl', undefined, {
       ATMOSPHERE_UTILITY_SHADOWS: true,
     }),
-    atmosphereIbl: readEntry('atmosphere-ibl.wgsl'),
     atmosphereLutsFragment: readEntry('atmosphere-luts-fragment.wgsl', undefined, {
       ATMOSPHERE_UTILITY_SHADOWS: true,
     }),
@@ -326,7 +334,7 @@ const CLOUD_DETAIL: bool = ${detail};
     atmosphereCompose: readEntry('atmosphere-compose.wgsl', undefined, {
       ATMOSPHERE_UTILITY_SHADOWS: true,
     }),
-    hdrpSsao: readGBufferEntry('hdrp-ssao.wgsl'),
+    hdrpSsao: readEntry('hdrp-ssao.wgsl').then((file) => gbufferEntry(file, 'standard-gbuffer/4')),
     hdrpGtaoCompute: readGBufferEntry('hdrp-gtao-compute.wgsl'),
     lightTextureResampleCompute: readEntry(
       'light-texture-resample-compute.wgsl',
@@ -352,18 +360,16 @@ const CLOUD_DETAIL: bool = ${detail};
       'depth-pyramid-reduce.wgsl',
       'forgeax::depth-pyramid-reduce-fragment',
     ),
-    ssrTrace: readGBufferEntry('ssr-trace.wgsl'),
-    ssrTemporal: readGBufferEntry('ssr-temporal.wgsl'),
-    ssrTraceFragment: readGBufferFragmentEntry('ssr-trace.wgsl', 'forgeax::ssr-trace-fragment'),
-    ssrTemporalFragment: readGBufferFragmentEntry(
-      'ssr-temporal.wgsl',
-      'forgeax::ssr-temporal-fragment',
-    ),
-    ssrCompose: readGBufferEntry('ssr-compose.wgsl'),
+    ssrTrace: readGBufferEntry('ssr-trace.wgsl').then(compactGbufferEntry),
+    ssrTraceFragment: readGBufferFragmentEntry(
+      'ssr-trace.wgsl',
+      'forgeax::ssr-trace-fragment',
+    ).then(compactGbufferEntry),
+    ssrCompose: readGBufferEntry('ssr-compose.wgsl').then(compactGbufferEntry),
     ssrComposeFragment: readGBufferFragmentEntry(
       'ssr-compose.wgsl',
       'forgeax::ssr-compose-fragment',
-    ),
+    ).then(compactGbufferEntry),
     rayQuery: readEntry('ray-query.wgsl'),
     rayPathTracer: readEntry('ray-path-tracer.wgsl', 'forgeax::engine-ray-path-tracer'),
     rayRasterSource: readGBufferEntry('ray-raster-source.wgsl'),
@@ -378,24 +384,49 @@ const CLOUD_DETAIL: bool = ${detail};
     }).then((file) => ({ ...file, id: `${file.id}?baked` })),
     rayScreenProbe: readGBufferEntry('ray-screen-probe.wgsl', undefined, {
       IRRADIANCE_FIELD_VISIBILITY: true,
+      IRRADIANCE_FIELD_PROBE_VISIBILITY_CACHE: false,
+    }),
+    rayScreenProbeGenerate: readEntry('ray-screen-probe.wgsl', undefined, {
+      IRRADIANCE_FIELD_VISIBILITY: true,
+      IRRADIANCE_FIELD_PROBE_VISIBILITY_CACHE: true,
+    }).then((file) => ({ ...file, id: `${file.id}?generate-visibility-cache` })),
+    rayScreenProbeAtlas: readEntry('ray-screen-probe-atlas.wgsl', undefined, {
+      IRRADIANCE_FIELD_VISIBILITY: true,
+      IRRADIANCE_FIELD_RADIANCE_ATLAS: true,
     }),
     rayReflectionComposite: readGBufferEntry('ray-reflection-composite.wgsl'),
     standardDeferred: readGBufferEntry(
       'standard-deferred-lighting.wgsl',
       'forgeax::engine-standard-deferred-lighting',
+    ).then(
+      (file): EngineShaderFile => ({
+        ...file,
+        programContract: {
+          ...file.programContract,
+          schemaVersion: 'shader-program-contract/1',
+          compactGbuffer: 'standard-gbuffer/4',
+        },
+      }),
+    ),
+    forwardDirectionalShadow: readEntry(
+      'forward-directional-shadow.wgsl',
+      'forgeax::engine-forward-directional-shadow',
+      { DIRECTIONAL_PCSS_AVAILABLE: true, POINT_SHADOW_AVAILABLE: true },
     ),
     forwardScreenCompose: readEntry(
       'forward-screen-compose.wgsl',
       'forgeax::engine-forward-screen-compose',
     ),
-    forwardScreenPack: readEntry('forward-screen-pack.wgsl', 'forgeax::engine-forward-screen-pack'),
     forwardContact: readEntry(
       'forward-contact-shadow.wgsl',
       'forgeax::engine-forward-contact-shadow',
     ),
-    shadowVariance: readEntry('shadow-variance.wgsl', 'forgeax::engine-shadow-variance'),
-    decalProject: readGBufferEntry('decal-project.wgsl', 'forgeax::engine-decal-project'),
-    decalApply: readGBufferEntry('decal-apply.wgsl', 'forgeax::engine-decal-apply'),
+    decalProject: readGBufferEntry('decal-project.wgsl', 'forgeax::engine-decal-project').then(
+      compactGbufferEntry,
+    ),
+    decalApply: readGBufferEntry('decal-apply.wgsl', 'forgeax::engine-decal-apply').then(
+      compactGbufferEntry,
+    ),
     subsurfaceDiffusion: readGBufferEntry(
       'subsurface-diffusion.wgsl',
       'forgeax::engine-subsurface-diffusion',
@@ -406,8 +437,13 @@ const CLOUD_DETAIL: bool = ${detail};
     'forgeax_material::terrain_vertex': readSource('terrain-vertex.wgsl'),
     'forgeax_material::terrain_layer_sampling': readSource('terrain-layer-sampling.wgsl'),
     'forgeax_material::terrain_surface': readSource('terrain-surface.wgsl'),
+    'forgeax_material::terrain_detail_surface': readSource('terrain-detail-surface.wgsl'),
     'forgeax_material::terrain_id_surface': readSource('terrain-id-surface.wgsl'),
+    'forgeax_ray::screen_probe': readSource('ray-screen-probe.wgsl'),
     'forgeax_ray::irradiance_field_sample': readSource('ray-irradiance-field-sample.wgsl'),
+    'forgeax_ray::screen_candidate': readSource('ray-screen-candidate.wgsl'),
+    'forgeax_ray::screen_reconstruction': SCREEN_PROBE_RECONSTRUCTION_WGSL,
+    'forgeax_ray::field_visibility': FIELD_VISIBILITY_BOUNDS_WGSL,
     'forgeax_ray::traversal': readSource('ray-traversal.wgsl'),
     'forgeax_lighting::light_texture_resample_kernel': readSource(
       'light-texture-resample-kernel.wgsl',
@@ -421,8 +457,11 @@ const CLOUD_DETAIL: bool = ${detail};
     'forgeax_shadow::surface': readSource('shadow-surface.wgsl'),
     'forgeax_shadow::capsule': readSource('capsule-shadow.wgsl'),
     'forgeax_view::common': readSource('common.wgsl'),
+    'forgeax_view::depth_of_field_tiles': readSource('depth-of-field-tiles.wgsl'),
+    'forgeax_view::bloom_filter': readSource('bloom-filter.wgsl'),
     'forgeax_view::output_encoding': readSource('output-encoding.wgsl'),
     'forgeax_view::tone_mapping': readSource('tone-mapping.wgsl'),
+    'forgeax_view::smaa_blend': readSource('smaa-blend.wgsl'),
     'forgeax_material::fragment_output': readSource('material/fragment-output.wgsl'),
     'forgeax_pbr::brdf': readSource('brdf.wgsl'),
     'forgeax_pbr::specular_aa': readSource('specular-aa.wgsl'),
@@ -434,7 +473,7 @@ const CLOUD_DETAIL: bool = ${detail};
     'forgeax_standard::cluster': readSource('standard-cluster.wgsl'),
     'forgeax_pbr::ibl_shared': readSource('ibl-shared.wgsl'),
     'forgeax_pbr::ibl_equirect_to_cube': readSource('ibl-equirect-to-cube.wgsl'),
-    'forgeax_pbr::ibl_irradiance': readSource('ibl-irradiance.wgsl'),
+    'forgeax_pbr::sky_sh_polynomial': readSource('sky-sh-polynomial.wgsl'),
     'forgeax_pbr::ibl_prefilter': readSource('ibl-prefilter.wgsl'),
     'forgeax_pbr::ibl_brdf_lut': readSource('ibl-brdf-lut.wgsl'),
     'forgeax_pbr::ibl_sampling': readSource('ibl-sampling.wgsl'),
@@ -476,9 +515,12 @@ const CLOUD_DETAIL: bool = ${detail};
     'forgeax_cloud::trace': readSource('cloud/trace.wgsl'),
     'forgeax_hdrp::ssao': readSource('hdrp-ssao.wgsl'),
     'forgeax_pbr::standard_lighting': readSource('standard-lighting.wgsl'),
+    'forgeax_pbr::planar_reflection': readSource('planar-reflection.wgsl'),
     'forgeax_pbr::gbuffer': readSource('standard-gbuffer.wgsl'),
     'forgeax_pbr::gbuffer_output': readSource('standard-gbuffer-output.wgsl'),
     'forgeax_depth_pyramid::sample': readSource('depth-pyramid-sample.wgsl'),
+    'forgeax_ssr::forward': readSource('ssr-forward.wgsl'),
+    'forgeax_ssr::ray': readSource('ssr-ray.wgsl'),
     'forgeax_pbr::shadow_pcf': readSource('shadow-pcf.wgsl'),
     'forgeax_pbr::clearcoat': readSource('material/physical/clearcoat.wgsl'),
     'forgeax_pbr::anisotropy': readSource('material/physical/anisotropy.wgsl'),
@@ -508,6 +550,10 @@ const CLOUD_DETAIL: bool = ${detail};
       'default_single_layer_medium_surface.wgsl',
     ),
     'forgeax_material::default_standard_surface': readSource('default_standard_surface.wgsl'),
+    'forgeax_material::standard_physical_inputs': readSource(
+      'material/standard-physical-inputs.wgsl',
+    ),
+    'forgeax_material::standard_surface_maps': readSource('material/standard-surface-maps.wgsl'),
     'forgeax_material::surface_sampling': readSource('surface-sampling.wgsl'),
     [SURFACE_SLOT_MODULE]: readSource('default_standard_surface.wgsl').then(
       projectSurfaceSlotSource,

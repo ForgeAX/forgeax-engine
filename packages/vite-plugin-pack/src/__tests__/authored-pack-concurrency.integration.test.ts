@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NativeCookDraft, NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { expect, it, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { createPluginPackInternal } from '../plugin-pack.js';
 
 it.each([
@@ -10,10 +11,7 @@ it.each([
 ])('retains native cooker concurrency and complete publication after %i ms startup', async (startupDelayMs) => {
   const root = await mkdtemp(join(tmpdir(), 'authored-pack-concurrency-'));
   const finish: Array<() => void> = [];
-  let signalStarted: () => void;
-  const started = new Promise<void>((resolve) => {
-    signalStarted = resolve;
-  });
+  const { promise: started, resolve: signalStarted } = testGate();
   let active = 0;
   let peak = 0;
   const cooker: NativeCooker = {

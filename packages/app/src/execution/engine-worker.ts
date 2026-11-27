@@ -1,4 +1,5 @@
 import { createVideoFrameHost } from '@forgeax/engine-graphics-extras';
+import { createTaskPool, type TaskWorkerToPoolMessage } from '@forgeax/engine-platform';
 import { addLoadWork, err, loadProgressScope, ok, type Result } from '@forgeax/engine-types';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
 import { validateExecutionBootstrapData } from './bootstrap-entry';
@@ -10,11 +11,13 @@ import {
   type ExecutionInitMessage,
   type ExecutionReadyMessage,
   type ExecutionRenderErrorMessage,
-  forwardPipelineLibraries,
+  forwardPipelinePreparation,
   forwardResourceBudgets,
   type HostToEngineMessage,
 } from './protocol';
 import { forwardRenderBackend } from './render-backend';
+import type { BrowserRenderWorkerControl } from './render-worker-browser-channel';
+import { executionTaskKinds } from './task-kinds';
 import { type FrameNotice, WorkerFrameSource } from './worker-frame-source';
 import { shutdownWorker } from './worker-shutdown';
 
@@ -105,6 +108,45 @@ function openVideoBridge(): VideoBridge {
   };
 }
 
+function browserTaskWorker(): Worker {
+  return new Worker(new URL('./task-worker-runtime.mjs', import.meta.url), {
+    type: 'module',
+    name: 'forgeax-task',
+  });
+}
+
+/** Main-thread Apps can submit the same worker-only task kinds as an Engine Worker. */
+export function createBrowserTaskPool() {
+  return createTaskPool({
+    kinds: executionTaskKinds,
+    workerFactory(listener) {
+      const worker = browserTaskWorker();
+      const { port1, port2 } = new MessageChannel();
+      const terminate = () => {
+        port1.close();
+        worker.terminate();
+      };
+      port1.onmessage = (event: MessageEvent<TaskWorkerToPoolMessage>) =>
+        listener.message(event.data);
+      worker.onerror = (event) => {
+        event.preventDefault();
+        listener.error(new Error(event.message));
+      };
+      try {
+        worker.postMessage({ kind: 'task-connect', port: port2 }, [port2]);
+      } catch (cause) {
+        port2.close();
+        terminate();
+        throw cause;
+      }
+      return {
+        postMessage: (message, transfer) => port1.postMessage(message, transfer ?? []),
+        terminate,
+      };
+    },
+  });
+}
+
 export async function startEngineWorker(
   options: StartEngineWorkerOptions,
 ): Promise<Result<EngineWorkerSession, AppErrorType>> {
@@ -117,11 +159,34 @@ export async function startEngineWorker(
       name: 'forgeax-engine',
     });
   const taskCleanups = new Map<number, () => void>();
+  const browserRenders = new Map<number, Worker>();
+  const document = options.canvas.ownerDocument;
+  const browserRenderPresentation =
+    options.diagnostics?.browserRenderPresentation === true && options.workers.render.enabled;
   let retired = false;
+  const notifyRenderVisibility = () => {
+    for (const render of browserRenders.values())
+      render.postMessage({
+        kind: 'browser-render-visibility',
+        visible: !document.hidden,
+      } satisfies BrowserRenderWorkerControl);
+  };
+  const retireBrowserRender = (workerId: number): void => {
+    const render = browserRenders.get(workerId);
+    if (render === undefined) return;
+    browserRenders.delete(workerId);
+    render.onerror = null;
+    render.terminate();
+  };
+  if (browserRenderPresentation)
+    document.addEventListener('visibilitychange', notifyRenderVisibility);
   const retirePoolWorkers = (): void => {
     retired = true;
     frameSource.connect(undefined);
     for (const cleanup of taskCleanups.values()) cleanup();
+    for (const workerId of browserRenders.keys()) retireBrowserRender(workerId);
+    if (browserRenderPresentation)
+      document.removeEventListener('visibilitychange', notifyRenderVisibility);
   };
   // Render notices arrive on a per-session port; a replacement session closes the old one.
   const frameSource = new WorkerFrameSource();
@@ -204,10 +269,7 @@ export async function startEngineWorker(
     };
     taskCleanups.set(message.workerId, cleanup);
     try {
-      task = new Worker(new URL('./task-worker-runtime.mjs', import.meta.url), {
-        type: 'module',
-        name: 'forgeax-task',
-      });
+      task = browserTaskWorker();
       task.onerror = (event): void => {
         event.preventDefault?.();
         report(event.message ?? 'task worker error');
@@ -216,6 +278,38 @@ export async function startEngineWorker(
       portOwnedByHost = false;
     } catch (cause) {
       report(String(cause));
+    }
+  };
+  const adoptBrowserRender = ({ workerId, port }: EngineMessage<'browser-render-open'>): void => {
+    if (retired || !browserRenderPresentation || browserRenders.has(workerId)) {
+      port.close();
+      return;
+    }
+    const report = (message: string): void => {
+      retireBrowserRender(workerId);
+      if (!retired) worker.postMessage({ kind: 'browser-render-error', workerId, message });
+    };
+    try {
+      const render = new Worker(new URL('./render-worker-runtime.mjs', import.meta.url), {
+        type: 'module',
+        name: 'forgeax-render',
+      });
+      browserRenders.set(workerId, render);
+      render.onerror = (event) => {
+        event.preventDefault();
+        report(event.message || 'Browser Render Worker could not start');
+      };
+      render.postMessage(
+        {
+          kind: 'browser-render-connect',
+          port,
+          visible: !document.hidden,
+        } satisfies BrowserRenderWorkerControl,
+        [port],
+      );
+    } catch (error) {
+      port.close();
+      report(String(error));
     }
   };
   const adoptRenderHostPort = (message: EngineMessage<'render-host-port'>): void => {
@@ -264,6 +358,14 @@ export async function startEngineWorker(
     }
     if (message.kind === 'task-retire') {
       taskCleanups.get(message.workerId)?.();
+      return;
+    }
+    if (message.kind === 'browser-render-open') {
+      adoptBrowserRender(message);
+      return;
+    }
+    if (message.kind === 'browser-render-retire') {
+      retireBrowserRender(message.workerId);
       return;
     }
     if (message.kind === 'render-host-port') {
@@ -338,7 +440,7 @@ export async function startEngineWorker(
     ...(options.animation === undefined ? {} : { animation: options.animation }),
     ...(options.diagnostics === undefined ? {} : { diagnostics: options.diagnostics }),
     ...forwardGpuStub(options),
-    ...forwardPipelineLibraries(options),
+    ...forwardPipelinePreparation(options),
     ...(options.outputColorSpace === undefined
       ? {}
       : { outputColorSpace: options.outputColorSpace }),

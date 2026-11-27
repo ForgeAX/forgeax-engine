@@ -29,6 +29,11 @@ export interface PackProgramHost {
     program: PackProgram,
     imports: Readonly<Record<string, PackProgramImport>>,
   ): Promise<string>;
+  /** Publish the same verified module at a locator loadable in the Task Worker. */
+  publishForTask?(
+    program: PackProgram,
+    imports: Readonly<Record<string, PackProgramImport>>,
+  ): Promise<string>;
   /** Optional native package loader; receives only a verified, published module URL. */
   importModule?(url: string): Promise<Readonly<Record<string, unknown>>>;
 }
@@ -44,30 +49,44 @@ export function createStaticPackProgramHost(
   entries: readonly {
     readonly modules: Readonly<Record<string, string>>;
     readonly load: (entry: string) => Promise<Readonly<Record<string, unknown>>>;
+    readonly taskUrl?: (entry: string) => string;
   }[],
   imports: Readonly<Record<string, PackProgramImport>>,
 ): PackProgramHost {
   const published = new Map<string, () => Promise<Readonly<Record<string, unknown>>>>();
+  const select = (program: PackProgram, bindings: Readonly<Record<string, PackProgramImport>>) => {
+    const identity = packProgramModuleIdentity(program, bindings).unwrap();
+    for (const name of Object.keys(program.imports ?? {})) {
+      if (
+        bindings[name]?.identity !== imports[name]?.identity ||
+        bindings[name]?.url !== imports[name]?.url
+      )
+        throw new TypeError(`Static program import differs from its published package: ${name}`);
+    }
+    const entry = entries.find((candidate) => {
+      const names = Object.keys(program.modules);
+      return (
+        names.length === Object.keys(candidate.modules).length &&
+        names.every((name) => candidate.modules[name] === program.modules[name])
+      );
+    });
+    if (!entry) throw new TypeError('Program modules are not in the published code package');
+    return { identity, entry };
+  };
   return {
     async publish(program, bindings) {
-      const identity = packProgramModuleIdentity(program, bindings).unwrap();
-      for (const name of Object.keys(program.imports ?? {})) {
-        if (
-          bindings[name]?.identity !== imports[name]?.identity ||
-          bindings[name]?.url !== imports[name]?.url
-        )
-          throw new TypeError(`Static program import differs from its published package: ${name}`);
-      }
-      const selected = entries.find((candidate) => {
-        const names = Object.keys(program.modules);
-        return (
-          names.length === Object.keys(candidate.modules).length &&
-          names.every((name) => candidate.modules[name] === program.modules[name])
-        );
-      });
-      if (!selected) throw new TypeError('Program modules are not in the published code package');
+      const { identity, entry } = select(program, bindings);
       const url = `https://forgeax.package/programs/${identity}/${program.entry}`;
-      published.set(url, () => selected.load(program.entry));
+      published.set(url, () => entry.load(program.entry));
+      return url;
+    },
+    async publishForTask(program, bindings) {
+      const { entry } = select(program, bindings);
+      const url = entry.taskUrl?.(program.entry);
+      if (url === undefined || !MODULE_URL.test(url))
+        throw new TypeError(
+          'Program module has no Task Worker locator in the published code package',
+        );
       return url;
     },
     async importModule(url) {

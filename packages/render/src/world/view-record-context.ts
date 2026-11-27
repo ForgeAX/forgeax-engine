@@ -1,5 +1,6 @@
 import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
+import { createScreenReceiverProfile } from '../assembly/renderer-facade';
 import { createViewPipelineState } from '../assembly/view-pipeline-state';
 import { createCaptureViewPipeline } from '../capture/capture-view';
 import type { DeviceScope } from '../lifecycle';
@@ -9,7 +10,9 @@ import type { CubeCaptureGraphState } from '../record/target-capture-graph';
 import type { RenderTarget } from '../targets/contracts';
 import type { FramebufferSnapshotSource } from '../targets/framebuffer-snapshot';
 import { ViewRecorder, type ViewViewport, viewCameraOf } from './render-views';
+import { renderSubmission } from './render-world';
 import { type ViewRecorderState, viewComposition } from './view-output-systems';
+import type { ViewSettlementOwner } from './view-settlement';
 
 /** Scoped recording facts. Shared services remain on the renderer port. */
 export const ViewRecordContext = defineComponent('ViewRecordContext', {
@@ -18,12 +21,20 @@ export const ViewRecordContext = defineComponent('ViewRecordContext', {
 
 /** The unique component payload owns writable view bindings and capture identity. */
 export class ViewRecordContextState {
+  readonly #profile = createScreenReceiverProfile(() => {
+    const view = this.recorder();
+    return (
+      this.captureView === undefined &&
+      view?.retired === false &&
+      view.scope === this.deviceScope &&
+      view.owner.frameState.irradianceField?.plannedTraversal === 'global-sdf'
+    );
+  });
   readonly local: ReturnType<typeof createViewPipelineState>;
   readonly captureView: RenderSystemInternals['captureView'];
   readonly standardPipeline: RenderSystemInternals['standardPipeline'];
   readonly featureHost: RenderSystemInternals['featureHost'];
   featureSceneInputs: RenderSystemInternals['featureSceneInputs'];
-  readonly sharedFeatureGpuWork: RenderSystemInternals['sharedFeatureGpuWork'];
   readonly outputColorSpace: RenderSystemInternals['outputColorSpace'];
   gpuPassTimingViewId: number | undefined;
   constructor(
@@ -35,6 +46,7 @@ export class ViewRecordContextState {
     base: PipelineState,
     capture: CubeCaptureGraphState | undefined,
     target: RenderTarget | undefined,
+    private readonly primaryOwner: ViewSettlementOwner,
   ) {
     this.local = createViewPipelineState(base, root, deviceScope);
     this.captureView = capture === undefined ? undefined : { camera, state: capture };
@@ -42,10 +54,12 @@ export class ViewRecordContextState {
       capture === undefined ? root.standardPipeline : createCaptureViewPipeline(capture);
     this.featureHost = capture === undefined ? root.featureHost : undefined;
     this.featureSceneInputs = capture === undefined ? root.featureSceneInputs : undefined;
-    this.sharedFeatureGpuWork = root.viewOwner?.preparedResolver.gpuWork;
     this.outputColorSpace =
       target === undefined ? root.outputColorSpace : createOutputColorSpaceState('srgb');
     this.gpuPassTimingViewId = camera;
+  }
+  get sharedFeatureGpuWork(): RenderSystemInternals['sharedFeatureGpuWork'] {
+    return this.primaryOwner.preparedResolver.gpuWork;
   }
   private recorder(): ViewRecorderState | undefined {
     const world = this.root.renderWorld;
@@ -53,6 +67,18 @@ export class ViewRecordContextState {
     return world
       .resolveUniqueRef<ViewRecorderState>(world.get(this.entity, ViewRecorder).unwrap().state)
       .unwrap();
+  }
+  get standardProfile(): RenderSystemInternals['standardProfile'] {
+    const world = this.root.renderWorld;
+    const view = this.recorder();
+    if (view?.retired === true || (view !== undefined && view.scope !== this.deviceScope))
+      return this.root.standardProfile;
+    return this.#profile(
+      this.root.standardProfile,
+      world === undefined ? -1 : renderSubmission(world).frame,
+      view?.owner.frameState.installedPipelineHandle ?? -1,
+      this.deviceScope.generation,
+    );
   }
   get canvas(): RenderSystemInternals['canvas'] {
     const view = this.recorder();

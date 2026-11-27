@@ -1,6 +1,6 @@
 import * as packRuntime from '@forgeax/engine-pack/runtime';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
 import { runtimeAssets } from '../internal/runtime-assets';
 import { materialRecordFixture } from './fixtures/material-publication';
@@ -26,7 +26,22 @@ it('keeps publication program data with its source instead of copying it into mu
     for (const program of record.programs) {
       expect(shaders.findMaterialArtifact(program.specializationKey)).toMatchObject({ ok: true });
     }
-    owner.update(loaded.handle, { values: { roughness: 0.5 } }).unwrap();
+    let reads = 0;
+    const values = new Proxy(
+      { roughness: 0.5 },
+      {
+        getOwnPropertyDescriptor(target, key) {
+          const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+          if (key === 'roughness' && descriptor) descriptor.value = ++reads === 1 ? 0.5 : 0.75;
+          return descriptor;
+        },
+      },
+    );
+    owner.update(loaded.handle, { values }).unwrap();
+    expect(reads).toBe(1);
+    expect(runtimeAssets(owner).borrow(loaded.handle).unwrap()).toMatchObject({
+      values: { roughness: 0.5 },
+    });
     expect(runtimeAssets(owner).borrow(loaded.handle).unwrap()).not.toHaveProperty('cooked');
   } finally {
     publication.mockRestore();
@@ -39,16 +54,13 @@ it('admits ordinary content within budget when the complete Cook publication is 
     shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
     limits: { maxBytes: 24 * 1024 },
   });
-  try {
-    const record = materialRecordFixture({
-      passes: [{ name: 'Forward', program: { module: `game::ready${'x'.repeat(8192)}` } }],
-    });
-    const result = await loadMaterialFixture(owner, record);
-    expect(result.ok, result.ok ? undefined : String(result.error)).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.projection?.specializationKey).toBe(record.specializationKey);
-    expect(runtimeAssets(owner).inspect().bytes).toBeLessThan(24 * 1024);
-  } finally {
-    owner.dispose();
-  }
+  onTestFinished(() => owner.dispose());
+  const record = materialRecordFixture({
+    passes: [{ name: 'Forward', program: { module: `game::ready${'x'.repeat(8192)}` } }],
+  });
+  const result = await loadMaterialFixture(owner, record);
+  expect(result.ok, result.ok ? undefined : String(result.error)).toBe(true);
+  if (!result.ok) return;
+  expect(result.value.projection?.specializationKey).toBe(record.specializationKey);
+  expect(runtimeAssets(owner).inspect().bytes).toBeLessThan(24 * 1024);
 });

@@ -4,6 +4,7 @@
 #import forgeax_view::common::{FullscreenOutput, fullscreen_triangle, ditherUnorm8}
 #import forgeax_view::output_encoding::{toOutputGamut}
 #import forgeax_view::tone_mapping::{mapTone}
+#import forgeax_view::smaa_blend::{smaaBlend}
 
 // STANDARD_OUTPUT_V2_PARAMS_LAYOUT. Continuous effect values are uniforms,
 // never source substitutions or shader variant axes.
@@ -17,8 +18,11 @@ struct StandardOutputV2Params {
   vignette: vec4<f32>, // intensity, radius, softness, reserved
   vignetteColor: vec4<f32>,
   finish: vec4<f32>, // grain intensity, grain size, sharpen, elapsed seconds
-  policy: vec4<u32>, // output gamut, linear Grade seam, dither, finish at encoding
+  policy: vec4<u32>, // output gamut, linear Grade seam, dither stage, finish at encoding
 };
+
+const DITHER_AT_FINISH: u32 = 1u;
+const DITHER_AT_ENCODING: u32 = 2u;
 
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var sourceSampler: sampler;
@@ -26,11 +30,7 @@ struct StandardOutputV2Params {
 @group(1) @binding(1) var outputLutSampler: sampler;
 @group(0) @binding(2) var<uniform> output: StandardOutputV2Params;
 @group(0) @binding(3) var<uniform> candidate: vec4<f32>;
-@group(0) @binding(4) var bloom0: texture_2d<f32>;
-@group(0) @binding(5) var bloom1: texture_2d<f32>;
-@group(0) @binding(6) var bloom2: texture_2d<f32>;
-@group(0) @binding(7) var bloom3: texture_2d<f32>;
-@group(0) @binding(8) var bloom4: texture_2d<f32>;
+@group(0) @binding(4) var secondaryImage: texture_2d<f32>;
 
 @vertex fn vs_main(@builtin(vertex_index) index: u32) -> FullscreenOutput {
   return fullscreen_triangle(index);
@@ -66,16 +66,8 @@ fn sampleScene(uv: vec2<f32>) -> vec4<f32> {
   );
 }
 
-fn bloomWeight(factor: f32) -> f32 { return mix(factor, 1.2 - factor, output.bloom.y); }
-
 fn sampleBloom(uv: vec2<f32>) -> vec3<f32> {
-  return output.bloom.x / 3.0 * (
-    textureSampleLevel(bloom0, sourceSampler, uv, 0.0).rgb * bloomWeight(1.0)
-    + textureSampleLevel(bloom1, sourceSampler, uv, 0.0).rgb * bloomWeight(0.8)
-    + textureSampleLevel(bloom2, sourceSampler, uv, 0.0).rgb * bloomWeight(0.6)
-    + textureSampleLevel(bloom3, sourceSampler, uv, 0.0).rgb * bloomWeight(0.4)
-    + textureSampleLevel(bloom4, sourceSampler, uv, 0.0).rgb * bloomWeight(0.2)
-  );
+  return output.bloom.x * textureSampleLevel(secondaryImage, sourceSampler, uv, 0.0).rgb;
 }
 
 fn gradeScene(scene: vec3<f32>, bloom: vec3<f32>) -> vec3<f32> {
@@ -118,7 +110,7 @@ fn finishNoise(color: vec3<f32>, position: vec2<f32>) -> vec3<f32> {
       * (0.35 + 0.65 * smoothstep(0.0, 0.08, light));
     result += grain * output.finish.x * weight;
   }
-  if (output.policy.z != 0u) {
+  if (output.policy.z == DITHER_AT_FINISH) {
     result = ditherUnorm8(result, position);
   }
   return result;
@@ -135,6 +127,9 @@ fn finishGrade(color: vec3<f32>, alpha: f32, input: FullscreenOutput) -> vec4<f3
 
 fn encodeGrade(linear: vec3<f32>, alpha: f32, input: FullscreenOutput) -> vec4<f32> {
   var encoded = vec4<f32>(clamp(encodeSrgb(toOutputGamut(linear, output.policy.x)), vec3<f32>(0.0), vec3<f32>(1.0)), alpha);
+  if (output.policy.z == DITHER_AT_ENCODING) {
+    return vec4<f32>(ditherUnorm8(encoded.rgb, input.position.xy), encoded.a);
+  }
   if (output.policy.w != 0u) {
     encoded = unpack4x8unorm(pack4x8unorm(encoded));
     encoded = vec4<f32>(finishNoise(encoded.rgb, input.position.xy), encoded.a);
@@ -144,6 +139,11 @@ fn encodeGrade(linear: vec3<f32>, alpha: f32, input: FullscreenOutput) -> vec4<f
 
 @fragment fn fs_encode(input: FullscreenOutput) -> @location(0) vec4<f32> {
   let linear = textureSampleLevel(source, sourceSampler, input.uv, 0.0);
+  return encodeGrade(linear.rgb, linear.a, input);
+}
+
+@fragment fn fs_smaa_encode(input: FullscreenOutput) -> @location(0) vec4<f32> {
+  let linear = smaaBlend(source, secondaryImage, vec2<i32>(input.position.xy));
   return encodeGrade(linear.rgb, linear.a, input);
 }
 

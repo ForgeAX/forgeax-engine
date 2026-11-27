@@ -20,7 +20,7 @@ const { hostStartupDocument, hostStartupScript } = await import(
 const logo = hostStartupDocument('Logo transport').match(/id="forgeax-loading-logo" src="data:image\/svg\+xml;base64,([^"]+)"/)?.[1];
 assert.ok(logo, 'the default Host document must carry its SVG logo');
 assert.equal(Buffer.from(logo, 'base64').toString('utf8'), await readFile(
-  resolve(import.meta.dirname, '../../../packages/devkit/src/host/forgeax-logo.svg'), 'utf8'));
+  resolve(import.meta.dirname, '../../../packages/app/src/forgeax-logo.svg'), 'utf8'));
 const context = new Context();
 const server = createServer((_request, response) => {
   response.writeHead(200, { 'content-type': 'text/html' });

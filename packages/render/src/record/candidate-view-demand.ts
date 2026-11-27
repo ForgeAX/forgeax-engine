@@ -4,13 +4,15 @@ import { CAMERA_VIEW_DEFAULTS, cameraViewExtent } from '../components/camera-vie
 import type { MaterialResource } from '../material-resource';
 import { deriveCameraStandardConfiguration } from '../pipeline/camera-standard-profile';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
-import type { MeshPipelinePreparation } from '../publication/contract';
-import type { RenderPublicationReceiver } from '../publication/receiver';
+import type { MeshPipelinePreparation, RenderPublicationMetadata } from '../publication/contract';
+import type { RenderResourceScope } from '../publication/resource-scope';
 import type { CameraSnapshot } from '../render-contract';
 import type { LightRoster, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { resolveCameraTarget } from '../render-system-extract';
 import { sameValue } from '../same-value';
 import { MaterialFrame } from '../scene/material-dispatch';
+import { projectedProbeCount } from '../scene/probe-blend';
+import { hasScreenAoPrograms, ssaoUsesLighting } from '../ssao-config';
 import { resolveViewSsrDependencies } from '../world/reflection-systems';
 import { renderLightsOf } from '../world/render-lights';
 import { renderProbesOf } from '../world/render-probes';
@@ -38,9 +40,14 @@ import {
   visibleSurfacePipelineDemand,
 } from './view-pipeline-demand';
 
-export type AcceptedViewDemandSource = NonNullable<
-  ReturnType<RenderPublicationReceiver['borrowAcceptedDemand']>
->;
+export interface AcceptedViewDemandSource {
+  readonly metadata: Pick<
+    RenderPublicationMetadata,
+    'cameras' | 'lights' | 'reflectionProbes' | 'skylight'
+  >;
+  readonly resources: RenderResourceScope;
+  isCurrent(): boolean;
+}
 
 export interface CandidateViewDemand {
   readonly selectionCamera: ScenePassSelectionCamera;
@@ -49,21 +56,19 @@ export interface CandidateViewDemand {
   readonly ssao: boolean;
   readonly reflectionFallbackDemand: boolean;
   readonly gpuDrivenGeometryLane: 'automatic' | 'direct' | undefined;
-  readonly shadowReflections: ReadonlySet<boolean>;
+  readonly shadowReflections: readonly boolean[];
   readonly hasShadowViews: boolean;
   readonly tonemapActive: boolean;
   readonly probeBlend: boolean;
   /** Only validates this synchronous borrow. A lease must call the reader again. */
   sourceCurrent(): boolean;
 }
-
 export interface CandidateViewDemandInput {
   readonly world?: World;
   readonly materials: MaterialFrame;
   readonly preparation: MeshPipelinePreparation;
   readonly view?: EntityHandle;
 }
-
 function candidateSceneInput(input: CandidateViewDemandInput) {
   // Novel pass families require the ordinary graph producer. Candidate ids are local to this recipe.
   if (
@@ -220,19 +225,19 @@ function readLightingDemand(
     );
   if (!configuration.ok) return undefined;
   const renderPath = (configuration.value.profile ?? DEFAULT_STANDARD_PROFILE).renderPath;
-  const ssao = configuration.value.config?.ssao?.enabled === true;
+  const ssao =
+    ssaoUsesLighting(configuration.value.config?.ambientOcclusion) &&
+    hasScreenAoPrograms(pipelineState, internals.depthPyramidShaders);
+  const reflectedAbi = pipelineState.standardClusterAbi ?? internals.standardClusterAbi;
   const lighting = standardLightingPipelineDemand(
     true,
     lights,
-    ssao,
-    caps.storageBuffer,
+    false,
+    internals.device,
     pipelineState.pbrPipelineLayout,
+    reflectedAbi !== undefined,
   );
-  if (
-    lighting.lightingKind === 'clustered' &&
-    (pipelineState.standardClusterAbi ?? internals.standardClusterAbi) === undefined
-  )
-    return undefined;
+  if (lighting.lightingKind === 'clustered' && reflectedAbi === undefined) return undefined;
   return { pipelineState, renderPath, ssao, lighting };
 }
 
@@ -300,8 +305,6 @@ function currentAcceptedScene(owner: ViewSettlementOwner, accepted: AcceptedView
   );
   return lights === undefined ? undefined : { lights };
 }
-
-/** Derive actual demand from the accepted source and its already-adopted persistent products. */
 export function readCandidateViewDemand(
   owner: ViewSettlementOwner,
   accepted: AcceptedViewDemandSource,
@@ -384,7 +387,7 @@ export function readCandidateViewDemand(
     shadowReflections: shadows,
     hasShadowViews: hasShadowPipelineDemand(lights, directionalViews),
     tonemapActive: camera.tonemap !== 'none' || standardBloomAdmitted(camera),
-    probeBlend: (gpuScene?.probeBlend?.records.length ?? 0) > 0,
+    probeBlend: projectedProbeCount(gpuScene?.probeBlend) > 0,
     sourceCurrent,
   };
 }

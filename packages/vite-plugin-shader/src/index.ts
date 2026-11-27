@@ -22,8 +22,8 @@
 //   research Finding 3).
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { readFile, realpath } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, normalize, resolve, sep } from 'node:path';
 import { isStandardRootModule } from '@forgeax/engine-pack';
@@ -39,8 +39,11 @@ import {
   type MaterialShaderManifestVariant,
   publishShaderProgramTemplates,
   readShaderProgramTemplates,
+  SHADER_PROJECT_MANIFEST_VERSION,
   type ShaderProgramTemplate,
+  ShaderRegistry,
   type ShaderTemplateManifest,
+  supportedVariantDefines,
 } from '@forgeax/engine-shader';
 import {
   buildMaterialSourceCatalog,
@@ -56,10 +59,10 @@ import {
   MATERIAL_WGSL_PROFILE,
   projectShaderConditionals,
 } from '@forgeax/engine-shader-compiler';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import {
   assertMaterialAsset,
   type BindGroupLayoutDescriptor,
-  isValidAssetGuidString,
   type MaterialAsset,
   type MaterialPass,
   type MaterialProgramAbi,
@@ -85,7 +88,6 @@ import {
   throwAuthoredMaterialError,
 } from './engine-inputs/prepare-engine-shader-source.js';
 import { waterInfoRasterEngineEntries } from './engine-inputs/water-info-raster-roster.js';
-import { supportedVariantDefines } from './supported-variant-defines.js';
 
 export {
   decodePackagedProfiles,
@@ -115,6 +117,7 @@ import {
   hasCompleteEngineShaderProfile,
   loadPackagedEngineShaderInputs,
   loadSharedEngineShaderManifest,
+  loadSharedEngineShaderTemplates,
   projectOptionalEngineEntries,
   projectShaderManifestEntries,
   projectShaderManifestInput,
@@ -177,7 +180,6 @@ export async function buildEngineShaderTemplateManifest(
     [engine.spriteLit, 'spriteLit'],
     [engine.sprite, 'sprite'],
     [engine.iblEquirectToCube, 'iblEquirect'],
-    [engine.iblIrradiance, 'iblIrradiance'],
     [engine.iblPrefilter, 'iblPrefilter'],
     [engine.iblBrdfLut, 'iblBrdfLut'],
     [engine.probeBackground, 'probeBackground'],
@@ -217,7 +219,9 @@ export async function buildEngineShaderTemplateManifest(
       engine: {
         identifier,
         paramSchema: engineMaterialParamSchema(identifier),
-        ...(options.pointShadows === undefined ? {} : { pointShadows: options.pointShadows }),
+        ...(options.pointShadows === true && axes.includes('CLUSTER_FORWARD_AVAILABLE')
+          ? { pointShadows: true }
+          : {}),
         ...(file.surfaceModule === undefined ? {} : { surfaceModule: file.surfaceModule }),
         ...(file.program === undefined ? {} : { program: file.program }),
       },
@@ -276,13 +280,53 @@ function sharedEngineManifestPathFor(options: BuildEngineShaderManifestOptions):
   // closure, so the opt-in never depends on how the shared inputs were produced.
   if (options.pointShadows === true) return null;
   const configured = process.env[SHARED_ENGINE_MANIFEST_ENV];
-  return configured === undefined || configured.length === 0 ? null : resolve(configured);
+  if (!configured) return null;
+  const manifestPath = resolve(configured);
+  if ((options.materialPackages?.length ?? 0) === 0) return manifestPath;
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch {
+    // Keep the existing asynchronous admission path for I/O and format diagnostics.
+    return manifestPath;
+  }
+  // Combining cooked material packages here needs the legacy compiled merge.
+  if (
+    manifest !== null &&
+    typeof manifest === 'object' &&
+    'shaderPublication' in manifest &&
+    manifest.shaderPublication === 'source'
+  )
+    return null;
+  return manifestPath;
 }
 
 async function loadSharedEngineManifestForBuilder(
   manifestPath: string,
   workspaceRoot: string,
 ): Promise<Awaited<ReturnType<typeof buildEngineShaderManifestUncached>>> {
+  const templates = loadSharedEngineShaderTemplates(manifestPath, {
+    pointShadows: false,
+    hdrpSsao: true,
+  });
+  if (templates !== undefined) {
+    const registry = new ShaderRegistry({
+      manifestUrl: manifestPath,
+      readText: async () => JSON.stringify(templates),
+      prepareProgramCompiler: prepareShaderProgramCompiler,
+    });
+    (await registry.loadManifest()).unwrap();
+    return serializeAsPublication(
+      {
+        schemaVersion: '1.0.0',
+        entries: Array.from(registry.entries(), (entry) =>
+          projectShaderManifestInput(entry, { glsl: '' }),
+        ),
+        materialShaders: [...registry.materialShaderManifestEntries()],
+      },
+      templates,
+    );
+  }
   const shared = await loadSharedEngineShaderManifest(manifestPath, workspaceRoot);
   const missing = SHARED_ENGINE_MANIFEST_REQUIRED_IDS.filter(
     (identifier) => !shared.materialShaders.some((entry) => entry.identifier === identifier),
@@ -314,8 +358,8 @@ async function loadSharedEngineManifestForBuilder(
  */
 function serializeAsPublication<
   M extends Awaited<ReturnType<typeof buildEngineShaderManifestUncached>>,
->(manifest: M, prepared?: ReturnType<typeof publishShaderManifest>): M {
-  let publication: ReturnType<typeof publishShaderManifest> | undefined;
+>(manifest: M, prepared?: ReturnType<typeof publishShaderManifest> | ShaderTemplateManifest): M {
+  let publication: typeof prepared;
   Object.defineProperty(manifest, 'toJSON', {
     enumerable: false,
     value: () => {
@@ -384,6 +428,88 @@ export function buildEngineShaderManifest(
   });
 }
 
+async function appendCookedMaterialPackages(
+  publication: ReturnType<typeof createCompiledEnginePublication>,
+  engineImports: Record<string, string>,
+  packagePaths: readonly string[],
+): Promise<void> {
+  if (packagePaths.length === 0) return;
+  const { publisher } = publication;
+  const authoredMaterialCompiler = createShaderProgramCompiler();
+  for (const packagePath of packagePaths) {
+    const resolvedPackagePath = resolve(process.cwd(), packagePath);
+    const materialPackage = parseMaterialPackage(
+      JSON.parse(await readFile(resolvedPackagePath, 'utf8')) as unknown,
+      resolvedPackagePath,
+    );
+    const programs = await prepareAuthoredMaterial(
+      resolvedPackagePath,
+      materialPackage,
+      engineImports,
+      authoredMaterialCompiler,
+    );
+    for (const prepared of programs) {
+      const primary = prepared.primary;
+      publication.entries.push(
+        publisher.entry(
+          {
+            ...primary.manifestEntry,
+            hash: primary.manifestEntry.hash,
+            wgsl: primary.manifestEntry.wgsl,
+            glsl: '' as const,
+            bindings: primary.manifestEntry.bindings,
+            uvSetCount: primary.manifestEntry.uvSetCount,
+            compilerProfile: MATERIAL_WGSL_PROFILE,
+          },
+          prepared.moduleId,
+        ),
+      );
+      publication.materialShaders.push({
+        identifier: prepared.moduleId,
+        sourcePath: prepared.sourcePath,
+        ...publisher.variant(
+          {
+            ...compiledArtifactProjection(primary.manifestEntry),
+            composedWgsl: primary.manifestEntry.wgsl,
+            ...(primary.receipt === undefined ? {} : { receipt: primary.receipt }),
+          },
+          prepared.moduleId,
+        ),
+        paramSchema: JSON.stringify(prepared.paramSchema),
+        variants: prepared.variants.map((variant) =>
+          publisher.variant(
+            {
+              definesKey: variant.definesKey,
+              defines: variant.defines,
+              ...compiledArtifactProjection(variant.manifestEntry),
+              composedWgsl: variant.manifestEntry.wgsl,
+              ...(variant.receipt === undefined ? {} : { receipt: variant.receipt }),
+            },
+            variant.definesKey,
+          ),
+        ),
+      });
+    }
+  }
+}
+
+/** Publish built-ins as templates and cook only the project's declared material packages. */
+export async function buildProjectShaderTemplateManifest(
+  options: Pick<BuildEngineShaderManifestOptions, 'materialPackages' | 'pointShadows'>,
+) {
+  const templates = await buildEngineShaderTemplateManifest(options);
+  const packages = options.materialPackages ?? [];
+  if (packages.length === 0) return templates;
+  const publication = createCompiledEnginePublication();
+  const { imports } = await loadEngineShaderEntries();
+  await appendCookedMaterialPackages(publication, imports, packages);
+  return {
+    schemaVersion: SHADER_PROJECT_MANIFEST_VERSION,
+    templates,
+    cooked: publication.publisher.finish(publication.entries, publication.materialShaders),
+  };
+}
+
 async function buildEngineShaderManifestUncached(
   options: BuildEngineShaderManifestOptions = {},
   sharedManifestPath: string | null = null,
@@ -412,62 +538,11 @@ async function buildEngineShaderManifestUncached(
   for (const file of shared === undefined ? engineFiles : [])
     await compileEngineEntry(state, file, eng.imports, pointShadows, true);
   const publisher = state.compiledEngine.publisher;
-  const authoredMaterialCompiler = createShaderProgramCompiler();
-  for (const packagePath of options.materialPackages ?? []) {
-    const resolvedPackagePath = resolve(process.cwd(), packagePath);
-    const materialPackage = parseMaterialPackage(
-      JSON.parse(await readFile(resolvedPackagePath, 'utf8')) as unknown,
-      resolvedPackagePath,
-    );
-    const programs = await prepareAuthoredMaterial(
-      resolvedPackagePath,
-      materialPackage,
-      eng.imports,
-      authoredMaterialCompiler,
-    );
-    for (const prepared of programs) {
-      const primary = prepared.primary;
-      state.compiledEngine.entries.push(
-        publisher.entry(
-          {
-            ...primary.manifestEntry,
-            hash: primary.manifestEntry.hash,
-            wgsl: primary.manifestEntry.wgsl,
-            glsl: '' as const,
-            bindings: primary.manifestEntry.bindings,
-            uvSetCount: primary.manifestEntry.uvSetCount,
-            compilerProfile: MATERIAL_WGSL_PROFILE,
-          },
-          prepared.moduleId,
-        ),
-      );
-      state.compiledEngine.materialShaders.push({
-        identifier: prepared.moduleId,
-        sourcePath: prepared.sourcePath,
-        ...publisher.variant(
-          {
-            ...compiledArtifactProjection(primary.manifestEntry),
-            composedWgsl: primary.manifestEntry.wgsl,
-            ...(primary.receipt === undefined ? {} : { receipt: primary.receipt }),
-          },
-          prepared.moduleId,
-        ),
-        paramSchema: JSON.stringify(prepared.paramSchema),
-        variants: prepared.variants.map((variant) =>
-          publisher.variant(
-            {
-              definesKey: variant.definesKey,
-              defines: variant.defines,
-              ...compiledArtifactProjection(variant.manifestEntry),
-              composedWgsl: variant.manifestEntry.wgsl,
-              ...(variant.receipt === undefined ? {} : { receipt: variant.receipt }),
-            },
-            variant.definesKey,
-          ),
-        ),
-      });
-    }
-  }
+  await appendCookedMaterialPackages(
+    state.compiledEngine,
+    eng.imports,
+    options.materialPackages ?? [],
+  );
   const produced = publisher.finish(
     state.compiledEngine.entries,
     state.compiledEngine.materialShaders,
@@ -512,7 +587,18 @@ async function buildEngineShaderManifestUncached(
  * Options for the `forgeaxShader` plugin factory (no configurable items in M2;
  * the future signature is reserved).
  */
+export type ShaderPreparationProgress =
+  | { readonly phase: 'inputs' }
+  | {
+      readonly phase: 'compile' | 'ready';
+      readonly sourcePath: string;
+      readonly completed: number;
+      readonly total: number;
+    };
+
 export interface ForgeAXShaderOptions {
+  /** Observations only; callback failures cannot affect shader publication. */
+  readonly onProgress?: (event: ShaderPreparationProgress) => void;
   /** Source publications prepare Engine programs at actual runtime use; Pack owns material artifacts. */
   readonly publication?: 'compiled' | 'source';
   /** Producer workspace root for repository-relative shared input paths. */
@@ -570,7 +656,8 @@ export interface ForgeAXShaderOptions {
    * shader manifest. Hosts that already have a Pack runtime publisher can
    * disable this channel while retaining the compile-time source transform;
    * the Pack artifact then remains the sole runtime registration owner.
-   * Defaults to `true` for standalone shader-only consumers.
+   * The standalone default publishes these artifacts. Explicit source hosts
+   * use their Pack publisher by default.
    */
   readonly publishAuthoredMaterialShaders?: boolean;
 }
@@ -682,6 +769,7 @@ function createCompiledEnginePublication() {
 }
 
 interface ManifestEntries {
+  readonly onProgress?: (event: ShaderPreparationProgress) => void;
   compiledEngine: ReturnType<typeof createCompiledEnginePublication>;
   readonly entries: Map<string, ManifestEntryValue>;
   readonly materialShaders: MaterialShaderManifestEntry[];
@@ -698,89 +786,44 @@ interface ManifestEntries {
 }
 
 interface MaterialPackageFile {
-  readonly schemaVersion: '1.0.0' | '2.0.0';
-  readonly kind: 'internal-text-package';
   readonly assetGuid: string;
   readonly source: string;
   readonly material: MaterialAsset;
 }
 
 function parseMaterialPackage(value: unknown, packagePath: string): MaterialPackageFile {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error(`material pack must be an object: ${packagePath}`);
+  const parsed = parsePackSourceJson(value);
+  if (!parsed.ok) {
+    throw new Error(`material pack has invalid v3 authoring: ${packagePath}; ${parsed.error.hint}`);
   }
-  const pack = value as {
-    schemaVersion?: unknown;
-    kind?: unknown;
-    assets?: unknown;
-    packageId?: unknown;
-  };
-  if (pack.schemaVersion === '3.0.0') {
-    const parsed = parsePackSourceJson(value);
-    if (!parsed.ok) {
-      throw new Error(
-        `material pack has invalid v3 authoring: ${packagePath}; ${parsed.error.hint}`,
-      );
-    }
-    if (parsed.value.format !== 'direct') {
-      throw new Error(`material pack must use the direct v3 branch: ${packagePath}`);
-    }
-    const projected = projectDirectPackJson(parsed.value);
-    if (projected.assets.length !== 1) {
-      throw new Error(
-        `material pack must contain exactly one direct material asset: ${packagePath}`,
-      );
-    }
-    const asset = projected.assets[0];
-    if (asset === undefined || asset.kind !== 'material') {
-      throw new Error(`direct v3 material pack must contain one material asset: ${packagePath}`);
-    }
-    assertMaterialAsset(asset.payload, packagePath);
-    return {
-      schemaVersion: '2.0.0',
-      kind: 'internal-text-package',
-      assetGuid: asset.guid,
-      source: asset.sourceKey,
-      material: asset.payload as MaterialAsset,
-    };
+  if (parsed.value.format !== 'direct') {
+    throw new Error(`material pack must use the direct v3 branch: ${packagePath}`);
   }
-  if (pack.schemaVersion !== '1.0.0' && pack.schemaVersion !== '2.0.0') {
-    throw new Error(`material pack has unsupported schemaVersion: ${packagePath}`);
+  const projected = projectDirectPackJson(parsed.value);
+  if (projected.assets.length !== 1) {
+    throw new Error(`material pack must contain exactly one direct material asset: ${packagePath}`);
   }
-  if (pack.kind !== 'internal-text-package' || !Array.isArray(pack.assets)) {
-    throw new Error(`material pack must contain an assets array: ${packagePath}`);
-  }
-  if (pack.assets.length !== 1) {
-    throw new Error(`material pack must contain exactly one asset: ${packagePath}`);
-  }
-  const asset = pack.assets[0] as {
-    guid?: unknown;
-    kind?: unknown;
-    sourceKey?: unknown;
-    payload?: unknown;
-    refs?: unknown;
-  };
-  if (!isValidAssetGuidString(asset.guid)) {
-    throw new Error(`material pack asset has invalid guid: ${packagePath}`);
-  }
-  if (
-    asset.kind !== 'material' ||
-    typeof asset.sourceKey !== 'string' ||
-    asset.sourceKey.length === 0
-  ) {
-    throw new Error(`material pack asset must declare kind and sourceKey: ${packagePath}`);
-  }
-  if (!Array.isArray(asset.refs)) {
-    throw new Error(`material pack asset must declare refs: ${packagePath}`);
+  const asset = projected.assets[0];
+  if (asset === undefined || asset.kind !== 'material') {
+    throw new Error(`direct v3 material pack must contain one material asset: ${packagePath}`);
   }
   assertMaterialAsset(asset.payload, packagePath);
   return {
-    schemaVersion: pack.schemaVersion,
-    kind: 'internal-text-package',
     assetGuid: asset.guid,
     source: asset.sourceKey,
     material: asset.payload as MaterialAsset,
   };
+}
+
+/** Identify authored material Packs with a local shader source during gallery discovery. */
+export function isShaderMaterialPackagePath(packagePath: string): boolean {
+  try {
+    const value = JSON.parse(readFileSync(packagePath, 'utf8')) as unknown;
+    const { source } = parseMaterialPackage(value, packagePath);
+    return statSync(resolve(dirname(packagePath), source)).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -840,7 +883,7 @@ async function compileUserMaterialVariants(
   // cannot silently ship a storage WGSL source against the WebGL2 uniform
   // pipeline layout (the old failure surfaced only at queue submit).
   const axes = scanUserMaterialVariantAxes(source);
-  const combinations = axes.length > 0 ? supportedVariantDefines(axes) : [undefined];
+  const combinations = axes.length > 0 ? [...supportedVariantDefines(axes)] : [undefined];
   const sourceForRouting = source;
   // Restrict the compiler catalog to the source's reachable import closure.
   // Engine material catalogs contain unrelated guarded imports (notably
@@ -921,6 +964,33 @@ async function compileUserMaterialVariants(
   };
 }
 
+async function isAuthoredStandardTemplate(
+  sourceModule: string | undefined,
+  sourcePath: string,
+  authoredSource: string,
+  engineImports: Readonly<Record<string, string>>,
+): Promise<boolean> {
+  const engineShaderSourceDir = resolve(
+    dirname(createRequire(import.meta.url).resolve('@forgeax/engine-shader/package.json')),
+    'src',
+  );
+  const engineRootFile =
+    sourceModule === 'forgeax_material::standard'
+      ? 'default-standard-pbr.wgsl'
+      : sourceModule === 'forgeax_material::pbr-skin'
+        ? 'default-standard-pbr-skin.wgsl'
+        : undefined;
+  const engineRootPath =
+    engineRootFile === undefined ? undefined : resolve(engineShaderSourceDir, engineRootFile);
+  return (
+    sourceModule !== undefined &&
+    isStandardRootModule(sourceModule) &&
+    (engineImports[sourceModule] === authoredSource ||
+      (engineRootPath !== undefined &&
+        (sourcePath === engineRootPath || (await realpath(sourcePath)) === engineRootPath)))
+  );
+}
+
 async function prepareAuthoredMaterial(
   packagePath: string,
   materialPackage: MaterialPackageFile,
@@ -939,22 +1009,12 @@ async function prepareAuthoredMaterial(
       ? sourceOverride.source
       : await readFile(sourcePath, 'utf8');
   const sourceModule = extractDefineImportPath(authoredSource);
-  const engineShaderSourceDir = resolve(
-    dirname(createRequire(import.meta.url).resolve('@forgeax/engine-shader/package.json')),
-    'src',
+  const standardTemplate = await isAuthoredStandardTemplate(
+    sourceModule,
+    sourcePath,
+    authoredSource,
+    engineImports,
   );
-  const engineRootFile =
-    sourceModule === 'forgeax_material::standard'
-      ? 'default-standard-pbr.wgsl'
-      : sourceModule === 'forgeax_material::pbr-skin'
-        ? 'default-standard-pbr-skin.wgsl'
-        : undefined;
-  const standardTemplate =
-    sourceModule !== undefined &&
-    isStandardRootModule(sourceModule) &&
-    (engineImports[sourceModule] === authoredSource ||
-      (engineRootFile !== undefined &&
-        sourcePath === resolve(engineShaderSourceDir, engineRootFile)));
   // The sourceKey can give an Engine template a project-owned material alias.
   // Other Pass modules retain their own source identity and root contract.
   const authoredModule = passes.some((pass) => pass.program.module === sourceModule)
@@ -1135,7 +1195,23 @@ async function findAuthoredMaterialForSource(
   engineImports: Readonly<Record<string, string>>,
   compile: ReturnType<typeof createShaderProgramCompiler>,
   sourceOverride?: string,
-): Promise<readonly PreparedAuthoredMaterial[] | undefined> {
+) {
+  const prepareMatch = async (
+    packagePath: string,
+    materialPackage: MaterialPackageFile,
+    matchedPath: string,
+  ) => {
+    const programs = await prepareAuthoredMaterial(
+      packagePath,
+      materialPackage,
+      engineImports,
+      compile,
+      sourceOverride === undefined ? undefined : { path: matchedPath, source: sourceOverride },
+    );
+    const selected = programs.find((program) => program.sourcePath === matchedPath);
+    return selected === undefined ? undefined : { programs, selected };
+  };
+  let linkedMatch: (() => ReturnType<typeof prepareMatch>) | undefined;
   for (const packagePath of packagePaths) {
     const resolvedPackagePath = resolve(process.cwd(), packagePath);
     const materialPackage = parseMaterialPackage(
@@ -1150,20 +1226,23 @@ async function findAuthoredMaterialForSource(
       resolve(dirname(resolvedPackagePath), materialPackage.source),
     );
     if (
+      candidateSourcePath === sourcePath ||
+      sourcePath.startsWith(`${dirname(candidateSourcePath)}${sep}`)
+    ) {
+      const matched = await prepareMatch(resolvedPackagePath, materialPackage, sourcePath);
+      if (matched !== undefined) return matched;
+    }
+    if (
+      linkedMatch === undefined &&
       candidateSourcePath !== sourcePath &&
-      !sourcePath.startsWith(`${dirname(candidateSourcePath)}${sep}`)
-    )
-      continue;
-    const prepared = await prepareAuthoredMaterial(
-      resolvedPackagePath,
-      materialPackage,
-      engineImports,
-      compile,
-      sourceOverride === undefined ? undefined : { path: sourcePath, source: sourceOverride },
-    );
-    if (prepared.some((program) => program.sourcePath === sourcePath)) return prepared;
+      (await realpath(candidateSourcePath).catch(() => undefined)) === sourcePath
+    ) {
+      // Vite may resolve symbolic links before transform. Keep the Pack's
+      // declared path for overrides and prefer explicit paths over this fallback.
+      linkedMatch = () => prepareMatch(resolvedPackagePath, materialPackage, candidateSourcePath);
+    }
   }
-  return undefined;
+  return linkedMatch?.();
 }
 
 function scanUserMaterialVariantAxes(source: string): string[] {
@@ -1304,7 +1383,6 @@ export function engineManifestFiles(
     eng.spriteLit,
     eng.msdfText,
     eng.iblEquirectToCube,
-    eng.iblIrradiance,
     eng.iblPrefilter,
     eng.iblBrdfLut,
     eng.probeBackground,
@@ -1327,7 +1405,6 @@ export function engineManifestFiles(
     eng.bloomComposite,
     eng.atmosphereCube,
     eng.atmosphereBackground,
-    eng.atmosphereIbl,
     eng.atmosphereLuts,
     eng.atmosphereLutsFragment,
     eng.atmosphereCompose,
@@ -1341,9 +1418,7 @@ export function engineManifestFiles(
     eng.depthPyramidSeedFragment,
     eng.depthPyramidReduceFragment,
     eng.ssrTrace,
-    eng.ssrTemporal,
     eng.ssrTraceFragment,
-    eng.ssrTemporalFragment,
     eng.ssrCompose,
     eng.ssrComposeFragment,
     eng.rayQuery,
@@ -1355,13 +1430,14 @@ export function engineManifestFiles(
     eng.rayIrradianceField,
     eng.rayBakedField,
     eng.rayScreenProbe,
+    eng.rayScreenProbeGenerate,
+    eng.rayScreenProbeAtlas,
     eng.rayReflectionComposite,
     eng.standardDeferred,
     eng.forwardScreenCompose,
-    eng.forwardScreenPack,
+    eng.forwardDirectionalShadow,
     eng.forwardContact,
     eng.decalProject,
-    eng.shadowVariance,
     eng.decalApply,
     eng.subsurfaceDiffusion,
     ...particle,
@@ -1375,7 +1451,7 @@ export function engineManifestFiles(
  */
 export function publishedVariantDefines(source: string): Record<string, boolean>[] {
   const axes = scanVariantAxes(source);
-  return axes.length > 0 ? supportedVariantDefines(axes) : [{}];
+  return axes.length > 0 ? [...supportedVariantDefines(axes)] : [{}];
 }
 
 // The rule table lives in @forgeax/engine-shader so request sites share it.
@@ -1418,6 +1494,9 @@ export const OPT_IN_VARIANT_AXES: ReadonlySet<string> = new Set([
   'STANDARD_LEAN_INPUTS',
   // Direct unlit draws reading GPU Scene rows exist only for the passes that request them.
   'GPU_SCENE_DIRECT',
+  'FORWARD_INLINE_SSR',
+  'DEFERRED_SCREEN_AO_AVAILABLE',
+  'DEFERRED_CAPSULE_SHADOW_AVAILABLE',
 ]);
 
 /** Axes that are additionally opt-in when the shader declares the cluster axis. */
@@ -1775,11 +1854,14 @@ function virtualBundlerSource(build: string | undefined): string {
   return `// AUTO-GENERATED by @forgeax/engine-vite-plugin-shader
 // virtual:forgeax/bundler -- forgeaxBundlerAdapter factory.
 // Do not edit; the plugin emits this module on demand.
-export function forgeaxBundlerAdapter() {
+function resolveBrowserShaderManifest() {
   const pageBase = globalThis.document?.baseURI ?? globalThis.location?.href;
   const manifest = (import.meta.env.BASE_URL ?? '/') + ${JSON.stringify(SHADER_MANIFEST_PATH)};
+  return pageBase === undefined ? manifest : new URL(manifest, pageBase).href;
+}
+export function forgeaxBundlerAdapter(options) {
   return {
-    shaderManifestUrl: pageBase === undefined ? manifest : new URL(manifest, pageBase).href,
+    shaderManifestUrl: options?.shaderManifestUrl ?? resolveBrowserShaderManifest(),
     importTransport: undefined,
     build: ${JSON.stringify(build)},
     remoteServe: import.meta.env.DEV === true,
@@ -1941,11 +2023,11 @@ function sharedEngineManifestPath(
 ): string | undefined {
   return process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD === '1' || wantEngineEntries === false
     ? undefined
-    : process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
+    : (sharedEngineManifestPathFor({}) ?? undefined);
 }
 
 async function compileEngineEntry(
-  state: Pick<ManifestEntries, 'entries' | 'compiledEngine'>,
+  state: Pick<ManifestEntries, 'entries' | 'compiledEngine' | 'onProgress'>,
   file: EngineShaderFile,
   imports: Record<string, string>,
   pointShadows = false,
@@ -1962,6 +2044,13 @@ async function compileEngineEntry(
     pointShadows,
   );
   const canonical = engineCanonicalVariantKey(standalone, variantAxes);
+  let completed = 0;
+  state.onProgress?.({
+    phase: 'compile',
+    sourcePath: file.id,
+    completed,
+    total: variantJobs.length,
+  });
   const selected = variantJobs.find((variant) => variant.definesKey === canonical);
   const direct =
     selected === undefined
@@ -2030,6 +2119,13 @@ async function compileEngineEntry(
           job.uniqueId,
         ),
       });
+      completed++;
+      state.onProgress?.({
+        phase: 'compile',
+        sourcePath: file.id,
+        completed,
+        total: variantJobs.length,
+      });
     },
   );
   const entryKey =
@@ -2082,6 +2178,7 @@ async function compileEngineEntry(
       ...(standalone ? {} : { uvSetCount }),
     });
   }
+  state.onProgress?.({ phase: 'ready', sourcePath: file.id, completed, total: variantJobs.length });
 }
 
 async function compileWaterEngineEntries(
@@ -2115,11 +2212,20 @@ async function compileWaterEngineEntries(
  * | `configureServer(server)` | dev-only: middleware serves the shader manifest from the same `state.entries` Map (II-A from plan-strategy §2 D-P2) |
  */
 export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShaderPlugin {
+  const report = (event: ShaderPreparationProgress): void => {
+    try {
+      options.onProgress?.(event);
+    } catch {
+      // Presentation observers cannot fail shader production.
+    }
+  };
   let workspaceRoot =
     options.workspaceRoot === undefined
       ? searchForWorkspaceRoot(process.cwd())
       : resolve(options.workspaceRoot);
-  const sourcePublication = options.publication === 'source';
+  const sourcePublication =
+    options.publication === 'source' ||
+    (options.publication === undefined && options.engineEntries !== false);
   let compiledInputs = new WeakMap<object, ShaderProgramTemplate>();
   const createAuthoredCompiler = (): ReturnType<typeof createShaderProgramCompiler> => {
     const compile = createShaderProgramCompiler();
@@ -2152,6 +2258,7 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
   };
   let compileAuthoredMaterial = createAuthoredCompiler();
   const state: ManifestEntries = {
+    onProgress: report,
     compiledEngine: createCompiledEnginePublication(),
     entries: new Map(),
     materialShaders: [],
@@ -2160,7 +2267,7 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
   };
   const wantEngineEntries = options.engineEntries ?? true;
   const publishAuthoredMaterialShaders =
-    options.publishAuthoredMaterialShaders ?? !sourcePublication;
+    options.publishAuthoredMaterialShaders ?? options.publication !== 'source';
   let nativeEnginePublication: ShaderTemplateManifest | undefined;
   // StandardProfile can enable AO at runtime without a second producer switch.
   const wantHdrpSsao =
@@ -2250,26 +2357,34 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
     sharedEnginePublication = shared.publication;
   };
 
-  const prepareNativeEnginePublication = async (context: MinimalPluginContext): Promise<void> => {
-    if (publishAuthoredMaterialShaders)
-      context.error({
-        message:
-          'Source publication delegates authored material programs to Pack; set publishAuthoredMaterialShaders to false.',
-      });
-    nativeEnginePublication =
-      wantEngineEntries === false
-        ? undefined
-        : await buildEngineShaderTemplateManifest({
-            pointShadows: wantPointShadows,
-            hdrpSsao: wantHdrpSsao,
-          });
+  const prepareNativeEnginePublication = async (): Promise<void> => {
+    if (wantEngineEntries !== false) {
+      const configured = process.env[SHARED_ENGINE_MANIFEST_ENV];
+      const shared =
+        configured === undefined || configured.length === 0
+          ? undefined
+          : loadSharedEngineShaderTemplates(resolve(configured), {
+              pointShadows: wantPointShadows,
+              hdrpSsao: wantHdrpSsao,
+            });
+      nativeEnginePublication =
+        shared ??
+        (await buildEngineShaderTemplateManifest({
+          pointShadows: wantPointShadows,
+          hdrpSsao: wantHdrpSsao,
+        }));
+    }
     loadedEngineShaderState = true;
+    if (publishAuthoredMaterialShaders)
+      await ensureAuthoredMaterialPackages(currentMaterialPackages(), getEngineImports());
   };
 
-  const publishNativeSourceManifest = (): ShaderManifestPublication | ShaderTemplateManifest => {
+  const publishNativeSourceManifest = () => {
     const base = nativeEnginePublication;
     if (!loadedEngineShaderState)
       throw new Error('Engine source publication has not been prepared');
+    if (base !== undefined && state.entries.size === 0 && state.materialShaders.length === 0)
+      return base;
     const programs = new Map(
       [...(base === undefined ? [] : readShaderProgramTemplates(base.library).unwrap())].map(
         ([id, value]) => [id, value.template],
@@ -2277,8 +2392,17 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
     );
     const entries = [...(base?.entries ?? [])];
     const hashes = new Set(entries.map((entry) => entry.hash));
+    const cookedKeys = new Set(
+      state.materialShaders.flatMap(({ identifier, sourcePath }) => [identifier, sourcePath]),
+    );
+    const cookedEntries: typeof state.entries = new Map();
     for (const [identifier, entry] of state.entries) {
       if (hashes.has(entry.hash)) continue;
+      if (cookedKeys.has(identifier)) {
+        cookedEntries.set(identifier, entry);
+        hashes.add(entry.hash);
+        continue;
+      }
       const template =
         entry.reflection === undefined ? undefined : compiledInputs.get(entry.reflection);
       if (template === undefined)
@@ -2289,18 +2413,32 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
       entries.push({ hash: entry.hash, identifier, program, selection: {} });
       hashes.add(entry.hash);
     }
-    if (programs.size === 0) return publishShaderManifest([], []);
-    return admitShaderTemplateManifest({
+    const cooked =
+      state.materialShaders.length === 0
+        ? undefined
+        : publishShaderManifest(
+            projectShaderManifestEntries(cookedEntries),
+            projectManifestMaterialSourcePaths(
+              inlineMaterialShaderComposedWgsl(
+                state.materialShaders,
+                state.entries,
+                state.variantWgsl,
+              ),
+            ),
+          );
+    if (programs.size === 0) return cooked ?? publishShaderManifest([], []);
+    const templates = admitShaderTemplateManifest({
       schemaVersion: '7.0.0',
       library: publishShaderProgramTemplates(programs).unwrap(),
       entries,
       materialShaders: base?.materialShaders ?? [],
     }).unwrap().wire;
+    return cooked === undefined
+      ? templates
+      : { schemaVersion: SHADER_PROJECT_MANIFEST_VERSION, templates, cooked };
   };
 
-  const publishCurrentManifest = (
-    appShardDelta: boolean,
-  ): ShaderManifestPublication | ShaderTemplateManifest => {
+  const publishCurrentManifest = (appShardDelta: boolean) => {
     if (sourcePublication) {
       return publishNativeSourceManifest();
     }
@@ -2486,7 +2624,7 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
   const primeDevManifest = (server: ViteDevServerLike): Promise<void> => {
     if (devManifestPrimeInFlight !== undefined) return devManifestPrimeInFlight;
     const prime = (async () => {
-      if (!sourcePublication)
+      if (!sourcePublication || publishAuthoredMaterialShaders)
         await ensureAuthoredMaterialPackages(currentMaterialPackages(), getEngineImports());
       const devWgslEntries = resolveDevWgslEntries(server);
       for (const wgslId of devWgslEntries) {
@@ -2554,11 +2692,9 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
     // shaders are SSOT — a compile failure here is a real bug, not a soft
     // skip).
     async buildStart(this: MinimalPluginContext): Promise<void> {
+      report({ phase: 'inputs' });
       devManifestBody = undefined;
-      if (sourcePublication) {
-        await prepareNativeEnginePublication(this);
-        return;
-      }
+      if (sourcePublication) return prepareNativeEnginePublication();
       const materialPackages = currentMaterialPackages();
       if (!wantEngineEntries && materialPackages.length === 0) return;
       const sharedManifest = sharedEngineManifestPath(wantEngineEntries);
@@ -2650,7 +2786,6 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
       // irradianceConvolve_fs / prefilterEnv_fs / brdfLutBake_fs) and calls
       // setIblComposedShaders before IblPipelineCache.createIblPipelines runs.
       await compileEngineEntry(state, eng.iblEquirectToCube, eng.imports);
-      await compileEngineEntry(state, eng.iblIrradiance, eng.imports);
       await compileEngineEntry(state, eng.iblPrefilter, eng.imports);
       await compileEngineEntry(state, eng.iblBrdfLut, eng.imports);
       await compileEngineEntry(state, eng.probeBackground, eng.imports);
@@ -2678,9 +2813,7 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
       await compileEngineEntry(state, eng.depthPyramidSeedFragment, eng.imports);
       await compileEngineEntry(state, eng.depthPyramidReduceFragment, eng.imports);
       await compileEngineEntry(state, eng.ssrTrace, eng.imports);
-      await compileEngineEntry(state, eng.ssrTemporal, eng.imports);
       await compileEngineEntry(state, eng.ssrTraceFragment, eng.imports);
-      await compileEngineEntry(state, eng.ssrTemporalFragment, eng.imports);
       await compileEngineEntry(state, eng.ssrCompose, eng.imports);
       await compileEngineEntry(state, eng.ssrComposeFragment, eng.imports);
       await compileEngineEntry(state, eng.rayQuery, eng.imports);
@@ -2692,20 +2825,20 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
       await compileEngineEntry(state, eng.rayIrradianceField, eng.imports);
       await compileEngineEntry(state, eng.rayBakedField, eng.imports);
       await compileEngineEntry(state, eng.rayScreenProbe, eng.imports);
+      await compileEngineEntry(state, eng.rayScreenProbeGenerate, eng.imports);
+      await compileEngineEntry(state, eng.rayScreenProbeAtlas, eng.imports);
       await compileEngineEntry(state, eng.rayReflectionComposite, eng.imports);
       await compileEngineEntry(state, eng.standardDeferred, eng.imports, wantPointShadows);
       await compileEngineEntry(state, eng.forwardScreenCompose, eng.imports);
-      await compileEngineEntry(state, eng.forwardScreenPack, eng.imports);
+      await compileEngineEntry(state, eng.forwardDirectionalShadow, eng.imports);
       await compileEngineEntry(state, eng.forwardContact, eng.imports);
       await compileEngineEntry(state, eng.decalProject, eng.imports);
-      await compileEngineEntry(state, eng.shadowVariance, eng.imports);
       await compileEngineEntry(state, eng.decalApply, eng.imports);
       await compileEngineEntry(state, eng.subsurfaceDiffusion, eng.imports);
       // Analytic atmosphere entries share the build-time Daylight import
       // closure and are consumed by the renderer-owned environment graph.
       await compileEngineEntry(state, eng.atmosphereCube, eng.imports);
       await compileEngineEntry(state, eng.atmosphereBackground, eng.imports);
-      await compileEngineEntry(state, eng.atmosphereIbl, eng.imports);
       await compileEngineEntry(state, eng.atmosphereLuts, eng.imports);
       await compileEngineEntry(state, eng.atmosphereLutsFragment, eng.imports);
       await compileEngineEntry(state, eng.atmosphereCompose, eng.imports);
@@ -2778,8 +2911,8 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
           code,
         );
         if (compiled !== undefined) {
-          replaceAuthoredMaterial(compiled);
-          authored = compiled.find((program) => program.sourcePath === sourcePath);
+          replaceAuthoredMaterial(compiled.programs);
+          authored = compiled.selected;
         }
       }
       if (authored !== undefined) {
@@ -2793,7 +2926,8 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
           ...[...state.authoredMaterials.values()]
             .filter(
               (program) =>
-                program.packagePath === authored.packagePath && program.sourcePath !== sourcePath,
+                program.packagePath === authored.packagePath &&
+                program.sourcePath !== authored.sourcePath,
             )
             .map((program) => program.sourcePath.replaceAll('\\', '/')),
         ]);

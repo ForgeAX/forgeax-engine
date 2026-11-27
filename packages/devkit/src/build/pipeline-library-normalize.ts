@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto';
-import { pipelineDescriptorJson as identity } from '@forgeax/engine-types';
+import { pipelineDescriptorJson as identity, sha256 } from '@forgeax/engine-types';
 import type { DevKitAppOptions } from '../plugin-build.js';
 
 type Manifest = NonNullable<DevKitAppOptions['pipelineLibrary']>;
@@ -51,9 +50,7 @@ function projections(manifest: Manifest) {
 /** Content identity matches the device library: labels are diagnostic, explicit
  * state remains explicit, binding order is canonical, and entry aliases apply. */
 function recipeKeys(manifest: Manifest) {
-  const shaders = manifest.shaders.map((row) =>
-    createHash('sha256').update(row.code).digest('hex'),
-  );
+  const shaders = manifest.shaders.map((row) => sha256(row.code));
   const groups = manifest.bindGroupLayouts.map((row) =>
     identity({
       ...semantic(row),
@@ -120,6 +117,28 @@ function retainDependencies<T>(
   };
 }
 
+function remapPipelines(
+  input: Manifest,
+  layout: (id: number | 'auto') => number | 'auto',
+  shader: (id: number) => number,
+) {
+  return {
+    renderPipelines: input.renderPipelines.map((row) => ({
+      ...row,
+      layout: layout(row.layout),
+      vertex: { ...row.vertex, module: shader(row.vertex.module) },
+      ...(row.fragment === undefined
+        ? {}
+        : { fragment: { ...row.fragment, module: shader(row.fragment.module) } }),
+    })),
+    computePipelines: input.computePipelines.map((row) => ({
+      ...row,
+      layout: layout(row.layout),
+      compute: { ...row.compute, module: shader(row.compute.module) },
+    })),
+  };
+}
+
 /** Only completed startup can own an omitted dependency. Unrelated unused rows
  * and all ordinary-request projection aliases remain available. */
 function omitStartupDependencies(
@@ -173,19 +192,7 @@ function omitStartupDependencies(
     shaders: shaders.values,
     bindGroupLayouts: groups.values,
     pipelineLayouts: layouts.values.map((row) => row.map(groups.index)),
-    renderPipelines: input.renderPipelines.map((row) => ({
-      ...row,
-      layout: layout(row.layout),
-      vertex: { ...row.vertex, module: shaders.index(row.vertex.module) },
-      ...(row.fragment === undefined
-        ? {}
-        : { fragment: { ...row.fragment, module: shaders.index(row.fragment.module) } }),
-    })),
-    computePipelines: input.computePipelines.map((row) => ({
-      ...row,
-      layout: layout(row.layout),
-      compute: { ...row.compute, module: shaders.index(row.compute.module) },
-    })),
+    ...remapPipelines(input, layout, shaders.index),
     ...(input.computeEntryModules === undefined
       ? {}
       : {
@@ -228,19 +235,7 @@ export function normalizePipelineLibrary(input: Manifest, startup?: Manifest): M
     shaders: shaders.values,
     bindGroupLayouts: groups.values,
     pipelineLayouts: layouts.values,
-    renderPipelines: input.renderPipelines.map((row) => ({
-      ...row,
-      layout: layout(row.layout),
-      vertex: { ...row.vertex, module: shader(row.vertex.module) },
-      ...(row.fragment === undefined
-        ? {}
-        : { fragment: { ...row.fragment, module: shader(row.fragment.module) } }),
-    })),
-    computePipelines: input.computePipelines.map((row) => ({
-      ...row,
-      layout: layout(row.layout),
-      compute: { ...row.compute, module: shader(row.compute.module) },
-    })),
+    ...remapPipelines(input, layout, shader),
     ...(input.computeEntryModules === undefined
       ? {}
       : {

@@ -14,13 +14,12 @@
 #endif
 #endif
 #import forgeax_shadow::surface::{projectShadowPosition}
-#import forgeax_scene_temporal::{packSceneTemporalV1WithValidity}
+#import forgeax_scene_temporal::{encodeSceneVelocityRaster, packSceneTemporalV1WithValidity}
 #import forgeax_material::alpha_hash::{alphaHashThreshold, alphaCoverageValue, materialOutputAlpha, materialOutputColor}
 #import forgeax_material::texture_coordinates::{materialUvLinear}
 #import forgeax_view::fog::{forward_fog}
 #import forgeax_view::fog::{vertex_height_fog}
 #import forgeax_material::oit::{OitOutput, oitAccumulate}
-#import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness}
 
 #pragma variant_axis STORAGE_BUFFER_AVAILABLE
 #pragma variant_axis ATMOSPHERE_AVAILABLE
@@ -138,7 +137,7 @@ fn materialTextureFilteringWitness() {
 }
 
 #if SKINNING_DISABLED == false
-#import forgeax_skin::task::{skinTaskDescriptor, skinTaskBlend, skinTaskDirectCandidate, skinTaskHistoryValid}
+#import forgeax_skin::task::{skinTaskDescriptor, skinTaskBlend, skinTaskPosition, skinTaskDirectCandidate, skinTaskPreviousTranslation, skinTaskHistoryValid}
 #endif
 
 struct VsIn {
@@ -225,7 +224,16 @@ fn unlitVertex(in : VsIn, idx : u32) -> VsOut {
 #endif
 #endif
 #endif
+#if SKINNING_DISABLED == false
+#ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
+  let translation = sceneIndexDraw(visible.x).world[3].xyz;
+#else
+  let translation = meshes[0u].worldFromLocal[3].xyz;
+#endif
+  let world = skinTaskPosition(descriptor, localToWorld, in.pos, translation);
+#else
   let world = localToWorld * vec4<f32>(in.pos, 1.0);
+#endif
   var out : VsOut;
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   out.materialAddress = visible.yw;
@@ -426,11 +434,9 @@ fn fs_main(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @location(0
 #endif
 }
 
-// Unlit does not receive AO lighting, but its opaque surface still supplies
-// depth and normals to the view's occlusion inputs. It shares color's vertex
-// transform; no normal texture or Standard PBR layout is required.
+// Preserve the opaque Unlit color pass coverage while writing only depth.
 @fragment
-fn fs_ao_input(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @location(0) u32 {
+fn fs_depth_masked(in : VsOut) {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   selectSceneMaterial(in.materialAddress);
 #endif
@@ -441,7 +447,6 @@ fn fs_ao_input(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @locati
   if (unlitColorCoverageRejected(coverage, in)) { discard; }
 #endif
   applyUnlitClipping(in.worldPos, in.clip.xy, false);
-  return encodeStandardNormalRoughness(in.worldNormal.xyz * select(-1.0, 1.0, frontFacing), 1.0);
 }
 
 // Weighted blended OIT accumulation for straight-alpha blend states.
@@ -531,14 +536,23 @@ fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
 #if SKINNING_DISABLED == false
   let descriptor = skinTaskDescriptor(unlitSkinCandidate(idx));
   let currentSkin = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, false);
-  let currentWorld = currentSkin * vec4<f32>(in.pos, 1.0);
+#ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
+  let draw = sceneIndexDraw(visibleItems[idx].x);
+  let translation = draw.world[3].xyz;
+  let previousTranslation = draw.previousWorld[3].xyz;
+#else
+  let translation = meshes[0u].worldFromLocal[3].xyz;
+  let previousTranslation = skinTaskPreviousTranslation(meshes[0u]);
+#endif
+  let currentWorld = skinTaskPosition(descriptor, currentSkin, in.pos, translation);
 #else
   let currentWorld = vec4<f32>(current.worldPos, 1.0);
 #endif
   var previousWorld = currentWorld;
 #if SKINNING_DISABLED == false
   let previousSkin = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, true);
-  previousWorld = previousSkin * vec4<f32>(in.pos, 1.0);
+  previousWorld = skinTaskPosition(descriptor, previousSkin, in.pos,
+    select(translation, previousTranslation, skinTaskHistoryValid(descriptor)));
 #else
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   previousWorld = sceneIndexDraw(visibleItems[idx].x).previousWorld * vec4<f32>(in.pos, 1.0);
@@ -588,8 +602,12 @@ fn temporalVertexColor(in : TemporalVsOut) -> vec4<f32> {
 #endif
 }
 
-@fragment
-fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
+struct UnlitTemporalCoverage {
+  opacity : f32,
+  rejected : bool,
+}
+
+fn unlitTemporalCoverage(in : TemporalVsOut) -> UnlitTemporalCoverage {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   selectSceneMaterial(in.materialAddress);
 #endif
@@ -598,7 +616,10 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
   let mappedAlpha = sampleMaterialTextureLinear(alphaTexture, alphaSampler, in.alphaUv, material.alphaTextureCoordinatesMetadata.zw)[u32(material.alphaChannel)];
   let coverage = unlitCoverageValue(texSample.a, vertexColor.a, mappedAlpha);
   let test = unlitCoverageTest(in.positionOS, material.alphaToCoverage, unlitAlphaHash());
-  if (unlitCoverageRejected(coverage, test)) { discard; }
+  return UnlitTemporalCoverage(coverage, unlitCoverageRejected(coverage, test));
+}
+
+fn materialTemporal(in : TemporalVsOut, coverage : f32) -> vec4<f32> {
   applyUnlitClipping(in.clippingPositionWS, in.clip.xy, false);
   let alpha = materialOutputAlpha(coverage, material.alphaMode);
 #ifdef COVERAGE_ONLY
@@ -630,4 +651,26 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
     reactive,
     motionValid,
   );
+}
+
+
+@fragment
+fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
+  let coverage = unlitTemporalCoverage(in);
+  if (coverage.rejected) { discard; }
+  return materialTemporal(in, coverage.opacity);
+}
+
+@fragment
+fn fs_temporal_depth(in : TemporalVsOut) -> @location(0) vec4<f32> {
+  let coverage = unlitTemporalCoverage(in);
+  if (coverage.rejected) { discard; }
+  return materialTemporal(in, coverage.opacity);
+}
+
+@fragment
+fn fs_scene_velocity(in : TemporalVsOut) -> @location(0) vec2<u32> {
+  let coverage = unlitTemporalCoverage(in);
+  if (coverage.rejected) { discard; }
+  return encodeSceneVelocityRaster(materialTemporal(in, coverage.opacity), in.previousClip);
 }

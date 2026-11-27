@@ -164,11 +164,11 @@ it.each([
                 group: 0,
                 postProcess: true,
                 sceneColor: 'material-input',
-                sceneDepth: 'depth',
+                sceneDepth: 'output-depth',
                 passInputBuffer: 'pass-inputs',
                 uniformBuffers: ['pass-inputs'],
               },
-              logicalTargets: { sceneColor: 'material-input', sceneDepth: 'depth' },
+              logicalTargets: { sceneColor: 'material-input', sceneDepth: 'output-depth' },
             },
             ...(waterSource === undefined
               ? []
@@ -212,7 +212,7 @@ it.each([
               name: 'material',
               sceneDepth: 'before-pass',
               colorAttachments: [{ target: 'color', loadOp: 'load', storeOp: 'store' }],
-              sampledTargets: ['material-input', 'depth'],
+              sampledTargets: ['material-input', 'output-depth'],
               draws: [
                 {
                   program: 'material',

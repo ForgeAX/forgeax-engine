@@ -4,6 +4,7 @@ import {
   DEFAULT_STANDARD_PROFILE,
   type StandardIrradianceFieldGi,
   type StandardProfile,
+  type StandardScreenProbeGi,
 } from '../../pipeline/standard-profile';
 import {
   IRRADIANCE_FIELD_MAX_PROBES,
@@ -43,6 +44,77 @@ const gi: StandardIrradianceFieldGi = {
 };
 
 describe('irradiance field plan', () => {
+  it('admits and freezes the near-far software policy through the public renderer profile', () => {
+    const softwareTracing = {
+      nearDistance: 2,
+      receiverBiasVoxels: 1,
+      expansionVoxels: 0.5,
+      maxErrorVoxels: 4,
+    };
+    const screen: StandardScreenProbeGi = {
+      ...gi,
+      gather: 'screen-probe',
+      probes: {
+        downsample: 8,
+        adaptiveFraction: 0.5,
+        importance: 'brdf',
+        screenTrace: { maxSteps: 32, thickness: 0.02 },
+        filterPasses: 2,
+        shortRangeAo: 0,
+        maxFrames: 8,
+      },
+      softwareTracing,
+    };
+    const profile: StandardProfile = {
+      ...DEFAULT_STANDARD_PROFILE,
+      renderPath: 'deferred',
+      ibl: false,
+      diffuseGi: screen,
+    };
+    expect(validateRenderProfile(profile)).toBeUndefined();
+    const frozen = freezeRenderProfile(profile).diffuseGi;
+    expect(frozen?.gather).toBe('screen-probe');
+    if (frozen?.gather !== 'screen-probe') throw new Error('Missing Screen Probe profile');
+    expect(frozen.softwareTracing).toEqual(softwareTracing);
+    expect(frozen.softwareTracing).not.toBe(softwareTracing);
+    expect(Object.isFrozen(frozen.softwareTracing)).toBe(true);
+    for (const invalid of [
+      null,
+      { ...softwareTracing, nearDistance: 0 },
+      { ...softwareTracing, nearDistance: Number.POSITIVE_INFINITY },
+      { ...softwareTracing, nearDistance: undefined },
+      { ...softwareTracing, receiverBiasVoxels: -1 },
+      { ...softwareTracing, expansionVoxels: 65 },
+      { ...softwareTracing, maxErrorVoxels: 0 },
+      { ...softwareTracing, unsupported: true },
+    ]) {
+      expect(validateDiffuseGi({ ...screen, softwareTracing: invalid } as never).ok).toBe(false);
+    }
+  });
+
+  it('admits and freezes the hardware policy at the public profile boundary', () => {
+    for (const hardwareRayTracing of [undefined, false, true]) {
+      // Exercise the raw JavaScript boundary, including an explicitly present undefined.
+      const requestedField = { ...field };
+      expect(Reflect.set(requestedField, 'hardwareRayTracing', hardwareRayTracing)).toBe(true);
+      const profile: StandardProfile = {
+        ...DEFAULT_STANDARD_PROFILE,
+        renderPath: 'deferred',
+        ibl: false,
+        diffuseGi: { ...gi, field: requestedField },
+      };
+      expect(validateRenderProfile(profile)).toBeUndefined();
+      const frozen = freezeRenderProfile(profile).diffuseGi;
+      expect(frozen?.gather).toBe('irradiance-field');
+      if (frozen?.gather !== 'irradiance-field') throw new Error('Missing field profile');
+      expect(frozen.field.hardwareRayTracing).toBe(hardwareRayTracing);
+      expect(Object.isFrozen(frozen.field)).toBe(true);
+    }
+    for (const hardwareRayTracing of [null, 0, 1, 'false', {}]) {
+      expect(planIrradianceField({ ...field, hardwareRayTracing } as never).ok).toBe(false);
+    }
+  });
+
   it('derives a probe lattice one region sample inside the composed border', () => {
     const plan = planIrradianceField(field);
     expect(plan.ok).toBe(true);
@@ -106,7 +178,7 @@ describe('irradiance field plan', () => {
       diffuseGi: gi,
     };
     expect(validateRenderProfile(profile)).toBeUndefined();
-    expect(validateRenderProfile({ ...profile, ibl: true })).toContain('IBL disabled');
+    expect(validateRenderProfile({ ...profile, ibl: true })).toBeUndefined();
     const frozen = freezeRenderProfile(profile).diffuseGi;
     expect(frozen?.gather).toBe('irradiance-field');
     if (frozen?.gather !== 'irradiance-field') return;

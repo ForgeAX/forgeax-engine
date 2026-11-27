@@ -6,6 +6,7 @@ import { scenePlugin, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
@@ -134,13 +135,22 @@ async function measure(width: number, height: number, mode: 'zero-copy' | 'copy'
       await new Promise((resolve) => requestAnimationFrame(resolve));
       if (frame === WARMUP) before = { ...counters };
       world.update(1 / 60).unwrap();
+      const request = { source: lease, geometryLane: 'direct' as const };
+      if (frame === 0) {
+        await drawReadyFrame(renderer, request);
+        continue;
+      }
       const start = performance.now();
-      const receipt = renderValue(renderer.draw({ source: lease, geometryLane: 'direct' }));
+      const receipt = renderValue(renderer.draw(request));
       const submitted = performance.now();
       renderValue(await receipt.completed);
       const completed = performance.now();
       const observed = await renderer.observe(receipt, { include: ['timings'] });
       if (frame < WARMUP) continue;
+      expect(
+        receipt.presentation,
+        JSON.stringify({ frame, width, height, mode, pending: receipt.presentationPendingReason }),
+      ).toBe('ready');
       cpuMs.push(submitted - start);
       completedMs.push(completed - start);
       const timings = observed.ok ? observed.value.timings : undefined;

@@ -6,11 +6,13 @@ import { rhi } from '@forgeax/engine-rhi-webgpu';
 import type { ShaderEntryPointReads } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { transmissionBackdropAvailable } from '../assembly/device-feature-admission';
+import { meshSsboByteOffset } from '../assembly/mesh-ssbo-grow';
 import { MeshChanges, ShadowMeshReads } from '../device/mesh-changes';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type { PreparedGpuDrivenDraw } from '../gpu-driven/prepared-draw';
 import { GpuBuffer } from '../gpu-resource';
+import { SKY_SH_BYTES } from '../ibl/sky-sh';
 import { createSkylightFallback } from '../ibl/skylight-bind-group';
 import { MaterialResource } from '../material-resource';
 import { worldRenderResources } from '../publication/resource-scope';
@@ -20,6 +22,7 @@ import { buildDispatchPlan } from '../record/fold-buckets';
 import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record/frame-snapshot';
 import { recordGeometryDraws } from '../record/main-pass-geometry';
 import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
+import { materialUniformSlot } from '../record/material-uniforms';
 import {
   type FoldBucket,
   flushMeshDrawUploads,
@@ -103,13 +106,12 @@ async function fixture(entryPoints?: readonly ShaderEntryPointReads[]) {
         visibility: 1,
         buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: MATERIAL_UNIFORM_BYTES },
       },
-      { binding: 1, visibility: 2, texture: { viewDimension: 'cube', sampleType: 'float' } },
+      { binding: 1, visibility: 2, buffer: { type: 'uniform', minBindingSize: SKY_SH_BYTES } },
       { binding: 2, visibility: 2, sampler: { type: 'filtering' } },
       { binding: 3, visibility: 2, texture: { viewDimension: '2d', sampleType: 'float' } },
       { binding: 4, visibility: 2, sampler: { type: 'filtering' } },
       { binding: 5, visibility: 2, texture: { viewDimension: '2d', sampleType: 'float' } },
       { binding: 6, visibility: 2, buffer: { type: 'uniform' } },
-      { binding: 47, visibility: 2, texture: { viewDimension: '2d', sampleType: 'float' } },
     ];
     if (transmissionBackdropAvailable(device.limits.maxSampledTexturesPerShaderStage))
       entries.push(
@@ -347,7 +349,6 @@ async function fixture(entryPoints?: readonly ShaderEntryPointReads[]) {
         fallbackTextureView: fallback.brdfLutView,
       },
       frameState: {
-        materialBgShared: new Map(),
         instancesBgShared: new WeakMap(),
         meshBindGroupCache: new WeakMap(),
       },
@@ -420,9 +421,17 @@ async function depth(
         1,
         f.meshGroup,
         f.meshGroup,
-        (_slot, material) =>
-          defined(c.materialBgAssemblyCache.get(c.world.identity, material.materialHandle, SHADER))
-            .bindGroup,
+        (_slot, material, _entity, _world, address) => {
+          const group = defined(
+            c.materialBgAssemblyCache.get(c.world.identity, material.materialHandle, SHADER),
+          ).bindGroup;
+          address.byteOffset = meshSsboByteOffset(
+            c.pipelineState.materialUniformBuffer,
+            materialUniformSlot(c.runtime, material) * MATERIAL_PER_ENTITY_STRIDE,
+          );
+          address.dynamicOffsetCount = 1;
+          return group;
+        },
         passKind,
         selectedDispatch,
       );
@@ -469,8 +478,8 @@ export async function verifyManagedShadowRecording(): Promise<void> {
     expect(sample(await depth(f, c, -1))).toEqual([0.25, 0]);
     expect(sample(await depth(f, c, 1))).toEqual([0, 0.75]);
     expect(sample(await depth(f, c, 0))).toEqual([0.25, 0.75]);
-    const left = defined(c.validatedOrdered[0]);
-    const right = defined(c.validatedOrdered[1]);
+    const left = defined(c.validatedOrdered.at(0));
+    const right = defined(c.validatedOrdered.at(1));
     // The main view may fold a source while a capture records its original
     // transform. Both byte ranges must coexist before the shared submission.
     const planned = buildDispatchPlan(
@@ -504,7 +513,7 @@ export async function verifyManagedShadowRecording(): Promise<void> {
       f.scene,
     );
     expect(planned.validatedOrdered.map((entry) => entry.meshSlot)).toEqual([0, 1]);
-    expect(planned.validatedOrdered[0]?.foldedMeshSlot).toBe(2);
+    expect(planned.validatedOrdered.at(0)?.foldedMeshSlot).toBe(2);
     expect(planned.foldDispatchPlan?.foldedBucketCount).toBe(1);
     uploadMeshSsboBatch(
       f.device.queue,
@@ -535,7 +544,7 @@ export async function verifyManagedShadowRecording(): Promise<void> {
     const selected = new GpuDrawSelection(
       f.topology
         .query(f.topology.sourcePlan(), undefined)
-        .batches.filter((batch) => batch.binding?.material === left.source.material),
+        .active.batches.filter((batch) => batch.binding?.material === left.source.material),
     );
     expect(sample(await depth(f, c, 0, [selected]))).toEqual([0, 0.75]);
     // Independent capture shadows require both casters. The display view
@@ -560,17 +569,19 @@ export async function verifyManagedShadowRecording(): Promise<void> {
     temporalTopology.rebuild(temporalScene.slotsSnapshot());
     for (const levels of [1, 2]) {
       const temporalSelection = new GpuDrawSelection(
-        temporalTopology.query(temporalTopology.sourcePlan(), undefined).batches.map((batch) => ({
-          ...batch,
-          prepared: {
-            identity: {
-              material: 'forgeax::default-standard-pbr',
-              deformation: 'rigid',
-              geometry: 'triangle',
-            },
-          } as PreparedGpuDrivenDraw,
-          lod: { coverages: levels === 1 ? [1] : [1, 0.5], ranges: [] },
-        })),
+        temporalTopology
+          .query(temporalTopology.sourcePlan(), undefined)
+          .active.batches.map((batch) => ({
+            ...batch,
+            prepared: {
+              identity: {
+                material: 'forgeax::default-standard-pbr',
+                deformation: 'rigid',
+                geometry: 'triangle',
+              },
+            } as PreparedGpuDrivenDraw,
+            lod: { coverages: levels === 1 ? [1] : [1, 0.5], ranges: [] },
+          })),
       );
       const temporalContext = {
         ...c,
@@ -665,7 +676,7 @@ export async function verifyManagedShadowRecording(): Promise<void> {
       const leftSelection = new GpuDrawSelection(
         topology
           .query(topology.sourcePlan(), undefined)
-          .batches.filter((batch) => batch.binding?.material === source.material),
+          .active.batches.filter((batch) => batch.binding?.material === source.material),
       );
       const row = {
         ...left,
@@ -765,7 +776,7 @@ export async function verifyManagedShadowRecording(): Promise<void> {
       nativeScene.rebuild([source as RenderableSnapshot]);
       const nativeTopology = new BatchTopology();
       nativeTopology.rebuild(nativeScene.slotsSnapshot());
-      const nativePlan = nativeTopology.query(nativeTopology.sourcePlan(), undefined);
+      const nativePlan = nativeTopology.query(nativeTopology.sourcePlan(), undefined).active;
       const nativeMeshes = new Map(
         nativePlan.batches.map((batch) => [defined(batch.binding), row.mesh]),
       );
@@ -954,7 +965,7 @@ export async function verifyManagedShadowCache(
     },
   } as const;
   const c = { ...f.context, materialFrame: defined(f.context.materialFrame) };
-  const first = defined(c.validatedOrdered[0]);
+  const first = defined(c.validatedOrdered.at(0));
   const original = first.source.material.snapshot;
   const oldMaterials = c.materialFrame;
   const render = async (count: number) => {
@@ -1023,7 +1034,7 @@ export async function verifyManagedShadowCache(
 export async function verifyManagedShadowTopology(): Promise<void> {
   const f = await fixture();
   try {
-    const right = defined(f.context.validatedOrdered[1]);
+    const right = defined(f.context.validatedOrdered.at(1));
     const original = right.mesh.submeshes;
     for (const topology of ['point-list', 'line-list', 'line-strip'] as const) {
       Object.assign(right.mesh, {
@@ -1058,8 +1069,8 @@ export async function verifyManagedShadowCameraRetention(): Promise<void> {
   const changes = new MeshChanges();
   const reads = new ShadowMeshReads(changes);
   reads.add(changes.create());
-  const first = defined(f.context.validatedOrdered[0]);
-  const next = defined(f.context.validatedOrdered[1]);
+  const first = defined(f.context.validatedOrdered.at(0));
+  const next = defined(f.context.validatedOrdered.at(1));
   const c = {
     ...f.context,
     validatedOrdered: [first],
@@ -1229,7 +1240,7 @@ export async function verifyMixedSkinPassRecording(): Promise<void> {
         depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'greater' },
       })
       .unwrap();
-    const left = defined(f.context.validatedOrdered[0]);
+    const left = defined(f.context.validatedOrdered.at(0));
     const demand = () => tasks.demand(shared.first);
     shared.frames.discardFrame();
     shared.matrix[12] = 0.5;

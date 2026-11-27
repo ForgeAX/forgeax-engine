@@ -5,12 +5,16 @@ import {
 } from '../textures/canvas-texture';
 import { renderTextureSourceKey } from '../textures/source-token';
 
+import type { TextureConsumerRoster } from './texture-consumers';
+
 export interface PublishedCanvasFrame {
   readonly id: string;
   readonly flipY: boolean;
   readonly version: number;
   readonly disposed: boolean;
-  /** Missing for a disposed or zero-sized canvas. */
+  /** Only immutable author snapshots may survive the consuming draw. */
+  readonly snapshot?: 'replace' | 'reuse';
+  /** A reused snapshot, disposed source or zero-sized canvas carries no pixels. */
   readonly frame?: VideoFrame;
 }
 
@@ -22,58 +26,127 @@ export interface ReceivedCanvasFrame {
   readonly signal: AbortSignal;
 }
 
-/** Native frames snapshot author pixels without transferring ownership of the canvas. */
-export function publicationCanvasFrames(
-  consumers: ReadonlyMap<number, readonly CanvasTextureSource[]>,
-): readonly PublishedCanvasFrame[] {
-  if (consumers.size === 0) return [];
-  const frames = new Map<string, PublishedCanvasFrame>();
-  try {
-    for (const sources of consumers.values())
-      for (const source of sources) {
-        if (!isCanvasTextureSource(source) || frames.has(renderTextureSourceKey(source))) continue;
-        const state = canvasTextureState(source);
-        const live =
-          state !== undefined &&
-          !state.lifetime.signal.aborted &&
-          state.canvas.width > 0 &&
-          state.canvas.height > 0;
-        frames.set(renderTextureSourceKey(source), {
-          id: renderTextureSourceKey(source),
-          version: state?.version ?? 1,
-          flipY: state?.flipY ?? false,
-          disposed: state === undefined || state.lifetime.signal.aborted,
-          ...(live
-            ? { frame: new VideoFrame(state.canvas, { timestamp: state.version, alpha: 'keep' }) }
-            : {}),
+interface AcceptedCanvasSnapshot {
+  readonly reference: PublishedCanvasFrame;
+  lastRevision: number;
+}
+
+const NO_CANVAS_FRAMES: readonly PublishedCanvasFrame[] = Object.freeze([]);
+
+/** A source epoch owns delivery identities, never the pixels of an accepted packet. */
+export class CanvasFramePublisher {
+  private readonly snapshots = new Map<string, AcceptedCanvasSnapshot>();
+  private readonly seen = new Set<string>();
+
+  prepare(consumers: TextureConsumerRoster<CanvasTextureSource>): readonly PublishedCanvasFrame[] {
+    if (consumers.size === 0) return NO_CANVAS_FRAMES;
+    const rows: PublishedCanvasFrame[] = [];
+    try {
+      consumers.forEach((sources) => {
+        for (const source of sources) {
+          if (!isCanvasTextureSource(source)) continue;
+          const id = renderTextureSourceKey(source);
+          if (this.seen.has(id)) continue;
+          this.seen.add(id);
+          rows.push(this.sourceRow(id, source));
+        }
+      });
+      return rows;
+    } catch (cause) {
+      for (const row of rows) row.frame?.close();
+      throw cause;
+    } finally {
+      this.seen.clear();
+    }
+  }
+
+  private sourceRow(id: string, source: CanvasTextureSource): PublishedCanvasFrame {
+    const state = canvasTextureState(source);
+    if (state === undefined || state.lifetime.signal.aborted)
+      return { id, version: state?.version ?? 1, flipY: state?.flipY ?? false, disposed: true };
+    const { version, flipY, snapshot, canvas } = state;
+    if (snapshot !== undefined) {
+      const prior = this.snapshots.get(id)?.reference;
+      if (prior?.version === version && prior.flipY === flipY) return prior;
+      return {
+        id,
+        version,
+        flipY,
+        disposed: false,
+        snapshot: 'replace',
+        frame: new VideoFrame(snapshot.frame, { timestamp: version, alpha: 'keep' }),
+      };
+    }
+    // A live author canvas may resize or be painted before its first visible draw.
+    return {
+      id,
+      version,
+      flipY,
+      disposed: false,
+      ...(canvas.width > 0 && canvas.height > 0
+        ? { frame: new VideoFrame(canvas, { timestamp: version, alpha: 'keep' }) }
+        : {}),
+    };
+  }
+
+  accept(rows: readonly PublishedCanvasFrame[], revision: number): void {
+    for (const row of rows) {
+      if (row.snapshot === 'replace') {
+        const { id, version, flipY } = row;
+        this.snapshots.set(id, {
+          reference: Object.freeze({ id, version, flipY, disposed: false, snapshot: 'reuse' }),
+          lastRevision: revision,
         });
+      } else if (row.snapshot === 'reuse') {
+        const accepted = this.snapshots.get(row.id);
+        if (accepted !== undefined) accepted.lastRevision = revision;
       }
-    return [...frames.values()];
-  } catch (cause) {
-    for (const row of frames.values()) row.frame?.close();
-    throw cause;
+    }
+    for (const [id, entry] of this.snapshots)
+      if (entry.lastRevision !== revision) this.snapshots.delete(id);
+  }
+
+  clear(): void {
+    this.snapshots.clear();
   }
 }
 
-/** Receiver session owns frame clones and stable GPU keys, including retirement. */
+interface CanvasReceiverState extends ReceivedCanvasFrame {
+  readonly lifetime: AbortController;
+  snapshot: boolean;
+}
+
+/** Each live immutable source has one owned frame for late draws and device recreation. */
 export class CanvasFrameReceiver {
-  private readonly frames = new Map<string, ReceivedCanvasFrame & { lifetime: AbortController }>();
+  private readonly frames = new Map<string, CanvasReceiverState>();
 
   get(id: string): ReceivedCanvasFrame | undefined {
     return this.frames.get(id);
   }
 
-  accept(rows: readonly PublishedCanvasFrame[]): void {
-    this.releaseFrames();
-    const active = new Set(rows.map((row) => row.id));
+  hasSnapshot(row: PublishedCanvasFrame): boolean {
+    const state = this.frames.get(row.id);
+    return (
+      state?.snapshot === true &&
+      state.version === row.version &&
+      state.flipY === row.flipY &&
+      state.frame !== undefined &&
+      state.frame.displayWidth > 0 &&
+      !state.signal.aborted
+    );
+  }
+
+  accept(rows: readonly PublishedCanvasFrame[], active: ReadonlySet<string>): void {
     for (const [id, state] of this.frames)
       if (!active.has(id)) {
+        state.frame?.close();
         state.lifetime.abort();
         this.frames.delete(id);
       }
     for (const row of rows) {
+      if (row.snapshot === 'reuse') continue;
       let state = this.frames.get(row.id);
-      if (state === undefined || state.signal.aborted) {
+      if (state === undefined || (state.signal.aborted && !row.disposed)) {
         const lifetime = new AbortController();
         state = {
           key: {},
@@ -81,26 +154,37 @@ export class CanvasFrameReceiver {
           signal: lifetime.signal,
           version: row.version,
           flipY: row.flipY,
+          snapshot: false,
         };
         this.frames.set(row.id, state);
       }
+      // The App also closes transport handles after completion. Own a separate
+      // reference only when a version survives that completion.
+      const snapshot = row.snapshot === 'replace';
+      const frame = snapshot ? row.frame?.clone() : row.frame;
+      if (snapshot) row.frame?.close();
+      state.frame?.close();
       state.version = row.version;
       state.flipY = row.flipY;
-      state.frame = row.frame;
+      state.frame = frame;
+      state.snapshot = snapshot;
       if (row.disposed) state.lifetime.abort();
     }
   }
 
   releaseFrames(): void {
-    for (const state of this.frames.values()) {
-      state.frame?.close();
-      state.frame = undefined;
-    }
+    for (const state of this.frames.values())
+      if (!state.snapshot) {
+        state.frame?.close();
+        state.frame = undefined;
+      }
   }
 
   dispose(): void {
-    this.releaseFrames();
-    for (const state of this.frames.values()) state.lifetime.abort();
+    for (const state of this.frames.values()) {
+      state.frame?.close();
+      state.lifetime.abort();
+    }
     this.frames.clear();
   }
 }

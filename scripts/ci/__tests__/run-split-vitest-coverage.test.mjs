@@ -7,6 +7,7 @@ import test from 'node:test';
 import { parse } from 'yaml';
 import { DawnSequencer } from '../../../config/vitest-dawn-sequencer.ts';
 import { runGroups } from '../../lib/run-bounded-groups.mjs';
+import { coreDeferredCoverageFiles, localModelingShowcases } from '../core-validation.mjs';
 
 const coldCoverageFiles = [
   'packages/app/__tests__/builtin-systems.test.ts',
@@ -31,8 +32,69 @@ const historicalCoverageProjects = [
   ),
 ].sort();
 
+const standardTransmissionFiles = ['dry-rgba32', 'dry-rgba16', 'waves-rgba32', 'waves-rgba16'].map(
+  (mode) => `packages/shader/src/__tests__/standard-transmission-${mode}.unit.test.ts`,
+);
+const standardAliasFile =
+  'packages/shader-compiler/src/__tests__/material-standard-alias.unit.test.ts';
+const materialCompilerSplitFile =
+  'packages/shader-compiler/src/material/__tests__/ray-surface-derivatives.integration.test.ts';
+const meshIoFormatFile = 'packages/mesh-io/src/__tests__/formats.integration.test.ts';
+const devkitBootstrapCommandsFile = 'packages/devkit/src/__tests__/bootstrap-commands.test.ts';
+const previouslySharedFiles = new Set([meshIoFormatFile, devkitBootstrapCommandsFile]);
+
+function restoreHistoricalSharedCoverage(groups) {
+  // Historical coverage receipts include these suites in their shared children.
+  return groups
+    .filter((group) => !group.files.some((file) => previouslySharedFiles.has(file)))
+    .map((group) => ({
+      ...group,
+      excludes: group.excludes.filter((file) => !previouslySharedFiles.has(file)),
+    }));
+}
+
+function coverageGroupsForHistoricalReceipts(projects, size, options) {
+  const groups = restoreHistoricalSharedCoverage(
+    coverageGroups(projects, size, {
+      ...options,
+      includeLocalShowcases: true,
+      historicalModeling: true,
+    }),
+  );
+  const split = groups.find((group) => group.files.includes(materialCompilerSplitFile));
+  const ledger =
+    options?.completed ??
+    JSON.parse(
+      readFileSync(new URL('../coverage-completed-child-seconds.json', import.meta.url), 'utf8'),
+    );
+  return groups
+    .filter(
+      (group) =>
+        group !== split &&
+        !group.files.some(
+          (file) => file === standardAliasFile || standardTransmissionFiles.includes(file),
+        ),
+    )
+    .map((group) => {
+      if (split === undefined || split.splitFromReceipt !== group.label) return group;
+      // Older observations charged both batches to a single serial owner.
+      const reserved = ledger.groups[group.label]?.reservedSeconds ?? 0;
+      return {
+        ...group,
+        files: [...group.files, ...split.files],
+        weight: Math.max(40, Math.ceil(reserved / 5) * 5),
+        reservationWeight: Math.max(
+          975,
+          ...ledger.replayRuns.map(
+            (run) => Math.ceil((run.completedSeconds[group.label] ?? 0) / 5) * 5,
+          ),
+        ),
+      };
+    });
+}
+
 function historicalCoverageGroups(options) {
-  return coverageGroups(historicalCoverageProjects, 8, options);
+  return coverageGroupsForHistoricalReceipts(historicalCoverageProjects, 8, options);
 }
 
 function waterCoverageGroupsThrough(runId) {
@@ -48,7 +110,7 @@ function waterCoverageGroupsThrough(runId) {
     ),
   );
   // New Node apps execute today; a completed cohort keeps only its own roster.
-  return coverageGroups(
+  return coverageGroupsForHistoricalReceipts(
     allProjectNames().filter((name) => admittedProjects.has(name)),
     8,
     {
@@ -514,7 +576,10 @@ test('forecast seeds require the exact roster, admission and every retained wind
   const seed = ledger.placementSeeds.find((seed) => seed.typecheck === false);
   assert.equal(seed.kind, 'forecast-only', 'a placement forecast is not executed CI evidence');
   assert.ok(coveragePlacementSeed(groups, 4, false, seed));
-  assert.ok(coveragePlacementSeed(coverageGroups(allProjectNames(), 8), 4, false));
+  assert.ok(
+    coveragePlacementSeed(coverageGroupsForHistoricalReceipts(allProjectNames(), 8), 4, false),
+  );
+  assert.equal(coveragePlacementSeed(coverageGroups(allProjectNames(), 8), 4, false), null);
   assert.equal(coveragePlacementSeed(groups, 3, false, seed), null);
   assert.equal(coveragePlacementSeed(groups, 4, true, seed), null);
   assert.equal(coveragePlacementSeed(groups.slice(1), 4, false, seed), null);
@@ -899,13 +964,14 @@ test('cold mounted asset libraries share the existing exclusive DevKit publicati
   );
 });
 
-test('cold source coverage admits parallel compilation within its inherited heap budget', () => {
+test('cold source coverage validates each owner heap and compiler budget', () => {
   const groups = coverageGroups(allProjectNames(), 8);
   const sources = groups.filter((group) => group.sourceCompilation);
-  assert.equal(sources.length, 9);
+  assert.equal(sources.length, 12 + standardTransmissionFiles.length);
   for (const file of [
     'packages/render/src/__tests__/direct-shadow-preparation.integration.test.ts',
     'packages/render/src/__tests__/direct-preparation.integration.test.ts',
+    'packages/vite-plugin-pack/src/__tests__/material-program-schema-reuse.integration.test.ts',
   ]) {
     const owner = sources.find((group) => group.files.includes(file));
     assert.equal(owner?.packagesOnly, true, file);
@@ -922,11 +988,31 @@ test('cold source coverage admits parallel compilation within its inherited heap
       ),
       1,
     );
-    for (const [capacityGiB, heapMiB] of [
-      [8, 4096],
-      [16, 8192],
-      [48, 24576],
-    ]) {
+    const serialWorkerLimit = [
+      ['packages/pack/src/__tests__/material-surface-publication.unit.test.ts', '7'],
+      [
+        'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts',
+        '7',
+      ],
+      [standardAliasFile, '7'],
+      [materialCompilerSplitFile, '7'],
+      [
+        'packages/vite-plugin-pack/src/__tests__/material-program-schema-reuse.integration.test.ts',
+        '6',
+      ],
+    ].find(([file]) => group.files.includes(file))?.[1];
+    const budgets = serialWorkerLimit
+      ? [
+          [8, 4096, '2'],
+          [16, 4096, serialWorkerLimit],
+          [48, 4096, serialWorkerLimit],
+        ]
+      : [
+          [8, 4096, '2'],
+          [16, 8192, '4'],
+          [48, 24576, '4'],
+        ];
+    for (const [capacityGiB, heapMiB, workers] of budgets) {
       const env = coverageGroupEnvironment(
         group,
         { cpus: 8, memoryBytes: capacityGiB * 1024 ** 3 },
@@ -935,7 +1021,7 @@ test('cold source coverage admits parallel compilation within its inherited heap
       );
       assert.ok(env.NODE_OPTIONS.endsWith(`--max-old-space-size=${heapMiB}`));
       assert.ok(env.NODE_OPTIONS.startsWith('--import=probe.mjs'));
-      assert.equal(env.FORGEAX_SHADER_COMPILE_WORKERS, capacityGiB === 8 ? '2' : '4');
+      assert.equal(env.FORGEAX_SHADER_COMPILE_WORKERS, workers);
       assert.equal(env.KEEP, 'yes');
     }
     const constrained = coverageGroupEnvironment(
@@ -986,8 +1072,8 @@ test('real generated-game coverage drains compiler children before starting the 
   });
   assert.equal(
     browserRuns,
-    7,
-    'native, Vite build and live startup owners drain neighboring coverage work',
+    8,
+    'native, Vite build, bootstrap and live startup owners drain neighboring coverage work',
   );
   assert.equal(active.size, 0);
 });
@@ -1048,7 +1134,7 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
       return group.label;
     },
   });
-  assert.equal(exclusiveRuns, 19);
+  assert.equal(exclusiveRuns, 20);
 });
 
 test('asset-library catalogs share the complete exclusive bootstrap owner with their original deadline', () => {
@@ -1084,9 +1170,19 @@ test('asset-library catalogs share the complete exclusive bootstrap owner with t
   assert.match(readFileSync(file, 'utf8'), /}, 120_000\);/);
 });
 
-test('cold large-scene contracts execute once without competing coverage children', () => {
-  const groups = coverageGroups(['@forgeax/engine-scene', '@forgeax/engine-render'], 8);
+test('cold scene, format and bootstrap contracts execute once in exclusive coverage children', () => {
+  const groups = coverageGroups(
+    [
+      '@forgeax/engine-scene',
+      '@forgeax/engine-render',
+      '@forgeax/engine-mesh-io',
+      '@forgeax/engine-devkit',
+    ],
+    8,
+  );
   for (const file of [
+    meshIoFormatFile,
+    devkitBootstrapCommandsFile,
     'packages/scene/src/__tests__/flat-propagation.contract.test.ts',
     'packages/render/src/__tests__/managed-production-batches.unit.test.ts',
   ]) {
@@ -1477,63 +1573,19 @@ test('fractional-sharpness subdivision oracle has one exclusive coverage owner',
   );
 });
 
-test('actual Vitest discovery and native partitions conserve the complete coverage roster', async () => {
-  const file = path
-    .resolve('packages/modeling/src/__tests__/perf-tiers.unit.test.ts')
-    .replaceAll('\\', '/');
-  const groups = coverageGroups(['@forgeax/engine-modeling'], 4);
-  const require = createRequire(import.meta.url);
-  const cli = path.join(path.dirname(require.resolve('vitest/package.json')), 'vitest.mjs');
-  const discover = (args) =>
-    JSON.parse(
-      execFileSync(
-        process.execPath,
-        [cli, 'list', '--project=@forgeax/engine-modeling', ...args, '--filesOnly', '--json'],
-        { encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] },
-      ),
-    ).map(({ file }) => file.replaceAll('\\', '/'));
-  const ordinary = discover([]);
-  const native = groups.filter((group) => group.shard);
-  const explicit = groups.filter((group) => group.files.length > 0);
-  const args = buildGroupArgs({
-    cliPath: 'vitest.mjs',
-    group: native[0],
-    maxWorkers: 1,
-    coverage: true,
-    coverageDir: 'coverage',
-    reportPath: 'report.json',
-  });
-  const covered = discover(args.filter((argument) => argument.startsWith('--exclude=')));
-  assert.ok(ordinary.includes(file), 'ordinary tests retain the complete performance file');
-  // `vitest list --filesOnly` lists the unsharded inventory. Exercise the
-  // configured sequencer with actual discovery, including isolated-file excludes.
-  const specifications = covered.map((moduleId) => ({
-    moduleId,
-    project: { name: '@forgeax/engine-modeling' },
-  }));
-  const partition = (specs, index, count) =>
-    new DawnSequencer({
-      config: { root: process.cwd(), coverage: { enabled: true }, shard: { index, count } },
-    }).shard(specs);
-  const partitions = await Promise.all(
-    native.map((group) => {
-      const [index, count] = group.shard.split('/').map(Number);
-      return partition(specifications, index, count);
-    }),
-  );
-  const reversed = await Promise.all(
-    native.map((_group, index) =>
-      partition([...specifications].reverse(), index + 1, native.length),
-    ),
-  );
-  assert.deepEqual(reversed, partitions, 'placement is independent of discovery order');
-  const isolated = explicit.flatMap((group) => discover(group.files));
+function discoverExplicitCoverageFiles(discovered, groups) {
+  const filters = groups.flatMap(({ files }) => files);
+  const observed = new Set(discovered);
+  const selected = filters
+    .map((file) => path.resolve(file).replaceAll('\\', '/'))
+    .filter((file) => observed.has(file));
   assert.deepEqual(
-    [...partitions.flat().map(({ moduleId }) => moduleId), ...isolated].toSorted(),
-    ordinary.filter((entry) => entry !== file).toSorted(),
-    'real native partitions and exclusive owners discover every instrumented file exactly once',
+    [...new Set(selected)].toSorted(),
+    discovered.toSorted(),
+    'the batched Vitest filter selects only the explicitly owned files',
   );
-});
+  return selected;
+}
 
 test('broad project halves spread across jobs instead of stacking different projects', () => {
   const groups = coverageGroups(allProjectNames(), 8);
@@ -1968,39 +2020,6 @@ test('complete fine waves admit unequal forecasts without a greedy placement dea
   }
 });
 
-test('runtime child CLI typecheck override retains the complete central typecheck owner', () => {
-  const require = createRequire(import.meta.url);
-  const cli = path.join(path.dirname(require.resolve('vitest/package.json')), 'vitest.mjs');
-  const discover = (args) =>
-    JSON.parse(
-      execFileSync(
-        process.execPath,
-        [cli, 'list', '--project=@forgeax/engine-render', ...args, '--filesOnly', '--json'],
-        { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] },
-      ),
-    ).map(({ file }) => file);
-  const all = discover([]);
-  const typeTests = all.filter((file) => file.includes('.test-d.'));
-  assert.ok(typeTests.length > 0, 'exercise the real package declaration, not a mock config');
-  const preflight = discover(['--typecheck.only']);
-  assert.deepEqual(
-    preflight.filter((file) => file.includes('.test-d.')).toSorted(),
-    typeTests.toSorted(),
-    'the central preflight retains every original type test',
-  );
-  const runtime = discover(['--typecheck.enabled=false']);
-  assert.deepEqual(
-    runtime.filter((file) => file.includes('.test-d.')),
-    [],
-    'explicit CLI false must override the package default in runtime children',
-  );
-  assert.deepEqual(
-    runtime.toSorted(),
-    all.filter((file) => !file.includes('.test-d.')).toSorted(),
-    'retain every ordinary runtime file',
-  );
-});
-
 test('ordinary Shader placement excludes the isolated source-production cost', () => {
   const groups = coverageGroups(['@forgeax/engine-vite-plugin-shader'], 8);
   const ordinary = groups.find((group) => group.files.length === 0);
@@ -2018,52 +2037,130 @@ test('ordinary Shader placement excludes the isolated source-production cost', (
   assert.ok(source.weight >= 760, 'retain the complete measured source-production reservation');
 });
 
-test('actual DevKit and Render discovery conserves both native halves and exclusive owners', async () => {
+test('actual Vitest discovery conserves native coverage and the central type-test owner', async () => {
   const require = createRequire(import.meta.url);
   const cli = path.join(path.dirname(require.resolve('vitest/package.json')), 'vitest.mjs');
-  for (const project of ['@forgeax/engine-devkit', '@forgeax/engine-render']) {
-    const groups = coverageGroups([project], 8);
-    const native = groups.filter((group) => group.shard);
-    const explicit = groups.filter((group) => group.files.length > 0);
-    const commonArgs = buildGroupArgs({
+  const modeling = '@forgeax/engine-modeling';
+  const render = '@forgeax/engine-render';
+  const projects = [modeling, '@forgeax/engine-devkit', render];
+  const groups = coverageGroups(projects, 8);
+  const owners = projects.map((project) => ({
+    project,
+    native: groups.filter((group) => group.shard && group.projects.includes(project)),
+    explicit: groups.filter((group) => group.files.length > 0 && group.projects.includes(project)),
+  }));
+  // One real root CLI discovery per mode. Project identities keep the three
+  // inventories independent while avoiding repeated Vite config resolution.
+  const discover = (args) => {
+    const rows = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          cli,
+          'list',
+          ...projects.map((project) => `--project=${project}`),
+          ...args,
+          '--filesOnly',
+          '--json',
+        ],
+        { encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] },
+      ),
+    );
+    return new Map(
+      projects.map((project) => [
+        project,
+        rows
+          .filter(({ projectName }) => projectName === project)
+          .map(({ file }) => file.replaceAll('\\', '/')),
+      ]),
+    );
+  };
+  const typeTest = (file) => file.includes('.test-d.');
+  const all = discover([]);
+  const typeTests = all.get(render).filter(typeTest);
+  assert.ok(typeTests.length > 0, 'exercise the real package type-test declaration');
+  const preflight = discover(['--typecheck.only']);
+  assert.deepEqual(preflight.get(render).filter(typeTest).toSorted(), typeTests.toSorted());
+  const runtimeOnly = '--typecheck.enabled=false';
+  const runtime = discover([runtimeOnly]);
+  assert.deepEqual(
+    runtime.get(render).toSorted(),
+    all
+      .get(render)
+      .filter((file) => !typeTest(file))
+      .toSorted(),
+    'the runtime child keeps every ordinary file and excludes central type tests',
+  );
+
+  const exclusions = (group) =>
+    buildGroupArgs({
       cliPath: cli,
-      group: { ...native[0], excludes: [] },
+      group,
       maxWorkers: 1,
       coverage: true,
       coverageDir: 'coverage',
       reportPath: 'report.json',
-    }).filter(
-      (argument) => argument.startsWith('--exclude=') || argument === '--typecheck.enabled=false',
-    );
-    const discover = (args) =>
-      JSON.parse(
-        execFileSync(
-          process.execPath,
-          [cli, 'list', `--project=${project}`, ...args, '--filesOnly', '--json'],
-          { encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] },
-        ),
-      ).map(({ file }) => file.replaceAll('\\', '/'));
-    const expected = discover(commonArgs);
-    const covered = discover([
-      ...commonArgs,
-      ...native[0].excludes.map((file) => `--exclude=${path.resolve(file).replaceAll('\\', '/')}`),
-    ]);
-    const specifications = covered.map((moduleId) => ({ moduleId, project: { name: project } }));
-    const partitions = await Promise.all(
-      native.map((group) => {
-        const [index, count] = group.shard.split('/').map(Number);
-        return new DawnSequencer({
-          config: { root: process.cwd(), coverage: { enabled: true }, shard: { index, count } },
-        }).shard(specifications);
-      }),
-    );
-    assert.ok(partitions.every((partition) => partition.length > 0));
+    }).filter((argument) => argument.startsWith('--exclude='));
+  const commonExcludes = new Set([
+    ...exclusions({ ...owners[0].native[0], excludes: [] }).map((arg) =>
+      arg.slice('--exclude='.length),
+    ),
+    ...[...coreDeferredCoverageFiles(), ...localModelingShowcases].map((file) =>
+      path.resolve(file).replaceAll('\\', '/'),
+    ),
+  ]);
+  const covered = discover([
+    runtimeOnly,
+    ...new Set(owners.flatMap(({ native }) => exclusions(native[0]))),
+  ]);
+  const selected = discover([
+    runtimeOnly,
+    ...owners.flatMap(({ explicit }) => explicit.flatMap(({ files }) => files)),
+  ]);
+  const performanceFile = path
+    .resolve('packages/modeling/src/__tests__/perf-tiers.unit.test.ts')
+    .replaceAll('\\', '/');
+  assert.ok(
+    runtime.get(modeling).includes(performanceFile),
+    'retain the complete performance file',
+  );
+  assert.ok(
+    commonExcludes.has(performanceFile),
+    'the Modeling preflight owns the performance file',
+  );
+
+  for (const { project, native, explicit } of owners) {
+    // Files-only listing is unsharded. Exercise the real sequencer against
+    // the ordinary inventory and the explicit child filters separately.
+    const specifications = covered
+      .get(project)
+      .map((moduleId) => ({ moduleId, project: { name: project } }));
+    const partition = (files) =>
+      Promise.all(
+        native.map((group) => {
+          const [index, count] = group.shard.split('/').map(Number);
+          return new DawnSequencer({
+            config: { root: process.cwd(), coverage: { enabled: true }, shard: { index, count } },
+          }).shard(files);
+        }),
+      );
+    const partitions = await partition(specifications);
+    assert.ok(partitions.every((files) => files.length > 0));
+    if (project === modeling)
+      assert.deepEqual(
+        await partition(specifications.toReversed()),
+        partitions,
+        'placement is independent of discovery order',
+      );
     assert.deepEqual(
       [
         ...partitions.flat().map(({ moduleId }) => moduleId),
-        ...explicit.flatMap((group) => discover(group.files)),
+        ...discoverExplicitCoverageFiles(selected.get(project), explicit),
       ].toSorted(),
-      expected.toSorted(),
+      runtime
+        .get(project)
+        .filter((file) => !commonExcludes.has(file))
+        .toSorted(),
       `${project}: every complete instrumented file still runs exactly once`,
     );
   }
@@ -2291,8 +2388,9 @@ test('each complete broad project half starts before fine-partition backfill', (
         localGpuLease: false,
         typecheck,
       });
+      const firstParallel = order.find((index) => !isExclusiveCoverageGroup(children[index]));
       assert.ok(
-        children[order[0]].shard?.endsWith('/2'),
+        firstParallel !== undefined && children[firstParallel].shard?.endsWith('/2'),
         'run 41579286478 started Render half two after 25 minutes of Modeling backfill',
       );
       assert.equal(new Set(order).size, children.length, 'retain every complete child');
@@ -2339,15 +2437,15 @@ test('delegated native preparation runs without an outer GPU lease and stays nat
   }
 });
 
-test('live browser inspection shares the existing exclusive Scene child in unit and coverage routes', () => {
+test('the Primary live journey is excluded from V8 while Scene and local browser acceptance stay available', () => {
   const file = 'packages/devkit/src/__tests__/live-dev-look.e2e.test.ts';
   const sceneFile = 'packages/devkit/src/__tests__/scene-bootstrap.e2e.test.ts';
   for (const isolateFiles of [false, true]) {
     const groups = coverageGroups(['@forgeax/engine-devkit'], 8, { isolateFiles });
-    const owners = groups.filter((group) => group.files.includes(file));
+    const owners = groups.filter((group) => group.files.includes(sceneFile));
     assert.equal(owners.length, 1);
     const owner = owners[0];
-    assert.ok(owner.files.includes(sceneFile));
+    assert.deepEqual(owner.files, isolateFiles ? [sceneFile] : [sceneFile, file]);
     assert.equal(owner.label, `@forgeax/engine-devkit:${sceneFile}`);
     assert.equal(owner.gpuLease, true);
     assert.ok(isExclusiveCoverageGroup(owner));
@@ -2360,12 +2458,20 @@ test('live browser inspection shares the existing exclusive Scene child in unit 
       ),
       1,
     );
-    assert.ok(owner.reservationWeight >= 375);
-    assert.ok(
-      groups
-        .filter((group) => group.files.length === 0)
-        .every((group) => group.excludes.includes(file)),
-    );
+    for (const group of groups) {
+      const args = buildGroupArgs({
+        cliPath: 'vitest.mjs',
+        group,
+        maxWorkers: 1,
+        coverage: isolateFiles,
+        coverageDir: '.coverage',
+        reportPath: 'result.json',
+      });
+      assert.equal(
+        args.includes(`--exclude=${path.resolve(file).replaceAll('\\', '/')}`),
+        isolateFiles || group.files.length === 0,
+      );
+    }
   }
 });
 
@@ -2383,6 +2489,32 @@ test('local GPU admission queues native unit groups after every CPU group', () =
   assert.deepEqual(
     scheduledGroupOrder(groups, { coverage: false, localGpuLease: true }),
     [0, 2, 1],
+  );
+});
+
+test('starts the cold Standard fixtures before the parallel coverage batch', () => {
+  const groups = [
+    { label: 'ordinary', files: [] },
+    { label: 'large source compilation', files: ['large-source.test.ts'] },
+    {
+      label: 'cold Standard alias',
+      files: ['packages/shader-compiler/src/__tests__/material-standard-alias.unit.test.ts'],
+    },
+    { label: 'other source compilation', files: ['other-source.test.ts'] },
+    {
+      label: 'cold Standard schema reuse',
+      files: [
+        'packages/vite-plugin-pack/src/__tests__/material-program-schema-reuse.integration.test.ts',
+      ],
+    },
+  ];
+  assert.deepEqual(
+    scheduledGroupOrder(groups, {
+      coverage: true,
+      localGpuLease: false,
+      coverageOrder: [1, 0, 3, 2, 4],
+    }),
+    [2, 4, 0, 1, 3],
   );
 });
 
@@ -2407,8 +2539,9 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
     bootstrapFile,
     libraryFile,
     publicationFile,
+    devkitBootstrapCommandsFile,
     sceneFile,
-    ...nativeFiles,
+    ...nativeFiles.slice(0, 2),
     liveProcessFile,
     liveClientFile,
     workerIdentityFile,
@@ -2435,13 +2568,19 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
       },
       {
         projects: ['@forgeax/engine-devkit'],
+        files: [devkitBootstrapCommandsFile],
+        excludes: [],
+        gpuLease: false,
+      },
+      {
+        projects: ['@forgeax/engine-devkit'],
         files: [nativeFiles[0]],
         excludes: [],
         gpuLease: false,
       },
       {
         projects: ['@forgeax/engine-devkit'],
-        files: [nativeFiles[1], nativeFiles[2]],
+        files: [nativeFiles[1]],
         excludes: [],
         gpuLease: true,
       },
@@ -2805,6 +2944,10 @@ test('cold Standard compilation and worker parity each have one exclusive instru
       'packages/shader-compiler/src/material/__tests__/surface-resources.integration.test.ts',
     ],
     [
+      '@forgeax/engine-shader-compiler',
+      'packages/shader-compiler/src/material/__tests__/weapon-spirit-material.integration.test.ts',
+    ],
+    [
       '@forgeax/engine-runtime',
       'packages/runtime/src/__tests__/custom-surface-publication.integration.test.ts',
     ],
@@ -2882,6 +3025,107 @@ test('cold Standard compilation and worker parity each have one exclusive instru
   }
 });
 
+test('the completed split compiler cohort fits the daily Coverage replay target', () => {
+  const ledger = JSON.parse(
+    readFileSync('scripts/ci/coverage-completed-child-seconds.json', 'utf8'),
+  );
+  const receipt = ledger.replayRuns.find((run) => run.runId === 44949779826);
+  const groups = restoreHistoricalSharedCoverage(
+    coverageGroups(allProjectNames(), 8, {
+      historicalModeling: true,
+      environment: { FORGEAX_CI_CORE_VALIDATION: '1' },
+    }),
+  );
+  assert.equal(receipt.originalJobs.length, 4);
+  assert.ok(receipt.originalJobs.every((job) => !job.inherited));
+  assert.deepEqual(
+    groups.map((group) => group.label).sort(),
+    Object.keys(receipt.completedSeconds).sort(),
+  );
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+  const observed = groups.map((group) => ({
+    ...group,
+    replaySeconds: [receipt.completedSeconds[group.label]],
+  }));
+  const finishes = coverageAssignmentLaneFinishes(observed, assignment, 4, false, true, 0);
+  assert.ok(Math.max(...finishes) <= receipt.targetSeconds, String(finishes));
+});
+
+test('the timeout cohort moves complete Coverage work off the overrun lane', () => {
+  const ledger = JSON.parse(
+    readFileSync('scripts/ci/coverage-completed-child-seconds.json', 'utf8'),
+  );
+  const receipt = ledger.replayRuns.find(({ runId }) => runId === 44984141441);
+  const groups = restoreHistoricalSharedCoverage(
+    coverageGroups(allProjectNames(), 8, {
+      historicalModeling: true,
+      environment: { FORGEAX_CI_CORE_VALIDATION: '1' },
+    }),
+  );
+  assert.equal(Object.keys(receipt.completedSeconds).length, 61);
+  assert.equal(Object.keys(receipt.reservedSeconds).length, 6);
+  assert.ok(receipt.originalJobs.every((job) => !job.inherited && job.runId === receipt.runId));
+  assert.deepEqual(
+    groups.map((group) => group.label).sort(),
+    [...Object.keys(receipt.completedSeconds), ...Object.keys(receipt.reservedSeconds)].sort(),
+  );
+  const interrupted = groups.find((group) =>
+    group.files.includes(
+      'packages/render/src/__tests__/direct-shadow-preparation.integration.test.ts',
+    ),
+  );
+  assert.equal(interrupted.observedSeconds, undefined);
+  assert.equal(receipt.reservedSeconds[interrupted.label], 180);
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+  const observed = groups.map((group) => ({
+    ...group,
+    replaySeconds: [receipt.completedSeconds[group.label] ?? receipt.reservedSeconds[group.label]],
+  }));
+  const finishes = coverageAssignmentLaneFinishes(observed, assignment, 4, false, true, 0);
+  assert.ok(Math.max(...finishes) <= receipt.targetSeconds, String(finishes));
+});
+
+test('current Coverage assigns each Standard output batch once across the four jobs', () => {
+  const groups = coverageGroups(allProjectNames(), 8, {
+    environment: { FORGEAX_CI_CORE_VALIDATION: '1' },
+  });
+  const assignments = assignCoverageShards(groups, 4, { typecheck: false });
+  const modelingByShard = [0, 0, 0, 0];
+  for (const [index, group] of groups.entries()) {
+    if (group.shard && group.projects[0] === '@forgeax/engine-modeling')
+      modelingByShard[assignments[index]]++;
+  }
+  assert.deepEqual(modelingByShard, [3, 3, 3, 3]);
+  const compilerSplitIndex = groups.findIndex((group) =>
+    group.files.includes(materialCompilerSplitFile),
+  );
+  const compilerSplit = groups[compilerSplitIndex];
+  const compilerIndex = groups.findIndex((group) => group.label === compilerSplit.splitFromReceipt);
+  assert.ok(compilerIndex >= 0);
+  assert.notEqual(assignments[compilerSplitIndex], assignments[compilerIndex]);
+  assert.equal(compilerSplit.files.length + groups[compilerIndex].files.length, 17);
+  for (const file of standardTransmissionFiles) {
+    const indices = groups.flatMap((group, index) => (group.files.includes(file) ? [index] : []));
+    assert.equal(indices.length, 1, file);
+    const [index] = indices;
+    const group = groups[index];
+    assert.equal(group.sourceCompilation, true, file);
+    assert.equal(group.packagesOnly, true, file);
+    assert.ok(isExclusiveCoverageGroup(group), file);
+    assert.ok(assignments[index] >= 0 && assignments[index] < 4, file);
+    assert.ok(group.weight > 0, file);
+    const prior = groups.find((candidate) => candidate.label === group.splitFromReceipt);
+    const measuredReplay = prior?.replaySeconds.findIndex((seconds) => seconds > 0);
+    assert.ok(measuredReplay >= 0, file);
+    assert.equal(group.replaySeconds[measuredReplay], 0, file);
+  }
+  const finishes = coverageAssignmentLaneFinishes(groups, assignments, 4, false, true);
+  assert.ok(
+    Math.max(...finishes) <= 2300,
+    `retain the current four-job execution budget: ${finishes}`,
+  );
+});
+
 test('large source and production recovery files have one exclusive instrumented owner', () => {
   const expected = new Map([
     [
@@ -2905,6 +3149,7 @@ test('large source and production recovery files have one exclusive instrumented
       '@forgeax/engine-shader',
     ],
     ['packages/shader/src/__tests__/material-program.test.ts', '@forgeax/engine-shader'],
+    ...standardTransmissionFiles.map((file) => [file, '@forgeax/engine-shader']),
     [
       'packages/rhi-webgpu/src/__tests__/pipeline-library.unit.test.ts',
       '@forgeax/engine-rhi-webgpu',
@@ -2974,8 +3219,9 @@ test('coverage admission bounds child-process tails when completed forecasts und
     { length: 4 },
     (_, lane) => assignment.filter((value) => value === lane).length,
   );
+  const evenShare = Math.ceil(groups.length / counts.length);
   assert.ok(
-    Math.max(...counts) <= 16,
+    Math.max(...counts) <= Math.max(16, evenShare),
     `retain setup/serial-tail headroom instead of stranding 21 children: ${counts}`,
   );
 });
@@ -3221,6 +3467,31 @@ test('authoring publication retains its cold 15-second deadline without a compet
   );
 });
 
+test('latest Core replay leaves room for the exclusive Shader Compiler in four shards', () => {
+  const ledger = JSON.parse(
+    readFileSync(new URL('../coverage-completed-child-seconds.json', import.meta.url), 'utf8'),
+  );
+  const receipt = ledger.replayRuns.find(({ runId }) => runId === 44509748020);
+  assert.equal(Object.keys(receipt.completedSeconds).length, 49);
+  assert.equal(receipt.interruptedGroups.length, 1);
+  const [interrupted] = receipt.interruptedGroups;
+  assert.equal(receipt.completedSeconds[interrupted], undefined);
+  assert.equal(receipt.reservedSeconds[interrupted], 1020);
+  const groups = coverageGroupsForHistoricalReceipts(receipt.projects, 8, {
+    environment: { FORGEAX_CI_CORE_VALIDATION: '1' },
+  });
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+  assert.equal(groups.length, 61);
+  assert.equal(new Set(assignment).size, 4);
+  const observed = groups.map((group) => ({
+    ...group,
+    replaySeconds: [receipt.completedSeconds[group.label] ?? receipt.reservedSeconds[group.label]],
+  }));
+  assert.ok(observed.every(({ replaySeconds: [seconds] }) => Number.isFinite(seconds)));
+  const finishes = coverageAssignmentLaneFinishes(observed, assignment, 4, false, true, 0);
+  assert.ok(Math.max(...finishes) < receipt.budgetSeconds, `latest replay lanes: ${finishes}`);
+});
+
 test('partial daily cohort retains its 2300-second placement window without importing core costs into full validation', () => {
   const receipt = JSON.parse(
     readFileSync('scripts/ci/__tests__/fixtures/coverage-completed-43847849110.json', 'utf8'),
@@ -3233,7 +3504,7 @@ test('partial daily cohort retains its 2300-second placement window without impo
   assert.equal(receipt.originalJobs.flatMap((job) => job.groups).length, 61);
   for (const label of [...receipt.failedGroups, ...receipt.unstartedGroups])
     assert.equal(receipt.completedSeconds[label], undefined);
-  const groups = coverageGroups(receipt.projects, 8, {
+  const groups = coverageGroupsForHistoricalReceipts(receipt.projects, 8, {
     environment: { FORGEAX_CI_CORE_VALIDATION: '1' },
   });
   assert.deepEqual(
@@ -3269,8 +3540,14 @@ test('partial daily cohort retains its 2300-second placement window without impo
     replayRuns: ledger.replayRuns.filter((run) => run.runId !== receipt.runId),
   };
   assert.deepEqual(
-    coverageGroups(receipt.projects, 8, { completed: ledger, environment: {} }),
-    coverageGroups(receipt.projects, 8, { completed: withoutDaily, environment: {} }),
+    coverageGroupsForHistoricalReceipts(receipt.projects, 8, {
+      completed: ledger,
+      environment: {},
+    }),
+    coverageGroupsForHistoricalReceipts(receipt.projects, 8, {
+      completed: withoutDaily,
+      environment: {},
+    }),
     'a core-only observation must not become a full/Nightly cost sample',
   );
 });
@@ -3284,7 +3561,7 @@ test('completed daily children rebalance the 45-minute timeout within the origin
   assert.equal(receipt.unstartedGroups.length, 3);
   for (const label of [...receipt.interruptedGroups, ...receipt.unstartedGroups])
     assert.equal(receipt.completedSeconds[label], undefined);
-  const groups = coverageGroups(receipt.projects, 8, {
+  const groups = coverageGroupsForHistoricalReceipts(receipt.projects, 8, {
     environment: { FORGEAX_CI_CORE_VALIDATION: '1' },
   });
   assert.deepEqual(
@@ -3321,7 +3598,7 @@ test('new slow coverage children retain preceding windows and all failed-owner f
     assert.equal(receipt.completedSeconds[label], undefined);
     assert.ok(receipt.reservedSeconds[label] > 0);
   }
-  const groups = coverageGroups(receipt.projects, 8, {
+  const groups = coverageGroupsForHistoricalReceipts(receipt.projects, 8, {
     environment: { FORGEAX_CI_CORE_VALIDATION: '1' },
   });
   assert.equal(groups.length, 61);
@@ -3390,7 +3667,7 @@ test('all 62 completed 708d children retain source costs while daily Play moves 
   const play = '@forgeax/engine-devkit:packages/devkit/src/__tests__/project-play.e2e.test.ts';
   assert.equal(receipt.completedSeconds[play], 736.26);
   const environment = { FORGEAX_CI_CORE_VALIDATION: '1' };
-  const groups = coverageGroups(receipt.projects, 8, { environment });
+  const groups = coverageGroupsForHistoricalReceipts(receipt.projects, 8, { environment });
   assert.equal(groups.length, 61);
   assert.ok(groups.every((group) => group.label !== play));
   assert.deepEqual(

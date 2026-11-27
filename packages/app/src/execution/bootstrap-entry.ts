@@ -42,6 +42,11 @@ export interface PreparedExecutionBootstrap {
 
 /** Realm-local Host bridge available to execution bootstrap plugins. */
 export interface ExecutionBootstrapHost {
+  /** Internal static Level candidates owned by this split Engine realm. */
+  readonly levelCandidates?: Pick<
+    import('../levels/app-level-owner').AppLevelOwner,
+    'create' | 'inspect'
+  >;
   /** Source-owned synchronous admission with realm-neutral asynchronous GPU preparation. */
   readonly dynamicGeometry?: AsyncDynamicGeometryHost;
   /** Logical target authoring; physical resources always belong to the Renderer. */

@@ -11,8 +11,11 @@ import { AssetGuid } from '@forgeax/engine/pack/guid';
 import physics3d from '@forgeax/engine/physics-rapier3d';
 import {
   ANTIALIAS_NONE,
+  ANTIALIAS_MSAA,
   ANTIALIAS_TAA,
+  ANTIALIAS_TSR,
   Camera,
+  DEFAULT_STANDARD_PROFILE,
   DirectionalLight,
   DynamicResolution,
   type FrameReceipt,
@@ -22,8 +25,6 @@ import {
   ScreenSpaceReflection,
   Skylight,
   TONEMAP_ACES_FILMIC,
-  type WaterSsrTemporal,
-  WaterSsrTemporalValue,
 } from '@forgeax/engine/render';
 import {
   WATER_SCENE_STATUS_RESOURCE,
@@ -87,25 +88,47 @@ const poses: Record<ViewPreset, CameraPose> = {
 const SSR_SETTINGS = {
   maxDistance: 60,
   thickness: 0.25,
-  maxRoughness: 0.7,
-  waterTemporal: 'always',
+  maxRoughness: 0.6,
 } as const;
+
+function waterDemoAntialias(mode: string | null) {
+  switch (mode) {
+    case 'none':
+      return ANTIALIAS_NONE;
+    case 'msaa':
+      return ANTIALIAS_MSAA;
+    case 'tsr':
+      return ANTIALIAS_TSR;
+    default:
+      return ANTIALIAS_TAA;
+  }
+}
+
+function waterDemoOptions(search: string) {
+  const query = new URLSearchParams(search);
+  const initialAa = waterDemoAntialias(query.get('aa'));
+  return {
+    initialAa,
+    temporal: initialAa === ANTIALIAS_TAA || initialAa === ANTIALIAS_TSR,
+    reflections: query.get('ssr') !== 'off',
+    renderPath: query.get('pipeline') === 'forward' ? 'forward' : 'deferred',
+    startView: query.get('view') === 'surface' ? 'surface' : 'overview',
+  } as const;
+}
 
 async function main() {
   const canvas = element<HTMLCanvasElement>('#scene');
   const panel = element<HTMLElement>('#controls-panel');
   const panelToggle = element<HTMLButtonElement>('#panel-toggle');
-  const waterTemporalMode = element<HTMLSelectElement>('#water-ssr-temporal');
-  waterTemporalMode.value = SSR_SETTINGS.waterTemporal;
-  const ssrSettings = () => ({
-    ...SSR_SETTINGS,
-    waterTemporal: WaterSsrTemporalValue[waterTemporalMode.value as WaterSsrTemporal],
-  });
+  const { initialAa, temporal, reflections, renderPath, startView } = waterDemoOptions(location.search);
+  element<HTMLInputElement>('#taa').checked = temporal;
+  element<HTMLInputElement>('#ssr').checked = reflections;
   const createStageApp = () =>
     createApp(
       canvas,
       {
         plugins: [physics3d],
+        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath },
         uiRoot: panel,
         pointerLockAllowed: () => false,
         ...(__WATER_R3_SSR_IDENTITY__ === null ? {} : { ssrIdentity: __WATER_R3_SSR_IDENTITY__ }),
@@ -245,10 +268,10 @@ async function main() {
     scenario === 'shared' && element<HTMLSelectElement>('#body-instance').value === 'peer'
       ? peer
       : required(bodies.find((body) => body.type === selectedBody));
-  let selectedView: View = 'overview';
+  let selectedView: View = startView;
   let pose = {
-    eye: [...poses.overview.eye] as [number, number, number],
-    target: [...poses.overview.target] as [number, number, number],
+    eye: [...poses[startView].eye] as [number, number, number],
+    target: [...poses[startView].target] as [number, number, number],
   };
   const camera = world
     .spawn(
@@ -269,16 +292,14 @@ async function main() {
             far: 400,
           }),
           clearColor: [0.68, 0.81, 0.83, 1],
-          antialias: ANTIALIAS_TAA,
+          antialias: initialAa,
           tonemap: TONEMAP_ACES_FILMIC,
         },
       },
-      {
-        component: ScreenSpaceReflection,
-        data: ssrSettings(),
-      },
     )
     .unwrap();
+  if (reflections)
+    world.addComponent(camera, { component: ScreenSpaceReflection, data: SSR_SETTINGS }).unwrap();
   const water = () => world.getResource<WaterSystem>(WATER_SYSTEM_RESOURCE);
   const materialPanel = await createMaterialPanel({
     assets,
@@ -460,7 +481,7 @@ async function main() {
     pose =
       scenario === 'shared'
         ? { eye: [35, 22, 52], target: [14, 0, 0] }
-        : { eye: [...poses.overview.eye], target: [...poses.overview.target] };
+        : { eye: [...poses[startView].eye], target: [...poses[startView].target] };
     cameraControls.reset();
     refreshViewButtons();
     mountScenario();
@@ -478,18 +499,14 @@ async function main() {
   });
   element<HTMLInputElement>('#ssr').addEventListener('change', (event) => {
     const enabled = (event.currentTarget as HTMLInputElement).checked;
-    waterTemporalMode.disabled = !enabled;
     if (enabled)
       world
         .addComponent(camera, {
           component: ScreenSpaceReflection,
-          data: ssrSettings(),
+          data: SSR_SETTINGS,
         })
         .unwrap();
     else world.removeComponent(camera, ScreenSpaceReflection).unwrap();
-  });
-  waterTemporalMode.addEventListener('change', () => {
-    world.set(camera, ScreenSpaceReflection, ssrSettings()).unwrap();
   });
   element<HTMLInputElement>('#taa').addEventListener('change', (event) =>
     world

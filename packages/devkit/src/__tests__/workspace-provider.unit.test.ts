@@ -36,7 +36,7 @@ import type { ViteDevServer } from 'vite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  createViteConfig: vi.fn(async () => ({})),
+  createViteConfig: vi.fn(async (..._args: unknown[]) => ({})),
 }));
 
 vi.mock('../host.js', async (importOriginal) => ({
@@ -1056,18 +1056,35 @@ describe('DevKit workspace provider', () => {
     });
   });
 
-  it('cancels a real Pack catalog readiness wait with its operation signal', async () => {
+  it.each([
+    'request',
+    'retry delay',
+    'terminal response body',
+  ])('preserves the catalog cancellation reason during the %s', async (phase) => {
     const controller = new AbortController();
     const reason = new Error('catalog probe cancelled');
-    const fetchMock = vi.fn(async () => {
-      controller.abort(reason);
-      return { status: 503, ok: false, body: null };
+    const fetchMock = vi.fn(async (_url: URL, { signal }: { signal: AbortSignal }) => {
+      if (phase === 'terminal response body') {
+        return new Response(
+          new ReadableStream({
+            start(body) {
+              signal.addEventListener('abort', () => body.error(signal.reason), { once: true });
+              void setImmediate().then(() => controller.abort(reason));
+            },
+          }),
+          { status: 500 },
+        );
+      }
+      if (phase === 'request') controller.abort(reason);
+      else void setImmediate().then(() => controller.abort(reason));
+      return new Response(null, { status: 503 });
     });
     vi.stubGlobal('fetch', fetchMock);
     await expect(
       waitForRuntimeCatalog('http://127.0.0.1:43123', 'workspace-scope', 1_000, controller.signal),
     ).rejects.toBe(reason);
     expect(fetchMock).toHaveBeenCalledOnce();
+    if (phase !== 'retry delay') expect(fetchMock.mock.calls[0]?.[1].signal.reason).toBe(reason);
   });
 
   it('rejects cancelled project admission before allocating a backend or server', async () => {
@@ -1495,6 +1512,9 @@ describe('DevKit workspace provider', () => {
     await expect(
       Promise.resolve().then(() => first.getCamera({ targetId: first.target.targetId })),
     ).rejects.toMatchObject({ code: 'engine-workspace-preview-closed' });
+    await expect(first.commitAssetContent?.(0, [])).rejects.toMatchObject({
+      code: 'engine-workspace-preview-closed',
+    });
     expect(commands.length).toBe(beforeStale);
     if (!failChild)
       expect(await replacement.getCamera({ targetId: replacement.target.targetId })).toMatchObject({
@@ -2435,6 +2455,92 @@ describe('DevKit workspace provider', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     await provider.closeProject({ project: opened.project, handle: opened.handle });
     await provider.dispose?.();
+  });
+
+  it('observes a Pack Catalog rejection when ready closes its own workspace', async () => {
+    const root = await projectRoot();
+    const server = fakeServer();
+    let disposed: Promise<void> | undefined;
+    let readyCalls = 0;
+    const packReady = () => {
+      readyCalls += 1;
+      disposed = Promise.resolve(provider.dispose?.());
+      return Promise.reject(new Error('Pack stopped during readiness'));
+    };
+    const provider = createDevKitWorkspaceProvider({
+      readyTimeoutMs: 1_000,
+      backendFactory: async () => createBackendHost(),
+      viteServerFactory: async () =>
+        ({
+          ...server,
+          httpServer: {},
+          config: { plugins: [{ name: 'forgeax:pack', ready: packReady }] },
+        }) as unknown as ViteDevServer,
+    });
+    await provider.openProject({ root, generation: 46 });
+    try {
+      await vi.waitFor(() => expect(readyCalls).toBe(1));
+      await disposed;
+      expect(server.close).toHaveBeenCalledOnce();
+    } finally {
+      await provider.dispose?.();
+    }
+  });
+
+  it('publishes preparation before Vite exists and ignores progress after session close', async () => {
+    const root = await projectRoot();
+    let report: NonNullable<
+      Parameters<typeof import('../host.js').createViteConfig>[3]
+    >['onPackProgress'];
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mocks.createViteConfig.mockImplementationOnce(async (...args) => {
+      const preparationOptions = args[3] as NonNullable<
+        Parameters<typeof import('../host.js').createViteConfig>[3]
+      >;
+      report = preparationOptions.onPackProgress;
+      preparationOptions.onPreparation?.('vite-server');
+      preparationOptions.onShaderProgress?.({
+        phase: 'compile',
+        sourcePath: 'engine/standard.wgsl',
+        completed: 3,
+        total: 16,
+      });
+      await blocked;
+      return {};
+    });
+    const createServer = vi.fn(async () => fakeServer());
+    const provider = createDevKitWorkspaceProvider({
+      backendFactory: async () => createBackendHost(),
+      viteServerFactory: createServer,
+    });
+    const opened = await provider.openProject({ root, generation: 46 });
+    try {
+      await vi.waitFor(() => expect(opened.status.preparation?.active).toHaveLength(1));
+      expect(opened.status.phase).toBe('preparing');
+      expect(createServer).not.toHaveBeenCalled();
+      expect(opened.status.preparation).toMatchObject({
+        stage: 'shader',
+        active: [
+          {
+            source: 'engine/standard.wgsl',
+            phase: 'shader',
+            progress: { completed: 3, total: 16 },
+          },
+        ],
+      });
+      release();
+      await vi.waitFor(() => expect(opened.status.phase).toBe('starting'));
+      await provider.closeProject({ project: opened.project, handle: opened.handle });
+      const before = opened.status;
+      report?.({ generation: 2, kind: 'stage', stage: 'ready' });
+      expect(opened.status).toBe(before);
+    } finally {
+      release();
+      await provider.dispose?.();
+    }
   });
 
   it('rejects workspace results from an old or unassociated caller', async () => {

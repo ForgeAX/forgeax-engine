@@ -27,7 +27,7 @@ import { RenderReflectionProbe, renderProbesOf } from './render-probes';
 import { ViewRecorder } from './render-views';
 import { RenderCleanup, RenderExtract, RenderPrepare, renderSubmission } from './render-world';
 import { RenderProbeInput } from './scene-systems';
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import {
   type StagedViewInputs,
   stagedViewInputs,
@@ -115,12 +115,8 @@ export function viewCaptureFitsOf(
   world: World,
   entity: EntityHandle | undefined,
 ): ReadonlyMap<object, ViewLights> | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewCaptureFits)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewCaptureFitsState>(
-      requireViewField(world, entity, ViewCaptureFits, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<ViewCaptureFitsState>(world, entity, ViewCaptureFits);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.fits : undefined;
 }
 
@@ -255,12 +251,8 @@ function fitCaptureFaces(
 }
 
 function stateOf(world: World, entity: EntityHandle | undefined) {
-  if (entity === undefined || !world.hasComponent(entity, ViewReflectionProbes)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewReflectionProbesState>(
-      requireViewField(world, entity, ViewReflectionProbes, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<ViewReflectionProbesState>(world, entity, ViewReflectionProbes);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state : undefined;
 }
 
@@ -379,8 +371,6 @@ function prepareViewReflectionProbes(
     );
     if (reset.changed) {
       resetTemporalHistory(frameState, 'signature-change');
-      frameState.ssrHistoryOwner?.reset('reflection-generation');
-      frameState.waterSsrHistoryOwner?.reset('reflection-generation');
     }
     frameState.ssrFallbackGeneration = reset.generation;
   } catch (cause) {

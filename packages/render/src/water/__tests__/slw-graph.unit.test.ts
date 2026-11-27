@@ -19,7 +19,6 @@ it('clears all optical outputs to zero coverage so non-Water pixels preserve the
     format: 'depth32float-stencil8',
     size,
   }).unwrap();
-  const normal = createRenderPipelineTarget(graph, 'normal', { format: 'r32uint', size }).unwrap();
   const temporal = createRenderPipelineTarget(graph, 'scene-temporal', {
     format: 'rgba16float',
     size,
@@ -32,7 +31,6 @@ it('clears all optical outputs to zero coverage so non-Water pixels preserve the
     context: { graph } as RenderPipelineBuildContext<RenderPipelineFrame>,
     color,
     depth,
-    opaqueNormal: normal,
     opaqueTemporal: temporal,
     receiver: { sampled: [], spotShadow: depth, extraAccesses: [] },
     view,
@@ -45,13 +43,11 @@ it('clears all optical outputs to zero coverage so non-Water pixels preserve the
   for (const attachment of optical?.colorAttachments ?? []) {
     expect(attachment).toMatchObject({ loadOp: 'clear', clearValue: { r: 0, g: 0, b: 0, a: 0 } });
   }
-  const velocity = raster.mock.calls.find(([name]) => name === 'water-scene-temporal')?.[1];
-  if (!result.ok) return;
-  expect(velocity?.accesses).toEqual([
-    { resource: result.value.temporal.view, usage: 'sampled-read' },
-    { resource: temporal.view, usage: 'color-attachment' },
-    { resource: result.value.coverage.view, usage: 'sampled-read' },
+  const prepass = raster.mock.calls.find(([name]) => name === 'water-depth-prepass')?.[1];
+  expect(prepass?.colorAttachments).toMatchObject([
+    { loadOp: 'clear' },
+    { view: temporal.view, loadOp: 'load' },
   ]);
-  expect(velocity?.depthStencilAttachment).toBeUndefined();
-  expect(velocity?.colorAttachments[0]?.loadOp).toBe('load');
+  expect(prepass?.depthStencilAttachment).toBeDefined();
+  expect(raster.mock.calls.some(([name]) => name === 'water-scene-temporal')).toBe(false);
 });

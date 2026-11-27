@@ -45,7 +45,8 @@ test('archive verifier checks the final template and source closures', async () 
   assert.match(verifier, /templates\/empty\/forge\.json/);
   assert.match(verifier, /templates\/game-3d\/README\.md/);
   assert.match(verifier, /verifySourceTemplate/);
-  assert.match(verifier, /sdk-unmanifested-artifact/);
+  assert.match(verifier, /verifySdkArchiveInventory\(sdkRoot, manifest.artifacts\)/);
+  assert.match(await source('scripts/forgeax/sdk-lib.mjs'), /sdk-unmanifested-artifact/);
 });
 
 test('npm consumer uses the built carrier from an isolated temporary project', async () => {

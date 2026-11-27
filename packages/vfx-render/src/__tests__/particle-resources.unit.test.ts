@@ -209,6 +209,7 @@ describe('particle material pass', () => {
       'render-material',
       'render-material-with-scene-depth',
       'render-material-and-scene-depth',
+      'render-lit-material-and-scene-depth',
       'render-standard-material-and-scene-depth',
     ] as const)
       expect(particleMaterialUsesBindings(contract)).toBe(true);
@@ -237,6 +238,7 @@ describe('particle material pass', () => {
     expect(particleMaterialSceneDepthBinding('group-0-resource')).toBe(0);
     expect(particleMaterialSceneDepthBinding('view-and-scene-depth')).toBe(1);
     expect(particleMaterialSceneDepthBinding('render-standard-material-and-scene-depth')).toBe(1);
+    expect(particleMaterialSceneDepthBinding('render-lit-material-and-scene-depth')).toBe(1);
     expect(particleMaterialSceneDepthBinding('group-0')).toBeUndefined();
     expect(particleMaterialSceneDepthBinding('view-only')).toBeUndefined();
     expect(particleMaterialSceneDepthBinding('render-material')).toBeUndefined();

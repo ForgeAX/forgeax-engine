@@ -185,3 +185,9 @@ export {
   requiresExactVfxRecovery,
   type VfxGpuRecoveryError,
 } from './recovery-input-history.js';
+export type { VfxStructuredInputBank } from './structured-input.js';
+export {
+  createVfxStructuredInputBank,
+  isVfxStructuredInputData,
+  VFX_STRUCTURED_INPUT_BYTES_LIMIT,
+} from './structured-input.js';

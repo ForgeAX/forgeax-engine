@@ -3,12 +3,11 @@ import { fileURLToPath } from 'node:url';
 import { derive, isMaterialProgramAbi } from '@forgeax/engine-types';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { prepareShaderProgramCompiler } from '../../../shader-compiler/src/program-template';
+import { findVariantByDefines, ShaderRegistry } from '../index.js';
 import { createMaterialProgramArtifactReceipt } from '../material/artifact-types.js';
 import { DEFAULT_STANDARD_PBR_PARAM_SCHEMA } from '../material-schemas.js';
-
-type EngineShaderManifest = Awaited<
-  ReturnType<typeof import('@forgeax/engine-vite-plugin-shader').buildEngineShaderManifest>
->;
+import type { MaterialShaderManifestEntry } from '../types.js';
 
 const alphaSchema = JSON.parse(
   readFileSync(
@@ -130,15 +129,20 @@ describe('custom material program receipt contract', () => {
 });
 
 describe('standard PBR transmission material contract', () => {
-  // Manifest production is an integration boundary: compile the producer once
-  // and let each contract assertion consume the same receipt-backed result.
-  // Rebuilding it in every test made this unit file spend ~100s in CI and
-  // caused the 20s receipt assertion to time out without any semantic failure.
-  let engineManifest!: EngineShaderManifest;
+  let materials: MaterialShaderManifestEntry[];
 
   beforeAll(async () => {
-    const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-    engineManifest = await buildEngineShaderManifest();
+    const { buildEngineShaderTemplateManifest } = await import(
+      '@forgeax/engine-vite-plugin-shader'
+    );
+    const wire = await buildEngineShaderTemplateManifest();
+    const registry = new ShaderRegistry({
+      manifestUrl: 'memory://engine-shaders/manifest.json',
+      readText: async () => JSON.stringify(wire),
+      prepareProgramCompiler: prepareShaderProgramCompiler,
+    });
+    (await registry.loadManifest()).unwrap();
+    materials = [...registry.materialShaderManifestEntries()];
   }, 120_000);
 
   it('declares the seven transmission and volume parameters once, separate from CPU and GPU evidence', () => {
@@ -184,10 +188,6 @@ describe('standard PBR transmission material contract', () => {
   });
 
   it('keeps the seven transmission inputs in the reflected UBO and coordinate contract', {
-    // This test intentionally invokes the full engine shader manifest
-    // producer. Keep its budget local to the producer-backed contract so a
-    // concurrent coverage child cannot turn host CPU contention into a false
-    // product failure.
     timeout: 60_000,
   }, async () => {
     const derived = derive(DEFAULT_STANDARD_PBR_PARAM_SCHEMA);
@@ -406,24 +406,22 @@ describe('standard PBR transmission material contract', () => {
       },
     ]);
 
-    const manifest = engineManifest;
-    const material = manifest.materialShaders.find(
+    const material = materials.find(
       (entry) => entry.identifier === 'forgeax::default-standard-pbr',
     );
     expect(material).toBeDefined();
     if (material === undefined) return;
-    const baseVariant = material.variants.find(
-      (variant) =>
-        variant.defines.CLUSTER_FORWARD_AVAILABLE === false &&
-        variant.defines.STORAGE_BUFFER_AVAILABLE === true &&
-        variant.defines.TRANSMISSION_AVAILABLE === false &&
-        variant.defines.VERTEX_COLOR_AVAILABLE === false,
-    );
+    const baseVariant = findVariantByDefines(material, {
+      CLUSTER_FORWARD_AVAILABLE: false,
+      STORAGE_BUFFER_AVAILABLE: true,
+      TRANSMISSION_AVAILABLE: false,
+      VERTEX_COLOR_AVAILABLE: false,
+    });
     expect(baseVariant).toBeDefined();
     if (baseVariant === undefined) return;
     expect(derived.totalBytes).toBe(1472);
-    // The base capability variant owns only the ordinary material region and
-    // the IBL injection. Transmission and second-stage physical maps are
+    // The base capability variant keeps sky lighting in View. Transmission
+    // and second-stage physical maps are
     // specialized in authored roots, so no transmission/physical resource
     // declaration may leak into this base artifact.
     expect(baseVariant.composedWgsl).not.toMatch(
@@ -433,23 +431,17 @@ describe('standard PBR transmission material contract', () => {
       /@group\(1\)\s*@binding\((?:13|14|15|16|24|25|26|27|28|29|30|31|32|33|34|35|36|37|38|39|40|41|42|43|44|45|46|47|48)\)\s*\n?\s*var\s+(?:thickness|clearcoat|anisotropy|sheen|iridescence|specular|diffuseTransmission)/u,
     );
     expect(baseVariant.composedWgsl).toMatch(
-      /@group\(1\)\s*@binding\(25\)\s*\n?\s*var\s+irradianceMap/u,
+      /@group\(0\)\s*@binding\(34\)\s*\n?\s*var<uniform>\s+skySh/u,
     );
   });
 
   it('publishes one receipt for direct and scene-index consumers', {
-    // Manifest production is intentionally real and coverage instrumentation
-    // adds enough startup cost to exceed the old 20s budget on the shared
-    // heavy runner. Keep the same producer-backed budget as the neighboring
-    // contract cases so CPU contention cannot turn a valid compile into a
-    // timeout-only failure.
     timeout: 60_000,
   }, async () => {
-    const manifest = engineManifest;
-    const standard = manifest.materialShaders.find(
+    const standard = materials.find(
       (entry) => entry.identifier === 'forgeax::default-standard-pbr',
     );
-    const skin = manifest.materialShaders.find((entry) => entry.identifier === 'forgeax::pbr-skin');
+    const skin = materials.find((entry) => entry.identifier === 'forgeax::pbr-skin');
     expect(standard).toBeDefined();
     expect(skin).toBeDefined();
     const standardReceipt = standard?.receipt;
@@ -470,8 +462,7 @@ describe('standard PBR transmission material contract', () => {
   it('composes the scene-index entry into the same validated PBR artifact as the direct entry', {
     timeout: 60_000,
   }, async () => {
-    const manifest = engineManifest;
-    const standard = manifest.materialShaders.find(
+    const standard = materials.find(
       (entry) => entry.identifier === 'forgeax::default-standard-pbr',
     );
     expect(standard).toBeDefined();
@@ -481,27 +472,26 @@ describe('standard PBR transmission material contract', () => {
     expect(standard.composedWgsl).toMatch(/@fragment\s+fn\s+fs_main\s*\(/);
     expect(standard.receipt?.sceneIndexEntry).toBe('vs_scene_index');
     expect(standard.receipt?.gbuffer).toBe('standard-gbuffer/2');
+    expect(standard.receipt?.compactGbuffer).toBe('standard-gbuffer/4');
     expect(standard.receipt?.receiptIdentity).toBe(
-      `${standard.receipt?.reflection.layoutIdentity}/standard-gbuffer/2`,
+      `${standard.receipt?.reflection.layoutIdentity}/standard-gbuffer/2/standard-gbuffer/4`,
     );
   });
 
   it('keeps skin scene-index material rows and non-cluster punctual lighting in the GPU variant', {
     timeout: 60_000,
   }, async () => {
-    const manifest = engineManifest;
-    const skin = manifest.materialShaders.find((entry) => entry.identifier === 'forgeax::pbr-skin');
+    const skin = materials.find((entry) => entry.identifier === 'forgeax::pbr-skin');
     expect(skin).toBeDefined();
     if (skin === undefined) return;
-    const sceneIndex = skin.variants.find(
-      (variant) =>
-        variant.defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true &&
-        variant.defines.STORAGE_BUFFER_AVAILABLE === true &&
-        variant.defines.CLUSTER_FORWARD_AVAILABLE === false &&
-        variant.defines.EXTENDED_LIGHTING_AVAILABLE === false &&
-        variant.defines.PROBE_BLEND_AVAILABLE === false &&
-        variant.defines.VERTEX_COLOR_AVAILABLE === false,
-    );
+    const sceneIndex = findVariantByDefines(skin, {
+      GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true,
+      STORAGE_BUFFER_AVAILABLE: true,
+      CLUSTER_FORWARD_AVAILABLE: false,
+      EXTENDED_LIGHTING_AVAILABLE: false,
+      PROBE_BLEND_AVAILABLE: false,
+      VERTEX_COLOR_AVAILABLE: false,
+    });
     expect(sceneIndex).toBeDefined();
     expect(sceneIndex?.composedWgsl).toContain('@binding(46)');
     expect(sceneIndex?.composedWgsl).toMatch(/materialAddress/);
@@ -511,8 +501,7 @@ describe('standard PBR transmission material contract', () => {
   it('rejects a receipt that loses a required prepared ABI field', {
     timeout: 60_000,
   }, async () => {
-    const manifest = engineManifest;
-    const standard = manifest.materialShaders.find(
+    const standard = materials.find(
       (entry) => entry.identifier === 'forgeax::default-standard-pbr',
     );
     expect(standard).toBeDefined();

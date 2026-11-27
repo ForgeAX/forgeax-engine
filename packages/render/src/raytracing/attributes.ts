@@ -1,7 +1,9 @@
 import { ok, type Result } from '@forgeax/engine-types';
 import {
+  buildRayRasterTriangles,
   buildRayReferenceScene,
   type RayMeshInstance,
+  type RayRasterTriangles,
   type RayReferenceError,
   type RayReferenceScene,
   rayReferenceFailure,
@@ -15,9 +17,11 @@ export interface RaySurfaceInstance extends RayMeshInstance {
   /** Object-space xyz plus authored tangent handedness (+1 or -1). */
   readonly tangents?: ArrayLike<number>;
 }
-export interface RaySurfaceScene extends RayReferenceScene {
+export interface RayRasterSurface extends RayRasterTriangles {
   /** Three 128-byte vertices: object position, RGBA, UV0..7, world normal/winding, world tangent. */
   readonly attributes: Uint8Array;
+}
+export interface RaySurfaceScene extends RayReferenceScene, RayRasterSurface {
   readonly instanceAttributes: ReadonlyMap<
     number,
     { readonly uvCount: number; readonly tangentFrame: boolean }
@@ -33,6 +37,24 @@ export function buildRaySurfaceScene(
 ): Result<RaySurfaceScene, RayReferenceError> {
   const scene = buildRayReferenceScene(instances);
   if (!scene.ok) return scene;
+  const surface = packRaySurfaceAttributes(instances, scene.value);
+  return surface.ok ? ok({ ...scene.value, ...surface.value }) : surface;
+}
+
+export function buildRayRasterSurface(
+  instance: RaySurfaceInstance,
+): Result<RayRasterSurface, RayReferenceError> {
+  const triangles = buildRayRasterTriangles(instance);
+  if (!triangles.ok) return triangles;
+  const surface = packRaySurfaceAttributes([instance], triangles.value);
+  if (!surface.ok) return surface;
+  return ok({ ...triangles.value, attributes: surface.value.attributes });
+}
+
+function packRaySurfaceAttributes(
+  instances: readonly RaySurfaceInstance[],
+  triangles: RayRasterTriangles,
+): Result<Pick<RaySurfaceScene, 'attributes' | 'instanceAttributes'>, RayReferenceError> {
   const byId = new Map(instances.map((i) => [i.instanceId, i]));
   const instanceAttributes = new Map<number, { uvCount: number; tangentFrame: boolean }>();
   for (const i of instances) {
@@ -74,13 +96,13 @@ export function buildRaySurfaceScene(
     }
   }
   const attributes = new Uint8Array(
-    Math.max(1, scene.value.triangleCount) * RAY_ATTRIBUTE_TRIANGLE_STRIDE,
+    Math.max(1, triangles.triangleCount) * RAY_ATTRIBUTE_TRIANGLE_STRIDE,
   );
   const out = new DataView(attributes.buffer);
-  const triangles = new DataView(scene.value.triangles.buffer);
-  for (let triangle = 0; triangle < scene.value.triangleCount; triangle++) {
-    const instanceId = triangles.getUint32(triangle * 80 + 48, true);
-    const primitive = triangles.getUint32(triangle * 80 + 56, true);
+  const rows = new DataView(triangles.triangles.buffer);
+  for (let triangle = 0; triangle < triangles.triangleCount; triangle++) {
+    const instanceId = rows.getUint32(triangle * 80 + 48, true);
+    const primitive = rows.getUint32(triangle * 80 + 56, true);
     const instance = byId.get(instanceId);
     if (instance === undefined) return rayReferenceFailure('missing source instance');
     const m = instance.transform;
@@ -134,7 +156,7 @@ export function buildRaySurfaceScene(
         out.setFloat32(offset + 96 + lane * 4, frame[lane] ?? 0, true);
     }
   }
-  return ok({ ...scene.value, attributes, instanceAttributes });
+  return ok({ attributes, instanceAttributes });
 }
 type V3 = [number, number, number];
 const read3 = (v: ArrayLike<number>, o: number): V3 => [v[o] ?? 0, v[o + 1] ?? 0, v[o + 2] ?? 0];

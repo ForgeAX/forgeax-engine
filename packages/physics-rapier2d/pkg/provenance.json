@@ -1,14 +1,14 @@
 {
-  "contentKey": "eefd2c83b71f28fea88f0dec6cfe81eebe884128f88d79ef78d6d485f273051d",
+  "contentKey": "afd537fae23a9610d70f8c8f1f180a1ff24690a36b7e14b3abcd9a36a5d1f772",
   "inputHashes": {
     "package.json": "0679c83cfa573475e56f85a3bd07b71b7cbadc3247d5f05894a39e2c997605c6",
     "scripts/source.json": "ec4d75a572b55a07d6aab58f958f8baaa85917f4e6b47b7b2587060947f385e5",
-    "scripts/build-wasm.mjs": "8b202931c1e2b2ddacc2968cc1ed5f0dcc983fdba72d87dd3451eeb0aa109e56",
+    "scripts/build-wasm.mjs": "7cb687eb9399204de6a3cef74e8d2321a6cb4906be3897386e33c359109d01b8",
     "scripts/native-init.js": "4b48c2123433d6fe079607b7527a12b5b3791be653fd76779ab4c5c814d6c732",
     "scripts/build-declarations.mjs": "12d720d5b612558e670259f51a9c62d0f722b9d28f5040da87779323050fd10c",
-    "scripts/build-simd-payload.mjs": "168a520bc489b8b5950f86a24dbbb867e6fc0f805208cfd939f12da2d6657371",
+    "scripts/build-simd-payload.mjs": "26f7b6e59d8188332ded292426ed73a3f8b07c39b797b660d58720058ec8db07",
     "scripts/native-tests.Cargo.toml": "8559bc7db872eacad675b4799675a929923815f5d71d13eddd22ed440611df17",
-    "scripts/native-tests.Cargo.lock": "5275c0a3cdc4b22ad2e90dad56930c0c6450d0a7c848e5aea61ea521fe243aff",
+    "scripts/native-tests.Cargo.lock": "b136077e11a25518d987a78fa44f3627e923f0bdcd3dbffcdc08222f714b68cf",
     "src/__tests__/contact-point-velocity.native.rs": "9d7c8d07ff530cb0009d905749cec67de2312ed04360d45ac9e96338c0bfdb72",
     "scripts/bindings-2d.Cargo.toml": "7cdaff81e20df4d5e693a2dc1ea89c61184bb137461ea71862ff61984b99e69c",
     "scripts/Cargo-2d.lock": "8aac01338ab3d24d342e5ff262718a238fbc2f98c165fe3cea0b28e5534ad361",
@@ -36,9 +36,9 @@
   "artifacts": {
     "LICENSE": "4c05555705e3efde601fb1252ae48f1d63992af8a8fb8947745b7fa834e8f519",
     "rapier-native.d.mts": "24af2f779a154d792bb1f0a7fb90d4f495b3e63b046d9a476f068e398806c3de",
-    "rapier-native.mjs": "fbf4fb1a005bee857d954957a072745f2549794e007e56c11de3cb21ef6c9fde",
+    "rapier-native.mjs": "2b82af483da378a18725a5c7efff89459361296d86635450318df49ad866b5fb",
     "rapier.d.mts": "dcd01ce5f56c64a2023bf056a5c0439836331e672a08fa7d2750d204d58536d4",
-    "rapier.mjs": "fc68392d75dc9c9f48faf6d74a2be521b62253a4ab20fc5992ed4da6a4cbba43",
-    "rapier.wasm": "1902f94dad5fd8930a9f243b9a3329fe10f5aa2cbb0a4bdc4bcf372f13919816"
+    "rapier.mjs": "515f5b442ff81c2c05dde5734d492e38e55fc49ee45b9bba5c0524cd9682f289",
+    "rapier.wasm": "0bcdae3e3f3e1950b1daf0bd4599cf359c99f4dc4d7eb8913848ce4e6e46dd29"
   }
 }

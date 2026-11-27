@@ -1,8 +1,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { createMaterialLoader } from '@forgeax/engine-assets-runtime';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import { validateMaterialTemplatePublication } from '@forgeax/engine-pack/material-cook';
 import {
   Camera,
   DirectionalLight,
@@ -24,13 +24,12 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { Asset, AssetHandle } from '@forgeax/engine-types';
 import { type MaterialAsset, ok } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
-import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
+import { prepareRuntimeAssetPublication } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import {
   createProbeGlobalMesh,
   probeGlobalProfile,
@@ -126,7 +125,271 @@ async function verifyColdMaterialMips(
   }
 }
 
-const manifest = shaderManifestUrl(await buildEngineShaderManifest());
+async function loadProbeCardMaterials(
+  assets: AssetRegistry,
+  materialAsset: MaterialAsset,
+  coldTexture: boolean,
+) {
+  const textureGuid = '019a0000-0000-7000-8000-000000000331';
+  const samplerGuid = '019a0000-0000-7000-8000-000000000332';
+  const cooker = createMaterialPackCooker();
+  const prepareMaterial = async (source: MaterialAsset) => {
+    const guid = AssetGuid.format(AssetGuid.random());
+    const draft = await cooker.cook({ guid, source, publication: 'templates' });
+    const template = validateMaterialTemplatePublication(
+      (draft.payload as { template: unknown }).template,
+    ).unwrap();
+    const { path, digest } = template.sourceArtifact;
+    const artifact = draft.artifacts[path];
+    assert(artifact);
+    expect(Object.keys(draft.artifacts)).toEqual([path]);
+    return {
+      guid,
+      asset: draft.payload as MaterialAsset,
+      refs: draft.refs,
+      artifacts: {
+        [path]: {
+          path,
+          mediaType: artifact.mediaType,
+          contentEncoding: 'identity' as const,
+          byteLength: artifact.bytes.byteLength,
+          integrity: { algorithm: 'sha256' as const, digest },
+        },
+      },
+      blob: [path, artifact.bytes] as const,
+    };
+  };
+  const [{ blob: primarySource, ...primary }, { blob: offscreenSource, ...offscreen }] =
+    await Promise.all([
+      prepareMaterial(materialAsset),
+      prepareMaterial(
+        Materials.standard({
+          baseColor: [1, 1, 1, 1],
+          baseColorTexture: { texture: textureGuid, sampler: samplerGuid },
+          roughness: 0.25,
+        }),
+      ),
+    ]);
+  // A 64x64 checkerboard minifies into the 16x16 offscreen Cards. Its
+  // generated levels must affect material RGB, independently of validity.
+  const textureSize = coldTexture ? 64 : 4;
+  // An even byte makes the cold mip average exactly 127, rather than the
+  // 127.5 UNORM tie whose permitted rounding differs across real backends.
+  const patternChannel = coldTexture ? 254 : 255;
+  const pixels = Uint8Array.from({ length: textureSize * textureSize * 4 }, (_, i) =>
+    i % 4 === 3
+      ? 255
+      : (
+            coldTexture
+              ? ((Math.floor(i / 4) % textureSize) + Math.floor(i / 4 / textureSize)) % 2 === 0
+              : Math.floor(i / 4) % 4 < 2
+          )
+        ? i % 4 === 0
+          ? patternChannel
+          : 0
+        : i % 4 === 1
+          ? patternChannel
+          : 0,
+  );
+  prepareRuntimeAssetPublication(
+    [
+      primary,
+      {
+        guid: textureGuid,
+        asset: {
+          kind: 'texture',
+          shape: { viewDimension: '2d', extent: { width: textureSize, height: textureSize } },
+          format: 'rgba8unorm',
+          colorSpace: 'linear',
+          mips: { kind: 'generate' },
+          data: pixels,
+        },
+      },
+      {
+        guid: samplerGuid,
+        asset: {
+          kind: 'sampler',
+          minFilter: 'nearest',
+          magFilter: 'nearest',
+          mipmapFilter: 'nearest',
+        },
+      },
+      offscreen,
+    ],
+    Object.fromEntries([primarySource, offscreenSource]),
+  )(assets);
+  const primaryHandle = (await assets.load(primary.guid, 'material')).unwrap();
+  (await assets.load(textureGuid, 'texture')).unwrap();
+  (await assets.load(samplerGuid, 'sampler')).unwrap();
+  return {
+    primary: primaryHandle,
+    offscreen: (await assets.load(offscreen.guid, 'material')).unwrap(),
+  };
+}
+
+async function verifyMissingProbeCardWorks(
+  cold: { readonly tape: V7Tape; readonly outputs: Readonly<Record<string, Uint8Array>> },
+  {
+    coldTexture,
+    directory,
+    errors,
+    save,
+  }: {
+    readonly coldTexture: boolean;
+    readonly directory: string;
+    readonly errors: string[];
+    readonly save: (name: string, bytes: Uint8Array) => void;
+  },
+) {
+  const model = buildFrameModel(cold.tape);
+  const support = model.works.find((work) => {
+    const pass = model.passes[work.passIndex],
+      event = pass && cold.tape.events[pass.beginEventIndex];
+    return event?.kind === 'beginComputePass' && event.desc?.label === 'probe-card.support';
+  });
+  assert(support);
+  for (const skipped of [
+    'fs_card',
+    'selectCandidates',
+    'sampleCards',
+    'support',
+    ...(coldTexture ? ['mips'] : []),
+  ]) {
+    const indices = new Set(
+      model.works
+        .filter((work) => {
+          if (skipped === 'support') return work === support;
+          if (skipped === 'mips') {
+            const pass = model.passes[work.passIndex],
+              event = pass && cold.tape.events[pass.beginEventIndex];
+            return (
+              event?.kind === 'beginRenderPass' &&
+              /^probe-card\.material\.\d+\.mip-\d+$/.test(event.desc.label ?? '')
+            );
+          }
+          return work.pipeline.shaders.some((shader) => shader.entryPoint === skipped);
+        })
+        .map((work) => work.eventIndex),
+    );
+    assert(indices.size > 0);
+    const modified = encodeTape({
+      ...cold.tape,
+      events: cold.tape.events.map((event, index) =>
+        !indices.has(index)
+          ? event
+          : event.kind === 'draw'
+            ? { ...event, vertexCount: 0 }
+            : event.kind === 'dispatchWorkgroups'
+              ? { ...event, x: 0 }
+              : event,
+      ),
+    }).unwrap();
+    save(`missing-${skipped}.rhitape`, modified);
+    const checked = decodeTape(modified).unwrap();
+    const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
+    const device = (
+      await adapter.requestDevice(replayDeviceRequest(checked, adapter.features, adapter.limits))
+    ).unwrap();
+    const raw = webgpu._internal_getRawDevice(device);
+    assert(raw);
+    raw.addEventListener('uncapturederror', (event) => errors.push(event.error.message));
+    const replay = (
+      await openReplay(checked, { device, createShaderModule: webgpu.createShaderModule })
+    ).unwrap();
+    try {
+      const request = (work: FrameModel['works'][number], slot: number) => {
+        const resourceId = work.bindings.find((binding) => binding.binding === slot)?.resourceId;
+        assert(resourceId);
+        return { resourceId, workIndex: work.workIndex };
+      };
+      const inputs = ['rays', 'hits'] as const;
+      const requests = [request(support, 4), ...inputs.map((_, index) => request(support, index))];
+      const sample =
+        skipped === 'mips'
+          ? model.works.find((work) =>
+              work.pipeline.shaders.some((shader) => shader.entryPoint === 'sampleCards'),
+            )
+          : undefined;
+      if (skipped === 'mips') {
+        assert(sample);
+        requests.push(request(sample, 9), request(sample, 12));
+      }
+      // Every read is from the same modified tape. Batch the original work
+      // points so the fresh device runs the shared native prefix only once.
+      const reads = (await replay.readAtWorks(requests)).unwrap();
+      const supportRead = reads[0]?.unwrap();
+      assert(supportRead);
+      expect(supportRead.provenance.selectedWorkIndex).toBe(support.workIndex);
+      const bytes = supportRead.bytes;
+      if (skipped === 'mips') {
+        const albedoRead = reads[3]?.unwrap();
+        const validityRead = reads[4]?.unwrap();
+        assert(sample && albedoRead && validityRead);
+        expect(albedoRead.provenance.selectedWorkIndex).toBe(sample.workIndex);
+        expect(validityRead.provenance.selectedWorkIndex).toBe(sample.workIndex);
+        const texels = albedoRead.bytes;
+        save('missing-mips-cards.albedoRoughness.bin', texels);
+        const original = cold.outputs['cards.albedoRoughness'];
+        assert(original);
+        let changedRgbTexels = 0;
+        for (let offset = 0; offset < texels.length; offset += 8) {
+          if (
+            !texels
+              .subarray(offset, offset + 6)
+              .every((value, channel) => value === original[offset + channel])
+          )
+            changedRgbTexels++;
+          expect(
+            equalBytes(
+              texels.subarray(offset + 6, offset + 8),
+              original.subarray(offset + 6, offset + 8),
+            ),
+          ).toBe(true);
+        }
+        expect(changedRgbTexels).toBe(6 * 16 * 16);
+        const validityTexels = validityRead.bytes;
+        expect(equalBytes(validityTexels, cold.outputs['cards.f0Validity'])).toBe(true);
+        save('missing-mips-cards.f0Validity.bin', validityTexels);
+        writeFileSync(
+          `${directory}/missing-mips-result.json`,
+          JSON.stringify(
+            {
+              omittedMipDraws: indices.size,
+              changedRgbTexels,
+              roughnessUnchanged: true,
+              f0ValidityUnchanged: true,
+            },
+            null,
+            2,
+          ),
+        );
+        // A valid black material is still valid. Missing mips must affect the
+        // captured material, not manufacture an unsupported-surface result.
+        expect(equalBytes(bytes, cold.outputs['card-support'])).toBe(true);
+      } else {
+        expect(equalBytes(bytes, cold.outputs['card-support'])).toBe(false);
+        const view = new DataView(bytes.buffer);
+        expect(
+          Array.from({ length: bytes.length / 32 }, (_, index) =>
+            view.getUint32(index * 32, true),
+          ).filter((state) => state === 2),
+        ).toHaveLength(0);
+      }
+      for (const [index, key] of inputs.entries()) {
+        const read = reads[index + 1]?.unwrap();
+        assert(read);
+        expect(read.provenance.selectedWorkIndex).toBe(support.workIndex);
+        expect(equalBytes(read.bytes, cold.outputs[key])).toBe(true);
+      }
+      save(`missing-${skipped}-support.bin`, bytes);
+    } finally {
+      (await replay.dispose()).unwrap();
+      raw.destroy();
+    }
+  }
+}
+
+const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 it.each([
   { nativeCards: false, geometryLane: 'automatic' as const },
   { nativeCards: true, geometryLane: 'automatic' as const },
@@ -257,95 +520,11 @@ it.each([
     roughness: 0.65,
     specular: 0,
   });
-  const publication: { guid: string; asset: Asset; refs?: readonly string[] }[] = [];
-  const publishMaterial = async (source: MaterialAsset) => {
-    const guid = AssetGuid.format(AssetGuid.random());
-    const cooked = await createMaterialPackCooker([], { profile: 'webgpu-storage-ray' }).cook({
-      guid,
-      source,
-    });
-    const record = validateCookedMaterialRecord(
-      (cooked.payload as { cooked: unknown }).cooked,
-    ).unwrap();
-    assert(
-      record.programs.every(({ selections }) =>
-        selections.every(
-          ({ context }) =>
-            context.backend === 'webgpu' && context.capability !== 'uniform-fallback',
-        ),
-      ),
-      'GI fixture material producer must target storage WebGPU with ray programs',
-    );
-    const ready = await createMaterialLoader({
-      loadPublication: async () => ({ guid, record, artifacts: cooked.artifacts }),
-      loadReference: async () => true,
-    }).load({ guid, specializationKey: record.specializationKey ?? '' });
-    assert(ready.status === 'Ready');
-    publication.push({ guid, asset: cooked.payload as MaterialAsset, refs: cooked.refs });
-    publishRuntimeAssets(host.assets, publication);
-    return (await host.assets.load(guid, 'material')).unwrap();
-  };
-  let offscreenMaterial: AssetHandle<'material'> | undefined;
-  const material = nativeCards
-    ? await publishMaterial(materialAsset)
-    : host.assets.create(materialAsset).unwrap();
-  if (nativeCards) {
-    // A 64x64 checkerboard minifies into the 16x16 offscreen Cards. Its
-    // generated levels must affect material RGB, independently of validity.
-    const textureSize = coldTexture ? 64 : 4;
-    // An even byte makes the cold mip average exactly 127, rather than the
-    // 127.5 UNORM tie whose permitted rounding differs across real backends.
-    const patternChannel = coldTexture ? 254 : 255;
-    const pixels = Uint8Array.from({ length: textureSize * textureSize * 4 }, (_, i) =>
-      i % 4 === 3
-        ? 255
-        : (
-              coldTexture
-                ? ((Math.floor(i / 4) % textureSize) + Math.floor(i / 4 / textureSize)) % 2 === 0
-                : Math.floor(i / 4) % 4 < 2
-            )
-          ? i % 4 === 0
-            ? patternChannel
-            : 0
-          : i % 4 === 1
-            ? patternChannel
-            : 0,
-    );
-    const textureGuid = '019a0000-0000-7000-8000-000000000331';
-    const samplerGuid = '019a0000-0000-7000-8000-000000000332';
-    publication.push(
-      {
-        guid: textureGuid,
-        asset: {
-          kind: 'texture',
-          shape: { viewDimension: '2d', extent: { width: textureSize, height: textureSize } },
-          format: 'rgba8unorm',
-          colorSpace: 'linear',
-          mips: { kind: 'generate' },
-          data: pixels,
-        },
-      },
-      {
-        guid: samplerGuid,
-        asset: {
-          kind: 'sampler',
-          minFilter: 'nearest',
-          magFilter: 'nearest',
-          mipmapFilter: 'nearest',
-        },
-      },
-    );
-    publishRuntimeAssets(host.assets, publication);
-    (await host.assets.load(textureGuid, 'texture')).unwrap();
-    (await host.assets.load(samplerGuid, 'sampler')).unwrap();
-    offscreenMaterial = await publishMaterial(
-      Materials.standard({
-        baseColor: [1, 1, 1, 1],
-        baseColorTexture: { texture: textureGuid, sampler: samplerGuid },
-        roughness: 0.25,
-      }),
-    );
-  }
+  const cardMaterials = nativeCards
+    ? await loadProbeCardMaterials(host.assets, materialAsset, coldTexture)
+    : undefined;
+  const material = cardMaterials?.primary ?? host.assets.create(materialAsset).unwrap();
+  const offscreenMaterial = cardMaterials?.offscreen;
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, -3] } },
@@ -382,7 +561,7 @@ it.each([
     renderPath: 'deferred' as const,
     visibleSurface: true,
     ibl: false,
-    ssao: false,
+    ambientOcclusion: { enabled: false },
   };
   let seeds = [
     { id: 7, generation: 1, position: [0, 0, -2] as const, cellSize: 2, traced: true },
@@ -904,148 +1083,7 @@ it.each([
   if (nativeCards) {
     const cold = packets.find((packet) => packet.name === 'cold');
     assert(cold);
-    const model = buildFrameModel(cold.tape);
-    const support = model.works.find((work) => {
-      const pass = model.passes[work.passIndex],
-        event = pass && cold.tape.events[pass.beginEventIndex];
-      return event?.kind === 'beginComputePass' && event.desc?.label === 'probe-card.support';
-    });
-    assert(support);
-    for (const skipped of [
-      'fs_card',
-      'selectCandidates',
-      'sampleCards',
-      'support',
-      ...(coldTexture ? ['mips'] : []),
-    ]) {
-      const indices = new Set(
-        model.works
-          .filter((work) => {
-            if (skipped === 'support') return work === support;
-            if (skipped === 'mips') {
-              const pass = model.passes[work.passIndex],
-                event = pass && cold.tape.events[pass.beginEventIndex];
-              return (
-                event?.kind === 'beginRenderPass' &&
-                /^probe-card\.material\.\d+\.mip-\d+$/.test(event.desc.label ?? '')
-              );
-            }
-            return work.pipeline.shaders.some((shader) => shader.entryPoint === skipped);
-          })
-          .map((work) => work.eventIndex),
-      );
-      assert(indices.size > 0);
-      const modified = encodeTape({
-        ...cold.tape,
-        events: cold.tape.events.map((event, index) =>
-          !indices.has(index)
-            ? event
-            : event.kind === 'draw'
-              ? { ...event, vertexCount: 0 }
-              : event.kind === 'dispatchWorkgroups'
-                ? { ...event, x: 0 }
-                : event,
-        ),
-      }).unwrap();
-      save(`missing-${skipped}.rhitape`, modified);
-      const checked = decodeTape(modified).unwrap();
-      const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
-      const device = (
-        await adapter.requestDevice(replayDeviceRequest(checked, adapter.features, adapter.limits))
-      ).unwrap();
-      const raw = webgpu._internal_getRawDevice(device);
-      assert(raw);
-      raw.addEventListener('uncapturederror', (event) => errors.push(event.error.message));
-      const replay = (
-        await openReplay(checked, { device, createShaderModule: webgpu.createShaderModule })
-      ).unwrap();
-      try {
-        const output = support.bindings.find((binding) => binding.binding === 4)?.resourceId;
-        assert(output);
-        const bytes = (await replay.readResourceAtWork(output, support.workIndex)).unwrap().bytes;
-        if (skipped === 'mips') {
-          const sample = model.works.find((work) =>
-            work.pipeline.shaders.some((shader) => shader.entryPoint === 'sampleCards'),
-          );
-          assert(sample);
-          const albedo = sample.bindings.find((binding) => binding.binding === 9)?.resourceId;
-          assert(albedo);
-          const texels = (await replay.readResourceAtWork(albedo, sample.workIndex)).unwrap().bytes;
-          save('missing-mips-cards.albedoRoughness.bin', texels);
-          const original = cold.outputs['cards.albedoRoughness'];
-          assert(original);
-          let changedRgbTexels = 0;
-          for (let offset = 0; offset < texels.length; offset += 8) {
-            if (
-              !texels
-                .subarray(offset, offset + 6)
-                .every((value, channel) => value === original[offset + channel])
-            )
-              changedRgbTexels++;
-            expect(
-              equalBytes(
-                texels.subarray(offset + 6, offset + 8),
-                original.subarray(offset + 6, offset + 8),
-              ),
-            ).toBe(true);
-          }
-          expect(changedRgbTexels).toBe(6 * 16 * 16);
-          const validity = sample.bindings.find((binding) => binding.binding === 12)?.resourceId;
-          assert(validity);
-          const validityTexels = (
-            await replay.readResourceAtWork(validity, sample.workIndex)
-          ).unwrap().bytes;
-          expect(equalBytes(validityTexels, cold.outputs['cards.f0Validity'])).toBe(true);
-          save('missing-mips-cards.f0Validity.bin', validityTexels);
-          writeFileSync(
-            `${directory}/missing-mips-result.json`,
-            JSON.stringify(
-              {
-                omittedMipDraws: indices.size,
-                changedRgbTexels,
-                roughnessUnchanged: true,
-                f0ValidityUnchanged: true,
-              },
-              null,
-              2,
-            ),
-          );
-          // A valid black material is still valid. Missing mips must affect the
-          // captured material, not manufacture an unsupported-surface result.
-          expect(equalBytes(bytes, cold.outputs['card-support'])).toBe(true);
-        } else {
-          expect(equalBytes(bytes, cold.outputs['card-support'])).toBe(false);
-          const view = new DataView(bytes.buffer);
-          expect(
-            Array.from({ length: bytes.length / 32 }, (_, index) =>
-              view.getUint32(index * 32, true),
-            ).filter((state) => state === 2),
-          ).toHaveLength(0);
-        }
-        const inputs = ['rays', 'hits'] as const;
-        const inputReads = (
-          await replay.readAtWorks(
-            inputs.map((_, index) => {
-              const resourceId = support.bindings.find(
-                (binding) => binding.binding === index,
-              )?.resourceId;
-              assert(resourceId);
-              return { resourceId, workIndex: support.workIndex };
-            }),
-          )
-        ).unwrap();
-        for (const [index, key] of inputs.entries()) {
-          const read = inputReads[index]?.unwrap();
-          assert(read);
-          expect(read.provenance.selectedWorkIndex).toBe(support.workIndex);
-          expect(equalBytes(read.bytes, cold.outputs[key])).toBe(true);
-        }
-        save(`missing-${skipped}-support.bin`, bytes);
-      } finally {
-        (await replay.dispose()).unwrap();
-        raw.destroy();
-      }
-    }
+    await verifyMissingProbeCardWorks(cold, { coldTexture, directory, errors, save });
   }
   expect(errors).toEqual([]);
 }, 180000);

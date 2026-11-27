@@ -7,6 +7,7 @@ import type { Context, Plugin } from '@forgeax/engine-plugin';
 import { inspectPluginFiber } from '@forgeax/engine-plugin';
 import { Camera, orthographic, perspective, type RendererOptions } from '@forgeax/engine-render';
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import { DEFAULT_LOAD_PROGRESS_LABELS } from '@forgeax/engine-types';
 import { VFX_GPU_RUNTIME_RESOURCE_KEY } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { transformWithOxc } from 'vite';
@@ -36,6 +37,8 @@ async function host(
 ) {
   let sceneAdmission: (() => unknown) | undefined;
   let inputAllowed = true;
+  const warn = vi.fn();
+  let audioError: ((error: unknown) => void) | undefined;
   const audioOwners: { destroy: ReturnType<typeof vi.fn> }[] = [];
   const releases: string[] = [];
   const captureLifecycle: string[] = [];
@@ -123,7 +126,7 @@ async function host(
       createGameVfx,
       createGameRenderFeatures,
       AbortController,
-      console: { info: vi.fn(), error: vi.fn() },
+      console: { info: vi.fn(), error: vi.fn(), warn },
       setTimeout,
       clearTimeout,
       wx: { createCanvas: () => canvas, getStorageSync: () => '', setStorageSync() {} },
@@ -148,7 +151,12 @@ async function host(
             inputAllowed = allowed;
           },
         }),
-      createWechatAudioBackend: () => {
+      createWechatAudioBackend: (
+        _source: unknown,
+        _platform: unknown,
+        { onError }: { onError: (error: unknown) => void },
+      ) => {
+        audioError = onError;
         const audio = {
           destroy: vi.fn(() => {
             releases.push('audio');
@@ -241,6 +249,7 @@ async function host(
       },
       enginePrograms: () => ({}),
       runtimeBinding: { scopeId: 'native-test' },
+      authored: [],
       imports: {},
       programHost: {},
       inputBackendPlugin: () => ({ name: 'test-input-backend', apply() {} }),
@@ -276,6 +285,8 @@ async function host(
     sceneAdmission: () => sceneAdmission?.(),
     inputAllowed: () => inputAllowed,
     audioOwners,
+    warn,
+    emitAudioError: (error: unknown) => audioError?.(error),
     releases,
     captures,
     captureLifecycle,
@@ -294,6 +305,18 @@ async function host(
 }
 
 describe('native Host startup failure ownership', () => {
+  it('keeps audio diagnostics out of scene admission and uses the native shader compiler', async () => {
+    const running = await host(async () => ({ dispose: async () => {} }));
+    try {
+      await vi.waitFor(() => expect(running.sceneAdmission()).toBe('scene'));
+      running.emitAudioError(cleanupError);
+      expect(running.warn).toHaveBeenCalledWith('ForgeAX native audio failed', cleanupError);
+      expect(running.sceneAdmission()).toBe('scene');
+    } finally {
+      await running.stop();
+    }
+  });
+
   it.each([
     'none',
     'custom',
@@ -567,7 +590,7 @@ describe('native Host startup failure ownership', () => {
       expect(running.sceneAdmission()).toBe('ui-only');
       expect(running.inputAllowed()).toBe(false);
       expect(document.querySelector('#forgeax-fatal-message')?.textContent).toBe(
-        'The game stopped because execution failed.',
+        DEFAULT_LOAD_PROGRESS_LABELS.host.runtimeFailed,
       );
       running.emitError({ code: 'cleanup-failed' });
       expect(running.inspect().startupError).toBe(cleanupError);

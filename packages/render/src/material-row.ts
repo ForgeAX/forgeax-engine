@@ -29,7 +29,9 @@ function admittedDefaults(
   return defaults;
 }
 
-const STANDARD_PIPELINE_DEFAULTS = admittedDefaults(STANDARD_PIPELINE_PARAM_SCHEMA);
+const STANDARD_FIELDS = ROW.fields
+  .filter((field) => !field.name.startsWith('_gpuDrivenPadding'))
+  .map((field) => field.name);
 
 function isNumericValue(value: unknown): value is number | readonly number[] {
   return typeof value === 'number' || Array.isArray(value);
@@ -85,25 +87,18 @@ function numericValue(
   name: string,
   material: MaterialSnapshot,
   schema: readonly ParamSchemaEntry[],
-  allowStandardFallback = false,
   defaults?: ReadonlyMap<string, unknown>,
 ): number | readonly number[] | undefined {
   const snapshotValue = material.paramSnapshot?.[name];
   if (isNumericValue(snapshotValue)) return snapshotValue;
-  if (allowStandardFallback) {
-    const materialValue = numericFallback(name, material);
-    if (materialValue !== undefined) return materialValue;
-  }
+  const materialValue = numericFallback(name, material);
+  if (materialValue !== undefined) return materialValue;
   return declaredDefault(name, schema, defaults);
 }
 
 function writeScalar(view: DataView, member: UboFieldLayout, value: number): void {
   switch (member.type) {
     case 'f32':
-    case 'vec2':
-    case 'vec3':
-    case 'vec4':
-    case 'color':
       view.setFloat32(member.offset, value, true);
       return;
     case 'i32':
@@ -135,54 +130,35 @@ function componentCount(member: UboFieldLayout): number {
  * classic UBO path that seeds schema defaults before writing authored values:
  * an RGB `baseColor` keeps the declared alpha 1 instead of packing 0.
  */
-function writeNumeric(
-  view: DataView,
-  member: UboFieldLayout,
-  value: number | readonly number[] | undefined,
-  declared: number | readonly number[] | undefined,
-): void {
-  const count = componentCount(member);
-  if (count === 1) {
-    writeScalar(view, member, typeof value === 'number' ? value : (value?.[0] ?? 0));
-    return;
-  }
-  const values = Array.isArray(value) ? value : [];
-  const fallback = Array.isArray(declared) ? declared : [];
-  for (let index = 0; index < count; index += 1) {
-    writeScalar(
-      view,
-      { ...member, offset: member.offset + index * 4, type: 'f32' },
-      values[index] ?? fallback[index] ?? 0,
-    );
-  }
-}
-
 function writeMember(
   view: DataView,
   member: UboFieldLayout,
   material: MaterialSnapshot,
   schema: readonly ParamSchemaEntry[],
-  allowStandardFallback: boolean,
   defaults: ReadonlyMap<string, unknown> | undefined,
 ): void {
-  const value = numericValue(member.name, material, schema, allowStandardFallback, defaults);
-  const short = Array.isArray(value) && value.length < componentCount(member);
-  writeNumeric(
-    view,
-    member,
-    value,
-    short ? declaredDefault(member.name, schema, defaults) : undefined,
-  );
+  const value = numericValue(member.name, material, schema, defaults);
+  const count = componentCount(member);
+  const declared =
+    Array.isArray(value) && value.length < count
+      ? declaredDefault(member.name, schema, defaults)
+      : undefined;
+  if (count === 1) {
+    writeScalar(view, member, typeof value === 'number' ? value : (value?.[0] ?? 0));
+    return;
+  }
+  const values = Array.isArray(value) ? value : undefined;
+  const fallback = Array.isArray(declared) ? declared : undefined;
+  for (let index = 0; index < count; index++) {
+    view.setFloat32(member.offset + index * 4, values?.[index] ?? fallback?.[index] ?? 0, true);
+  }
 }
 
 function validateReceipt(receipt: MaterialProgramAbi): void {
-  const expectedFields = ROW.fields
-    .filter((field) => !field.name.startsWith('_gpuDrivenPadding'))
-    .map((field) => field.name);
   if (
     receipt.materialRow.byteLength !== ROW.stride ||
-    receipt.materialRow.fields.length !== expectedFields.length ||
-    receipt.materialRow.fields.some((field, index) => field !== expectedFields[index])
+    receipt.materialRow.fields.length !== STANDARD_FIELDS.length ||
+    receipt.materialRow.fields.some((field, index) => field !== STANDARD_FIELDS[index])
   ) {
     throw new RangeError(
       `Standard PBR material row receipt must match the ${ROW.stride}-byte canonical ABI`,
@@ -196,27 +172,7 @@ export function packStandardPbrMaterialRow(
   material: MaterialSnapshot,
 ): Uint8Array {
   validateReceipt(receipt);
-  const payload = new Uint8Array(ROW.stride);
-  const view = new DataView(payload.buffer);
-  const f32 = new Float32Array(payload.buffer);
-  for (const member of STANDARD_PIPELINE_DERIVED.numericMembers) {
-    writeMember(
-      view,
-      member,
-      material,
-      STANDARD_PIPELINE_PARAM_SCHEMA,
-      true,
-      STANDARD_PIPELINE_DEFAULTS,
-    );
-  }
-  for (const record of STANDARD_PIPELINE_DERIVED.coordinateRecords) {
-    writeMaterialTextureCoordinateRecord(
-      f32,
-      record.offset / 4,
-      material.textureCoordinates?.get(record.parameter),
-    );
-  }
-  return payload;
+  return packRow(STANDARD_PIPELINE_PARAM_SCHEMA, STANDARD_PIPELINE_DERIVED, material, ROW.stride);
 }
 
 /**
@@ -234,13 +190,22 @@ export function packMaterialProgramRow(
 ): Uint8Array | undefined {
   const derived = derive(schema);
   if (derived.totalBytes > rowStride || rowStride < 16 || rowStride % 16 !== 0) return undefined;
+  return packRow(schema, derived, material, rowStride);
+}
+
+function packRow(
+  schema: readonly ParamSchemaEntry[],
+  derived: ReturnType<typeof derive>,
+  material: MaterialSnapshot,
+  rowStride: number,
+): Uint8Array {
   const payload = new Uint8Array(rowStride);
   const view = new DataView(payload.buffer);
   const f32 = new Float32Array(payload.buffer);
   const defaults = admittedDefaults(schema);
   // Snapshot fields back missing values exactly as the direct uniform writer does.
   for (const member of derived.numericMembers) {
-    writeMember(view, member, material, schema, true, defaults);
+    writeMember(view, member, material, schema, defaults);
   }
   for (const record of derived.coordinateRecords) {
     writeMaterialTextureCoordinateRecord(

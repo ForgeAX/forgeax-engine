@@ -1,5 +1,6 @@
 import { cookMeshDistanceFieldProduct } from '@forgeax/engine-import';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import { MESH_BIN_HEADER_BYTES } from '@forgeax/engine-pack/mesh-bin-contract';
 import {
   type ArtifactDescriptor,
   type AssetRuntimeArtifactDescriptor,
@@ -7,7 +8,9 @@ import {
   ok,
 } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { decodeMeshBinary } from '../assets/mesh-binary';
 import { meshAssetDecoder } from '../assets/mesh-decoder';
+import { unpackMeshBin } from '../assets/unpack-mesh-bin';
 import { createBoxGeometry } from '../box';
 import { withMeshAabb } from '../mesh-aabb';
 import { buildMeshCollision } from '../mesh-collision';
@@ -55,18 +58,52 @@ function decode(
   });
 }
 
-const meshBody = (bytes: Uint8Array) => ({
+const meshBody = (bytes: Uint8Array, version = '5') => ({
   body: {
     descriptor: {
       path: 'mesh.bin',
       mediaType: 'application/x-forgeax-mesh',
-      assetCodec: { name: 'mesh-binary', version: '5' },
+      assetCodec: { name: 'mesh-binary', version },
     },
     bytes,
   },
 });
 
 describe('Geometry runtime decoder', () => {
+  it('keeps Cook bytes native and reconstructs canonical rows without changing packed tangent words', async () => {
+    const source = createBoxGeometry(1, 2, 3).unwrap();
+    const count = (source.attributes.position as Float32Array).length / 3;
+    const tangentFrame = new Uint32Array(count).fill(0x7fc00001);
+    const { normal: _normal, tangent: _tangent, ...rest } = source.attributes;
+    const attributes = { ...rest, tangentFrame };
+    const canonical = packInterleavedVertexAttributes(attributes, count).unwrap().vertices;
+    const { aabb: _aabb, ...mesh } = { ...source, attributes, vertices: canonical };
+    const bytes = packMeshBin(mesh, 'static-box', [], 'static-streams').unwrap();
+    const legacy = packMeshBin(mesh, 'static-box').unwrap();
+    const physical = (await decode({ kind: 'mesh' }, meshBody(bytes, '7'))).unwrap();
+    const body = bytes.subarray(
+      MESH_BIN_HEADER_BYTES,
+      MESH_BIN_HEADER_BYTES + canonical.byteLength,
+    );
+    expect(bytes.length).toBe(legacy.length);
+    expect(physical.attributeStorage).toBe('static-streams');
+    expect(new Uint8Array(physical.vertices.buffer)).toEqual(body);
+    expect(copyMeshAttribute(physical, 'tangentFrame')).toEqual(tangentFrame);
+    expect(physical.aabb).toEqual(source.aabb);
+    expect(physical.indices).toEqual(source.indices);
+    expect(new Uint32Array(interleavedMesh(physical).vertices.buffer)).toEqual(
+      new Uint32Array(canonical.buffer),
+    );
+    expect(decodeMeshBinary(bytes, [])).toEqual(decodeMeshBinary(legacy, []));
+    expect(unpackMeshBin(bytes).unwrap().version).toBe(7);
+    const invalidFloat = bytes.slice();
+    new DataView(invalidFloat.buffer).setFloat32(MESH_BIN_HEADER_BYTES, NaN, true);
+    expect(decodeMeshBinary(invalidFloat, [], 'native')).toBeUndefined();
+    const invalidLayout = bytes.slice();
+    invalidLayout[48] = 0x3f;
+    expect(decodeMeshBinary(invalidLayout, [], 'native')).toBeUndefined();
+  });
+
   it('re-admits serialized packed geometry without restoring expanded attribute storage', async () => {
     const source = createBoxGeometry(1, 2, 3).unwrap();
     const json = JSON.parse(
@@ -237,6 +274,21 @@ describe('Geometry runtime decoder', () => {
     });
     expect(Array.from(restored.indices ?? [])).toEqual(Array.from(mesh.indices ?? []));
     expect((await decode({ ...mesh, collision: { positions: [], indices: [] } })).ok).toBe(false);
+  });
+
+  it('rejects non-finite packed positions through standalone unpacking and Mesh assembly', async () => {
+    const mesh = createBoxGeometry(1, 2, 3).unwrap();
+    const bytes = packMeshBin(mesh, 'mesh').unwrap();
+    const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    data.setFloat32(MESH_BIN_HEADER_BYTES, Number.NaN, true);
+    expect(unpackMeshBin(bytes, 'mesh', 'interleaved')).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'payload-non-finite' } },
+    });
+    expect(await decode({}, meshBody(bytes))).toMatchObject({
+      ok: false,
+      error: { code: 'asset-package-invalid' },
+    });
   });
 
   it('rejects two geometry sources, corrupt binaries and malformed inline attributes instead of dropping them', async () => {

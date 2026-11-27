@@ -51,6 +51,13 @@ Authoring Mesh inputs without `attributeStorage` supply complete finite channels
 
 Use `meshAttributeWindow(mesh, key)` once outside a CPU loop, then read `data[offset + vertex * stride + component]`. It is a zero-copy view, including mixed uint16 skin channels and nonzero byte offsets. Take vertex cardinality from its `count` or `deriveVertexCount`, never from an empty runtime declaration. GPU raster uploads use `vertices` directly. `copyMeshAttribute(mesh, key, output?)` explicitly copies one contiguous channel when an algorithm needs it; `meshAttributeChannels(mesh)` is an uncached cold conversion for authoring algorithms. Retaining either result explicitly retains a second representation. No Proxy or lazy getter participates in numeric access.
 
+Skin weights accept `Float32Array` or normalized `Uint8Array` and `Uint16Array`.
+Vertex fetch delivers the integer lanes as float weights at location 5
+(`unorm8x4` or `unorm16x4`). This uses 4 or 8 bytes per vertex for weights,
+compared with 16 bytes for Float32. Mesh binary v8 stores these packed lanes.
+The raw window and authoring channels preserve the encoded integers.
+`copyMeshAttribute(mesh, 'skinWeight')` gives an explicit decoded Float32 copy.
+
 `ReadonlyMeshAttributeWindow` carries the same numeric addressing contract over
 read-only array-like storage. Immutable dependency consumers derive offsets from
 `deriveVertexLayoutProjection`, which reads attribute presence independently of
@@ -68,12 +75,39 @@ Retaining one lane retains its sibling storage for that decoded mesh.
 
 ## MeshBuilder
 
-`MeshBuilder` is the incremental authoring owner for custom geometry. Append
-canonical position/normal/UV/tangent data and indexed submeshes, then call
-`build()` once to obtain a `Result<MeshAsset, AssetError>`. The builder derives
-the interleaved vertex layout, index width, submesh ranges, and AABB from the
-same attribute-layout and bounds owners used by procedural factories; callers
-do not maintain a second stride, bounds, or layout table.
+Use `createMeshBuilder` to construct a `MeshAsset` from custom vertex data.
+Independent triangle batches use section-local indices. Already assembled data
+and incremental callers use mesh-global indices. Both derive the packed vertex
+layout, index width and AABB and return `Result<MeshAsset, AssetError>`.
+
+### Independent triangle sections
+
+```ts
+import { createMeshBuilder } from '@forgeax/engine/geometry';
+
+const mesh = createMeshBuilder({
+  materialSlots: [{ slotName: 'wall' }, { slotName: 'trim' }],
+  sections: [
+    { materialSlot: 0, attributes: wallAttributes, indices: [0, 1, 2] },
+    { materialSlot: 1, attributes: trimAttributes, indices: [0, 1, 2] },
+  ],
+}).build();
+```
+
+Each section contributes one indexed triangle-list draw. Indices address that
+section's own vertex data. The builder checks them before rebasing, packs the
+sections into one vertex and index stream, and derives submesh ranges in input
+order. Every geometry section must provide the same attribute channels and
+storage formats. At least one section must contain geometry. Use
+`{ materialSlot }` to reserve a zero-count range when a producer needs to keep
+section order stable across LODs.
+
+> [!IMPORTANT]
+> Pass either `sections` or mesh-global `attributes`, `indices`, and
+> `submeshes`. A section builder snapshots the input at creation and exposes
+> `build()`. For vertex sharing across submeshes, use the mesh-global form.
+
+### Mesh-global buffers
 
 All indexed submeshes address the same accumulated vertex stream.
 `appendIndices` retains raw values; appending vertices does not rebase them.
@@ -103,10 +137,9 @@ Shader UV sets a mesh lacks are aliased inside its uploaded vertex: to the last
 present UV set, or to `position.xy` for a raw UV-less `MeshAsset` (the vertex
 stride never grows, so direct and GPU-driven draws read the same bytes).
 
-Malformed cardinality,
-non-finite attributes, out-of-range indices, and empty commits fail with the
-existing structured `asset-parse-failed` detail. A rejected build can be
-repaired and retried without publishing a partial mesh.
+Invalid cardinality, attributes, indices or ranges return a structured
+`asset-invalid-value` from builder validation. A failed section build reports
+the offending field in `error.detail`. Fix the input and create a new builder.
 
 ## Edge conversion factories
 
@@ -598,8 +631,13 @@ partition and expands source section sidedness. `decodeMeshDistanceFieldAttachme
 an ordinary Mesh publication against the encoded field and returns the complete
 validated field. The Mesh decoder owns the no-attachment path and composes the
 field with its geometry.
-The artifact codec profile and native cook fingerprint derive their policy
-revision from `MESH_DISTANCE_FIELD_GENERATION_VERSION`.
+Artifact version 5 publishes exact samples and `MeshDistanceFieldSurface` flat
+source triangles, strict sidedness and a complete BVH; older artifacts require
+source recooking. Sampled fields carry `unsignedSampleError` for capped source
+magnitudes, without asserting signed interiors, GPU arithmetic or raster-surface
+identity. Samples and surface share the existing 32 MiB artifact budget.
+The codec version derives from `MESH_DISTANCE_FIELD_ARTIFACT_VERSION`; its builder
+profile and cook fingerprint derive separately from `MESH_DISTANCE_FIELD_GENERATION_VERSION`.
 
 `packMeshBin` only encodes geometry and rejects a decoded `distanceField` rather
 than dropping it. Use Import's complete Mesh output producer for export; it

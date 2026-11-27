@@ -20,6 +20,8 @@ export interface EncodeSourceInfo {
 }
 
 /** Image policy fills every codec option except the source dimensions. */
+export type ImageBasisEncoder = typeof basisEncode;
+
 export type BasisEncodeParams = Omit<BasisEncodeOptions, 'width' | 'height'>;
 
 /** Resolve sidecar controls once; null keeps the ordinary uncompressed path. */
@@ -80,6 +82,7 @@ export async function encodeTextureToKtx2(
   width: number,
   height: number,
   params: BasisEncodeParams,
+  encode: ImageBasisEncoder = basisEncode,
 ): Promise<EncodeTextureResult> {
   // Fail fast above the wasm32 encoder's source-pixel ceiling (4096^2). Above
   // this the encoder returns 0 bytes silently; surface a structured, actionable
@@ -98,7 +101,7 @@ export async function encodeTextureToKtx2(
       },
     };
   }
-  const result = await basisEncode(pixels, { ...params, width, height });
+  const result = await encode(pixels, { ...params, width, height });
   if (!result.ok) {
     const reason =
       result.error.detail !== undefined && 'reason' in result.error.detail

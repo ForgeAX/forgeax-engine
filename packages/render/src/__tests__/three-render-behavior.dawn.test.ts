@@ -9,10 +9,12 @@ function kernel(file: string, name: string): string {
   return match[0];
 }
 
-// Production default program: the LUT path of a static `#ifdef` switch (the
-// raw source is not run through the preprocessor here).
-function defaultKernel(file: string, name: string): string {
-  return kernel(file, name).replace(/#ifdef \w+\n[\s\S]*?#else\n([\s\S]*?)#endif\n/g, '$1');
+// Supply a known DFG input through the production LUT branch.
+function environmentLutKernel(name: string): string {
+  return kernel('ibl-sampling', name).replace(
+    /#ifdef ENV_BRDF_LUT\n([\s\S]*?)#endif/g,
+    (_, selected: string) => selected.split('#else\n')[0] ?? '',
+  );
 }
 
 async function evaluate(code: string, count: number, withLut = false): Promise<Float32Array> {
@@ -98,10 +100,11 @@ it('IBL separates reflected single scattering from diffuse multiple scattering',
     ${kernel('ibl-sampling', 'EnvironmentScattering')}
     ${kernel('brdf', 'specularF90')}
     ${kernel('ibl-sampling', 'environmentMultiScattering')}
+    ${kernel('ibl-sampling', 'environmentSingleScatteringFromDfg')}
     ${kernel('ibl-sampling', 'environmentScatteringFromDfg')}
-    ${defaultKernel('ibl-sampling', 'environmentDfg')}
-    ${kernel('ibl-sampling', 'environmentScattering')}
-    ${kernel('ibl-sampling', 'projectSpecularRadiance')}
+    ${environmentLutKernel('environmentDfg')}
+    ${environmentLutKernel('environmentScattering')}
+    ${environmentLutKernel('projectSpecularRadiance')}
     @group(0) @binding(1) var lut: texture_2d<f32>;
     @group(0) @binding(2) var lutSampler: sampler;
     @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3u) {

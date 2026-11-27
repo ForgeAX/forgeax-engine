@@ -16,6 +16,7 @@
   "references": [
     { "path": "../codec" },
     { "path": "../types" },
+    { "path": "../platform" },
     { "path": "../rhi" }
   ]
 }

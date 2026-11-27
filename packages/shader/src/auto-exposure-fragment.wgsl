@@ -1,4 +1,4 @@
-// Same V1 sample positions and classifier; every output owns its complete count.
+// Shared sample classification with the compute meter; every output owns its complete count.
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var classified: texture_2d<u32>;
 @group(0) @binding(2) var histogram: texture_2d<u32>;
@@ -14,12 +14,13 @@
   let dimensions = textureDimensions(source, 0);
   let sampleGrid = (dimensions + vec2<u32>(3u)) / vec2<u32>(4u);
   let block = vec2<u32>(position.xy);
-  let pixel = min(block * vec2<u32>(4u) + vec2<u32>(2u), dimensions - vec2<u32>(1u));
-  let value = classifyExposureSample(textureLoad(source, vec2<i32>(pixel), 0).rgb);
-  let center = (vec2<f32>(sampleGrid) - vec2<f32>(1.)) * 0.5;
-  let inverseExtent = 1. / max(center, vec2<f32>(1.));
-  let weight = value.y * centerWeight(block, center, inverseExtent * inverseExtent);
-  return vec4<u32>(value.x, weight, 0u, 0u);
+  return classifyExposureBlock(source, parameters, block, dimensions, exposureSampleScale(sampleGrid), false);
+}
+
+@fragment fn auto_exposure_classify_half(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
+  let dimensions = textureDimensions(source, 0);
+  let sampleGrid = (dimensions + vec2<u32>(1u)) / vec2<u32>(2u);
+  return classifyExposureBlock(source, parameters, vec2<u32>(position.xy), dimensions, exposureSampleScale(sampleGrid), true);
 }
 
 @fragment fn auto_exposure_tile_histogram(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
@@ -28,14 +29,22 @@
   let tileIndex = u32(position.y);
   let origin = vec2<u32>(tileIndex % tileColumns, tileIndex / tileColumns) * vec2<u32>(16u);
   let firstBin = u32(position.x) * 4u;
+  let scale = exposureSampleScale(grid);
   var counts = vec4<u32>(0u);
   for (var y = 0u; y < 16u; y++) {
     for (var x = 0u; x < 16u; x++) {
       let samplePixel = origin + vec2<u32>(x, y);
       if (any(samplePixel >= grid)) { continue; }
-      let value = textureLoad(classified, vec2<i32>(samplePixel), 0).xy;
-      if (value.x >= firstBin && value.x < firstBin + 4u) {
-        counts[value.x - firstBin] += value.y;
+      let records = textureLoad(classified, vec2<i32>(samplePixel), 0);
+      for (var lane = 0u; lane < 4u; lane++) {
+        let value = exposureBinWeights(records[lane], scale);
+        if (value.x >= firstBin && value.x < firstBin + 4u) {
+          counts[value.x - firstBin] += value.y;
+        }
+        let next = value.x + 1u;
+        if (next >= firstBin && next < firstBin + 4u) {
+          counts[next - firstBin] += value.z;
+        }
       }
     }
   }

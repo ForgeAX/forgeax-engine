@@ -16,7 +16,7 @@ import {
 import { RhiError } from '@forgeax/engine-rhi';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
@@ -27,7 +27,7 @@ import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
-const manifest = shaderManifestUrl(await buildEngineShaderManifest());
+const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 
 it('runs persistent placement through the ordinary Renderer without changing HDR or sharing cached A/B roles', async () => {
   const fixture = await rayPathCommands.prepareRayPublicationFixture(undefined, 'matte');
@@ -186,7 +186,7 @@ it('runs persistent placement through the ordinary Renderer without changing HDR
     renderPath: 'deferred' as const,
     visibleSurface: true,
     ibl: false,
-    ssao: false,
+    ambientOcclusion: { enabled: false },
   };
   let seeds = [{ id: 7, generation: 1, position: [0, 0, -3] as const, cellSize: 2, traced: true }];
   const submit = () => renderer.draw({ source: lease, geometryLane: 'automatic' });

@@ -60,11 +60,11 @@ function defer(device: RhiDevice) {
       releases.push(resolve);
     });
   const compute = vi.fn(async (desc: ComputePipelineDescriptor) => {
-    await gate();
+    if (desc.label?.startsWith('volume_')) await gate();
     return device.createComputePipeline(desc);
   });
   const render = vi.fn(async (desc: RenderPipelineDescriptor) => {
-    await gate();
+    if (desc.label === 'volume_composite') await gate();
     return device.createRenderPipeline(desc);
   });
   device.createComputePipelineAsync = compute;

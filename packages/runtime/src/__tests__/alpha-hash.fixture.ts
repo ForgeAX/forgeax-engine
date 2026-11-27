@@ -184,7 +184,13 @@ export async function verifyAlphaHash(
     })
     .unwrap();
   const profile = renderer.inspect().profile;
-  unwrap(renderer.setProfile({ ...profile, renderPath: 'forward', ssao: false }));
+  unwrap(
+    renderer.setProfile({
+      ...profile,
+      renderPath: 'forward',
+      ambientOcclusion: { enabled: false },
+    }),
+  );
   let completedFrames = 0;
   const sample = async (capture = false, final = false, imageName?: string) => {
     world.update(1 / 60).unwrap();
@@ -341,16 +347,28 @@ export async function verifyAlphaHash(
     expect(await sample()).toEqual(stationary);
     // Forward and Deferred must commit the same mask from the shared Surface.
     if (options.kind !== 'unlit') {
-      unwrap(renderer.setProfile({ ...profile, renderPath: 'deferred', ssao: false }));
+      unwrap(
+        renderer.setProfile({
+          ...profile,
+          renderPath: 'deferred',
+          ambientOcclusion: { enabled: false },
+        }),
+      );
       const deferred = await sample();
       expect(deferred.map((value) => value > 0.5)).toEqual(stationary.map((value) => value > 0.5));
-      unwrap(renderer.setProfile({ ...profile, renderPath: 'forward', ssao: false }));
+      unwrap(
+        renderer.setProfile({
+          ...profile,
+          renderPath: 'forward',
+          ambientOcclusion: { enabled: false },
+        }),
+      );
     }
     unwrap(
       renderer.setProfile({
         ...profile,
         renderPath: options.taaRenderPath ?? 'forward',
-        ssao: false,
+        ambientOcclusion: { enabled: false },
       }),
     );
     const noTaa = statistics(await sample(false, true, 'raw'));

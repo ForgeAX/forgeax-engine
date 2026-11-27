@@ -1,8 +1,7 @@
 // Cube-target and reflection-probe capture views recorded beside the display
-// view: compile their graphs before the display graph, then upload their View
-// UBOs and execute them into the shared frame encoder.
+// view. Prepare each writer's recording, upload its View UBO and issue its
+// physical passes on the shared frame encoder.
 
-import type { CompiledRenderGraph } from '@forgeax/engine-render-graph';
 import { err, ok, type Result } from '@forgeax/engine-rhi';
 import type { CloudShadowProjection } from '../cloud/lighting/shadow';
 import { stageAtmospherePublish } from '../environment/storage';
@@ -21,6 +20,11 @@ import {
   renderGraphPassInstrumentationActive,
 } from './frame-targets';
 import { flushMeshDrawUploads } from './mesh-ssbo';
+import {
+  type CaptureRecording,
+  NativeCaptureRecording,
+  NativeProbeCapture,
+} from './native-target-capture';
 import type {
   _InternalRenderPipelineContext,
   PipelineState,
@@ -28,21 +32,24 @@ import type {
 } from './render-context';
 import { shadowViewPlanesByView } from './shadow-culling';
 import type { CubeCaptureGraphWork } from './target-capture-graph';
-import { prepareTargetCaptureLighting } from './target-capture-lighting';
-import { compileTargetCaptureFrameGraph } from './typed-frame-graph';
-import { writeViewUbo } from './view-ubo';
+import {
+  finishTargetCaptureLighting,
+  prepareTargetCaptureLighting,
+} from './target-capture-lighting';
+import { prepareTargetCaptureRecording } from './typed-frame-graph';
+import { indirectSpecularMode, writeViewUbo } from './view-ubo';
 
-interface CompiledCaptureView {
+interface CaptureViewRecording {
   viewport: { readonly width: number; readonly height: number };
-  graph: CompiledRenderGraph<RenderPipelineFrame>;
+  recording: CaptureRecording;
 }
 
 export type CubeCaptureFrame = ReturnType<
   typeof prepareTargetCaptureLighting<CubeCaptureGraphWork>
 > &
-  CompiledCaptureView;
+  CaptureViewRecording;
 export type ProbeCaptureFrame = ReturnType<typeof prepareTargetCaptureLighting> &
-  CompiledCaptureView;
+  CaptureViewRecording;
 /** The planar mirror records inside the display graph, on the display view's shadows. */
 export type PlanarCaptureFrame = CubeCaptureFrame & { readonly shadows: SharedShadowSource };
 
@@ -58,7 +65,7 @@ function fitOf(cubeCapture: CubeCaptureFrameInput, work: object): ViewLights {
   return fit;
 }
 
-function compileCubeCaptureFrame(
+function prepareCubeCaptureFrame(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   pipelineState: PipelineState,
@@ -76,11 +83,14 @@ function compileCubeCaptureFrame(
     pipelineState,
     fitOf(cubeCapture, work),
   );
-  const graph = compileTargetCaptureFrameGraph(
+  const viewport = {
+    width: Math.max(1, work.physical.descriptor.width >> (work.mipLevel ?? 0)),
+    height: Math.max(1, work.physical.descriptor.height >> (work.mipLevel ?? 0)),
+  };
+  const recording = prepareTargetCaptureRecording(
     lighting.runtime,
     lighting.frameState,
-    lighting.pipeline,
-    work.faceCamera,
+    viewport,
     lighting.lights,
     graphShadowMapSize,
     { work: [work], atmosphere: lighting.capturedAtmosphere !== undefined },
@@ -92,15 +102,12 @@ function compileCubeCaptureFrame(
   );
   return {
     ...lighting,
-    graph,
-    viewport: {
-      width: Math.max(1, work.physical.descriptor.width >> (work.mipLevel ?? 0)),
-      height: Math.max(1, work.physical.descriptor.height >> (work.mipLevel ?? 0)),
-    },
+    recording,
+    viewport,
   };
 }
 
-function compileProbeCaptureFrame(
+function prepareProbeCaptureFrame(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   pipelineState: PipelineState,
@@ -124,11 +131,11 @@ function compileProbeCaptureFrame(
     pipelineState,
     fitOf(cubeCapture, probe),
   );
-  const graph = compileTargetCaptureFrameGraph(
+  const viewport = { width: probe.rawSize, height: probe.rawSize };
+  const recording = prepareTargetCaptureRecording(
     lighting.runtime,
     lighting.frameState,
-    lighting.pipeline,
-    work.faceCamera,
+    viewport,
     lighting.lights,
     graphShadowMapSize,
     { work: [], atmosphere: lighting.capturedAtmosphere !== undefined },
@@ -138,12 +145,18 @@ function compileProbeCaptureFrame(
     undefined,
     lighting.scenePasses,
   );
-  return { ...lighting, graph, viewport: { width: probe.rawSize, height: probe.rawSize } };
+  return { ...lighting, recording, viewport };
+}
+
+interface RecordingCaptureBatch {
+  cube: CubeCaptureFrame[];
+  probes: ProbeCaptureFrame[];
+  planar?: PlanarCaptureFrame;
 }
 
 /**
  * Cube-target faces first, then raw reflection-probe faces, in capture order.
- * The planar mirror compiles apart: the display graph records it after its
+ * The planar mirror records separately: the display graph records it after its
  * own shadows, which the mirror samples instead of rasterising its own.
  */
 function compileCaptureFrames(
@@ -154,16 +167,14 @@ function compileCaptureFrames(
   cubeCaptureWork: readonly CubeCaptureGraphWork[],
   graphShadowMapSize: number | undefined,
   terrainReceivers: readonly TerrainShadowReceiver[],
-  captureFrames: CubeCaptureFrame[],
-  probeCaptureFrames: ProbeCaptureFrame[],
-): PlanarCaptureFrame | undefined {
-  if (cubeCapture === undefined) return undefined;
-  let planar: PlanarCaptureFrame | undefined;
+  batch: RecordingCaptureBatch,
+): void {
+  if (cubeCapture === undefined) return;
   for (const work of cubeCaptureWork) {
     if (work.faceCamera.planarReflection !== undefined) {
       const shadows: SharedShadowSource = { current: undefined };
-      planar = {
-        ...compileCubeCaptureFrame(
+      const next = {
+        ...prepareCubeCaptureFrame(
           internals,
           frameState,
           pipelineState,
@@ -175,10 +186,13 @@ function compileCaptureFrames(
         ),
         shadows,
       };
+      if (batch.planar !== undefined && !(batch.planar.recording instanceof NativeCaptureRecording))
+        void batch.planar.recording.retire();
+      batch.planar = next;
       continue;
     }
-    captureFrames.push(
-      compileCubeCaptureFrame(
+    batch.cube.push(
+      prepareCubeCaptureFrame(
         internals,
         frameState,
         pipelineState,
@@ -190,7 +204,7 @@ function compileCaptureFrames(
     );
   }
   for (const probe of cubeCapture.reflectionProbes?.graph.work ?? []) {
-    const frame = compileProbeCaptureFrame(
+    const frame = prepareProbeCaptureFrame(
       internals,
       frameState,
       pipelineState,
@@ -199,9 +213,8 @@ function compileCaptureFrames(
       graphShadowMapSize,
       terrainReceivers,
     );
-    if (frame !== undefined) probeCaptureFrames.push(frame);
+    if (frame !== undefined) batch.probes.push(frame);
   }
-  return planar;
 }
 
 /** The capture compiler's explicit input; production resolves it from current view components. */
@@ -217,7 +230,7 @@ export interface CaptureGraphCompileInput {
   readonly terrainReceivers: readonly TerrainShadowReceiver[];
 }
 
-/** Graphs compiled for one view attempt, owned until its actual submission completes. */
+/** Recordings owned by one view attempt through its submission. */
 export interface CaptureGraphBatch {
   readonly cube: readonly CubeCaptureFrame[];
   readonly probes: readonly ProbeCaptureFrame[];
@@ -243,25 +256,28 @@ export function captureGraphFailure(cause: unknown): RendererOperationError<'gra
 
 /** Release every successfully compiled graph, including a partially failed batch. */
 export function retireCaptureGraphBatch(batch: CaptureGraphBatch): void {
-  for (const capture of captureGraphFrames(batch)) void capture.graph.retire();
+  for (const { recording } of captureGraphFrames(batch))
+    if (!(recording instanceof NativeCaptureRecording)) void recording.retire();
 }
 
-/** Every compiled frame of a batch, the planar mirror last. */
+/** Every capture recording in the batch, the planar mirror last. */
 export function captureGraphFrames(
   batch: CaptureGraphBatch,
 ): readonly (CubeCaptureFrame | ProbeCaptureFrame)[] {
-  return batch.planar === undefined
-    ? [...batch.cube, ...batch.probes]
-    : [...batch.cube, ...batch.probes, batch.planar];
+  if (batch.planar !== undefined) return [...batch.cube, ...batch.probes, batch.planar];
+  if (batch.cube.length === 0) return batch.probes;
+  if (batch.probes.length === 0) return batch.cube;
+  return [...batch.cube, ...batch.probes];
 }
 
 /** Compile through the same owner for a Render World view and a direct recorder. */
 export function compileCaptureGraphBatch(input: CaptureGraphCompileInput): CaptureGraphOutcome {
-  const cube: CubeCaptureFrame[] = [];
-  const probes: ProbeCaptureFrame[] = [];
-  let planar: PlanarCaptureFrame | undefined;
+  const batch: RecordingCaptureBatch = {
+    cube: [],
+    probes: [],
+  };
   try {
-    planar = compileCaptureFrames(
+    compileCaptureFrames(
       input.internals,
       input.frameState,
       input.pipelineState,
@@ -269,14 +285,29 @@ export function compileCaptureGraphBatch(input: CaptureGraphCompileInput): Captu
       input.work,
       input.shadowMapSize,
       input.terrainReceivers,
-      cube,
-      probes,
+      batch,
     );
-    return ok({ cube, probes, planar });
+    return ok(batch);
   } catch (cause) {
-    retireCaptureGraphBatch({ cube, probes, planar });
+    retireCaptureGraphBatch(batch);
     return err(captureGraphFailure(cause));
+  } finally {
+    if (input.capture !== undefined) finishTargetCaptureLighting(input.capture.state);
   }
+}
+
+function captureGraphInstrumentation(capture: CubeCaptureFrame | ProbeCaptureFrame) {
+  const captureInternals = capture.runtime;
+  if (!renderGraphPassInstrumentationActive(captureInternals)) return undefined;
+  const viewId = capture.work.faceCamera.entityKey;
+  return createRenderGraphPassInstrumentation<RenderPipelineFrame>({
+    internals: captureInternals,
+    owner: 'capture',
+    ...(viewId === undefined ? {} : { viewId }),
+    ...(capture.recording instanceof NativeCaptureRecording
+      ? { generation: capture.recording.generation }
+      : { graph: capture.recording }),
+  });
 }
 
 function executeCaptureFrame(
@@ -309,19 +340,26 @@ function executeCaptureFrame(
     capture.work.sceneInput !== true,
     elapsedSeconds,
     capture.viewport,
+    undefined,
+    0,
+    undefined,
+    indirectSpecularMode(frameState.cameraStandardProfile ?? internals.standardProfile, false),
   );
   const groups = buildPerFrameBindGroups(
     capture.runtime,
     capture.frameState,
     capture.pipeline,
-    hasValidated,
+    hasValidated || capture.recording instanceof NativeProbeCapture,
     bindGroupCounts,
-    undefined,
+    capture.recording instanceof NativeCaptureRecording
+      ? capture.recording.shadowTargets(capture.frameState)
+      : undefined,
     true,
     capture.lighting,
   );
   const context = {
     ...passCtx,
+    nativePassNames: internals.framePassNames,
     ...groups,
     runtime: capture.runtime,
     capturedAtmosphere: capture.capturedAtmosphere,
@@ -331,6 +369,8 @@ function executeCaptureFrame(
     featureExecutions: (capture.work as CubeCaptureGraphWork).feature?.executions ?? [],
     shadowViewPlanesByView: shadowViewPlanesByView(capture.lights.shadowViews),
     frameState: capture.frameState,
+    // Raw capture views have no display GI inputs.
+    bakedField: undefined,
     standardLighting: capture.lighting,
     // Auxiliary capture graphs keep mesh cascades until they request their own
     // capsule surface/transport; display-view admission cannot suppress them.
@@ -345,7 +385,7 @@ function executeCaptureFrame(
   const pendingResamples = capture.frameState.pendingLightTextureResamples;
   if (pendingResamples !== undefined) {
     for (const pending of pendingResamples) {
-      const encoded = pending.work.execute(passCtx.encoder);
+      const encoded = pending.work.execute(passCtx.encoder, internals.framePassNames);
       if (!encoded.ok) {
         pending.work.discard((error) => capture.runtime.errorRegistry.fire(error));
         for (const remaining of pendingResamples) {
@@ -358,19 +398,11 @@ function executeCaptureFrame(
     lightTextureResamples.push(...pendingResamples);
     delete capture.frameState.pendingLightTextureResamples;
   }
-  const captureInternals = capture.runtime;
-  const instrumentation = renderGraphPassInstrumentationActive(captureInternals)
-    ? createRenderGraphPassInstrumentation({
-        internals: captureInternals,
-        graph: capture.graph,
-        owner: 'capture',
-        ...(capture.work.faceCamera.entityKey === undefined
-          ? {}
-          : { viewId: capture.work.faceCamera.entityKey }),
-      })
-    : undefined;
+  const instrumentation = captureGraphInstrumentation(capture);
   const execute = () => {
-    const executed = capture.graph.execute(context, undefined, instrumentation);
+    if (capture.recording instanceof NativeCaptureRecording)
+      return capture.recording.encode(context, instrumentation);
+    const executed = capture.recording.execute(context, undefined, instrumentation);
     if (!executed.ok) throw executed.error;
   };
   // Only the program owner can distinguish a pending native compile from a
@@ -380,8 +412,16 @@ function executeCaptureFrame(
     encoded = false;
     markPipelinePreparationPending(frameState, { code: 'scene-pipeline-preparation' });
   };
-  if (capture.runtime.withPipelinePreparationErrors === undefined) execute();
-  else capture.runtime.withPipelinePreparationErrors(execute, pending);
+  const names = context.nativePassNames;
+  const namesStart = names?.length ?? 0;
+  let passSequenceCompleted = false;
+  try {
+    if (capture.runtime.withPipelinePreparationErrors === undefined) execute();
+    else capture.runtime.withPipelinePreparationErrors(execute, pending);
+    passSequenceCompleted = encoded && !capture.frameState.pipelinePreparationPending;
+  } finally {
+    if (!passSequenceCompleted && names !== undefined) names.length = namesStart;
+  }
   if (capture.frameState.pipelinePreparationPending)
     markPipelinePreparationPending(
       frameState,
@@ -400,7 +440,6 @@ function executeCaptureFrame(
   flushMeshDrawUploads(internals.device.queue, capture.pipeline.meshStorageBuffer);
   const publishCapture = capture.frameState.pendingAtmospherePublish;
   if (publishCapture !== undefined) stageAtmospherePublish(frameState, publishCapture);
-  internals.framePassNames?.push(...capture.graph.inspect().passes.map((pass) => pass.name));
 }
 
 /** Capture views share the display pass context minus its GPU-owned shadow state. */

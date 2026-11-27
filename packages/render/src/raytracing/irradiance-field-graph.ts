@@ -10,14 +10,15 @@ import type { BindGroup, Buffer } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
+import { addCardRadiosityGraph } from './card-radiosity-graph';
 import type { RayDiffuseTargets } from './diffuse-graph';
 import {
   type Binding,
+  type CardRadiosityInput,
   IRRADIANCE_FIELD_PENDING_OFFSET,
   IRRADIANCE_FIELD_REFLECTION_HISTORY_BYTES,
   IRRADIANCE_FIELD_REFLECTION_RAY_BYTES,
   type IrradianceFieldKernelInput,
-  type IrradianceFieldKernelStage,
 } from './irradiance-field';
 import {
   type KernelGraphHandle,
@@ -25,19 +26,33 @@ import {
   resolveKernelBinding,
 } from './kernel-graph-access';
 import { addCardAtlasPasses } from './probe-card-graph';
-import { addRayDiffuseCompositePass } from './ray-graph-shared';
+import { addRayDiffuseCompositePass, snapshotRayReflectionFallback } from './ray-graph-shared';
 import type { IrradianceFieldExtent, PreparedIrradianceField } from './renderer-irradiance-field';
 import type { PreparedWorldAcceleration } from './renderer-world-acceleration';
+import { worldAccelerationTableWords } from './world-acceleration-coverage';
 
 type ViewKernels = PreparedIrradianceField['view'];
+type FieldKernelStage = keyof PreparedIrradianceField['kernels'];
 
 type ViewRecordInput = 'reflectionRays' | 'reflectionSignal';
 type RayQueryInput = 'tlas' | 'traversalInstances' | 'faceNormals';
 /** Field-scoped handles; per-view reflection records are bound by their own passes.
  * The Ray Query handles exist exactly when the field selected that traversal. */
 export type IrradianceFieldGraphHandles = Readonly<
-  Record<Exclude<IrradianceFieldKernelInput, ViewRecordInput | RayQueryInput>, KernelGraphHandle> &
-    Partial<Record<RayQueryInput, KernelGraphHandle>> & { visibility: GraphTextureView }
+  Record<
+    Exclude<IrradianceFieldKernelInput, ViewRecordInput | RayQueryInput | CardRadiosityInput>,
+    KernelGraphHandle
+  > &
+    Partial<Record<RayQueryInput | CardRadiosityInput, KernelGraphHandle>> & {
+      visibility: GraphTextureView;
+      visibilityInputs: GraphBuffer;
+      canonical: GraphTextureView;
+    }
+>;
+
+export type FieldRadianceGraphHandles = Pick<
+  IrradianceFieldGraphHandles,
+  'field' | 'irradiance' | 'moments' | 'meta'
 >;
 
 /** Graph identity: one-shot producer passes, Card capture imports and the view extent
@@ -47,6 +62,7 @@ export function irradianceFieldGraphShape(prepared: PreparedIrradianceField) {
   return [
     prepared.generation,
     prepared.composeRequired(),
+    prepared.canonical.required(),
     prepared.capture(),
     prepared.cards.capture.revision,
     prepared.cards.textureRevision,
@@ -56,6 +72,7 @@ export function irradianceFieldGraphShape(prepared: PreparedIrradianceField) {
     extent.height,
     extent.gathered !== undefined,
     extent.reflection !== undefined,
+    prepared.cardRadiosity !== undefined,
   ];
 }
 
@@ -67,7 +84,10 @@ export function addIrradianceFieldPasses(
   target: RayDiffuseTargets,
   /** A consumer that samples the field itself (Screen Probe gather) replaces
    * the view gather/upsample/composite after the field and Card radiance are current. */
-  consume?: (handles: IrradianceFieldGraphHandles) => Result<void, RenderGraphError>,
+  consume?: (
+    handles: IrradianceFieldGraphHandles,
+    far?: FieldRadianceGraphHandles,
+  ) => Result<void, RenderGraphError>,
 ) {
   const current = () => {
     if (prepared.fence.currentGeneration() !== prepared.generation)
@@ -104,6 +124,18 @@ export function addIrradianceFieldPasses(
   const visibility = graph
     .importView(visibilityTexture, { dimension: '3d' }, () => current().visibility.view)
     .unwrap();
+  const canonicalTexture = graph
+    .importTexture(
+      'irradiance-field.canonical-scene',
+      prepared.canonical.descriptor,
+      () => current().canonical.texture,
+    )
+    .unwrap();
+  const canonical = graph
+    .importView(canonicalTexture, { dimension: '2d' }, () => current().canonical.view)
+    .unwrap();
+  const canonicalParams = imported('canonical-params', prepared.canonical.params, true);
+  const visibilityInputs = imported('visibility-inputs', prepared.visibilityInputs, true);
   const b = prepared.buffers;
   const field = imported('field', b.field, true);
   const frameUniform = imported('frame', b.frame, true);
@@ -111,12 +143,42 @@ export function addIrradianceFieldPasses(
   const irradiance = imported('irradiance', b.irradiance);
   const moments = imported('moments', b.moments);
   const meta = imported('meta', b.meta);
+  const farBuffers = prepared.farRadiance?.buffers;
+  const far =
+    farBuffers === undefined
+      ? undefined
+      : {
+          field: imported('far-field', farBuffers.field, true),
+          irradiance: imported('far-radiance', farBuffers.irradiance),
+          moments: imported('far-moments', farBuffers.moments),
+          meta: imported('far-meta', farBuffers.meta),
+        };
   const probeRays = imported('probe-rays', b.probeRays);
   const probeList = imported('probe-list', b.probeList);
   const probeOrigins = imported('probe-origins', b.probeOrigins);
   const surfaces = imported('card-surfaces', b.surfaces);
   const cardDirect = imported('card-direct', b.cardDirect);
   const cardLit = imported('card-lit', b.cardLit);
+  const radiosity = prepared.cardRadiosity;
+  const radiosityHandles =
+    radiosity === undefined
+      ? {}
+      : {
+          cardDirect,
+          cardRadiosityFrame: imported('card-radiosity.frame', radiosity.buffers.frame, true),
+          cardRadiosityPages: imported('card-radiosity.pages', radiosity.buffers.pages),
+          cardRadiosityOrigins: imported('card-radiosity.origins', radiosity.buffers.origins),
+          cardRadiosityBounce: imported('card-radiosity.bounce', radiosity.buffers.bounce),
+          cardRadiosityIndirect: imported('card-radiosity.indirect', radiosity.buffers.indirect),
+          cardRadiosityRays: imported('card-radiosity.rays', radiosity.buffers.trace),
+          cardRadiosityFiltered: imported('card-radiosity.filtered', radiosity.buffers.filtered),
+          cardRadiositySh: imported('card-radiosity.sh', radiosity.buffers.sh),
+          cardRadiosityMeta: imported('card-radiosity.meta', radiosity.buffers.meta),
+          cardRadiosityVisibility: imported(
+            'card-radiosity.visibility',
+            radiosity.buffers.visibility,
+          ),
+        };
   const cardSettings = imported('card-settings', prepared.cards.settings, true);
   const extentBuffer = (
     name: string,
@@ -163,16 +225,40 @@ export function addIrradianceFieldPasses(
     });
     if (!projected.ok) return projected;
   }
-  const atlasPasses = addCardAtlasPasses(
-    graph,
-    'irradiance-field.card',
-    prepared.cards,
-    prepared.capture(),
-    () => current().cards,
-    (_frame, pass) => current().recordCapture(pass),
-  );
+  if (prepared.canonical.required()) {
+    const settings = graph.addCopyPass('irradiance-field.visibility-inputs', {
+      accesses: [
+        { resource: regionBuffers.settings, usage: 'copy-src' },
+        { resource: visibilityInputs, usage: 'copy-dst' },
+      ],
+      encodeDirect: (encoder, _frame, resources) =>
+        encoder.copyBufferToBuffer(
+          resources.buffer(regionBuffers.settings).unwrap(),
+          0,
+          resources.buffer(visibilityInputs).unwrap(),
+          0,
+          48,
+        ),
+    });
+    if (!settings.ok) return settings;
+    const projected = graph.addComputePass('irradiance-field.canonical-scene', {
+      accesses: [
+        { resource: regionBuffers.instances, usage: 'storage-read' },
+        { resource: regionBuffers.fields, usage: 'storage-read' },
+        { resource: canonicalParams, usage: 'uniform-read' },
+        { resource: canonical, usage: 'storage-write' },
+      ],
+      encodeDirect: (pass) => {
+        const value = current();
+        value.canonical.record(pass).unwrap();
+        value.markEncoded('canonical');
+      },
+    });
+    if (!projected.ok) return projected;
+  }
+  const atlasPasses = addFieldCardCaptures(graph, prepared, current);
   if (!atlasPasses.ok) return atlasPasses;
-  const { atlas, projections } = atlasPasses.value;
+  const { atlas, projections, primitiveIndex, cardReceivers } = atlasPasses.value;
   const traced = addWorldAccelerationPass(
     graph,
     prepared.acceleration,
@@ -182,11 +268,14 @@ export function addIrradianceFieldPasses(
       return value;
     },
     field,
+    far?.field,
   );
   if (!traced.ok) return traced;
   const handles: IrradianceFieldGraphHandles = {
     ...traced.value,
     visibility,
+    visibilityInputs,
+    canonical,
     voxels: regionBuffers.voxels,
     grid: regionBuffers.settings,
     instances: regionBuffers.instances,
@@ -198,6 +287,8 @@ export function addIrradianceFieldPasses(
     frame: frameUniform,
     field,
     surfaces,
+    cardReceivers,
+    cardPrimitiveIndex: primitiveIndex,
     cardLit,
     probeRays,
     probeList,
@@ -206,18 +297,27 @@ export function addIrradianceFieldPasses(
     moments,
     meta,
     ...atlas,
+    ...radiosityHandles,
   };
   /** One TS-kernel pass whose accesses are exactly the stage's binding roster. */
   const kernelPass = (
     label: string,
-    stage: IrradianceFieldKernelStage,
+    stage: FieldKernelStage,
     work: (value: PreparedIrradianceField) => number,
     before?: (value: PreparedIrradianceField) => void,
-    after: readonly IrradianceFieldKernelStage[] = [],
+    after: readonly FieldKernelStage[] = [],
     executeIf?: () => boolean,
-  ) =>
-    graph.addComputePass(`irradiance-field.${label}`, {
-      accesses: kernelAccesses(prepared.kernels[stage].bindings, handles, 'storage-write'),
+    domain?: FieldRadianceGraphHandles,
+  ) => {
+    // World-cache updates read this source's direct light plus prior committed
+    // Card indirect, not a Card atlas left over from a different source epoch.
+    const domainHandles = domain === undefined ? handles : { ...handles, ...domain };
+    const stageHandles =
+      stage === 'traceProbes' && radiosityHandles.cardRadiosityBounce !== undefined
+        ? { ...domainHandles, cardLit: radiosityHandles.cardRadiosityBounce }
+        : domainHandles;
+    return graph.addComputePass(`irradiance-field.${label}`, {
+      accesses: kernelAccesses(prepared.kernels[stage].bindings, stageHandles, 'storage-write'),
       ...(executeIf === undefined ? {} : { executeIf }),
       encodeDirect: (pass, _graphframe, resources) => {
         const value = current();
@@ -226,12 +326,13 @@ export function addIrradianceFieldPasses(
           value.kernels[recorded]
             .record(
               pass,
-              kernelResolver(value.kernels[recorded].bindings, handles, resources),
+              kernelResolver(value.kernels[recorded].bindings, stageHandles, resources),
               work(value),
             )
             .unwrap();
       },
     });
+  };
   // Card direct light is skipped (its buffers keep last frame's values) unless a
   // capture slice, light change or edit made it stale; the frame upload therefore
   // opens in the always-run probe trace, still before this frame's submit.
@@ -267,64 +368,112 @@ export function addIrradianceFieldPasses(
         .unwrap(),
   });
   if (!lit.ok) return lit;
-  const placed = kernelPass('place-probes', 'placeProbes', (value) => value.schedule().probes);
-  if (!placed.ok) return placed;
-  const probesTraced = kernelPass(
-    'trace-probes',
-    'traceProbes',
-    (value) => value.schedule().probes * value.plan.raysPerProbe,
-    (value) => value.writeFrame(),
-  );
-  if (!probesTraced.ok) return probesTraced;
-  // The derive kernel's bindings are a subset of the update kernel's accesses.
-  const updated = kernelPass(
-    'update-probes',
-    'updateProbes',
-    (value) => value.schedule().probes,
-    undefined,
-    ['deriveProbes'],
-  );
-  if (!updated.ok) return updated;
-  const fieldReads = fieldReadsOf(handles);
-  const radiated = graph.addComputePass('irradiance-field.radiosity', {
-    accesses: [
-      { resource: frameUniform, usage: 'uniform-read' },
-      { resource: surfaces, usage: 'storage-read' },
-      { resource: cardDirect, usage: 'storage-read' },
-      { resource: cardLit, usage: 'storage-write' },
-      ...fieldReads,
-    ],
-    encodeDirect: (pass, _graphframe, resources) => {
-      const value = current();
-      value.view.radiateCards
-        .record(
-          pass,
-          [frameUniform, surfaces, cardDirect, cardLit].map((r) => ({
-            buffer: resources.buffer(r).unwrap(),
-          })),
-          value.sample,
-          tileThreads(),
-        )
-        .unwrap();
-    },
+  const radiated = addCardRadiosityGraph({
+    graph,
+    prepared,
+    current,
+    kernelPass,
+    frameUniform,
+    surfaces,
+    cardDirect,
+    cardLit,
+    tileThreads,
+    fieldReads: () => fieldReadsOf(handles),
   });
   if (!radiated.ok) return radiated;
+  if (far !== undefined) {
+    // Both domains use the same schedule and sequentially reuse ray scratch.
+    // Their history and per-probe relocation state are independently owned.
+    const probes = (value: PreparedIrradianceField) => value.schedule().probes;
+    const placed = kernelPass(
+      'place-far-probes',
+      'placeProbes',
+      probes,
+      undefined,
+      [],
+      undefined,
+      far,
+    );
+    if (!placed.ok) return placed;
+    const farTrace = kernelPass(
+      'trace-far-probes',
+      'traceProbes',
+      (value) => probes(value) * value.plan.raysPerProbe,
+      undefined,
+      [],
+      undefined,
+      far,
+    );
+    if (!farTrace.ok) return farTrace;
+    const updated = kernelPass(
+      'update-far-probes',
+      'updateProbes',
+      probes,
+      undefined,
+      ['deriveProbes'],
+      undefined,
+      far,
+    );
+    if (!updated.ok) return updated;
+  }
   const scope = { graph, current, target, extent, handles, extentBuffer, view: viewUniform(graph) };
   const gathered =
     consume === undefined
       ? addFieldGatherPasses({
           ...scope,
           label: 'irradiance-field',
-          ...(extent.reflection === undefined || target.reflection === undefined
-            ? {}
-            : { reflectionResponse: target.reflection.response.view }),
         })
-      : consume(handles);
+      : consume(handles, far);
   if (!gathered.ok) return gathered;
   return addFieldReflectionPasses(scope);
 }
 
 type Current = () => PreparedIrradianceField;
+
+/** The same graph submission orders material, identity, immutable source facts,
+ * then direct light. Retained captures are revalidated against this source epoch. */
+function addFieldCardCaptures(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  prepared: PreparedIrradianceField,
+  current: Current,
+) {
+  const captured = addCardAtlasPasses(
+    graph,
+    'irradiance-field.card',
+    prepared.cards,
+    prepared.capture(),
+    () => current().cards,
+    (_frame, pass, phase) => current().recordCapture(pass, phase),
+  );
+  if (!captured.ok) return captured;
+  const resources = prepared.cards.capture.receivers;
+  const cardReceivers = graph
+    .importBuffer(
+      'irradiance-field.card-receivers',
+      { size: resources.size, usage: 128 | 12 },
+      () => current().cards.capture.receivers.buffer,
+    )
+    .unwrap();
+  if (prepared.traversal === 'global-sdf') {
+    const staging = graph
+      .importBuffer(
+        'irradiance-field.card-receiver-staging',
+        { size: resources.size, usage: 128 | 12 },
+        () => current().cards.capture.receivers.staging,
+      )
+      .unwrap();
+    const published = graph.addCopyPass('irradiance-field.card-receivers', {
+      executeIf: () => current().schedule().direct,
+      accesses: [
+        { resource: staging, usage: 'copy-src' },
+        { resource: cardReceivers, usage: 'copy-dst' },
+      ],
+      encodeDirect: (encoder) => current().recordReceiverFacts(encoder),
+    });
+    if (!published.ok) return published;
+  }
+  return ok({ ...captured.value, cardReceivers });
+}
 type ExtentBuffer = (
   name: string,
   size: number,
@@ -374,6 +523,7 @@ export function addWorldAccelerationPass<FrameCtx extends RenderGraphFrame>(
   live: () => PreparedWorldAcceleration,
   /** The shared sampler rejects cache reads until this encoded roster is complete. */
   field?: GraphBuffer,
+  farField?: GraphBuffer,
 ): Result<Partial<Record<RayQueryInput, KernelGraphHandle>>, RenderGraphError> {
   if (acceleration === undefined) return ok({});
   // Graph imports are frozen before encoding. Recovery must precede that
@@ -401,7 +551,7 @@ export function addWorldAccelerationPass<FrameCtx extends RenderGraphFrame>(
   const traversalInstances = table(
     'traversalInstances',
     'traversal-instances',
-    (acceleration.maxInstances + 1) * 16,
+    worldAccelerationTableWords(acceleration.maxInstances, acceleration.maxTriangles) * 4,
   );
   const faceNormals = table('faceNormals', 'face-normals', acceleration.maxTriangles * 16);
   const built = graph.addCopyPass('irradiance-field.world-acceleration', {
@@ -415,19 +565,25 @@ export function addWorldAccelerationPass<FrameCtx extends RenderGraphFrame>(
   });
   if (!built.ok) return built;
   if (field !== undefined) {
+    const fields = farField === undefined ? [field] : [field, farField];
     const covered = graph.addCopyPass('irradiance-field.world-coverage', {
       accesses: [
         { resource: traversalInstances, usage: 'copy-src' },
-        { resource: field, usage: 'copy-dst' },
+        ...fields.map((resource) => ({ resource, usage: 'copy-dst' as const })),
       ],
-      encodeDirect: (encoder, _graphframe, resources) =>
-        encoder.copyBufferToBuffer(
-          resources.buffer(traversalInstances).unwrap(),
-          0,
-          resources.buffer(field).unwrap(),
-          IRRADIANCE_FIELD_PENDING_OFFSET,
-          4,
-        ),
+      encodeDirect: (encoder, _graphframe, resources) => {
+        const table = resources.buffer(traversalInstances).unwrap();
+        for (const target of fields) {
+          encoder.copyBufferToBuffer(
+            table,
+            0,
+            resources.buffer(target).unwrap(),
+            IRRADIANCE_FIELD_PENDING_OFFSET,
+            4,
+          );
+        }
+        return ok(undefined);
+      },
     });
     if (!covered.ok) return covered;
   }
@@ -445,8 +601,12 @@ interface ViewScope {
 
 type FieldSampleHandles = Pick<FieldHandles, 'field' | 'irradiance' | 'moments' | 'meta'> &
   (
-    | { readonly grid: FieldHandles['grid']; readonly visibility: GraphTextureView }
-    | { readonly grid?: never; readonly visibility?: never }
+    | {
+        readonly visibilityInputs: GraphBuffer;
+        readonly visibility: GraphTextureView;
+        readonly canonical: GraphTextureView;
+      }
+    | { readonly visibilityInputs?: never; readonly visibility?: never; readonly canonical?: never }
   );
 
 function fieldReadsOf(handles: FieldSampleHandles) {
@@ -459,8 +619,9 @@ function fieldReadsOf(handles: FieldSampleHandles) {
     ...(handles.visibility === undefined
       ? []
       : [
-          { resource: handles.grid as GraphBuffer, usage: 'uniform-read' as const },
+          { resource: handles.visibilityInputs, usage: 'uniform-read' as const },
           { resource: handles.visibility, usage: 'sampled-read' as const },
+          { resource: handles.canonical, usage: 'sampled-read' as const },
         ]),
   ];
 }
@@ -496,7 +657,6 @@ export interface FieldGatherExtent {
   readonly upsampled: Buffer | undefined;
 }
 interface FieldGatherScope<E extends FieldGatherExtent> {
-  readonly reflectionResponse?: GraphTextureView;
   /** Pass label prefix, the lane's inspection identity. */
   readonly label: string;
   readonly graph: RenderGraphBuilder<RenderPipelineFrame>;
@@ -514,7 +674,6 @@ interface FieldGatherScope<E extends FieldGatherExtent> {
 
 /** Per-pixel gather (-> upsample) -> the shared additive diffuse composite. */
 export function addFieldGatherPasses<E extends FieldGatherExtent>({
-  reflectionResponse,
   label,
   graph,
   current,
@@ -524,6 +683,8 @@ export function addFieldGatherPasses<E extends FieldGatherExtent>({
   extentBuffer,
   view,
 }: FieldGatherScope<E>): Result<void, RenderGraphError> {
+  if (current().view.gatherField === undefined)
+    throw new Error('field view gather requires its gather kernel');
   const pixelCount = extent.width * extent.height;
   const frameUniform = handles.frame as GraphBuffer;
   const fieldReads = fieldReadsOf(handles);
@@ -548,7 +709,9 @@ export function addFieldGatherPasses<E extends FieldGatherExtent>({
     encodeDirect: (pass, _graphframe, resources) => {
       const value = current();
       const size = value.extent();
-      value.view.gatherField
+      const kernel = value.view.gatherField;
+      if (kernel === undefined) throw new Error('field view gather requires its gather kernel');
+      kernel
         .record(
           pass,
           [
@@ -575,7 +738,10 @@ export function addFieldGatherPasses<E extends FieldGatherExtent>({
       ],
       encodeDirect: (pass, _graphframe, resources) => {
         const value = current();
-        value.view.upsampleField
+        const kernel = value.view.upsampleField;
+        if (kernel === undefined)
+          throw new Error('half-resolution field requires its upsample kernel');
+        kernel
           .record(
             pass,
             [
@@ -601,9 +767,7 @@ export function addFieldGatherPasses<E extends FieldGatherExtent>({
     () => current().composite,
     target,
     signal,
-    view,
     pixelCount,
-    reflectionResponse,
   );
   if (!composited.ok) return composited;
   return ok(undefined);
@@ -624,6 +788,12 @@ function addFieldReflectionPasses({
 }: ViewScope): Result<void, RenderGraphError> {
   const reflection = target.reflection;
   if (extent.reflection === undefined || reflection === undefined) return ok(undefined);
+  const currentReflection = () => {
+    const bundle = current().reflection();
+    if (bundle.state !== 'ready')
+      throw new Error('irradiance field reflection bundle is not ready');
+    return bundle.value;
+  };
   const pixelCount = extent.width * extent.height;
   const frameUniform = handles.frame as GraphBuffer;
   const rays = extentBuffer(
@@ -647,9 +817,8 @@ function addFieldReflectionPasses({
       { resource: signal, usage: 'storage-write' },
     ],
     encodeDirect: (pass, _graphframe, resources) => {
-      const value = current();
-      value.view.generateFieldReflections
-        .record(
+      currentReflection()
+        .view.generateFieldReflections.record(
           pass,
           [
             { buffer: resources.buffer(frameUniform).unwrap() },
@@ -659,14 +828,14 @@ function addFieldReflectionPasses({
             { buffer: resources.buffer(rays).unwrap() },
             { buffer: resources.buffer(signal).unwrap() },
           ],
-          value.sample,
+          current().sample,
           pixelCount,
         )
         .unwrap();
     },
   });
   if (!generated.ok) return generated;
-  const kernel = current().kernels.traceReflections;
+  const kernel = currentReflection().trace;
   const local: KernelHandles = {
     ...handles,
     reflectionRays: rays,
@@ -676,12 +845,8 @@ function addFieldReflectionPasses({
   const traced = graph.addComputePass('irradiance-field.reflection-trace', {
     accesses: kernelAccesses(kernel.bindings, local, 'storage-read-write'),
     encodeDirect: (pass, _graphframe, resources) => {
-      current()
-        .kernels.traceReflections.record(
-          pass,
-          kernelResolver(kernel.bindings, local, resources),
-          pixelCount,
-        )
+      currentReflection()
+        .trace.record(pass, kernelResolver(kernel.bindings, local, resources), pixelCount)
         .unwrap();
     },
   });
@@ -715,7 +880,7 @@ function addFieldReflectionPasses({
       { resource: rays, usage: 'storage-read' },
     ],
     encodeDirect: (pass, _graphframe, resources) =>
-      current()
+      currentReflection()
         .view.accumulateFieldReflections.record(
           pass,
           [
@@ -743,7 +908,7 @@ function addFieldReflectionPasses({
       { resource: denoised, usage: 'storage-write' },
     ],
     encodeDirect: (pass, _graphframe, resources) =>
-      current()
+      currentReflection()
         .view.filterFieldReflections.record(
           pass,
           [
@@ -758,6 +923,12 @@ function addFieldReflectionPasses({
         .unwrap(),
   });
   if (!filtered.ok) return filtered;
+  const fallbackBeforeComposite = snapshotRayReflectionFallback(
+    graph,
+    'irradiance-field.previous-fallback',
+    reflection.fallback,
+  );
+  if (!fallbackBeforeComposite.ok) return fallbackBeforeComposite;
   const composited = graph.addRasterPass('irradiance-field.reflection-composite', {
     accesses: [
       { resource: target.scene.view, usage: 'color-attachment' },
@@ -766,22 +937,25 @@ function addFieldReflectionPasses({
       { resource: target.depth, usage: 'sampled-read' },
       { resource: target.normal.view, usage: 'sampled-read' },
       { resource: reflection.response.view, usage: 'sampled-read' },
+      { resource: fallbackBeforeComposite.value, usage: 'sampled-read' },
     ],
     colorAttachments: [
       { view: target.scene.view, loadOp: 'load', storeOp: 'store' },
       { view: reflection.fallback.view, loadOp: 'load', storeOp: 'store' },
     ],
     encodeDirect: (pass, _graphframe, resources) =>
-      current()
-        .reflectionComposite.record(
+      currentReflection()
+        .composite.record(
           pass,
           {
             reconstructed: resources.buffer(denoised).unwrap(),
             depth: resources.textureView(target.depth).unwrap(),
             normal: resources.textureView(target.normal.view).unwrap(),
             response: resources.textureView(reflection.response.view).unwrap(),
+            previous: resources.textureView(fallbackBeforeComposite.value).unwrap(),
           },
           pixelCount,
+          reflection.composeReflection === true,
         )
         .unwrap(),
   });

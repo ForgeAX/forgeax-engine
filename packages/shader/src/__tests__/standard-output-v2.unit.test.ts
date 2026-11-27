@@ -9,6 +9,7 @@ const imports = {
   'forgeax_view::common': source('common.wgsl'),
   'forgeax_view::output_encoding': source('output-encoding.wgsl'),
   'forgeax_view::tone_mapping': source('tone-mapping.wgsl'),
+  'forgeax_view::smaa_blend': source('smaa-blend.wgsl'),
 };
 
 it('publishes finite native Grade/Final entries with only their selected resource reads', async () => {
@@ -22,6 +23,7 @@ it('publishes finite native Grade/Final entries with only their selected resourc
     'fs_grade_bloom',
     'fs_grade_lut_bloom',
     'fs_encode',
+    'fs_smaa_encode',
     'fs_final',
     'fs_final_fxaa',
   ]) {
@@ -29,13 +31,13 @@ it('publishes finite native Grade/Final entries with only their selected resourc
     expect(entry, name).toBeDefined();
     const reads = entry?.bindings.map((read) => `${read.group}:${read.binding}`).sort();
     expect(reads).toContain('0:0');
-    expect(reads).toContain('0:1');
+    expect(reads?.includes('0:1')).toBe(name !== 'fs_smaa_encode');
     expect(reads).toContain('0:2');
     expect(reads?.includes('0:3')).toBe(name.startsWith('fs_grade'));
     expect(reads?.includes('1:0')).toBe(name.includes('lut'));
     expect(reads?.includes('1:1')).toBe(name.includes('lut'));
-    for (const binding of [4, 5, 6, 7, 8])
-      expect(reads?.includes(`0:${binding}`)).toBe(name.includes('bloom'));
+    expect(reads?.includes('0:4')).toBe(name.includes('bloom') || name === 'fs_smaa_encode');
+    for (const binding of [5, 6, 7, 8]) expect(reads).not.toContain(`0:${binding}`);
     expect(entry?.effects).toEqual({
       mayDiscard: false,
       writesDepth: false,

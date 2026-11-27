@@ -7,6 +7,8 @@ description: >-
 
 # forgeax-engine-debug-draw
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 > debug-draw visualizes gameplay facts: `app.debugDraw.line(a, b, RED)` draws wire geometry in the final frame without ECS entities/components/systems. GPU recording and frame analysis use [`forgeax-engine-rhi-debug`](../forgeax-engine-rhi-debug/SKILL.md). Use debug-draw for demos, physics tuning, cameras, and audio radii.
 
 ## Mental model

@@ -92,8 +92,8 @@
           "executionClass": "independent",
           "artifactRequirements": {
             "packGuids": [
-              "019e9c00-0000-7000-8000-000000000000",
-              "019e9c00-0000-7000-8000-000000000002",
+              "c76202f1-8caa-5873-a899-a372ea0b5cfc",
+              "96b5ec1b-841a-5dc5-be0f-2171aacd75bc",
               "8cf2368a-0ae3-579a-a479-b0df2b5f392a"
             ]
           },
@@ -666,7 +666,7 @@
           "commandId": "smoke",
           "executionClass": "independent",
           "artifactRequirements": {
-            "packGuids": ["019e2808-d3ba-735f-811f-ae7bbb465392"]
+            "packGuids": ["6498c168-6c36-55ae-aa5a-9ed01836ff62"]
           },
           "oracle": "frameReceipt"
         }
@@ -816,6 +816,9 @@
           "gateId": "hello-text/smoke",
           "commandId": "smoke",
           "executionClass": "independent",
+          "artifactRequirements": {
+            "packGuids": ["0172daac-227f-5a3b-b6ae-313f9fd52081"]
+          },
           "oracle": "frameReceipt"
         }
       ]

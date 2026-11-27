@@ -82,8 +82,16 @@ it('replaces cached Pack metadata when native reflection changes without changin
         artifactPath: (guid: string, key: string) => `${guid}/${key}`,
       }),
     };
-    const newCompiler = async () =>
-      (await import('@forgeax/engine-shader-compiler')).createMaterialPackCooker([root]);
+    const newCompiler = async () => {
+      const compiler = (await import('@forgeax/engine-shader-compiler')).createMaterialPackCooker([
+        root,
+      ]);
+      // This fixture characterizes the explicitly compiled transport's reflection bytes.
+      return {
+        ...compiler,
+        cook: (input: unknown) => compiler.cook({ ...(input as object), publication: undefined }),
+      };
+    };
     let cooker = await newCompiler();
     const run = async () => {
       const prepared = (

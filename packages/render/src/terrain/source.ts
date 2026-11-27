@@ -28,7 +28,6 @@ import {
   defaultMaterialSnapshot,
   type RenderableSnapshot,
 } from '../render-system-extract.js';
-import { at, type Node as FrameNode, put } from '../scene/frame-tree';
 
 /** Instance facts only. The asset owner supplies current content during section execution. */
 export interface TerrainRenderSource {
@@ -49,46 +48,15 @@ export interface TerrainDrawSource {
   readonly activeLayers: readonly number[];
   readonly grids: readonly AssetHandle<'mesh'>[];
   readonly sectionCount: number;
-  readonly sections: FrameNode<TerrainDrawSection> | undefined;
+  readonly sections: TerrainSections;
 }
 
 export interface TerrainDrawSection {
   readonly data: TerrainSection;
+  /** Section-local f32 bounds advance with the admitted height tile. */
+  readonly localAabb: readonly number[];
   /** This section's packed f32 mip chain, detached once per affected tile. */
   readonly heights: Uint8Array;
-}
-
-/** Per-view geometric facts that remain valid for one exact accepted Terrain input. */
-export interface TerrainProjectionSectionFacts {
-  readonly lod: number;
-  readonly grid: number;
-  readonly neighbors: readonly number[];
-  readonly localAabb: readonly number[];
-  /** Current producer authority, checked before these facts may be reused. */
-  readonly materialSource: MaterialResource;
-  readonly materialSnapshot: MaterialResource['snapshot'];
-  readonly layerFrame: object | undefined;
-  readonly dispatch: readonly DispatchEntry[];
-}
-
-/** Candidate proof is carried by section rows and promoted only with that view's submit. */
-export interface TerrainProjectionFacts {
-  readonly world: RenderResourceScope;
-  readonly source: TerrainDrawSource;
-  readonly sourceVersion: number;
-  readonly handle: number;
-  readonly lod0Diameter: number;
-  readonly forcedLod: number;
-  readonly layer: number;
-  /** Copy of every matrix element: pose arrays may be mutated in place between frames. */
-  readonly transform: readonly number[];
-  /** position xyz, near, fov, projection, and orthographic top/bottom. */
-  readonly camera: readonly [number, number, number, number, number, string, number, number];
-  readonly shadowFamily: number;
-  readonly authorVisible: boolean | undefined;
-  readonly shadowCaster: false | undefined;
-  readonly shadowReceiver: false | undefined;
-  readonly sections: readonly TerrainProjectionSectionFacts[];
 }
 
 const rootMaterial = MaterialResource.from({ ...defaultMaterialSnapshot(), passes: [] });
@@ -107,6 +75,7 @@ function fixedSection(
   world: RenderResourceScope,
   asset: TerrainAsset,
   index: number,
+  atlas: ReturnType<typeof terrainHeightAtlas>,
 ): TerrainDrawSection {
   const section = asset.sections[index];
   if (section === undefined || typeof section.heightTexture !== 'number')
@@ -115,7 +84,6 @@ function fixedSection(
   if (texture.kind !== 'texture' || texture.format !== 'rgba8unorm' || texture.data === undefined)
     terrainSourceError('terrain-query-unavailable', 'height', 'packed f32 height mip bytes');
   const n = asset.subsectionVertices;
-  const atlas = terrainHeightAtlas(asset);
   const heights = new Uint8Array(terrainHeightMipOffset(n, n, Math.log2(n) + 1));
   let sourceOffset = 0,
     targetOffset = 0;
@@ -130,7 +98,81 @@ function fixedSection(
     sourceOffset += width * atlas.tileRows * size * 4;
     targetOffset += size * size * 4;
   }
-  return { data: { ...section, activeLayers: [...section.activeLayers] }, heights };
+  const width = (n - 1) * asset.spacing;
+  const [min, max] = terrainHeightBounds(section.minHeight, section.maxHeight);
+  return {
+    data: { ...section, activeLayers: [...section.activeLayers] },
+    heights,
+    localAabb: Object.freeze([
+      Math.fround(section.x),
+      Math.fround(min),
+      Math.fround(section.z),
+      terrainAxisEndpoint(section.x, width),
+      Math.fround(max),
+      terrainAxisEndpoint(section.z, width),
+    ]),
+  };
+}
+
+const SECTIONS_PER_PAGE = 64;
+const PAGES_PER_GROUP = 256;
+const SECTIONS_PER_GROUP = SECTIONS_PER_PAGE * PAGES_PER_GROUP;
+
+/** Dense section indices survive height edits. Each issued view keeps its own page directory. */
+class TerrainSections {
+  private constructor(private readonly groups: TerrainDrawSection[][][]) {}
+
+  static capture(world: RenderResourceScope, asset: TerrainAsset): TerrainSections {
+    const groups: TerrainDrawSection[][][] = [];
+    const atlas = terrainHeightAtlas(asset);
+    for (let start = 0; start < asset.sections.length; start += SECTIONS_PER_GROUP) {
+      const group: TerrainDrawSection[][] = [];
+      const end = Math.min(start + SECTIONS_PER_GROUP, asset.sections.length);
+      for (let pageStart = start; pageStart < end; pageStart += SECTIONS_PER_PAGE) {
+        const page: TerrainDrawSection[] = [];
+        const pageEnd = Math.min(end, pageStart + SECTIONS_PER_PAGE);
+        for (let index = pageStart; index < pageEnd; index++)
+          page.push(fixedSection(world, asset, index, atlas));
+        group.push(page);
+      }
+      groups.push(group);
+    }
+    return new TerrainSections(groups);
+  }
+
+  at(index: number): TerrainDrawSection | undefined {
+    const group = this.groups[Math.floor(index / SECTIONS_PER_GROUP)];
+    return group?.[Math.floor(index / SECTIONS_PER_PAGE) % PAGES_PER_GROUP]?.[
+      index % SECTIONS_PER_PAGE
+    ];
+  }
+
+  update(
+    world: RenderResourceScope,
+    asset: TerrainAsset,
+    indices: ReadonlySet<number>,
+  ): TerrainSections {
+    if (indices.size === 0) return this;
+    const groups = this.groups.slice();
+    const atlas = terrainHeightAtlas(asset);
+    for (const index of indices) {
+      const groupId = Math.floor(index / SECTIONS_PER_GROUP);
+      const pageId = Math.floor(index / SECTIONS_PER_PAGE) % PAGES_PER_GROUP;
+      const priorGroup = this.groups[groupId] as TerrainDrawSection[][];
+      let group = groups[groupId] as TerrainDrawSection[][];
+      if (group === priorGroup) {
+        group = group.slice();
+        groups[groupId] = group;
+      }
+      let page = group[pageId] as TerrainDrawSection[];
+      if (page === priorGroup[pageId]) {
+        page = page.slice();
+        group[pageId] = page;
+      }
+      page[index % SECTIONS_PER_PAGE] = fixedSection(world, asset, index, atlas);
+    }
+    return new TerrainSections(groups);
+  }
 }
 
 /** Renderer-owned geometry projection; the existing source change stream drives path copies. */
@@ -157,9 +199,7 @@ export class TerrainSourceCache {
         terrainSourceError('terrain-query-unavailable', 'grid', 'an admitted Mesh reference');
       return value;
     });
-    let sections: FrameNode<TerrainDrawSection> | undefined;
-    for (let index = 0; index < asset.sections.length; index++)
-      sections = put(sections, fixedSection(world, asset, index), 0, index, 1);
+    const sections = TerrainSections.capture(world, asset);
     const version = renderAssetRevision(world, handle);
     if (version === undefined)
       terrainSourceError(
@@ -225,14 +265,11 @@ export class TerrainSourceCache {
           }
         }
       }
-      let sections = before.sections;
-      for (const index of indices)
-        sections = put(sections, fixedSection(world, asset, index), 0, index, 1);
       roots.set(change.handle, {
         ...before,
         version: change.revision,
         asset: fixedAsset(asset),
-        sections,
+        sections: before.sections.update(world, asset, indices),
       });
     }
   }
@@ -247,7 +284,7 @@ export class TerrainSourceCache {
 }
 
 export function terrainDrawSection(source: TerrainDrawSource, index: number): TerrainDrawSection {
-  const section = at(source.sections, index)?.node.value;
+  const section = source.sections.at(index);
   if (section === undefined)
     terrainSourceError('terrain-query-unavailable', 'section', 'a fixed prepared Terrain section');
   return section;

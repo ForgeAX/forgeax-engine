@@ -1,4 +1,4 @@
-import { ensureShaderManifestProfile } from '../../../../scripts/lib/shader-manifest.mjs';
+import { createHash } from 'node:crypto';
 import { useBuiltAssetSource, useImportedAssetSource } from '../../../shared/scripts/source-publication.mjs';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
@@ -161,18 +161,47 @@ export function createCanvas(width, height, onDevice = () => {}) {
   return canvas;
 }
 
-let manifestUrl;
-export async function engineManifestUrl() {
-  if (manifestUrl) return manifestUrl;
-  await ensureShaderManifestProfile('point-ssao');
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-  manifestUrl = URL.createObjectURL(
-    new Blob([JSON.stringify(await buildEngineShaderManifest({ pointShadows: true }))], {
-      type: 'application/json',
-    }),
-  );
-  process.once('exit', () => URL.revokeObjectURL(manifestUrl));
-  return manifestUrl;
+const engineManifestUrls = new Map();
+export async function engineManifestDetails(catalogRoot, shaderManifestPath) {
+  const catalogPath = shaderManifestPath !== undefined ? resolve(shaderManifestPath) : catalogRoot === undefined
+    ? undefined
+    : resolve(catalogRoot, 'shaders', 'manifest.json');
+  const cacheKey = catalogPath ?? 'source-build';
+  const cached = engineManifestUrls.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  let bytes;
+  if (catalogPath !== undefined) {
+    bytes = readFileSync(catalogPath);
+  } else {
+    const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+    bytes = Buffer.from(
+      JSON.stringify(await buildEngineShaderTemplateManifest({ pointShadows: true })),
+    );
+  }
+  if (bytes.byteLength === 0)
+    throw new Error(`Shader manifest publication is empty: ${catalogPath ?? 'source build'}`);
+
+  // Vite's publication carries fragments and their index table in one file. Keep
+  // these exact bytes; ShaderRegistry performs the full schema and digest checks.
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/json' }));
+  const details = {
+    url,
+    path: catalogPath,
+    bytes: bytes.byteLength,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+  };
+  engineManifestUrls.set(cacheKey, details);
+  if (engineManifestUrls.size === 1) {
+    process.once('exit', () => {
+      for (const { url: ownedUrl } of engineManifestUrls.values()) URL.revokeObjectURL(ownedUrl);
+    });
+  }
+  return details;
+}
+
+export async function engineManifestUrl(catalogRoot) {
+  return (await engineManifestDetails(catalogRoot)).url;
 }
 
 const halfTable = new Float32Array(65536);
@@ -343,7 +372,7 @@ export function summarizeTimings(frames) {
 }
 
 /** Sponza through the built hello-gi catalog (`vite build` dist), as src/main.ts spawns it. */
-export async function spawnSponza(world, assets, distDir) {
+export async function spawnSponza(world, assets, distDir, onAssetsLoaded = () => {}) {
   const { createWorldContext } = await import('@forgeax/engine-ecs');
   const { renderComponentsPlugin } = await import('@forgeax/engine-render');
   const { scenePlugin } = await import('@forgeax/engine-scene');
@@ -353,12 +382,13 @@ export async function spawnSponza(world, assets, distDir) {
   const restore = installDistCatalog(assets, distDir);
   try {
     const scene = (await assets.load(assets.parseGuid(SPONZA.sceneGuid), 'scene')).unwrap();
+    onAssetsLoaded();
     assets.instantiate(scene, world).unwrap();
   } finally {
     restore();
   }
   spawnLight(world, SPONZA.light);
-  spawnCamera(world, SPONZA.camera, 1);
+  return spawnCamera(world, SPONZA.camera, 1);
 }
 
 /** Publish cooked materials into the Renderer's asset registry and the World. */
@@ -382,7 +412,7 @@ export function directProfile(original) {
     ...profile,
     renderPath: 'deferred',
     ibl: false,
-    ssao: false,
+    ambientOcclusion: { enabled: false },
     pbr: true,
     visibleSurface: true,
   };

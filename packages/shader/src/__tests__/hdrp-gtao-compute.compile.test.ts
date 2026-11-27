@@ -32,6 +32,10 @@ interface ShaderCompiler {
 const source = readFileSync(resolve(import.meta.dirname, '../hdrp-gtao-compute.wgsl'), 'utf8');
 const ssao = readFileSync(resolve(import.meta.dirname, '../hdrp-ssao.wgsl'), 'utf8');
 const gbuffer = readFileSync(resolve(import.meta.dirname, '../standard-gbuffer.wgsl'), 'utf8');
+const depthPyramid = readFileSync(
+  resolve(import.meta.dirname, '../depth-pyramid-sample.wgsl'),
+  'utf8',
+);
 const common = readFileSync(resolve(import.meta.dirname, '../common.wgsl'), 'utf8');
 let compiler: ShaderCompiler;
 
@@ -47,6 +51,11 @@ describe('GTAO compute specialization', () => {
       id: 'forgeax_hdrp::gtao_compute',
       imports: {
         'forgeax_hdrp::ssao': ssao,
+        'forgeax_depth_pyramid::sample': depthPyramid,
+        forgeax_scene_temporal: readFileSync(
+          resolve(import.meta.dirname, '../scene-temporal.wgsl'),
+          'utf8',
+        ),
         'forgeax_pbr::gbuffer': gbuffer,
         'forgeax_view::common': common,
       },

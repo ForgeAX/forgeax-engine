@@ -24,7 +24,13 @@ const browserMocks = vi.hoisted(() => {
     off: vi.fn(),
     goto: vi.fn(),
     waitForFunction: vi.fn(async (_predicate: unknown, value: unknown) => {
-      if (typeof value === 'string') captureReady = value;
+      if (
+        value &&
+        typeof value === 'object' &&
+        'checkpoint' in value &&
+        typeof value.checkpoint === 'string'
+      )
+        captureReady = value.checkpoint;
     }),
     waitForTimeout: vi.fn(),
     screenshot: vi.fn(async (options?: { readonly style?: string }) =>
@@ -71,6 +77,7 @@ const browserMocks = vi.hoisted(() => {
     browser,
     server,
     launch: vi.fn(async () => browser),
+    launchServer: vi.fn(async () => ({ once: vi.fn() })),
     createServer: vi.fn(async () => server),
     reset() {
       captureReady = null;
@@ -99,6 +106,7 @@ const browserMocks = vi.hoisted(() => {
         server.listen,
         server.close,
         this.launch,
+        this.launchServer,
         this.createServer,
       ]) {
         mock.mockClear();
@@ -143,7 +151,9 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 
-vi.mock('playwright', () => ({ chromium: { launch: browserMocks.launch } }));
+vi.mock('playwright', () => ({
+  chromium: { launch: browserMocks.launch, launchServer: browserMocks.launchServer },
+}));
 vi.mock('vite', () => ({ createServer: browserMocks.createServer }));
 vi.mock('../host.js', () => ({ createViteConfig: vi.fn(async () => ({})) }));
 vi.mock('@forgeax/engine-image/parse-image', () => ({
@@ -160,6 +170,7 @@ vi.mock('@forgeax/engine-image/parse-image', () => ({
 
 import { createBrowserCapture } from '../browser-capture.js';
 import { captureRenderFailure } from '../capture-render-failure.js';
+import { launchChromiumBrowser, launchChromiumBrowserServer } from '../chromium-sandbox.js';
 import { createViteConfig } from '../host.js';
 import type { BrowserCarrierAdapter } from '../tools/display-carrier.js';
 
@@ -204,6 +215,36 @@ function emitRequest(
     });
   return request;
 }
+
+describe('Chromium sandbox recovery', () => {
+  it.each([
+    {
+      kind: 'browser',
+      launch: launchChromiumBrowser,
+      start: browserMocks.launch,
+      error: 'Chromium sandboxing failed!',
+    },
+    {
+      kind: 'server',
+      launch: launchChromiumBrowserServer,
+      start: browserMocks.launchServer,
+      error: 'Failed to move to new namespace: PID namespaces supported',
+    },
+  ])('retries the same Chromium $kind after sandbox failure', async ({ launch, start, error }) => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
+    start.mockRejectedValueOnce(new Error(error));
+    const options = { channel: 'chrome', headless: true, args: ['--enable-unsafe-webgpu'] };
+
+    await launch(options);
+
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(start).toHaveBeenNthCalledWith(1, { ...options, chromiumSandbox: true });
+    expect(start).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ ...options, chromiumSandbox: false }),
+    );
+  });
+});
 
 describe('software browser session', () => {
   it.skipIf(process.geteuid === undefined).each([true, false])(
@@ -291,6 +332,53 @@ describe('software browser session', () => {
         await rm(root, { recursive: true, force: true });
         const chowned = linux.chown.mock.lastCall?.[0];
         if (chowned !== undefined) await rm(dirname(chowned), { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.geteuid === undefined)(
+    'captures after a Linux root sandbox setup failure',
+    async () => {
+      vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+      vi.spyOn(process, 'geteuid').mockReturnValue(0);
+      vi.stubEnv('DISPLAY', undefined);
+      vi.stubEnv('WAYLAND_DISPLAY', undefined);
+      vi.stubEnv('FORGEAX_TEST_BROWSER_SECRET', 'fixture');
+      linux.accessSetpriv.mockResolvedValue(undefined);
+      linux.passwd.mockResolvedValue('pwuser:x:1000:1000::/home/you:/bin/sh');
+      linux.chown.mockRejectedValueOnce(
+        Object.assign(new Error('unmapped identity'), { code: 'EINVAL' }),
+      );
+      const root = await mkdtemp(resolve(tmpdir(), 'forgeax-root-browser-recovery-'));
+      const executable = resolve(root, 'chrome');
+      const capture = createBrowserCapture(root);
+      try {
+        await Promise.all([
+          writeFile(executable, ''),
+          writeFile(
+            resolve(root, 'forge.json'),
+            '{"id":"recovery","name":"Recovery","schemaVersion":"3.0.0","roots":{}}',
+          ),
+          writeFile(resolve(root, 'package.json'), '{"name":"recovery"}'),
+        ]);
+        const session = await capture.open({
+          browser: executable,
+          backend: 'software',
+          serverUrl: 'http://127.0.0.1:43123/',
+        });
+        const frame = await session.capture(undefined, { timeoutMs: 1000, waitMs: 0 });
+        expect(frame.pixels.rendered).toBe(true);
+        expect(await readFile(frame.output, 'utf8')).toBe('compositor-png');
+        expect(browserMocks.launch).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            executablePath: executable,
+            chromiumSandbox: false,
+            env: expect.not.objectContaining({ FORGEAX_TEST_BROWSER_SECRET: expect.anything() }),
+          }),
+        );
+      } finally {
+        await capture.close();
+        await rm(root, { recursive: true, force: true });
       }
     },
   );

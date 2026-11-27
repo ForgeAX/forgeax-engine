@@ -11,6 +11,7 @@ import {
 } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import * as viewBindings from '../environment/bindings';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { PreparedRasterBundleCache } from '../gpu-driven/prepared-raster-bundle';
 import { GpuDrivenProduction, type PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
@@ -197,7 +198,7 @@ async function fixture(
       : {}),
     scene: {
       scene: available.scene,
-      plan: topology.query(topology.sourcePlan(), undefined),
+      plan: topology.query(topology.sourcePlan(), undefined).active,
       slots: projection.slotsSnapshot(),
       slotAt: projection.slotAt,
       sourceIdentity: 'main-window-world',
@@ -239,7 +240,7 @@ async function fixture(
       topology.apply(delta);
       return {
         ...defined(input.scene),
-        plan: topology.query(topology.sourcePlan(), undefined),
+        plan: topology.query(topology.sourcePlan(), undefined).active,
         slots: projection.slotsSnapshot(),
       };
     },
@@ -258,11 +259,12 @@ function recorder(
   initial = f.prepare(),
   late = true,
   preparedBundles = false,
+  rendererRecording = preparedBundles,
 ) {
   let current = initial;
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
   const main = initial
-    .project(graph, 'rgba8unorm', 1, undefined, undefined, late, preparedBundles)
+    .project(graph, 'rgba8unorm', 1, undefined, undefined, late, rendererRecording)
     .unwrap();
   const color = graph
     .createTexture('color', { format: 'rgba8unorm', size: { width: 1, height: 1 } })
@@ -290,6 +292,7 @@ function recorder(
     defined(main.addLateOcclusion)(pyramidView).unwrap();
   }
   const bindings: BindGroup[] = [];
+  const views: BindGroup[] = [];
   graph
     .addRasterPass('main-window-witness', {
       accesses: [...main.accesses, { resource: colorView, usage: 'color-attachment' }],
@@ -304,6 +307,7 @@ function recorder(
       encode: ({ pass, resources }) => {
         const setGroup = pass.setBindGroup.bind(pass);
         vi.spyOn(pass, 'setBindGroup').mockImplementation((index, group, ...rest) => {
+          if (index === 0) views.push(group);
           if (index === 3) bindings.push(group);
           setGroup(index, group, ...rest);
         });
@@ -333,9 +337,11 @@ function recorder(
     .compile({ device: f.device, surfaceSize: { width: 1, height: 1 } })
     .unwrap();
   return {
+    views,
     record(frame = current) {
       current = frame;
       bindings.length = 0;
+      views.length = 0;
       const encoder = f.device.createCommandEncoder().unwrap();
       compiled.execute({ encoder } as RenderPipelineFrame).unwrap();
       f.device.queue.submit([encoder.finish().unwrap()]).unwrap();
@@ -352,6 +358,27 @@ function defined<T>(value: T | null | undefined): T {
 }
 
 describe('Main GPU-driven prepared visible windows', () => {
+  it.each(['stock', 'raw'])('records the View binding for a %s direct encode', async (mode) => {
+    const f = await fixture();
+    const r = recorder(f, f.prepare(), false, false, mode === 'stock');
+    const projected = f.device
+      .createBindGroup({ layout: f.input.viewBindGroupLayout, entries: [] })
+      .unwrap();
+    const projection = vi.spyOn(viewBindings, 'viewForPipeline').mockReturnValue(projected);
+    try {
+      expect(r.record().length).toBeGreaterThan(0);
+      const expected = mode === 'stock' ? [projected] : [f.group, projected];
+      expect(r.views).toEqual([...expected, ...expected, ...expected]);
+      projection.mockReturnValue(f.group);
+      expect(r.record(f.prepare()).length).toBeGreaterThan(0);
+      expect(r.views).toEqual([f.group, f.group, f.group]);
+    } finally {
+      projection.mockRestore();
+      await r.close();
+      f.close();
+    }
+  });
+
   it('observes the physical medium pipeline across raster classes and cache hits', async () => {
     const f = await fixture(true, 3);
     const prepared = f.prepare();
@@ -493,6 +520,7 @@ describe('Main GPU-driven prepared visible windows', () => {
       r.record(f.prepare());
       expect(create).not.toHaveBeenCalled();
       expect(f.production.inspect().preparedBundleHits).toBeGreaterThan(0);
+      expect(f.production.inspect().preparedBundleFixedHits).toBeGreaterThan(0);
       // Unchanged runs replay their retained native commands without
       // resolving visible windows again.
       expect(recordings.windows).toHaveLength(0);
@@ -628,7 +656,7 @@ describe('Main GPU-driven prepared visible windows', () => {
       f.topology.apply(delta);
       const scene = {
         ...defined(f.input.scene),
-        plan: f.topology.query(f.topology.sourcePlan(), undefined),
+        plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
         slots: f.projection.slotsSnapshot(),
       };
       const changed = f.prepare({ scene });
@@ -856,7 +884,7 @@ describe('Main GPU-driven prepared visible windows', () => {
       const oldContents = oldWindows.map((windows) => [...windows]);
       const first = oldWindows.flat();
       const firstBuffer = defined(lookup.mock.calls[0])[0];
-      direct.record();
+      direct.record(f.prepare());
       const instanceBuffer = defined(f.input.scene).scene.instanceBuffer;
       const bindings = new Map([['1', 'split']]);
       const grown = f.prepare({ materialBindingClasses: bindings });
@@ -866,7 +894,7 @@ describe('Main GPU-driven prepared visible windows', () => {
       r.record(grown);
       expect(oldWindows).toEqual(oldContents);
       lookup.mockClear();
-      const groups = direct.record(grown);
+      const groups = direct.record(f.prepare({ materialBindingClasses: bindings }));
       expect(groups.length).toBeGreaterThan(0);
       expect(groups.every((group) => !first.includes(group))).toBe(true);
       expect(lookup.mock.calls.every(([buffer]) => buffer !== firstBuffer)).toBe(true);

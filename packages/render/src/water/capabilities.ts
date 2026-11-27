@@ -95,65 +95,67 @@ export function inspectWaterRenderCapabilities(inspection: RenderInspection) {
         'water-slw-inner-color',
         'water-no-water-color-hdr',
         'copy-dst',
-      ) &&
-      texture('water-no-water-depth') !== undefined &&
-      access('water-no-water-depth-copy', 'water-no-water-depth', 'copy-dst');
-    const optics = edge(
-      'water-slw-inner-color',
-      'water-reflection-composite',
-      'water-slw-optics-hdr',
-      'color-attachment',
-    );
-    const captureSky = edge(
-      'water-slw-inner-color',
-      'water-reflection-composite',
-      'water-capture-sky-hdr',
-      'color-attachment',
-    );
+      ) && edge('water-depth-copy', 'water-depth-prepass', 'water-prepass-depth', 'copy-dst');
+    const colorPass = pass('water-slw-inner-color');
+    const direct =
+      pass('water-reflection-composite') === undefined &&
+      colorPass?.accesses.some(
+        (item) => item.usage === 'color-attachment' && item.resource !== 'water-slw-optics-hdr',
+      ) === true;
+    const optics =
+      direct ||
+      edge(
+        'water-slw-inner-color',
+        'water-reflection-composite',
+        'water-slw-optics-hdr',
+        'color-attachment',
+      );
+    const captureSky =
+      direct ||
+      edge(
+        'water-slw-inner-color',
+        'water-reflection-composite',
+        'water-capture-sky-hdr',
+        'color-attachment',
+      );
+    const visibility =
+      edge('water-depth-prepass', 'water-slw-inner-color', 'water-mask', 'color-attachment') &&
+      access('water-depth-prepass', 'water-prepass-depth', 'depth-stencil-write');
     const prepass =
-      ['water-normal-roughness', 'water-mask', 'water-wpo-velocity'].every(
-        (label) =>
-          access('water-depth-mask-velocity', label, 'color-attachment') &&
-          texture(label) !== undefined,
-      ) && access('water-depth-mask-velocity', 'water-prepass-depth', 'depth-stencil-write');
-    const trace = pass('water-ssr-trace'),
-      temporal = pass('water-ssr-temporal');
+      visibility &&
+      access('water-depth-prepass', 'water-normal-roughness', 'color-attachment') &&
+      access('water-depth-prepass', 'standard-scene-temporal', 'color-attachment');
+    const trace = pass('water-ssr-trace');
     const ssrOrigin =
       ['water-normal-roughness', 'water-mask'].every((label) =>
-        edge('water-depth-mask-velocity', 'water-ssr-trace', label, 'color-attachment'),
+        edge('water-depth-prepass', 'water-ssr-trace', label, 'color-attachment'),
       ) &&
-      edge(
-        'water-depth-mask-velocity',
-        'water-ssr-trace',
-        'water-prepass-depth',
-        'depth-stencil-write',
-      );
-    const ssrHistory =
-      temporal !== undefined &&
-      edge(
-        'water-depth-mask-velocity',
-        'water-ssr-temporal',
-        'water-wpo-velocity',
-        'color-attachment',
-      ) &&
+      edge('water-depth-prepass', 'water-ssr-trace', 'water-prepass-depth', 'depth-stencil-write');
+    const ssrOutput =
       trace?.accesses.some(
         (write) =>
           write.usage === 'storage-write' &&
-          edge(trace.name, temporal.name, write.resource, write.usage),
-      ) === true &&
-      temporal.accesses.some(
-        (read) => read.usage === 'sampled-read' && texture(read.resource)?.origin === 'imported',
-      );
-    const ssrOutput =
-      temporal?.accesses.some(
-        (write) =>
-          write.usage === 'storage-write' &&
-          edge(temporal.name, 'water-reflection-composite', write.resource, write.usage),
+          edge(trace.name, 'water-reflection-composite', write.resource, write.usage),
       ) === true;
+    const inlineSsr =
+      inspection.ssr?.status === 'admitted' &&
+      inspection.ssr.lane === 'forward' &&
+      ['hzb', 'water-hzb'].some(
+        (label) =>
+          edge(`${label}-seed`, 'water-slw-inner-color', label, 'storage-write') ||
+          edge(`${label}-reduce-chain`, 'water-slw-inner-color', label, 'storage-write'),
+      );
 
-    return { sceneCopy, optics, captureSky, prepass, ssrOrigin, ssrHistory, ssrOutput };
+    return {
+      sceneCopy,
+      optics,
+      captureSky,
+      prepass,
+      visibility,
+      waterSurfaceSsr: inlineSsr || (ssrOrigin && ssrOutput),
+    };
   };
-  const { sceneCopy, optics, captureSky, prepass, ssrOrigin, ssrHistory, ssrOutput } =
+  const { sceneCopy, optics, captureSky, prepass, visibility, waterSurfaceSsr } =
     inspectSurfacePasses();
   const shared = graph?.shared;
   const currentShared =
@@ -163,7 +165,7 @@ export function inspectWaterRenderCapabilities(inspection: RenderInspection) {
       : undefined;
   const materialConsumer = (row: WaterRenderGraphInspection['passes'][number]) =>
     row.kind === 'raster' &&
-    ['water-slw-inner-color', 'water-depth-mask-velocity'].some((name) => row.name.endsWith(name));
+    ['water-slw-inner-color', 'water-depth-prepass'].some((name) => row.name.endsWith(name));
   const composedCompute = (needle: string) => {
     for (const owner of [graph, currentShared]) {
       if (owner === undefined) continue;
@@ -297,8 +299,9 @@ export function inspectWaterRenderCapabilities(inspection: RenderInspection) {
     ready: inspection.state === 'alive',
     noWaterSceneCopy: sceneCopy,
     singleLayerOptics: optics,
+    waterSurfaceVisibility: visibility,
     waterSurfaceDepthNormalVelocity: prepass,
-    waterSurfaceSsr: prepass && ssrOrigin && ssrHistory && ssrOutput,
+    waterSurfaceSsr,
     captureSky,
     captureReflection: captureSky && source.source === 'probe' && source.state === 'active',
     skyReflection: captureSky && source.source === 'skylight' && source.state === 'active',

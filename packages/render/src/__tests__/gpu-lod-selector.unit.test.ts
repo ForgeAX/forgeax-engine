@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { GPU_DRIVEN_VIEW_WGSL, selectGpuLodLane } from '../gpu-driven/view-gpu';
+import { GPU_SCENE_PRIMITIVE_FLAGS } from '../gpu-scene-row-encoding';
 
 describe('GPU LOD selector lane', () => {
   it('contains the same absolute threshold and readiness inputs as the CPU reference', () => {
@@ -9,9 +10,12 @@ describe('GPU LOD selector lane', () => {
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('selectLodLevel');
   });
 
-  it('keeps GPU-driven candidates without authored bounds conservatively visible', () => {
+  it('keeps boundless and explicitly uncullable GPU-driven candidates visible', () => {
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('if ((primitive.flags & 5u) != 5u) { return false; }');
-    expect(GPU_DRIVEN_VIEW_WGSL).toContain('if ((primitive.flags & 2u) == 0u) { return true; }');
+    expect(GPU_DRIVEN_VIEW_WGSL).toContain(
+      'if ((primitive.flags & 2u) == 0u || ' +
+        `(primitive.flags & ${GPU_SCENE_PRIMITIVE_FLAGS.skipFrustum}u) != 0u) { return true; }`,
+    );
   });
 
   it('selects the GPU lane only when all required storage capabilities exist', () => {

@@ -33,6 +33,11 @@ Query parameters, mirrored by the on-page controls:
 | `camera` | `path` animates the camera along the scene path |
 | `size`, `bounces` | canvas size (512) and GI bounce count (1) |
 
+Selecting Screen Probe in Sponza uses the renderer's High GI tier by default.
+The native Sponza window starts in the same tier, and its Irradiance Field mode
+uses Medium. Sponza's authored 32-texel Card captures apply to either mode.
+Use `--screen-probe-tier epic` in the native runner to inspect the Epic profile.
+
 `window.__gi` exposes `set`, `observe(frames, warmup)`, `state()` and `capture(runId)` for
 automation. Dev serve defines the RHI Debug flag, so `capture` uploads a tape through
 `/__forgeax-debug/tape`.
@@ -310,3 +315,19 @@ Light-move frames-to-90 % (`gi-temporal.mjs --events light,none`) and the refere
 ratios (cornell 1.040, leak 0.987, courtyard 0.992, Sponza 0.980) match `before`. Sharing
 radiosity across 2x2 texel blocks was rejected: it leaked through thin walls (leak
 dark-room ratio 1.36 → 1.48).
+
+### Ordinary desktop player
+
+Stage the existing Khronos Sponza directory from the contributor asset
+checkout as `apps/hello/gi/sponza-assets`, preserving its Meta and textures.
+Build with the standard project CLI. The project configuration selects
+the irradiance field and the existing Renderer chooses its traversal.
+
+```sh
+forgeax project build --root apps/hello/gi --target native --out-dir .forgeax/native-sponza-dist
+node apps/hello/gi/.forgeax/native-sponza-dist/game.mjs
+```
+
+Run the same output with `FORGEAX_WGPU_NATIVE_RAY_QUERY=off` to exercise the
+Global SDF fallback. The `[forgeax.sponza.gi]` receipt reports the selected
+traversal and any fallback reason after at least 60 GI submissions.

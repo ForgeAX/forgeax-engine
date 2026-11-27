@@ -5,14 +5,44 @@ import { filesUnder } from './sdk-lib.mjs';
 const VIEW_CONSUMER_SKILLS = Object.freeze(['forgeax-view-cli', 'forgeax-view-start']);
 
 /** Publish the same View-owned guidance in the tool and SDK game skill inventory. */
-export async function stageViewConsumerSkills(viewRoot, skillsRoot) {
+export async function stageViewConsumerSkills(viewRoot, skillsRoot, engineGuideRoot) {
   for (const id of VIEW_CONSUMER_SKILLS) {
     const destination = resolve(skillsRoot, id);
     await mkdir(destination, { recursive: true });
-    await cp(resolve(viewRoot, 'skills', id, 'SKILL.md'), resolve(destination, 'SKILL.md'), {
-      errorOnExist: true,
-      force: false,
-    });
+    const owner = resolve(viewRoot, 'skills', id);
+    if (engineGuideRoot === undefined) {
+      await cp(resolve(owner, 'SKILL.md'), resolve(destination, 'SKILL.md'), {
+        errorOnExist: true,
+        force: false,
+      });
+      continue;
+    }
+    for (const name of ['SKILL.md', 'SKILL.zh-CN.md']) {
+      if (id === 'forgeax-view-start') {
+        await cp(
+          resolve(engineGuideRoot, name.replace('SKILL', 'VIEW-START')),
+          resolve(destination, name),
+        );
+        continue;
+      }
+      const source = await readFile(resolve(owner, name), 'utf8');
+      const anchor = source.indexOf('../forgeax-view-start/SKILL');
+      const start = source.lastIndexOf('\n\n', anchor);
+      const end = source.indexOf('> [!IMPORTANT]', anchor);
+      if (anchor < 0 || start < 0 || end < 0)
+        throw new Error('engine-view-cli-guide-sections-missing');
+      const intro = await readFile(
+        resolve(engineGuideRoot, name.replace('SKILL', 'VIEW-CLI-INTRO')),
+        'utf8',
+      );
+      await writeFile(
+        resolve(destination, name),
+        source.slice(0, start + 2) +
+          intro.trimEnd() +
+          '\n\n' +
+          source.slice(end).replace(/\bSDK (?=command|\p{Script=Han})/gu, 'Engine '),
+      );
+    }
   }
   return [...VIEW_CONSUMER_SKILLS];
 }
@@ -32,14 +62,38 @@ export const VIEW_TOOL_FILES = Object.freeze([
   'scripts/preview-rhi-evidence.mjs',
 ]);
 
+/** Resolve authoring-tool registry edges from the frozen contributor workspace. */
+export async function pinViewRegistryDependencies(viewRoot, packageRoot) {
+  const path = resolve(packageRoot, 'package.json');
+  const manifest = JSON.parse(await readFile(path, 'utf8'));
+  for (const name of Object.keys(manifest.dependencies ?? {})) {
+    if (name === '@forgeax/engine') continue;
+    const dependency = JSON.parse(
+      await readFile(resolve(viewRoot, 'node_modules', name, 'package.json'), 'utf8'),
+    );
+    if (dependency.name !== name || typeof dependency.version !== 'string')
+      throw new Error(`engine-view-dependency-identity: ${name}`);
+    manifest.dependencies[name] = dependency.version;
+  }
+  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
 /** Embed the built View tool in the SDK without contributor workspace dependencies. */
-export async function stageViewToolPackage(viewRoot, packageRoot, version) {
+export async function stageViewToolPackage(viewRoot, packageRoot, version, engineGuideRoot) {
   await mkdir(packageRoot, { recursive: true });
   const files = VIEW_TOOL_FILES;
   for (const file of files.filter((file) => file !== 'skills'))
     await cp(resolve(viewRoot, file), resolve(packageRoot, file), { recursive: true });
   await rm(resolve(packageRoot, 'skills'), { recursive: true, force: true });
-  await stageViewConsumerSkills(viewRoot, resolve(packageRoot, 'skills'));
+  await stageViewConsumerSkills(viewRoot, resolve(packageRoot, 'skills'), engineGuideRoot);
+  if (engineGuideRoot !== undefined) {
+    await writeFile(
+      resolve(packageRoot, 'README.md'),
+      '# ForgeaX View\n\n' +
+        'Use `forgeax project view --json` from the game root. Open the returned URL to inspect the project.\n' +
+        'See the [startup guide](skills/forgeax-view-start/SKILL.md) and [live operations](skills/forgeax-view-cli/SKILL.md).\n',
+    );
+  }
   const manifest = JSON.parse(await readFile(resolve(viewRoot, 'package.json'), 'utf8'));
   manifest.private = true;
   manifest.version = version;

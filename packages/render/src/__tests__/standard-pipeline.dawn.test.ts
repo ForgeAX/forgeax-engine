@@ -32,9 +32,9 @@ function topology(device: RhiDevice): RenderPipelineTopology {
       ...DEFAULT_STANDARD_PROFILE,
       renderPath: 'deferred',
       lightCount: 256,
-      ssao: { algorithm: 'gtao' },
+      ambientOcclusion: { enabled: true, method: 'gtao' },
     },
-    config: { ssao: { enabled: true, algorithm: 'gtao' } },
+    config: { ambientOcclusion: { enabled: true, method: 'gtao' } },
     surface: {
       width: 1,
       height: 1,
@@ -122,15 +122,16 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
       {
         graph,
         standardLighting: clusteredStandardLighting(),
+        capabilities: device.caps,
         projectGpuDriven: () => ok(undefined),
         contributeFeatures: () => ok(undefined),
       },
       topology(device),
     );
-    expect(built.ok).toBe(true);
+    expect(built.ok, built.ok ? undefined : JSON.stringify(built.error)).toBe(true);
     if (!built.ok) return;
     const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } });
-    expect(compiled.ok).toBe(true);
+    expect(compiled.ok, compiled.ok ? undefined : JSON.stringify(compiled.error)).toBe(true);
     if (compiled.ok) {
       const passes = compiled.value.inspect().passes;
       expect(passes.map((pass) => pass.kind)).toContain('compute');
@@ -139,7 +140,7 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
     }
   });
 
-  it('reads back GPU membership and proves equality with the exact CPU mirror of the Prepared list', async () => {
+  it('rebuilds exact GPU membership in the same grid across submissions with changing light shapes', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device: RhiDevice = (await adapter.requestDevice()).unwrap();
     const frame = {
@@ -147,6 +148,12 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
       local: [
         { kind: 'point' as const, shadowed: false, position: vec3.create(-0.8, 0, -4), range: 2 },
         { kind: 'spot' as const, shadowed: false, position: vec3.create(0.8, 0, -6), range: 3 },
+        {
+          kind: 'point' as const,
+          shadowed: false,
+          position: vec3.create(0, 0, 0),
+          range: Infinity,
+        },
       ],
       view: mat4.lookAt(mat4.create(), [0, 0, 0], [0, 0, -1], [0, 1, 0]),
       projection: mat4.perspectiveReverseZ(mat4.create(), Math.PI / 3, 1, 0.1, 100),
@@ -244,10 +251,11 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
     )
       return;
 
-    expect(device.queue.writeBuffer(clusterGridBuffer.value, 0, clusterGrid)).toMatchObject({
-      ok: true,
-    });
-    expect(device.queue.writeBuffer(boundsBuffer.value, 0, lightBounds)).toMatchObject({
+    // Count words contain the last GPU result. Only starts are CPU reservation inputs.
+    const reusedGrid = clusterGrid.slice();
+    for (let cell = 0; cell < layout.clusterCount; cell++)
+      reusedGrid[cell * layout.clusterGridStrideU32 + layout.clusterGridCountWordOffsetU32] = 0;
+    expect(device.queue.writeBuffer(clusterGridBuffer.value, 0, reusedGrid)).toMatchObject({
       ok: true,
     });
     expect(device.queue.writeBuffer(uniformBuffer.value, 0, uniformData)).toMatchObject({
@@ -265,54 +273,61 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
     });
     expect(bindings.ok).toBe(true);
     if (!bindings.ok) return;
-    const encoder = device.createCommandEncoder({ label: 'standard-cluster-membership-readback' });
-    expect(encoder.ok).toBe(true);
-    if (!encoder.ok) return;
-    const pass = encoder.value.beginComputePass();
-    pass.setPipeline(pipeline.value);
-    pass.setBindGroup(0, bindings.value);
-    pass.dispatchWorkgroups(Math.ceil((layout.grid.x * layout.grid.y * layout.grid.z) / 64));
-    pass.end();
-    encoder.value.copyBufferToBuffer(
-      lightIndexBuffer.value,
-      0,
-      readbackBuffer.value,
-      0,
-      Math.max(4, membershipEntryCount * 4),
-    );
-    encoder.value.copyBufferToBuffer(
-      clusterGridBuffer.value,
-      0,
-      readbackBuffer.value,
-      Math.max(4, membershipEntryCount * 4),
-      layout.clusterGridU32Length * 4,
-    );
-    const finished = encoder.value.finish();
-    expect(finished.ok).toBe(true);
-    if (!finished.ok) return;
-    expect(device.queue.submit([finished.value])).toMatchObject({ ok: true });
-    await device.queue.onSubmittedWorkDone();
-    const mapped = await readbackBuffer.value.mapAsync(1);
-    expect(mapped.ok).toBe(true);
-    if (!mapped.ok) return;
-    const range = mapped.value.getMappedRange();
-    expect(range.ok).toBe(true);
-    if (!range.ok) return;
-    const listBytes = Math.max(4, membershipEntryCount * 4);
-    const gpuList = new Uint32Array(range.value.slice(0, membershipEntryCount * 4));
-    const gpuGrid = new Uint32Array(
-      range.value.slice(listBytes, listBytes + layout.clusterGridU32Length * 4),
-    );
-    expectMirroredMembership(
-      layout,
-      clusterGrid,
-      lightIndexList,
-      lightBounds,
-      gpuGrid,
-      gpuList,
-      frame,
-    );
-    mapped.value.unmap();
+    for (const exact of [1, 0, 1, 0]) {
+      const activeBounds = lightBounds.slice();
+      activeBounds[5] = exact;
+      expect(device.queue.writeBuffer(boundsBuffer.value, 0, activeBounds).ok).toBe(true);
+      const encoder = device.createCommandEncoder({
+        label: 'standard-cluster-membership-readback',
+      });
+      expect(encoder.ok).toBe(true);
+      if (!encoder.ok) return;
+      const pass = encoder.value.beginComputePass();
+      pass.setPipeline(pipeline.value);
+      pass.setBindGroup(0, bindings.value);
+      pass.dispatchWorkgroups(Math.ceil((layout.grid.x * layout.grid.y * layout.grid.z) / 64));
+      pass.end();
+      encoder.value.copyBufferToBuffer(
+        lightIndexBuffer.value,
+        0,
+        readbackBuffer.value,
+        0,
+        Math.max(4, membershipEntryCount * 4),
+      );
+      encoder.value.copyBufferToBuffer(
+        clusterGridBuffer.value,
+        0,
+        readbackBuffer.value,
+        Math.max(4, membershipEntryCount * 4),
+        layout.clusterGridU32Length * 4,
+      );
+      const finished = encoder.value.finish();
+      expect(finished.ok).toBe(true);
+      if (!finished.ok) return;
+      expect(device.queue.submit([finished.value])).toMatchObject({ ok: true });
+      await device.queue.onSubmittedWorkDone();
+      const mapped = await readbackBuffer.value.mapAsync(1);
+      expect(mapped.ok).toBe(true);
+      if (!mapped.ok) return;
+      const range = mapped.value.getMappedRange();
+      expect(range.ok).toBe(true);
+      if (!range.ok) return;
+      const listBytes = Math.max(4, membershipEntryCount * 4);
+      const gpuList = new Uint32Array(range.value.slice(0, membershipEntryCount * 4));
+      const gpuGrid = new Uint32Array(
+        range.value.slice(listBytes, listBytes + layout.clusterGridU32Length * 4),
+      );
+      expectMirroredMembership(
+        layout,
+        clusterGrid,
+        lightIndexList,
+        activeBounds,
+        gpuGrid,
+        gpuList,
+        frame,
+      );
+      mapped.value.unmap();
+    }
   }, 30_000);
 });
 

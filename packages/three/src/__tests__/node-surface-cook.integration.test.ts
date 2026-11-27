@@ -1,6 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { decompressZstd } from '@forgeax/engine-codec';
-import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { withClipping } from '@forgeax/engine-types';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cookThreeSurface } from '../build/surface';
@@ -8,27 +7,8 @@ import { projectMaterial, validateMaterial } from '../material';
 import { prepareMaterialPrograms } from '../material-programs';
 import { MeshStandardNodeMaterial } from '../node-materials';
 import { bindThreeSurface, normalizeThreeSurface } from '../node-surface';
+import { MATERIAL_PUBLICATION_V1, readMaterialPublication } from '../program-publication';
 import { float, mix, uniform } from '../tsl';
-
-it('admits planar reflection from a cooked Standard Surface program', {
-  timeout: 120000,
-}, async () => {
-  const floor = new MeshStandardNodeMaterial();
-  floor.roughnessNode = float(0.2);
-  const planar = await cookThreeSurface(floor, { planarReflection: true });
-
-  const assets = new AssetRegistry();
-  try {
-    const prepare = await prepareMaterialPrograms(assets, [planar.publication]);
-    bindThreeSurface(floor, planar.recipe).unwrap();
-    const reflected = prepare(projectMaterial(validateMaterial(floor).unwrap(), {}).unwrap());
-    expect(reflected.values?.planarReflection).toBe(1);
-    expect(assets.create(reflected).ok).toBe(true);
-  } finally {
-    assets.dispose();
-    floor.dispose();
-  }
-});
 
 describe('compiled Three roughness graph', () => {
   const material = new MeshStandardNodeMaterial();
@@ -37,7 +17,7 @@ describe('compiled Three roughness graph', () => {
 
   beforeAll(async () => {
     material.roughnessNode = mix(float(0.1), amount.mul(0.8), float(0.5));
-    cooked = await cookThreeSurface(material);
+    cooked = await cookThreeSurface(material, { planarReflection: true });
   }, 120000);
 
   afterAll(() => material.dispose());
@@ -47,8 +27,7 @@ describe('compiled Three roughness graph', () => {
   }, async () => {
     amount.value = 0.9;
     try {
-      const repeated = await cookThreeSurface(material);
-      expect(repeated.recipe).toEqual(cooked.recipe);
+      expect(normalizeThreeSurface(material).unwrap().graphKey).toBe(cooked.recipe.graphKey);
     } finally {
       amount.value = 0.7;
     }
@@ -60,8 +39,13 @@ describe('compiled Three roughness graph', () => {
     expect(cooked.recipe.programGuid).toMatch(/^forgeax-three-surface-[a-f0-9]{64}$/);
     const decoded = await decompressZstd(Buffer.from(cooked.publication, 'base64'));
     if (!decoded.ok) throw decoded.error;
-    const publications: unknown[] = JSON.parse(new TextDecoder().decode(decoded.value));
-    const record = validateCookedMaterialRecord(publications[0]).unwrap();
+    expect(new DataView(decoded.value.buffer, decoded.value.byteOffset).getUint32(0)).toBe(
+      MATERIAL_PUBLICATION_V1,
+    );
+    const records = readMaterialPublication(decoded.value);
+    expect(records).toHaveLength(1);
+    const record = records[0];
+    if (!record) throw new Error('Missing cooked Surface program');
     expect(record.programs.length).toBeGreaterThan(0);
     expect(
       record.resolved.passes.every(
@@ -74,10 +58,12 @@ describe('compiled Three roughness graph', () => {
     const second = await cookThreeSurface(rebound);
     const assets = new AssetRegistry();
     try {
-      const prepare = await prepareMaterialPrograms(assets, [
-        cooked.publication,
-        second.publication,
-      ]);
+      const publications = [cooked.publication, second.publication];
+      const prepare = await prepareMaterialPrograms(assets, publications);
+      await prepareMaterialPrograms(assets, publications);
+      publications[0] = 'invalid-publication';
+      await expect(prepareMaterialPrograms(assets, publications)).rejects.toThrow();
+      publications[0] = cooked.publication;
       const project = () =>
         prepare(
           withClipping(projectMaterial(validateMaterial(material).unwrap(), {}).unwrap(), {
@@ -85,6 +71,7 @@ describe('compiled Three roughness graph', () => {
           }),
         );
       const first = project();
+      expect(first.values?.planarReflection).toBe(1);
       expect(Object.getOwnPropertySymbols(first)).toEqual([]);
       expect(assets.create(first).ok).toBe(true);
       expect(first.parameters?.some((parameter) => parameter.name === 'threeInput0')).toBe(true);

@@ -1,6 +1,4 @@
-import type { EntityHandle } from '@forgeax/engine-ecs';
-import { mat4 } from '@forgeax/engine-math';
-import { copyPresentationWorldMatrix } from '@forgeax/engine-scene';
+import { createPresentationMatrixReader } from '@forgeax/engine-scene/internal';
 import type { SkeletonAsset } from '@forgeax/engine-types';
 import type { GpuInputArena } from '../gpu-input-arena';
 import type { RenderResourceScope } from '../publication/resource-scope';
@@ -12,6 +10,7 @@ import { SkinSceneInputs } from './skin-scene-inputs';
 export interface SkinCompositionEntry {
   skin: SkinSceneInputs | undefined;
   readonly source: RenderResourceScope;
+  jointMatrices?: ReturnType<typeof createPresentationMatrixReader>;
   readonly projection: { slotsSnapshot(): SceneSlotFrame };
 }
 
@@ -27,8 +26,6 @@ export interface SkinCompositionHost {
  * no partially adopted pose survives.
  */
 export class CompositionSkinAdoption {
-  private jointScratch: ReturnType<typeof mat4.create> | undefined;
-
   constructor(private readonly host: SkinCompositionHost) {}
 
   fail(entry: SkinCompositionEntry, cause: unknown): never {
@@ -72,17 +69,13 @@ export class CompositionSkinAdoption {
   }
 
   /** Reads the same presentation matrix as every other render extraction. */
-  joint(entry: SkinCompositionEntry, entity: number): void {
+  joints(entry: SkinCompositionEntry, entities: Iterable<number>): void {
     try {
       const skin = entry.skin,
         world = entry.source?.world;
-      if (skin === undefined || world === undefined || !skin.hasJoint(entity)) return;
-      this.jointScratch ??= mat4.create();
-      if (!copyPresentationWorldMatrix(world, entity as EntityHandle, this.jointScratch)) {
-        skin.joint(entity, undefined);
-        return;
-      }
-      skin.joint(entity, this.jointScratch);
+      if (skin === undefined || world === undefined) return;
+      entry.jointMatrices ??= createPresentationMatrixReader(world);
+      entry.jointMatrices.visit(entities, skin.hasJoint, skin.joint);
     } catch (cause) {
       this.fail(entry, cause);
     }
@@ -102,7 +95,7 @@ export class CompositionSkinAdoption {
       if (skin === undefined) return;
       if (baseline) for (const joint of skin.firstJoints() ?? []) skin.joint(joint, undefined);
       for (const joint of retired) skin.joint(joint, undefined);
-      for (const index of rows) this.adopt(skin, entities[index] as number, transforms, index * 16);
+      for (const index of rows) skin.joint(entities[index] as number, transforms, index * 16);
     } catch (cause) {
       this.fail(entry, cause);
     }
@@ -121,19 +114,7 @@ export class CompositionSkinAdoption {
   }
 
   initializeJoints(entry: SkinCompositionEntry): void {
-    const skin = entry.skin;
-    if (skin === undefined) return;
-    for (const entity of skin.firstJoints() ?? []) this.joint(entry, entity);
-  }
-
-  private adopt(
-    skin: SkinSceneInputs,
-    entity: number,
-    source: ArrayLike<number>,
-    offset: number,
-  ): void {
-    this.jointScratch ??= mat4.create();
-    for (let lane = 0; lane < 16; lane++) this.jointScratch[lane] = source[offset + lane] as number;
-    skin.joint(entity, this.jointScratch);
+    const first = entry.skin?.firstJoints();
+    if (first !== undefined && first.size > 0) this.joints(entry, first);
   }
 }

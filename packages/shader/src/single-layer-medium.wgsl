@@ -1,4 +1,8 @@
 #define_import_path forgeax::single-layer-medium
+#import forgeax_view::common::{forwardScreenSurface}
+#import forgeax_cloud::layer::{viewLinearSampler}
+
+#import forgeax_pbr::sky_sh_polynomial::{SkyShPolynomial}
 
 #import forgeax_clipping::planes::{applyViewClipping}
 #import forgeax_material::single_layer_medium_surface_v1::{SingleLayerMediumSurfaceInput, SingleLayerMediumSurfaceData}
@@ -21,7 +25,7 @@
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #import forgeax_material::parameters::{MATERIAL_SCENE_ROW_VEC4_COUNT}
 #endif
-#import forgeax_pbr::standard_lighting::{SkylightUniforms, sampleSkylightDiffuse, sampleSkylightRadiance}
+#import forgeax_pbr::standard_lighting::{SkylightUniforms, sampleSkylightDiffuse, sampleStandardReflectionRadiance}
 #import forgeax_pbr::ibl_sampling::{environmentReflectionDirection}
 #import forgeax_pbr::lighting_probe::{evaluateProbeDiffuse}
 #import forgeax_pbr::lighting_directional::{evalDirectionalShadowFactorAtPixel}
@@ -93,13 +97,12 @@ struct SingleLayerMediumSceneMaterialRow {
 
 // The generic material record owner appends the transmission pair after the
 // empty medium parameter region and six IBL entries (bindings 7 and 8).
-@group(1) @binding(1) var mediumIrradianceMap: texture_cube<f32>;
+@group(1) @binding(1) var<uniform> mediumSkySh: SkyShPolynomial;
 @group(1) @binding(2) var mediumIrradianceSampler: sampler;
 @group(1) @binding(3) var mediumPrefilterMap: texture_2d<f32>;
 @group(1) @binding(4) var mediumPrefilterSampler: sampler;
 @group(1) @binding(5) var mediumBrdfLut: texture_2d<f32>;
 @group(1) @binding(6) var<uniform> mediumSkylight: SkylightUniforms;
-@group(1) @binding(47) var skylightPrefilterMap: texture_2d<f32>;
 @group(1) @binding(7) var surfaceBackdropSampler: sampler;
 @group(1) @binding(8) var surfaceBackdropTexture: texture_2d<f32>;
 
@@ -112,26 +115,9 @@ struct SingleLayerMediumSceneMaterialRow {
 @group(1) @binding(12) var surfaceNearestLayerTexture: texture_2d<f32>;
 @group(1) @binding(13) var surfaceNearestDepthSampler: sampler;
 @group(1) @binding(14) var surfaceNearestDepthTexture: texture_2d<f32>;
-struct PlanarReflectionUniform {
-  viewProjection: mat4x4<f32>,
-  plane: vec4<f32>,
-  enabledAndPadding: vec4<f32>,
-};
+#import forgeax_pbr::planar_reflection::{PlanarReflectionUniform, samplePlanarReflection}
 @group(1) @binding(15) var planarReflectionTexture: texture_2d<f32>;
 @group(1) @binding(16) var<uniform> planarReflection: PlanarReflectionUniform;
-
-fn samplePlanarReflection(position: vec3<f32>, normal: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
-  if (planarReflection.enabledAndPadding.x == 0.0 ||
-      abs(dot(planarReflection.plane, vec4<f32>(position, 1.0))) > 0.001 ||
-      abs(dot(normal, planarReflection.plane.xyz)) < 0.999) { return fallback; }
-  let clip = planarReflection.viewProjection * vec4<f32>(position, 1.0);
-  if (clip.w <= 0.0) { return fallback; }
-  let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-  if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) { return fallback; }
-  let reflected = textureSampleLevel(planarReflectionTexture, surfaceBackdropSampler, uv, 0.0);
-  return reflected.rgb + fallback * (1.0 - clamp(reflected.a, 0.0, 1.0));
-}
-
 
 // Direct draws and the GPU-driven lane consume the renderer's retained SH9
 // projection. The scene/visible/dynamic-input group keeps one ABI while the
@@ -141,8 +127,6 @@ fn samplePlanarReflection(position: vec3<f32>, normal: vec3<f32>, fallback: vec3
 #endif
 
 #ifdef CLUSTER_FORWARD_AVAILABLE
-@group(2) @binding(7) var ssaoBlurredTexture: texture_2d<f32>;
-@group(2) @binding(8) var ssaoBlurredSampler: sampler;
 #endif
 
 struct SurfaceFrameFacts {
@@ -547,8 +531,8 @@ fn sampleNearestCoverage(pixelPosition: vec4<f32>, rawDepth: f32) -> f32 {
 }
 
 fn sampleSkyReflection(normal: vec3<f32>, viewDirection: vec3<f32>, roughness: f32, worldPosition: vec3<f32>) -> vec3<f32> {
-  return sampleSkylightRadiance(mediumSkylight, worldPosition, environmentReflectionDirection(normal, viewDirection, roughness), roughness,
-    mediumPrefilterMap, mediumPrefilterSampler, skylightPrefilterMap);
+  return sampleStandardReflectionRadiance(mediumSkylight, worldPosition, environmentReflectionDirection(normal, viewDirection, roughness), roughness,
+    mediumPrefilterMap, mediumPrefilterSampler);
 }
 
 fn sampleMediumDiffuse(
@@ -557,7 +541,7 @@ fn sampleMediumDiffuse(
   probeIdentity: vec2<u32>,
 ) -> vec3<f32> {
   let skyIrradiance = sampleSkylightDiffuse(
-    mediumSkylight, normal, mediumIrradianceMap, mediumIrradianceSampler,
+    mediumSkylight, normal, mediumSkySh,
   );
   var diffuse = skyIrradiance;
 #ifdef PROBE_BLEND_AVAILABLE
@@ -595,7 +579,7 @@ fn sampleMediumDiffuse(
 #ifdef CLUSTER_FORWARD_AVAILABLE
   let dimensions = vec2<f32>(textureDimensions(surfaceBackdropTexture));
   let ssaoUv = clamp(pixelPosition.xy / max(dimensions, vec2<f32>(1.0)), vec2<f32>(0.0), vec2<f32>(1.0));
-  let ssao = textureSample(ssaoBlurredTexture, ssaoBlurredSampler, ssaoUv).r;
+  let ssao = textureSample(forwardScreenSurface, viewLinearSampler, ssaoUv).r;
   // The AO producer already applied the intensity exponent before filtering.
   diffuse *= select(1.0, ssao, get_ssao_intensity() > 0.0);
 #endif
@@ -774,7 +758,9 @@ fn composeColor(input: SingleLayerMediumSurfaceInput, surface: SingleLayerMedium
 #ifdef SURFACE_MEDIUM_V2
   fresnel*=clamp(surface.reflectionStrength,0.0,1.0);
 #endif
-  let reflection = samplePlanarReflection(input.positionWS, orientedPlaneNormal, sampleSkyReflection(orientedNormal, viewDirection, roughness, input.positionWS));
+  let planar = samplePlanarReflection(planarReflection, planarReflectionTexture,
+    surfaceBackdropSampler, input.positionWS, orientedNormal, viewDirection, roughness);
+  let reflection = planar.rgb + sampleSkyReflection(orientedNormal, viewDirection, roughness, input.positionWS) * (1.0 - planar.a);
 
   let foam = clamp(surface.foam, 0.0, 1.0);
   var foamTint=vec3<f32>(0.9,0.95,1.0);

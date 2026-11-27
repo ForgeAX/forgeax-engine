@@ -91,6 +91,8 @@ export function findVariantByKey(
   definesKey: string,
 ): MaterialShaderManifestVariant | undefined {
   if (templateManifestAxes(entry) !== undefined) return templateManifestVariant(entry, definesKey);
+  const publication = admittedVariants.get(entry);
+  if (publication !== undefined) return publication.byKey.get(definesKey);
   return entry.variants.find((v) => v.definesKey === definesKey);
 }
 
@@ -107,11 +109,53 @@ export function findVariantByDefines(
   );
 }
 
+const admittedVariants = new WeakMap<
+  MaterialShaderManifestEntry,
+  {
+    readonly axes: readonly string[];
+    readonly byKey: ReadonlyMap<string, MaterialShaderManifestVariant>;
+  }
+>();
+
+const emptyVariants = {
+  axes: Object.freeze([]),
+  byKey: new Map<string, MaterialShaderManifestVariant>(),
+};
+
+function collectVariantAxes(entry: MaterialShaderManifestEntry): readonly string[] {
+  const axes = new Set<string>();
+  for (const variant of entry.variants) {
+    for (const axis of Object.keys(variant.defines)) axes.add(axis);
+  }
+  return [...axes];
+}
+
+/** Seal the variant inputs of a validated, privately decoded material manifest row. */
+export function sealMaterialShaderVariants(entry: MaterialShaderManifestEntry): void {
+  for (const variant of entry.variants) {
+    Object.freeze(variant.defines);
+    Object.freeze(variant);
+  }
+  Object.freeze(entry.variants);
+  Object.freeze(entry);
+  if (entry.variants.length === 0) {
+    admittedVariants.set(entry, emptyVariants);
+    return;
+  }
+  const byKey = new Map<string, MaterialShaderManifestVariant>();
+  for (const variant of entry.variants)
+    if (!byKey.has(variant.definesKey)) byKey.set(variant.definesKey, variant);
+  admittedVariants.set(entry, { axes: Object.freeze(collectVariantAxes(entry)), byKey });
+}
+
+/** A template declares its axes directly. Its legacy variants array enumerates the whole family. */
+export function materialShaderHasVariants(entry: MaterialShaderManifestEntry): boolean {
+  return (templateManifestAxes(entry)?.length ?? entry.variants.length) > 0;
+}
+
 /** Axes are source declarations; inspecting them never composes a program or expands permutations. */
 export function materialShaderAxes(entry: MaterialShaderManifestEntry): readonly string[] {
   return (
-    templateManifestAxes(entry) ?? [
-      ...new Set(entry.variants.flatMap((variant) => Object.keys(variant.defines))),
-    ]
+    templateManifestAxes(entry) ?? admittedVariants.get(entry)?.axes ?? collectVariantAxes(entry)
   );
 }

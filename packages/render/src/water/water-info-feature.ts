@@ -56,7 +56,7 @@ import type {
   RenderFeatureSubmission,
 } from '../features/types';
 
-import { materialProgramSelectionsForMaterial } from '../render-system-extract';
+import { materialProgramSelectionsForMaterial } from '../material-program-selection';
 
 import { buildWaterGpuMeshZone, type WaterGpuMeshZone } from './gpu-mesh-source';
 

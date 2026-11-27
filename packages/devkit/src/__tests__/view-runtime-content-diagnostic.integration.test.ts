@@ -30,7 +30,6 @@ it.skipIf(process.env.FOCUS_SELECTOR !== selector)(
         '--projection-out',
         'shared-build-inputs',
       ],
-      ['scripts/forgeax/prepare-shader-release-inputs.mjs', '--build', '--profile', 'base-ssao'],
       ['scripts/ci/run-view-integration.mjs', '--candidate', '--group', 'runtime-ts'],
     ];
     try {

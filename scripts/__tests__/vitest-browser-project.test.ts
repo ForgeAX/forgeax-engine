@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { transformWithOxc } from 'vite';
 import { describe, expect, it, vi } from 'vitest';
 import { createBrowserProject } from '../../config/vitest-browser-project';
 
@@ -131,5 +132,28 @@ describe('explicit Browser Pack preparation', () => {
     expect(rootsFor(files)).toContain(
       resolve(process.cwd(), 'apps/learn-render/1.getting-started/4.textures/assets'),
     );
+  });
+});
+
+describe('Browser TypeScript transform ownership', () => {
+  it.each([
+    'ordinary-lit-depth.browser.test.ts',
+    'material-mrt.browser.test.ts',
+  ])('transforms %s with the real shared compiler options', async (name) => {
+    const project = createBrowserProject();
+    expect(project.tsconfig).toBe(resolve(process.cwd(), 'tsconfig.base.json'));
+    expect(project.oxc.tsconfig).toBe(project.tsconfig);
+    expect(project.optimizeDeps.rolldownOptions.tsconfig).toBe(project.tsconfig);
+    const shared = JSON.parse(readFileSync(project.tsconfig, 'utf8'));
+    expect(shared.references).toBeUndefined();
+    expect(shared.compilerOptions.strict).toBe(true);
+    const build = JSON.parse(readFileSync(resolve(process.cwd(), 'tsconfig.json'), 'utf8'));
+    expect(build.references).toContainEqual({ path: './packages/modeling' });
+    const file = resolve(process.cwd(), 'packages/runtime/src/__tests__', name);
+    const result = await transformWithOxc(readFileSync(file, 'utf8'), file, {
+      tsconfig: project.tsconfig,
+    });
+    expect(result.code).toContain('vitest/browser');
+    expect(result.code).not.toContain('declare module');
   });
 });

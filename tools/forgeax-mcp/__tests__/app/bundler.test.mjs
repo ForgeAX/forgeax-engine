@@ -42,8 +42,15 @@ test('retiring a document cancels its source read without evicting its replaceme
 for (const scenario of ['reset before headers', 'reset during body', 'persistent reset', 'HTTP error']) {
   test(`remote source reads handle ${scenario} without replaying HTTP failures`, async () => {
     let reads = 0;
+    let initialSocket;
+    let recovery;
     const server = createServer((request, response) => {
       reads++;
+      if (reads === 1) initialSocket = request.socket;
+      else recovery = {
+        fresh: request.socket !== initialSocket,
+        connection: request.headers.connection,
+      };
       if (scenario === 'HTTP error') {
         response.writeHead(503).end('unavailable');
       } else if (scenario === 'persistent reset' || reads === 1) {
@@ -70,6 +77,7 @@ for (const scenario of ['reset before headers', 'reset during body', 'persistent
         assert.equal(module.value, 42);
       }
       assert.equal(reads, scenario === 'HTTP error' ? 1 : 2);
+      if (reads === 2) assert.deepEqual(recovery, { fresh: true, connection: 'close' });
     } finally {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));

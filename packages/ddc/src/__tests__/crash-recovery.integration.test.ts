@@ -1,62 +1,64 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DdcEntryStore, ddcOutputDigest } from '../entry-store.js';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
+import { DdcEntryStore } from '../entry-store.js';
 import { DdcLifecycle } from '../lifecycle.js';
+import { ddcEntryFixture } from './entry-fixture.js';
 
 const GUID = '019e3969-1d48-7c3b-ac24-6d68f457065f';
 const KEY_A = 'a'.repeat(64);
 const KEY_B = 'b'.repeat(64);
 
 async function writeEntry(root: string, key: string): Promise<void> {
-  const base = {
-    key,
-    guid: GUID,
-    payload: { key },
-    refs: [],
-    artifacts: {},
-    receipt: {
-      guid: GUID,
+  await new DdcEntryStore(root).write(
+    ddcEntryFixture(
+      {
+        key,
+        guid: GUID,
+        payload: { key },
+        refs: [],
+        artifacts: {},
+      },
+      'test',
       key,
-      producer: 'test',
-      inputFingerprint: key,
-      outputDigest: '',
-    },
-  } as const;
-  await new DdcEntryStore(root).write({
-    ...base,
-    receipt: { ...base.receipt, outputDigest: ddcOutputDigest(base) },
-  });
+    ),
+  );
 }
 
 describe('DDC lease and crash recovery', () => {
-  const roots: string[] = [];
+  const scratch = temporaryDirectories();
 
-  afterEach(async () => {
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-  });
+  afterEach(scratch.clear);
 
   it('keeps a crashed cooking attempt out of the readable head', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-crash-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-ddc-crash-');
     const lifecycle = new DdcLifecycle(root);
-    await lifecycle.begin(GUID, KEY_A);
-
-    await expect(lifecycle.inspect(GUID, KEY_A)).resolves.toMatchObject({ state: 'cooking' });
-    await expect(lifecycle.recover(GUID, KEY_A)).resolves.toMatchObject({ state: 'failed' });
-    await expect(lifecycle.inspect(GUID, KEY_A)).resolves.toMatchObject({
-      state: 'failed',
-      currentKey: undefined,
+    await writeEntry(root, KEY_A);
+    const accepted = await lifecycle.begin(GUID, KEY_A);
+    await expect(lifecycle.commit(accepted, KEY_A)).resolves.toMatchObject({ result: 'current' });
+    const crashed = await lifecycle.begin(GUID, KEY_B);
+    await expect(lifecycle.readCurrentEntry(GUID)).resolves.toMatchObject({ entry: null });
+    const replacement = await lifecycle.begin(GUID, KEY_B);
+    expect(replacement.generation).toBeGreaterThan(crashed.generation);
+    await writeEntry(root, KEY_B);
+    await expect(lifecycle.commit(crashed, KEY_B)).resolves.toMatchObject({ result: 'lease-lost' });
+    await expect(lifecycle.commit(replacement, KEY_B)).resolves.toMatchObject({
+      result: 'current',
+    });
+    await expect(lifecycle.inspect(GUID, KEY_B)).resolves.toMatchObject({
+      state: 'current',
+      currentKey: KEY_B,
+      lastKnownGoodKey: KEY_A,
     });
   });
 
   it('rejects a commit after the lease is lost', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-crash-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-ddc-crash-');
     const lifecycle = new DdcLifecycle(root);
     const lease = await lifecycle.begin(GUID, KEY_A);
-    await lifecycle.revoke(lease);
+    await lifecycle.fail(lease, {
+      code: 'lease-lost',
+      detail: 'cook lease was revoked before validation',
+    });
 
     await expect(lifecycle.commit(lease, KEY_A)).resolves.toEqual({
       result: 'lease-lost',
@@ -65,16 +67,15 @@ describe('DDC lease and crash recovery', () => {
     });
   });
 
-  it('keeps an old writer stale after a newer desired key starts cooking', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-crash-'));
-    roots.push(root);
+  it('rejects an old writer after a newer desired key starts cooking', async () => {
+    const root = await scratch.make('forgeax-ddc-crash-');
     const lifecycle = new DdcLifecycle(root);
     const oldLease = await lifecycle.begin(GUID, KEY_A);
     const newLease = await lifecycle.begin(GUID, KEY_B);
     await writeEntry(root, KEY_B);
 
     await expect(lifecycle.commit(oldLease, KEY_A)).resolves.toEqual({
-      result: 'stale',
+      result: 'lease-lost',
       key: KEY_A,
       revision: 0,
     });

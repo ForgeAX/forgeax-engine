@@ -112,6 +112,14 @@ export class EnvironmentLifecycle {
     );
   }
 
+  /** The accepted owner identity; reading it never prepares or acquires a generation. */
+  get activeGeneration(): EnvironmentGeneration | undefined {
+    return this.active;
+  }
+  get activeFrame(): EnvironmentFrame | undefined {
+    return this.active === undefined ? undefined : this.frames.get(this.active.signature);
+  }
+
   discard(generation: EnvironmentGeneration): void {
     if (this.active === generation) return;
     if (this.candidates.get(generation.signature) !== generation) return;

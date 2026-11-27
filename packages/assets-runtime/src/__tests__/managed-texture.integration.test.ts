@@ -17,6 +17,22 @@ function texture(overrides: Partial<TextureAsset> = {}): TextureAsset {
   return { ...value, data: new Uint8Array(deriveTextureLayout(value).unwrap().byteLength) };
 }
 
+it('reads selected Texture fields and returns independent pixel bytes', () => {
+  const assets = new AssetRegistry();
+  const source = texture();
+  const handle = assets.create(source).unwrap();
+  expect(assets.read(handle, ['shape', 'format', 'encoding']).unwrap()).toEqual({
+    shape: source.shape,
+    format: source.format,
+    encoding: undefined,
+  });
+  const pixels = assets.read(handle, ['data']).unwrap();
+  pixels.data[0] = 99;
+  expect(assets.read(handle, ['data']).unwrap().data[0]).toBe(0);
+  expect(assets.read(handle, []).unwrap()).toEqual({});
+  assets.dispose();
+});
+
 it('writes a narrow texture rectangle with stride evidence and fixed old content', () => {
   const assets = new AssetRegistry();
   const handle = assets.create(texture()).unwrap();

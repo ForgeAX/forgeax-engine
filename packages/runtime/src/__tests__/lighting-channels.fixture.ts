@@ -56,6 +56,22 @@ export interface ChannelSample {
   readonly maximum: number;
 }
 
+function shouldCaptureChannelSample(
+  receiver: ChannelReceiver,
+  lightMask: number,
+  receiverMask: number,
+  enabled: boolean,
+): boolean {
+  return (
+    enabled &&
+    (receiver === 'rigid' || receiver === 'skin' || receiver === 'physical') &&
+    (lightMask === 0x80000000 || (receiver === 'physical' && lightMask === 0xffffffff)) &&
+    (receiverMask === 0x80000000 ||
+      receiverMask === 0x7fffffff ||
+      (receiver === 'physical' && receiverMask === 0xffffffff))
+  );
+}
+
 /** Real World/publication, Standard writers, and linear HDR independent oracle. */
 export async function verifyLightingChannels(
   renderer: Renderer,
@@ -65,6 +81,7 @@ export async function verifyLightingChannels(
     readonly preparePhysicalMaterial?: (source: MaterialAsset) => Promise<AssetHandle<'material'>>;
     readonly paths?: readonly ChannelSample['path'][];
     readonly captureLights?: readonly ChannelSample['light'][];
+    readonly capturePaths?: readonly ChannelSample['path'][];
     readonly recorder?: RecorderAttachment;
     readonly recover?: () => Promise<void>;
     readonly capture?: (name: string, tape: EncodedTape, image: Float32Array) => Promise<void>;
@@ -370,15 +387,14 @@ export async function verifyLightingChannels(
           setLights(light, lightMask);
           world.set(receiver, MeshRenderer, { lightingChannels: receiverMask }).unwrap();
           await draw(false, false);
-          const capture =
-            (receiverKind === 'rigid' || receiverKind === 'skin' || receiverKind === 'physical') &&
+          const capture = shouldCaptureChannelSample(
+            receiverKind,
+            lightMask,
+            receiverMask,
             options.capture !== undefined &&
-            (lightMask === 0x80000000 ||
-              (receiverKind === 'physical' && lightMask === 0xffffffff)) &&
-            (receiverMask === 0x80000000 ||
-              receiverMask === 0x7fffffff ||
-              (receiverKind === 'physical' && receiverMask === 0xffffffff)) &&
-            (options.captureLights === undefined || options.captureLights.includes(light));
+              (options.captureLights === undefined || options.captureLights.includes(light)) &&
+              (options.capturePaths === undefined || options.capturePaths.includes(path)),
+          );
           const { image, tape } = await draw(true, capture);
           if (image === undefined) throw new Error('missing linear HDR channel observation');
           let mean = 0,

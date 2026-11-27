@@ -87,8 +87,10 @@ describe('World Instances storage and uniform submission', () => {
   beforeAll(async () => {
     // Shader production is fixture setup; keep the render assertion's 30s
     // deadline independent of a cold compiler/manifest build.
-    const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-    const manifest = await buildEngineShaderManifest();
+    const { buildEngineShaderTemplateManifest } = await import(
+      '@forgeax/engine-vite-plugin-shader'
+    );
+    const manifest = await buildEngineShaderTemplateManifest();
     ENGINE_MANIFEST_URL_W6 = createShaderManifestUrl(manifest);
   }, 180_000);
 

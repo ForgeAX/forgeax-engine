@@ -42,6 +42,7 @@ import {
   type RenderInspection,
   RenderPublicationError,
   RenderPublicationTargetOwner,
+  type RenderWorldLease,
 } from '@forgeax/engine-render';
 import {
   createWaterInfoSourceFeature,
@@ -50,7 +51,6 @@ import {
   WATER_INFO_FEATURE_IDENTITY,
   WATER_UNDERWATER_FEATURE_IDENTITY,
 } from '@forgeax/engine-render/internal';
-import { builtinTaskKinds } from '@forgeax/engine-render/tasks';
 import { ownPipelineLibrary } from '@forgeax/engine-rhi';
 import type { RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import { createDevImportTransport } from '@forgeax/engine-runtime';
@@ -58,8 +58,8 @@ import {
   type AssetRegistry,
   type BundlerOptions,
   constructRuntimeRendererHost,
-  createPublicationAssets,
   type RendererHostAssembly,
+  stagePublicationAssets,
 } from '@forgeax/engine-runtime/internal/renderer-host';
 import {
   AudioError,
@@ -86,6 +86,9 @@ import {
 } from '../internal/rhi-capture';
 import { workerEngineProfile } from '../internal/worker-engine-profile';
 import { attachWorkerRhiRecorder } from '../internal/worker-rhi-capture';
+import { AppLevelOwner } from '../levels/app-level-owner';
+import { levelServicePlugin } from '../levels/level-service';
+import { createLocalLevelOwner } from '../levels/local-app-levels';
 import { type AppObservation, createAppObservation } from '../observation';
 import { createRenderFeatureHost, type RenderFeatureHost } from '../renderer-plugin';
 import { APP_PHASE_CATALOG, type CanvasDrawingBufferSize } from '../types';
@@ -102,6 +105,7 @@ import { installCarriedGpuStub } from './gpu-stub';
 import { createLocalHdrFrameObserver } from './hdr-frame-observation';
 import type {
   EngineToHostMessage,
+  ExecutionFaultMessage,
   ExecutionFrameCompletion,
   ExecutionFrameMessage,
   ExecutionInitMessage,
@@ -112,6 +116,7 @@ import type {
   HostToEngineMessage,
   RetainedExecutionInit,
 } from './protocol';
+import { browserRenderWorkerSource } from './render-worker-browser-channel';
 import { readRendererInspection, rendererInspectionFailure } from './renderer-inspection';
 import { applyRendererOrderDiagnostic } from './renderer-order-diagnostic';
 import {
@@ -119,6 +124,7 @@ import {
   type SharedKernelSliceExecutor,
 } from './shared-kernel-slices';
 import { SourceRenderWorker } from './source-render-worker';
+import { executionTaskKinds } from './task-kinds';
 import type {
   ExecutionRendererInspectionOptions,
   ExecutionRendererInspectionResult,
@@ -164,6 +170,9 @@ interface WorkerRealm {
     readonly cancel: () => void;
   };
   renderWorker?: SourceRenderWorker;
+  sourceLease?: RenderWorldLease;
+  levels?: AppLevelOwner;
+  stoppingLevels?: true;
   publicationTargets?: RenderPublicationTargetOwner;
   init: RetainedExecutionInit;
   assetAssembly: AssetRuntimeAssembly | undefined;
@@ -181,6 +190,10 @@ interface WorkerRealm {
   rhiCapture: RhiCapture | undefined;
   rhiAttachment: RecorderAttachment | undefined;
 }
+
+const browserRenderWorkers = browserRenderWorkerSource((message, transfer) =>
+  scope.postMessage(message, transfer ?? []),
+);
 
 let realm: WorkerRealm | undefined;
 const rebuildQueue = new SerializedRebuildQueue();
@@ -301,6 +314,24 @@ async function executeInspection(job: ExecutionInspectMessage, target: WorkerRea
           engine: { realm: 'worker' },
           world: { identity: target.world.identity },
         }),
+        requestViewportHit: async (
+          request: import('@forgeax/engine-render').ViewportHitRequest,
+          signal?: AbortSignal,
+        ): Promise<import('@forgeax/engine-render').ViewportHitResult> => {
+          if (
+            realm !== target ||
+            realmTransitions > 0 ||
+            inspectionsClosed ||
+            request.worldIdentity !== target.world.identity
+          )
+            return { kind: 'stale', reason: 'world-or-request' };
+          const result = await (target.renderWorker === undefined
+            ? renderer?.requestViewportHit?.(request, signal)
+            : target.renderWorker.requestViewportHit(request, signal));
+          return realm !== target || realmTransitions > 0 || inspectionsClosed
+            ? { kind: 'stale', reason: 'render-session' }
+            : (result ?? { kind: 'unavailable', reason: 'backend' });
+        },
         observeNextGeometry: async (options?: { readonly signal?: AbortSignal }) => {
           if (
             realm !== target ||
@@ -454,7 +485,7 @@ function realmTaskPool(target: WorkerRealm): TaskPool {
   // A host that never adopts pool Workers leaves the pool running inline.
   const startup = target.init.startupTimeoutMs;
   target.taskPool ??= createTaskPool({
-    kinds: builtinTaskKinds,
+    kinds: executionTaskKinds,
     ...(target.init.startup?.settings.execution?.taskWorkers === undefined
       ? {}
       : { workers: target.init.startup.settings.execution.taskWorkers }),
@@ -471,6 +502,7 @@ function postFault(
   hint: string,
   cause: unknown,
   partialWrite = false,
+  owner?: Pick<ExecutionFaultMessage, 'systemName' | 'kernelName'>,
 ): void {
   scope.postMessage({
     kind: 'fault',
@@ -480,6 +512,7 @@ function postFault(
     expected,
     hint,
     detail: serializableDetail(cause),
+    ...owner,
     partialWrite,
     retryable: false,
   });
@@ -552,10 +585,19 @@ function requestRecoveryCanvas(target: WorkerRealm, signal: AbortSignal): Promis
 async function disposeRealm(target: WorkerRealm): Promise<void> {
   target.pendingSurface?.cancel();
   let renderFailure: unknown;
+  target.stoppingLevels = true;
   try {
-    await target.renderWorker?.dispose();
+    await target.levels?.closeStopped();
   } catch (cause) {
     renderFailure = cause;
+  }
+  try {
+    await target.renderWorker?.dispose();
+    target.sourceLease?.dispose();
+    delete target.sourceLease;
+  } catch (cause) {
+    renderFailure =
+      renderFailure === undefined ? cause : new AggregateError([renderFailure, cause]);
   }
   target.observation?.release();
   target.observation = undefined;
@@ -690,11 +732,15 @@ function realmRendererOptions(
       : { gpuPassTiming: init.diagnostics.gpuPassTiming }),
     ...(pipelineLibrary === undefined ? {} : { pipelineLibrary }),
     ...(backgroundPipelineLibrary === undefined ? {} : { backgroundPipelineLibrary }),
+    ...(init.viewportHitWarmup === true ? { viewportHitWarmup: true } : {}),
     ...(init.backgroundPipelineLibraryConcurrency === undefined
       ? {}
       : { backgroundPipelineLibraryConcurrency: init.backgroundPipelineLibraryConcurrency }),
     ...(init.outputColorSpace === undefined ? {} : { outputColorSpace: init.outputColorSpace }),
     ...(init.renderBackend === undefined ? {} : { renderBackend: init.renderBackend }),
+    ...(init.staticShadowBudgetBytes === undefined
+      ? {}
+      : { staticShadowBudgetBytes: init.staticShadowBudgetBytes }),
     ...(init.dynamicGeometryMeshBudgetBytes === undefined
       ? {}
       : { dynamicGeometryMeshBudgetBytes: init.dynamicGeometryMeshBudgetBytes }),
@@ -762,12 +808,13 @@ function realmCatalogSource(
   });
 }
 
-// A split source realm owns a CPU Registry without a Renderer host.
-function createRealmPublicationAssets(
+function stageRealmAssets(
   init: ExecutionInitMessage,
+  host: RendererHostAssembly | undefined,
   bundler: BundlerOptions | undefined,
-): Promise<AssetRegistry> {
-  return createPublicationAssets(
+) {
+  if (host !== undefined) return { assets: host.assets, ready: undefined };
+  return stagePublicationAssets(
     bundler,
     init.assetBudgetBytes === undefined ? {} : { assetBudgetBytes: init.assetBudgetBytes },
   );
@@ -843,6 +890,7 @@ function realmBootstrapHost(
     ...(stagedRenderWorker === undefined
       ? {}
       : { dynamicGeometry: stagedRenderWorker.dynamicGeometry }),
+    ...(candidate.levels === undefined ? {} : { levelCandidates: candidate.levels }),
     ...(renderTargets === undefined ? {} : { renderTargets }),
     get canvas() {
       return candidate.canvas;
@@ -912,21 +960,25 @@ function realmExtensionPlugins(
       realmBootstrapHost(candidate, stagedRenderWorker, renderer),
       renderer,
     ),
+    ...(candidate.levels === undefined ? [] : [levelServicePlugin(candidate.levels.service)]),
     ...(prepared.plugins ?? []),
   ];
 }
 
 function bootstrapProgramOptions(
-  init: ExecutionInitMessage,
+  candidate: WorkerRealm,
   prepared: PreparedExecutionBootstrap,
 ): Pick<
   Parameters<typeof workerEngineProfile>[0],
   'pluginPrograms' | 'runtimePacks' | 'animation'
 > {
+  const { animation } = candidate.init;
   return {
     ...(prepared.pluginPrograms === undefined ? {} : { pluginPrograms: prepared.pluginPrograms }),
-    ...(prepared.runtimePacks === undefined ? {} : { runtimePacks: prepared.runtimePacks }),
-    ...(init.animation === undefined ? {} : { animation: init.animation }),
+    ...(prepared.runtimePacks === undefined
+      ? {}
+      : { runtimePacks: { ...prepared.runtimePacks, tasks: realmTaskPool(candidate) } }),
+    ...(animation === undefined ? {} : { animation }),
   };
 }
 
@@ -936,9 +988,20 @@ function stageSourceRenderWorker(
   candidate: WorkerRealm,
   assets: AssetRegistry,
   sourceFeatures: RenderFeature<unknown>[],
+  renderer: Renderer | undefined,
 ): SourceRenderWorker | undefined {
-  if (!candidate.init.workers.render.enabled) return undefined;
-  return new SourceRenderWorker(
+  if (!candidate.init.workers.render.enabled) {
+    if (renderer !== undefined)
+      candidate.levels = createLocalLevelOwner(
+        candidate.world,
+        assets,
+        renderer,
+        () => performance.now(),
+        () => candidate.stoppingLevels === true,
+      );
+    return undefined;
+  }
+  const worker = new SourceRenderWorker(
     candidate.world,
     assets,
     candidate.init,
@@ -946,7 +1009,19 @@ function stageSourceRenderWorker(
     sourceFeatures,
     candidate.publicationTargets,
     realmTaskPool(candidate),
+    candidate.init.diagnostics?.browserRenderPresentation === true
+      ? browserRenderWorkers.open
+      : undefined,
   );
+  candidate.levels = new AppLevelOwner({
+    world: candidate.world,
+    assets,
+    render: () => worker.levelRenderHost(),
+    now: () => performance.now(),
+    physics: () => candidate.pluginContext?.get('physics'),
+    stopped: () => candidate.stoppingLevels === true,
+  });
+  return worker;
 }
 
 // Retain the original root/commit failure order before the start boundary.
@@ -1063,9 +1138,16 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
     endRenderer();
     sceneWork = beginLoadWork('scene');
     const catalogSource = realmCatalogSource(init);
-    const assets = host?.assets ?? (await createRealmPublicationAssets(init, bundler));
+    const { assets, ready: assetReadiness } = stageRealmAssets(init, host, bundler);
     candidate.assetAssembly = admitRealmAssetAssembly(init, assets, catalogSource);
-    stagedRenderWorker = stageSourceRenderWorker(candidate, assets, sourceFeatures);
+    stagedRenderWorker = stageSourceRenderWorker(
+      candidate,
+      assets,
+      sourceFeatures,
+      candidateRenderer,
+    );
+    const stagedRenderFailure = preloadStagedRenderWorker(stagedRenderWorker);
+    if (assetReadiness !== undefined) await assetReadiness;
     const endPlugins = beginLoadTimeline('boot', 'plugin-bootstrap');
     const pluginContext = await createWorldContext(
       nextWorld,
@@ -1079,7 +1161,7 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
         input: realmInput,
         audio: audioBackend,
         assetAssembly: candidate.assetAssembly,
-        ...bootstrapProgramOptions(init, prepared),
+        ...bootstrapProgramOptions(candidate, prepared),
         extensions: realmExtensionPlugins(
           candidate,
           prepared,
@@ -1091,8 +1173,6 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
     endPlugins();
     candidate.pluginContext = pluginContext;
     rendererLifecycleTransferred = true;
-    // A non-split realm never stages a Render Worker, so preload is a no-op there.
-    const stagedRenderFailure = preloadStagedRenderWorker(stagedRenderWorker);
     if (prepared.root) {
       const endRoot = beginLoadTimeline('boot', 'root-activation');
       await activateExecutionRoot(pluginContext, prepared.root, {
@@ -1113,7 +1193,10 @@ async function createRealm(startup: ExecutionInitMessage): Promise<boolean> {
     const committed =
       candidateRenderer === undefined
         ? true
-        : await commitAttachedWorld(candidateRenderer, nextWorld, async () => true);
+        : await commitAttachedWorld(candidateRenderer, nextWorld, async (source) => {
+            candidate.sourceLease = source;
+            return true;
+          });
     if (!committed) {
       await disposeRealm(candidate);
       if (previousSurfaceReleased) previousRenderer?.restoreSurface();
@@ -1284,26 +1367,32 @@ function endProfileFrame(
 function postWorldPoisoned(world: World): boolean {
   if (world.execution.health !== 'poisoned') return false;
   const fault = world.execution.fault;
+  const owner =
+    fault?.code === 'system-failed'
+      ? { systemName: `${fault.schedule}/${fault.systemName}` }
+      : fault?.code === 'shared-kernel-failed'
+        ? { kernelName: fault.kernelName }
+        : undefined;
   postFault(
     'world',
     fault?.code ?? 'world-poisoned',
     'World remains healthy through update',
     'rebuild the poisoned World explicitly',
-    fault,
+    fault?.cause,
     fault?.partialWrite ?? true,
+    owner,
   );
   return true;
 }
 
 function postFrameFault(world: World, cause: unknown): void {
-  const fault = world.execution.fault;
+  if (postWorldPoisoned(world)) return;
   postFault(
-    fault === null ? 'runtime' : 'world',
-    fault?.code ?? 'app-system-update-failed',
+    'runtime',
+    'app-system-update-failed',
     'World update completes before Renderer draw',
-    fault === null ? 'inspect the runtime cause' : 'rebuild the poisoned World explicitly',
+    'inspect the runtime cause',
     cause,
-    fault?.partialWrite ?? false,
   );
 }
 
@@ -1343,15 +1432,15 @@ function postSimulationComplete(
   });
 }
 
-function publishSourceFrame(
+async function publishSourceFrame(
   activeRealm: WorkerRealm,
   renderWorker: SourceRenderWorker,
   message: ExecutionFrameMessage,
   sampleTimeSeconds: number,
   simulation: FrameSimulationTiming,
   creditWaitMs: number,
-): void {
-  renderWorker.publish(message, sampleTimeSeconds, simulation.engineUpdateMs, creditWaitMs);
+): Promise<void> {
+  await renderWorker.publish(message, sampleTimeSeconds, simulation.engineUpdateMs, creditWaitMs);
   renderSampleTimeSeconds = sampleTimeSeconds;
   lastFrameId = message.frameId;
   postSimulationComplete(activeRealm, message.frameId, simulation);
@@ -1365,13 +1454,13 @@ function drawFrame(
   profileSession: RecorderSession | undefined,
   profileFrame: ProfileFrameToken | undefined,
 ): ReturnType<Renderer['draw']> {
-  const attached = activeRenderer.attach(activeRealm.world);
-  if (!attached.ok) throw attached.error;
+  const source = activeRealm.sourceLease;
+  if (source === undefined) throw Error('The Engine Worker World has no committed Render lease');
   localHdr.beforeDraw(activeRenderer);
   const geometryLane = activeRealm.init.diagnostics?.geometryLane;
   return profilePhase(profileSession, 'renderer-draw', () =>
     activeRenderer.draw({
-      source: attached.value,
+      source,
       sampleTimeSeconds,
       ...(message.temporalReset ? { temporalReset: true } : {}),
       ...(profileFrame === undefined ? {} : { profileFrame }),
@@ -1579,16 +1668,21 @@ async function advanceFrame(
   const profileSession = activeRealm.profiler?.activeSession();
   const profileFrame = beginProfileFrame(profileSession);
   try {
+    activeRealm.levels?.beginFrame(message.render !== false);
     const update = profilePhase(profileSession, 'world-update-primary', () =>
       world.update(message.deltaSeconds),
     );
     if (!update.ok) throw update.error;
-    if (postWorldPoisoned(world)) return;
+    if (postWorldPoisoned(world)) {
+      activeRealm.levels?.stopRequests();
+      return;
+    }
     const updateFinished = performance.now();
     const simulation = frameSimulationTiming(
       updateFinished - started,
       activeRealm.kernelSlices?.takeLastDispatch() ?? null,
     );
+    activeRealm.levels?.step();
     activeRealm.observation?.prepareFrame();
     if (message.render === false) {
       // The skipped picture still advances the implicit render-sample clock.
@@ -1598,7 +1692,7 @@ async function advanceFrame(
       return;
     }
     if (activeRealm.renderWorker !== undefined) {
-      publishSourceFrame(
+      await publishSourceFrame(
         activeRealm,
         activeRealm.renderWorker,
         message,
@@ -1619,6 +1713,7 @@ async function advanceFrame(
       profileFrame,
     );
   } catch (cause) {
+    if (world.execution.health === 'poisoned') activeRealm.levels?.stopRequests();
     postFrameFault(world, cause);
   } finally {
     endProfileFrame(profileSession, profileFrame);
@@ -1653,6 +1748,8 @@ async function rebuild(message: ExecutionRebuildMessage): Promise<void> {
     }
     const canvas = message.canvas ?? activeRealm.canvas;
     if (canvas === undefined) throw new Error('World rebuild requires a fresh rendering canvas');
+    activeRealm.stoppingLevels = true;
+    await activeRealm.levels?.closeStopped('replace-world');
     await activeRealm.renderWorker?.dispose();
     const init: ExecutionInitMessage = {
       ...activeRealm.init,
@@ -1680,6 +1777,9 @@ async function rebuild(message: ExecutionRebuildMessage): Promise<void> {
 
 function receiveWorkerLifecycle(message: HostToEngineMessage | FrameRequest): boolean {
   switch (message.kind) {
+    case 'browser-render-error':
+      browserRenderWorkers.failed(message.workerId, message.message);
+      return true;
     case 'native-frame-request':
       nativeFrames?.receive(message);
       return true;

@@ -217,7 +217,7 @@ export async function verifyRendererDiffuse(
     ...original,
     renderPath: 'deferred' as const,
     ibl: false,
-    ssao: false,
+    ambientOcclusion: { enabled: false },
     visibleSurface: true,
   };
   const settings = {
@@ -367,7 +367,9 @@ export async function verifyRendererDiffuse(
         (shader) =>
           shader.stage === 'fragment' &&
           shader.entryPoint ===
-            (reconstruction === undefined ? 'fs_ray_diffuse' : 'fs_ray_diffuse_reconstructed'),
+            (reconstruction === undefined
+              ? 'fs_ray_diffuse_replace'
+              : 'fs_ray_diffuse_reconstructed_replace'),
       ),
     );
     assert(composite, 'ordinary frame contains the production diffuse composite');

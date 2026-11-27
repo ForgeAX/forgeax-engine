@@ -1,5 +1,6 @@
 import type { TextureFormat } from '@forgeax/engine-rhi';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
+import { findMaterialShaderEntry } from '@forgeax/engine-shader';
 import { isTriangleTopology, type MaterialRenderState } from '@forgeax/engine-types';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import { artifactAlphaMask, maskedInEarlyPassVariantSet } from '../material-alpha-mask';
@@ -7,18 +8,13 @@ import { seededDepthRenderState, transformRenderState } from '../material-render
 import type { MaterialResource } from '../material-resource';
 import { rasterColorFormat, standardSurfaceDiscardMask } from '../material-stage-constants';
 import { SKIN_UNCOVERED_GBUFFER_ENTRY } from '../pbr-pipeline';
-import {
-  PREDEPTH_FRAGMENT_ENTRY,
-  predepthCoversMaterial,
-  predepthFragmentEntry,
-} from '../predepth-coverage';
+import { PREDEPTH_FRAGMENT_ENTRY, predepthCoversMaterial } from '../predepth-coverage';
 import { captureDispatchOverlays, type DispatchOverlays } from '../record/dispatch-overlays';
-import type { ValidatedRenderable } from '../record/frame-snapshot';
+import type { DrawRows, ValidatedRenderable } from '../record/frame-snapshot';
 import {
   geometryRenderStateForPass,
   variantSetForCoveragePass,
 } from '../record/main-pass-geometry';
-import { isMediumMaterial } from '../record/material-pass-selection';
 import type { RenderSystemInternals } from '../record/render-context';
 import {
   STANDARD_OPAQUE_FRAGMENT_ENTRY,
@@ -29,7 +25,9 @@ import type { RenderPipelineGpuDrivenFilter } from '../render-pipeline';
 import type { DispatchList, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { GenerationalWeakMap } from '../scene/generational-weak-map';
 import type { AcceptedMaterial, MaterialDispatchPass } from '../scene/material-dispatch';
-import { MaterialFrame } from '../scene/material-dispatch';
+import { MaterialFrame, selectMaterialPrograms } from '../scene/material-dispatch';
+import { BatchExecutionTable } from './batch-execution-table';
+import { materialBindingLayout } from './fixed-task-plan';
 import { withFrameLighting } from './pbr-program';
 import { capturedPreparedMaterialArtifactKey, type PreparedGpuDrivenDraw } from './prepared-draw';
 import { lodCoverageMayFade } from './production-raster-lod';
@@ -45,7 +43,9 @@ type MaterialPrograms = {
 import {
   type BatchArtifactResolver,
   type BatchExecution,
+  type BatchGeometryAdmission,
   type BatchPass,
+  captureBatchGeometryAdmission,
   prepareBatchExecution,
 } from './batch-execution';
 import {
@@ -56,6 +56,8 @@ import {
 
 const NO_EXECUTION: BatchExecution = Object.freeze({ route: 'none' });
 
+import { isVelocityRasterEntry } from './raster-selection';
+
 export interface BatchExecutions {
   readonly forward: BatchExecution;
   readonly shadow: BatchExecution;
@@ -65,6 +67,21 @@ interface MaterialProgramSelection {
   logicalMaterialShaderId: string;
   sceneIndexProgramKey: string | undefined;
   materialShaderId: string;
+}
+
+/** The two addresses belong to one authored Pass. A specialization ID already selects its ABI. */
+export function sceneIndexKeyForPass(
+  material: MaterialSnapshot,
+  pass: 'forward' | 'shadow',
+  directId: string | undefined,
+): string | undefined {
+  if (directId === undefined) return undefined;
+  for (const name in material.materialSceneIndexProgramKeys) {
+    const program = material.materialSceneIndexProgramKeys[name];
+    if (program?.pass === pass && material.materialProgramKeys?.[name] === directId)
+      return program.specializationKey;
+  }
+  return undefined;
 }
 
 /** Select the direct/scene program pair published for this concrete pass. */
@@ -80,18 +97,7 @@ export function gpuDrivenMaterialProgramSelection(
   const shadowMaterialShaderId = pass === 'shadow' ? shadowEntry?.materialShaderId : undefined;
   const directMaterialShaderId =
     pass === 'shadow' ? shadowMaterialShaderId : logicalMaterialShaderId;
-  let sceneIndexProgramKey: string | undefined;
-  for (const passName in sceneIndexProgramKeys) {
-    const program = sceneIndexProgramKeys[passName];
-    if (
-      program?.pass === pass &&
-      directMaterialShaderId !== undefined &&
-      material.materialProgramKeys?.[passName] === directMaterialShaderId
-    ) {
-      sceneIndexProgramKey = program.specializationKey;
-      break;
-    }
-  }
+  const sceneIndexProgramKey = sceneIndexKeyForPass(material, pass, directMaterialShaderId);
   if (sceneIndexProgramKeys !== undefined && sceneIndexProgramKey === undefined) return undefined;
   const materialShaderId =
     pass === 'shadow'
@@ -165,24 +171,10 @@ class CapturedMaterialProgramIndex implements GpuDrivenMaterialProgramIndex {
   readonly get = (material: MaterialResource) => {
     const accepted = this.#materials.get(material);
     if (accepted === undefined) return undefined;
+    if (accepted.programs !== undefined) return accepted.programs;
     let programs = sharedProgramSelections.get(accepted);
     if (programs !== undefined) return programs;
-    const forward: MaterialDispatchPass[] = [];
-    const shadow: MaterialDispatchPass[] = [];
-    programs = {
-      snapshot: accepted.snapshot,
-      materialHandle: accepted.snapshot.materialHandle ?? -1,
-      forward,
-      shadow,
-    };
-    for (const pass of accepted.passes) {
-      if (pass.materialShaderId === undefined) continue;
-      if (pass.tags.LightMode === 'ShadowCaster') shadow.push(pass);
-      else if (pass.tags.LightMode === 'Forward' || isMediumMaterial(accepted.snapshot))
-        forward.push(pass);
-    }
-    Object.freeze(forward);
-    Object.freeze(shadow);
+    programs = selectMaterialPrograms(accepted.snapshot, accepted.passes);
     sharedProgramSelections.set(accepted, programs);
     return programs;
   };
@@ -217,16 +209,269 @@ export class GpuDrivenMaterialProgramProjection {
 
 interface MaterialArtifactRead {
   readonly shader: string;
+  readonly key: number;
   readonly request: Parameters<BatchArtifactResolver>[1];
   readonly artifact: MaterialShaderArtifact | undefined;
+  /** Scalar proof only. A read never retains the collection that last consumed it. */
+  verified: symbol | undefined;
+}
+
+const NO_SHADER_READS: readonly MaterialArtifactRead[] = Object.freeze([]);
+
+/** A source address has one observation across the forward and shadow bindings of this join. */
+class BatchArtifactReads {
+  private stamp?: symbol;
+  private selected?: Map<string, Map<number, MaterialArtifactRead>>;
+  private active?: MaterialArtifactRead[];
+
+  get reads(): readonly MaterialArtifactRead[] {
+    return this.active ?? NO_SHADER_READS;
+  }
+
+  constructor(
+    private readonly resolve: BatchArtifactResolver | undefined,
+    private readonly clustered: boolean,
+    private readonly probeBlend: boolean,
+    private readonly reflectionFallback: boolean,
+  ) {}
+
+  /** Replay a whole fixed input without allocating. A changed address and all earlier
+   * observations enter the new join exactly once, even for a live resolver. */
+  static begin(
+    previous: readonly MaterialArtifactRead[],
+    resolve: BatchArtifactResolver | undefined,
+    clustered: boolean,
+    probeBlend: boolean,
+    reflectionFallback: boolean,
+  ): BatchArtifactReads | undefined {
+    for (let i = 0; i < previous.length; i++) {
+      const read = previous[i] as MaterialArtifactRead;
+      const artifact = resolve?.(read.shader, read.request);
+      if (artifact === read.artifact) continue;
+      const next = new BatchArtifactReads(resolve, clustered, probeBlend, reflectionFallback);
+      for (let j = 0; j <= i; j++) {
+        const sampled = previous[j] as MaterialArtifactRead;
+        next.variants(sampled.shader).set(sampled.key, {
+          ...sampled,
+          artifact: j === i ? artifact : sampled.artifact,
+          verified: undefined,
+        });
+      }
+      return next;
+    }
+    return undefined;
+  }
+
+  private variants(shader: string) {
+    this.selected ??= new Map();
+    let variants = this.selected.get(shader);
+    if (variants === undefined) {
+      variants = new Map();
+      this.selected.set(shader, variants);
+    }
+    return variants;
+  }
+
+  private observe(shader: string, request: Parameters<BatchArtifactResolver>[1], key: number) {
+    const variants = this.variants(shader);
+    let read = variants.get(key);
+    if (read === undefined) {
+      const options =
+        request.pass === 'forward'
+          ? {
+              ...request,
+              clustered: this.clustered,
+              probeBlend: this.probeBlend,
+              reflectionFallback: this.reflectionFallback,
+            }
+          : { ...request };
+      read = {
+        shader,
+        key,
+        request: options,
+        artifact: this.resolve?.(shader, options),
+        verified: undefined,
+      };
+      variants.set(key, read);
+    }
+    // A primed address no longer used by the new route drops out of its published dependencies.
+    if (read.verified === undefined) {
+      this.active ??= [];
+      this.active.push(read);
+    }
+    this.stamp ??= Symbol();
+    read.verified = this.stamp;
+    return read;
+  }
+
+  capture(
+    shader: string,
+    request: Parameters<BatchArtifactResolver>[1],
+    out: MaterialArtifactRead[],
+  ) {
+    const read = this.observe(shader, request, artifactRequestKey(request));
+    out.push(read);
+    return read.artifact;
+  }
+
+  current(reads: readonly MaterialArtifactRead[]): boolean {
+    for (const read of reads) if (!this.currentRead(read)) return false;
+    return true;
+  }
+
+  currentRead(read: MaterialArtifactRead): boolean {
+    if (this.stamp !== undefined && read.verified === this.stamp) return true;
+    if (this.observe(read.shader, read.request, read.key).artifact !== read.artifact) return false;
+    read.verified = this.stamp;
+    return true;
+  }
 }
 
 interface RetainedBatchExecution {
+  admission?: BatchGeometryAdmission | undefined;
+  readonly directShadow: boolean;
   readonly snapshot: MaterialSnapshot;
   readonly passes: readonly MaterialDispatchPass[];
   readonly geometry: GpuDrivenBatchBinding['geometry'];
   readonly reads: readonly MaterialArtifactRead[];
   readonly execution: BatchExecution;
+}
+
+type PassExecution = Pick<RetainedBatchExecution, 'reads' | 'execution'>;
+const NO_PASS: PassExecution = { reads: NO_SHADER_READS, execution: NO_EXECUTION };
+
+/** An issued pair carries its own shader dependencies across frame and retention replacement. */
+class PublishedBatchExecutions implements BatchExecutions {
+  readonly forward: BatchExecution;
+  readonly shadow: BatchExecution;
+  readonly #forwardReads: readonly MaterialArtifactRead[];
+  readonly #shadowReads: readonly MaterialArtifactRead[];
+  constructor(forward: PassExecution, shadow: PassExecution) {
+    this.forward = forward.execution;
+    this.shadow = shadow.execution;
+    this.#forwardReads = forward.reads;
+    this.#shadowReads = shadow.reads;
+  }
+  current(observed: BatchArtifactReads): boolean {
+    return observed.current(this.#forwardReads) && observed.current(this.#shadowReads);
+  }
+  registerInputs(
+    inputs: BatchExecutionInputs,
+    row: number,
+    previous?: PublishedBatchExecutions,
+  ): void {
+    inputs.replaceReads(
+      row,
+      previous === undefined ? NO_SHADER_READS : previous.#forwardReads,
+      this.#forwardReads,
+    );
+    inputs.replaceReads(
+      row,
+      previous === undefined ? NO_SHADER_READS : previous.#shadowReads,
+      this.#shadowReads,
+    );
+  }
+
+  sameReads(other: PublishedBatchExecutions): boolean {
+    return this.#forwardReads === other.#forwardReads && this.#shadowReads === other.#shadowReads;
+  }
+}
+
+interface ShaderBindingReaders {
+  read: MaterialArtifactRead;
+  readonly rows: Set<number>;
+}
+
+/** Dependencies of the most recently accepted join. Published draw tables own their values separately. */
+class BatchExecutionInputs {
+  private readonly materials = new Map<MaterialResource, number | number[]>();
+  private readonly shaders = new Map<string, Map<number, ShaderBindingReaders>>();
+  private readonly marked: Uint8Array;
+  readonly rows: Uint32Array;
+  count = 0;
+
+  private mark(row: number): void {
+    if (this.marked[row] === 1) return;
+    this.marked[row] = 1;
+    this.rows[this.count++] = row;
+  }
+
+  finish(): void {
+    for (let i = 0; i < this.count; i++) this.marked[this.rows[i] as number] = 0;
+    this.count = 0;
+  }
+
+  constructor(table: BatchExecutionTable) {
+    this.marked = new Uint8Array(table.size);
+    this.rows = new Uint32Array(table.size);
+    let row = 0;
+    table.forEach((pair, binding) => {
+      const prior = this.materials.get(binding.material);
+      if (prior === undefined) this.materials.set(binding.material, row);
+      else if (Array.isArray(prior)) prior.push(row);
+      else this.materials.set(binding.material, [prior, row]);
+      if (pair instanceof PublishedBatchExecutions) pair.registerInputs(this, row);
+      row++;
+    });
+  }
+
+  markMaterial(resource: MaterialResource): void {
+    const bindings = this.materials.get(resource);
+    if (Array.isArray(bindings)) for (const binding of bindings) this.mark(binding);
+    else if (bindings !== undefined) this.mark(bindings);
+  }
+
+  markShaders(observed: BatchArtifactReads): void {
+    for (const variants of this.shaders.values())
+      for (const group of variants.values()) {
+        // If every reader will select a new pass, let those reads establish current demand.
+        for (const binding of group.rows) {
+          if (this.marked[binding] === 1) continue;
+          if (!observed.currentRead(group.read)) for (const reader of group.rows) this.mark(reader);
+          break;
+        }
+      }
+  }
+
+  replaceReads(
+    row: number,
+    before: readonly MaterialArtifactRead[],
+    after: readonly MaterialArtifactRead[],
+  ): void {
+    if (before === after) return;
+    for (const old of before) {
+      if (hasShaderAddress(after, old)) continue;
+      const variants = this.shaders.get(old.shader);
+      const group = variants?.get(old.key);
+      if (!variants || !group) throw new Error('Batch shader reader lost its dependency');
+      group.rows.delete(row);
+      if (group.rows.size === 0) variants.delete(old.key);
+      if (variants.size === 0) this.shaders.delete(old.shader);
+    }
+    for (const read of after) {
+      let variants = this.shaders.get(read.shader);
+      if (variants === undefined) {
+        variants = new Map();
+        this.shaders.set(read.shader, variants);
+      }
+      let group = variants.get(read.key);
+      if (group === undefined) {
+        group = { read, rows: new Set() };
+        variants.set(read.key, group);
+      }
+      group.read = read;
+      group.rows.add(row);
+    }
+  }
+}
+
+function hasShaderAddress(
+  reads: readonly MaterialArtifactRead[],
+  address: MaterialArtifactRead,
+): boolean {
+  for (const read of reads)
+    if (read.key === address.key && read.shader === address.shader) return true;
+  return false;
 }
 
 /**
@@ -243,8 +488,6 @@ export class GpuDrivenMaterialExecutionRetention {
   };
   reused = 0;
   prepared = 0;
-  /** Last collected frame; an identical join keeps its identity for downstream caches. */
-  last: CollectedMaterialArtifacts | undefined;
   /**
    * Inputs of the last complete join. A collection is a pure function of its
    * batch roster, accepted programs, frame flags and the artifacts its distinct
@@ -252,23 +495,27 @@ export class GpuDrivenMaterialExecutionRetention {
    */
   lastInputs:
     | {
-        readonly batches: object;
+        readonly bindings: object | symbol;
         readonly programs: object | undefined;
+        readonly frame: MaterialFrame | undefined;
         readonly flags: number;
         readonly reads: readonly MaterialArtifactRead[];
-        readonly collected: CollectedMaterialArtifacts;
+        readonly collected: IssuedMaterialArtifacts;
+        readonly dependencies?: BatchExecutionInputs | undefined;
       }
     | undefined;
   get(
     kind: 'forward' | 'shadow',
     binding: GpuDrivenBatchBinding,
     programs: MaterialPrograms & { readonly snapshot: MaterialSnapshot },
-    resolve: BatchArtifactResolver,
-  ): BatchExecution | undefined {
+    observed: BatchArtifactReads,
+    directShadow: boolean,
+  ): RetainedBatchExecution | undefined {
     const entry = this.entries[kind].get(binding);
     const passes = programs[kind];
     if (
       entry === undefined ||
+      entry.directShadow !== directShadow ||
       entry.snapshot !== programs.snapshot ||
       entry.geometry !== binding.geometry ||
       entry.passes.length !== passes.length
@@ -276,14 +523,38 @@ export class GpuDrivenMaterialExecutionRetention {
       return undefined;
     for (let index = 0; index < passes.length; index++)
       if (entry.passes[index] !== passes[index]) return undefined;
-    for (const read of entry.reads)
-      if (resolve(read.shader, read.request) !== read.artifact) return undefined;
+    if (!observed.current(entry.reads)) return undefined;
     this.reused++;
-    return entry.execution;
+    return entry;
+  }
+  geometryAdmission(kind: 'forward' | 'shadow', binding: GpuDrivenBatchBinding) {
+    return this.entries[kind].get(binding)?.admission;
   }
   set(kind: 'forward' | 'shadow', binding: GpuDrivenBatchBinding, entry: RetainedBatchExecution) {
     this.prepared++;
+    const previous = this.geometryAdmission(kind, binding);
+    entry.admission =
+      entry.execution.route === 'gpu' && previous?.prepared === entry.execution.prepared
+        ? previous
+        : captureBatchGeometryAdmission(binding.geometry, entry.execution);
     this.entries[kind].set(binding, entry);
+  }
+
+  publish(
+    input: NonNullable<GpuDrivenMaterialExecutionRetention['lastInputs']>,
+    last: IssuedMaterialArtifacts | undefined,
+  ) {
+    const { collected } = input;
+    const published =
+      last !== undefined &&
+      last.firstSkinArtifact === collected.firstSkinArtifact &&
+      sameOrderedEntries(last.batchExecutions, collected.batchExecutions, sameBatchExecutions) &&
+      sameOrderedEntries(last.materialArtifacts, collected.materialArtifacts, Object.is) &&
+      sameOrderedEntries(last.shadowMaterialArtifacts, collected.shadowMaterialArtifacts, Object.is)
+        ? last
+        : collected;
+    this.lastInputs = { ...input, collected: published };
+    return published;
   }
 }
 
@@ -296,30 +567,39 @@ function artifactRequestKey(request: Parameters<BatchArtifactResolver>[1]): numb
     (request.deformation === 'skin' ? 4 : 0) |
     (request.vertexColorAvailable ? 8 : 0) |
     (request.alphaMask ? 16 : 0) |
-    (request.leanInputs ? 32 : 0)
+    (request.leanInputs ? 32 : 0) |
+    (request.tangentFrame32 ? 64 : 0)
   );
 }
 
 /** Each renderer's artifact resolver owns one retention; recovery installs a new resolver. */
 const resolverRetention = new WeakMap<object, GpuDrivenMaterialExecutionRetention>();
 
+export type MaterialArtifactDemand =
+  | 'forward'
+  | 'shadow'
+  | 'forward-and-shadow'
+  | 'forward-with-direct-shadows';
+
 /** Resolve shared geometry/material/Pass executions without inspecting batch members. */
 export function collectGpuDrivenMaterialArtifacts({
   batches,
   resolve,
+  canAwaitSource,
   clustered,
   reflectionFallback,
   probeBlend,
-  shadowViews,
+  demand,
   programs,
   retention = resolve === undefined ? undefined : resolverRetention.get(resolve),
 }: {
   readonly batches: Iterable<Pick<GpuDrivenBatch, 'binding'>>;
   readonly resolve: RenderSystemInternals['getMaterialShaderArtifact'];
+  readonly canAwaitSource?: (shaderId: string) => boolean;
   readonly clustered: boolean;
   readonly reflectionFallback: boolean;
   readonly probeBlend: boolean;
-  readonly shadowViews: boolean;
+  readonly demand: MaterialArtifactDemand;
   readonly programs: GpuDrivenMaterialProgramIndex | undefined;
   readonly retention?: GpuDrivenMaterialExecutionRetention;
 }): CollectedMaterialArtifacts {
@@ -327,58 +607,45 @@ export function collectGpuDrivenMaterialArtifacts({
     retention = new GpuDrivenMaterialExecutionRetention();
     resolverRetention.set(resolve, retention);
   }
+  const needsForward = demand !== 'shadow';
+  const needsShadow = demand !== 'forward';
+  const directShadows = demand === 'forward-with-direct-shadows';
   const flags =
     (clustered ? 1 : 0) |
     (reflectionFallback ? 2 : 0) |
     (probeBlend ? 4 : 0) |
-    (shadowViews ? 8 : 0);
-  const programIdentity = CapturedMaterialProgramIndex.materialRoot(programs) ?? programs;
+    (needsForward ? 8 : 0) |
+    (needsShadow ? 16 : 0) |
+    (directShadows ? 32 : 0);
+  const frame = CapturedMaterialProgramIndex.materialRoot(programs);
+  const programIdentity = frame ?? programs;
   const retainedInputs = retention?.lastInputs;
-  // With the same accepted programs, flags and artifact resolutions, every
-  // binding of the last join keeps its execution; only new bindings join.
-  const retainedJoin =
-    retention !== undefined &&
+  const previous =
     retainedInputs !== undefined &&
-    retainedInputs.collected === retention.last &&
     retainedInputs.programs === programIdentity &&
-    retainedInputs.flags === flags &&
-    retainedInputs.reads.every((read) => resolve?.(read.shader, read.request) === read.artifact)
+    retainedInputs.flags === flags
       ? retainedInputs
       : undefined;
-  if (retainedJoin?.batches === batches) return retainedJoin.collected;
-  const distinctReads: MaterialArtifactRead[] = [...(retainedJoin?.reads ?? [])];
-  const materialArtifacts = new Map<string, MaterialShaderArtifact>();
-  const shadowMaterialArtifacts = new Map<string, MaterialShaderArtifact>();
-  const batchExecutions = new Map<GpuDrivenBatchBinding, BatchExecutions>();
-  const selectedArtifacts = new Map<string, Map<number, MaterialShaderArtifact | undefined>>();
+  const bindings = materialBindingLayout(batches) ?? batches;
+  let observed: BatchArtifactReads;
+  if (previous?.bindings === bindings) {
+    const changed = BatchArtifactReads.begin(
+      previous.reads,
+      resolve,
+      clustered,
+      probeBlend,
+      reflectionFallback,
+    );
+    if (changed === undefined) return previous.collected;
+    observed = changed;
+  } else observed = new BatchArtifactReads(resolve, clustered, probeBlend, reflectionFallback);
+  // Per-binding entries below can change before a pending or failed collection finishes.
+  // Only a complete publish restores their association with an accepted roster.
+  if (retention !== undefined) retention.lastInputs = undefined;
+  let materialArtifacts: Map<string, MaterialShaderArtifact> | undefined;
+  let shadowMaterialArtifacts: Map<string, MaterialShaderArtifact> | undefined;
   let firstSkinArtifact: MaterialShaderArtifact | undefined;
-  for (const read of distinctReads) {
-    let variants = selectedArtifacts.get(read.shader);
-    if (variants === undefined) {
-      variants = new Map();
-      selectedArtifacts.set(read.shader, variants);
-    }
-    variants.set(artifactRequestKey(read.request), read.artifact);
-  }
-  const selectArtifact: BatchArtifactResolver = (shader, request) => {
-    let variants = selectedArtifacts.get(shader);
-    if (variants === undefined) {
-      variants = new Map();
-      selectedArtifacts.set(shader, variants);
-    }
-    // This resolver's address is always scene-index; the other request fields vary.
-    const key = artifactRequestKey(request);
-    if (!variants.has(key)) {
-      const resolved = {
-        ...request,
-        ...(request.pass === 'forward' ? { clustered, probeBlend, reflectionFallback } : {}),
-      };
-      const artifact = resolve?.(shader, resolved);
-      variants.set(key, artifact);
-      distinctReads.push({ shader, request: resolved, artifact });
-    }
-    return variants.get(key);
-  };
+  let sourcePreparationPending = false;
   const select = (
     material: MaterialSnapshot,
     entry: MaterialDispatchPass | undefined,
@@ -386,14 +653,10 @@ export function collectGpuDrivenMaterialArtifacts({
   ): BatchPass | undefined => {
     if (entry?.materialShaderId === undefined) return undefined;
     const shaderId = entry.materialShaderId;
-    let sceneIndexProgramKey: string | undefined;
-    for (const name in material.materialSceneIndexProgramKeys) {
-      const program = material.materialSceneIndexProgramKeys[name];
-      if (program?.pass === kind && material.materialProgramKeys?.[name] === shaderId) {
-        sceneIndexProgramKey = program.specializationKey;
-        break;
-      }
-    }
+    const sceneIndexProgramKey =
+      kind === 'shadow' && directShadows
+        ? undefined
+        : sceneIndexKeyForPass(material, kind, shaderId);
     return {
       kind,
       shaderId,
@@ -404,8 +667,7 @@ export function collectGpuDrivenMaterialArtifacts({
       ...(entry.fragmentEntry === undefined ? {} : { fragmentEntry: entry.fragmentEntry }),
     };
   };
-  // A binding of the last join keeps its executions, so its program lookup and
-  // join closures are only needed for bindings that are new to this frame.
+  // Only new or invalidated bindings require program lookup and pass selection.
   const prepareBinding = (binding: GpuDrivenBatchBinding): BatchExecutions => {
     const accepted = programs?.get(binding.material);
     if (accepted === undefined)
@@ -414,26 +676,26 @@ export function collectGpuDrivenMaterialArtifacts({
         owner: 'material',
         expected: 'a fixed material version from the scene owner',
       });
-    const prepare = (kind: 'forward' | 'shadow'): BatchExecution => {
-      if (kind === 'shadow' && !isTriangleTopology(binding.geometry.draw.topology))
-        return NO_EXECUTION;
-      const reused = retention?.get(kind, binding, accepted, selectArtifact);
+    const prepare = (kind: 'forward' | 'shadow'): PassExecution => {
+      if (kind === 'shadow' && !isTriangleTopology(binding.geometry.draw.topology)) return NO_PASS;
+      const directShadow = kind === 'shadow' && directShadows;
+      const reused = retention?.get(kind, binding, accepted, observed, directShadow);
       if (reused !== undefined) return reused;
-      if (retention === undefined) return join(kind, selectArtifact);
-      const reads: MaterialArtifactRead[] = [];
+      let reads: MaterialArtifactRead[] | undefined;
       const execution = join(kind, (shader, request) => {
-        const artifact = selectArtifact(shader, request);
-        reads.push({ shader, request, artifact });
-        return artifact;
+        reads ??= [];
+        return observed.capture(shader, request, reads);
       });
-      retention.set(kind, binding, {
+      const pass = {
+        directShadow,
         snapshot: accepted.snapshot,
         passes: accepted[kind],
         geometry: binding.geometry,
-        reads,
+        reads: reads ?? NO_SHADER_READS,
         execution,
-      });
-      return execution;
+      };
+      if (!sourcePreparationPending) retention?.set(kind, binding, pass);
+      return pass;
     };
     const join = (
       kind: 'forward' | 'shadow',
@@ -441,7 +703,7 @@ export function collectGpuDrivenMaterialArtifacts({
     ): BatchExecution => {
       const passes = accepted[kind];
       const pass = select(accepted.snapshot, passes[0], kind);
-      if (passes.length > 1 && pass !== undefined)
+      if (pass !== undefined && (passes.length > 1 || (kind === 'shadow' && directShadows)))
         return { route: 'direct', material: accepted.snapshot, pass };
       if (
         pass !== undefined &&
@@ -454,8 +716,17 @@ export function collectGpuDrivenMaterialArtifacts({
         accepted.snapshot,
         pass,
         selectArtifact,
+        retention?.geometryAdmission(kind, binding),
       );
       if (!execution.ok) {
+        if (
+          execution.error.code === 'missing-material-receipt' &&
+          pass !== undefined &&
+          canAwaitSource?.(pass.sceneIndexProgramKey ?? pass.shaderId) === true
+        ) {
+          sourcePreparationPending = true;
+          return NO_EXECUTION;
+        }
         if (execution.error.detail.recovery !== 'route-cpu-lane' || pass === undefined)
           throw execution.error;
         return { route: 'direct', material: accepted.snapshot, pass, reason: execution.error };
@@ -469,66 +740,126 @@ export function collectGpuDrivenMaterialArtifacts({
         return { route: 'direct', material: accepted.snapshot, pass: execution.value.pass };
       return execution.value;
     };
-    return {
-      forward: prepare('forward'),
-      shadow: shadowViews ? prepare('shadow') : NO_EXECUTION,
-    };
+    return new PublishedBatchExecutions(
+      needsForward ? prepare('forward') : NO_PASS,
+      needsShadow ? prepare('shadow') : NO_PASS,
+    );
   };
-  for (const batch of batches) {
-    const binding = batch.binding;
-    if (binding === undefined)
-      throw new GpuDrivenPreparationError('missing-material-receipt', {
-        reason: 'material-receipt-missing',
-        owner: 'material',
-        expected: 'a geometry and material binding from the scene owner',
-      });
-    const reused = retainedJoin?.collected.batchExecutions.get(binding);
-    const { forward, shadow } = reused ?? prepareBinding(binding);
-    batchExecutions.set(binding, { forward, shadow });
+  const currentBinding = (binding: GpuDrivenBatchBinding, prior?: BatchExecutions) =>
+    prior instanceof PublishedBatchExecutions && prior.current(observed)
+      ? prior
+      : prepareBinding(binding);
+  let forwardOwners: Map<string, GpuDrivenBatchBinding> | undefined;
+  let shadowOwners: Map<string, GpuDrivenBatchBinding> | undefined;
+  let firstSkinOwner: GpuDrivenBatchBinding | undefined;
+  const collectArtifacts = (
+    { forward, shadow }: BatchExecutions,
+    binding: GpuDrivenBatchBinding,
+  ) => {
     const forwardKey =
       forward.route === 'gpu' ? capturedPreparedMaterialArtifactKey(forward.prepared) : undefined;
     if (forward.route === 'gpu' && forwardKey !== undefined) {
+      materialArtifacts ??= new Map();
       materialArtifacts.set(forwardKey, forward.artifact);
+      forwardOwners ??= new Map();
+      forwardOwners.set(forwardKey, binding);
       // Admission already proved this pass consumes paired Skin vertex inputs.
       // Selecting its task layout does not rescan immutable program contracts.
-      if (firstSkinArtifact === undefined && forward.prepared.identity.deformation === 'skin')
+      if (firstSkinArtifact === undefined && forward.prepared.identity.deformation === 'skin') {
         firstSkinArtifact = forward.artifact;
+        firstSkinOwner = binding;
+      }
     }
     if (shadow.route === 'gpu') {
       const key = capturedPreparedMaterialArtifactKey(shadow.prepared);
-      if (key !== undefined) shadowMaterialArtifacts.set(key, shadow.artifact);
+      if (key !== undefined) {
+        shadowMaterialArtifacts ??= new Map();
+        shadowMaterialArtifacts.set(key, shadow.artifact);
+        shadowOwners ??= new Map();
+        shadowOwners.set(key, binding);
+      }
     }
+  };
+  let batchExecutions: BatchExecutionTable;
+  let publicationBaseline = retainedInputs?.collected;
+  let dependencies: BatchExecutionInputs | undefined;
+  // An issued layout identifies ordered bindings independently of instance windows.
+  // Reconcile that roster against changed Scene leaves and live shader reads.
+  if (
+    typeof bindings === 'symbol' &&
+    retainedInputs?.bindings === bindings &&
+    retainedInputs.flags === flags &&
+    retainedInputs.frame !== undefined &&
+    frame !== undefined
+  ) {
+    const last = retainedInputs.collected;
+    dependencies = retainedInputs.dependencies ?? new BatchExecutionInputs(last.batchExecutions);
+    const reconciled = reconcileMaterialExecutions(
+      last,
+      retainedInputs.frame,
+      frame,
+      dependencies,
+      observed,
+      currentBinding,
+    );
+    batchExecutions = reconciled.executions;
+    if (reconciled.artifactLayoutChanged) {
+      publicationBaseline = undefined;
+      batchExecutions.forEach(collectArtifacts);
+    } else {
+      const collected =
+        batchExecutions === last.batchExecutions
+          ? last
+          : projectBatchArtifacts(last, batchExecutions);
+      if (sourcePreparationPending) return { ...collected, sourcePreparationPending: true };
+      if (retention !== undefined)
+        retention.lastInputs = {
+          bindings,
+          programs: programIdentity,
+          frame,
+          flags,
+          reads: observed.reads,
+          collected,
+          dependencies,
+        };
+      return collected;
+    }
+  } else {
+    batchExecutions = BatchExecutionTable.collect(batches, requireBatchBinding, (binding) => {
+      const current = currentBinding(binding, previous?.collected.batchExecutions.get(binding));
+      collectArtifacts(current, binding);
+      return current;
+    });
   }
-  const firstArtifact = materialArtifacts.values().next().value;
-  const collected = {
-    materialArtifacts,
-    shadowMaterialArtifacts,
+  const firstArtifact = materialArtifacts?.values().next().value;
+  const collected: IssuedMaterialArtifacts = {
+    materialArtifacts: materialArtifacts ?? new Map(),
+    shadowMaterialArtifacts: shadowMaterialArtifacts ?? new Map(),
     firstArtifact,
     firstSkinArtifact,
+    forwardOwners,
+    shadowOwners,
+    firstSkinOwner,
     batchExecutions,
+    ...(sourcePreparationPending ? { sourcePreparationPending: true } : {}),
   };
-  if (retention === undefined) return collected;
-  const last = retention.last;
-  let published: CollectedMaterialArtifacts = collected;
-  if (
-    last !== undefined &&
-    sameOrderedEntries(last.batchExecutions, batchExecutions, sameBatchExecutions) &&
-    sameOrderedEntries(last.materialArtifacts, materialArtifacts, Object.is) &&
-    sameOrderedEntries(last.shadowMaterialArtifacts, shadowMaterialArtifacts, Object.is)
-  )
-    published = last;
-  retention.last = published;
-  retention.lastInputs = {
-    batches,
-    programs: programIdentity,
-    flags,
-    reads: distinctReads,
-    collected: published,
-  };
-  return published;
+  if (retention === undefined || sourcePreparationPending) return collected;
+  return retention.publish(
+    {
+      bindings,
+      programs: programIdentity,
+      frame,
+      flags,
+      reads: observed.reads,
+      collected,
+      dependencies,
+    },
+    publicationBaseline,
+  );
 }
 
 export interface CollectedMaterialArtifacts {
+  readonly sourcePreparationPending?: true;
   readonly materialArtifacts: ReadonlyMap<string, MaterialShaderArtifact>;
   readonly shadowMaterialArtifacts: ReadonlyMap<string, MaterialShaderArtifact>;
   readonly firstArtifact: MaterialShaderArtifact | undefined;
@@ -536,8 +867,128 @@ export interface CollectedMaterialArtifacts {
   readonly batchExecutions: ReadonlyMap<GpuDrivenBatchBinding, BatchExecutions>;
 }
 
+/** Captured pass executions depend on one material leaf and their specific shader reads. */
+interface IssuedMaterialArtifacts extends CollectedMaterialArtifacts {
+  readonly forwardOwners: ReadonlyMap<string, GpuDrivenBatchBinding> | undefined;
+  readonly shadowOwners: ReadonlyMap<string, GpuDrivenBatchBinding> | undefined;
+  readonly firstSkinOwner: GpuDrivenBatchBinding | undefined;
+  readonly batchExecutions: BatchExecutionTable;
+}
+
+/** Each key keeps its last contributing binding in roster order, independently of new draw values. */
+function projectBatchArtifacts(
+  last: IssuedMaterialArtifacts,
+  batchExecutions: BatchExecutionTable,
+): IssuedMaterialArtifacts {
+  const selected = (binding: GpuDrivenBatchBinding, pass: 'forward' | 'shadow') => {
+    const draw = batchExecutions.get(binding)?.[pass];
+    if (draw?.route !== 'gpu') throw new Error('Published shader owner lost its GPU route');
+    return draw.artifact;
+  };
+  const project = (
+    previous: ReadonlyMap<string, MaterialShaderArtifact>,
+    owners: IssuedMaterialArtifacts['forwardOwners'],
+    pass: 'forward' | 'shadow',
+  ) => {
+    let edited: Map<string, MaterialShaderArtifact> | undefined;
+    owners?.forEach((binding, key) => {
+      const next = selected(binding, pass);
+      if (next !== previous.get(key)) {
+        edited ??= new Map(previous);
+        edited.set(key, next);
+      }
+    });
+    return edited ?? previous;
+  };
+  const materialArtifacts = project(last.materialArtifacts, last.forwardOwners, 'forward');
+  return {
+    ...last,
+    batchExecutions,
+    materialArtifacts,
+    shadowMaterialArtifacts: project(last.shadowMaterialArtifacts, last.shadowOwners, 'shadow'),
+    firstArtifact:
+      materialArtifacts === last.materialArtifacts
+        ? last.firstArtifact
+        : materialArtifacts.values().next().value,
+    firstSkinArtifact:
+      last.firstSkinOwner === undefined ? undefined : selected(last.firstSkinOwner, 'forward'),
+  };
+}
+
+function requireBatchBinding(batch: Pick<GpuDrivenBatch, 'binding'>): GpuDrivenBatchBinding {
+  if (batch.binding === undefined)
+    throw new GpuDrivenPreparationError('missing-material-receipt', {
+      reason: 'material-receipt-missing',
+      owner: 'material',
+      expected: 'a geometry and material binding from the scene owner',
+    });
+  return batch.binding;
+}
+
+function reconcileMaterialExecutions(
+  last: IssuedMaterialArtifacts,
+  previousFrame: MaterialFrame,
+  frame: MaterialFrame,
+  inputs: BatchExecutionInputs,
+  observed: BatchArtifactReads,
+  currentBinding: (binding: GpuDrivenBatchBinding, prior?: BatchExecutions) => BatchExecutions,
+) {
+  if (frame !== previousFrame) {
+    frame.changesSince(previousFrame, (before, after) => {
+      if (
+        before?.snapshot === after?.snapshot &&
+        before?.passes === after?.passes &&
+        before?.programs === after?.programs
+      )
+        return;
+      const resource = (after ?? before)?.resource;
+      if (resource !== undefined) inputs.markMaterial(resource);
+    });
+  }
+
+  inputs.markShaders(observed);
+  let artifactLayoutChanged = false;
+  const executions = last.batchExecutions.reconcile(
+    (prior, binding, row) => {
+      const current = currentBinding(binding);
+      if (current === prior || sameBatchExecutions(current, prior)) return prior;
+      if (current instanceof PublishedBatchExecutions && prior instanceof PublishedBatchExecutions)
+        current.registerInputs(inputs, row, prior);
+      artifactLayoutChanged ||=
+        !sameArtifactSlot(prior.forward, current.forward) ||
+        !sameArtifactSlot(prior.shadow, current.shadow);
+      return current;
+    },
+    inputs.rows,
+    inputs.count,
+  );
+  inputs.finish();
+  return { executions, artifactLayoutChanged };
+}
+
+/** Ordered artifact maps and the first skinned artifact depend only on these draw facts. */
+function sameArtifactSlot(before: BatchExecution, after: BatchExecution): boolean {
+  if (before === after) return true;
+  if (before.route !== 'gpu' || after.route !== 'gpu')
+    return before.route !== 'gpu' && after.route !== 'gpu';
+  if (before.prepared === after.prepared) return true;
+  const key = capturedPreparedMaterialArtifactKey(before.prepared);
+  return (
+    key === capturedPreparedMaterialArtifactKey(after.prepared) &&
+    (key === undefined ||
+      before.prepared.identity.deformation === after.prepared.identity.deformation)
+  );
+}
+
 function sameBatchExecutions(left: BatchExecutions, right: BatchExecutions): boolean {
-  return left.forward === right.forward && left.shadow === right.shadow;
+  return (
+    left === right ||
+    (left.forward === right.forward &&
+      left.shadow === right.shadow &&
+      left instanceof PublishedBatchExecutions &&
+      right instanceof PublishedBatchExecutions &&
+      left.sameReads(right))
+  );
 }
 
 function sameOrderedEntries<K, V>(
@@ -571,6 +1022,7 @@ export function* prepareHiddenMaterialExecutions(
   materials: MaterialFrame | undefined,
   pass: 'forward' | 'shadow',
   resolve: RenderSystemInternals['getMaterialShaderArtifact'],
+  canAwaitSource?: (identifier: string) => boolean,
 ) {
   // A validated source owns fixed geometry and bindings. Frame validation may
   // wrap that same source in a new entry. Do not recapture
@@ -601,11 +1053,12 @@ export function* prepareHiddenMaterialExecutions(
   const collected = collectGpuDrivenMaterialArtifacts({
     batches: draws,
     resolve,
+    ...(canAwaitSource === undefined ? {} : { canAwaitSource }),
     programs,
     clustered: false,
     reflectionFallback: false,
     probeBlend: false,
-    shadowViews: pass === 'shadow',
+    demand: pass,
     ...(retained === undefined ? {} : { retention: retained[pass] }),
   });
   for (const draw of draws) {
@@ -629,7 +1082,7 @@ function hiddenRenderState(
       ? seededDepthRenderState(state, artifactAlphaMask(selected.variantSet))
       : geometryRenderStateForPass(
           state,
-          selected.fragmentEntry === 'fs_temporal' ? 'temporal' : 'forward',
+          isVelocityRasterEntry(selected.fragmentEntry) ? 'temporal' : 'forward',
           pass.coverageOnly,
           undefined,
           selected.fragmentEntry,
@@ -672,9 +1125,10 @@ function hiddenMaterialMatchesFilter(
 }
 
 export function prepareHiddenGpuDrivenPipelines(input: {
-  readonly entries: readonly ValidatedRenderable[];
+  readonly entries: DrawRows;
   readonly materials?: MaterialFrame | undefined;
   readonly resolve?: RenderSystemInternals['getMaterialShaderArtifact'];
+  readonly shaders: RenderSystemInternals['shaderRegistry'];
   readonly artifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined;
   readonly factory: NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>;
   readonly formats: readonly TextureFormat[];
@@ -689,6 +1143,7 @@ export function prepareHiddenGpuDrivenPipelines(input: {
   readonly visibleSurface: boolean;
   readonly directionalShadowSimple?: boolean;
   readonly leanLighting?: boolean;
+  readonly forwardInlineSsr?: boolean;
   /** The recording view carries camera clipping planes; absent keeps them off. */
   readonly viewClipping?: boolean;
   /** The same admitted source draw belongs to this pass's indirect lane. */
@@ -703,6 +1158,17 @@ export function prepareHiddenGpuDrivenPipelines(input: {
       input.materials,
       'forward',
       input.resolve,
+      (identifier) => {
+        if (input.shaders?.isMaterialArtifactPreparationPending(identifier) !== true) return false;
+        ready = false;
+        input.onPending?.({
+          code: 'scene-pipeline-preparation',
+          entity: entry.source.entityKey,
+          pass: 'forward',
+          shader: identifier,
+        });
+        return true;
+      },
     )) {
       if (execution.route !== 'gpu') continue;
       const { prepared, material, artifact } = execution;
@@ -725,18 +1191,14 @@ export function prepareHiddenGpuDrivenPipelines(input: {
         prepared.identity.deformation === 'skin' &&
         input.visibleSurface
           ? SKIN_UNCOVERED_GBUFFER_ENTRY
-          : input.fragmentEntry === PREDEPTH_FRAGMENT_ENTRY
-            ? input.formats.length === 0
-              ? predepthFragmentEntry(artifact)
-              : 'fs_ao_input'
-            : selectStandardForwardScreenEntry(input.fragmentEntry, artifact.fragmentEntry);
+          : selectStandardForwardScreenEntry(input.fragmentEntry, artifact.fragmentEntry);
       const passArtifact =
         fragment === undefined
           ? artifact
           : {
               ...artifact,
               fragmentEntry: fragment,
-              ...(fragment === 'fs_temporal' ? { vertexEntry: 'vs_temporal' } : {}),
+              ...(isVelocityRasterEntry(fragment) ? { vertexEntry: 'vs_temporal' } : {}),
               ...(input.coverageOnly
                 ? { variantSet: variantSetForCoveragePass(artifact.variantSet, true) ?? '' }
                 : {}),
@@ -761,6 +1223,7 @@ export function prepareHiddenGpuDrivenPipelines(input: {
             generalArtifact,
             input.directionalShadowSimple === true,
             input.leanLighting === true,
+            input.forwardInlineSsr === true,
           )
         : generalArtifact;
       const request = requestMaterialAbiRasterPipeline(input.factory, {
@@ -802,10 +1265,9 @@ export function prepareHiddenGpuDrivenPipelines(input: {
 
 /** Reflection fact: the selected scene-index vertex entry reads @group(3) @binding(8). */
 function readsSceneMorphInputs(artifact: MaterialShaderArtifact): boolean {
-  const entry =
-    artifact.fragmentEntry === 'fs_temporal' ? 'vs_temporal' : artifact.receipt?.sceneIndexEntry;
-  const reads = artifact.program.entryPoints?.find(
-    (point) => point.stage === 'vertex' && point.name === entry,
-  );
+  const entry = isVelocityRasterEntry(artifact.fragmentEntry)
+    ? 'vs_temporal'
+    : artifact.receipt?.sceneIndexEntry;
+  const reads = findMaterialShaderEntry(artifact.program.entryPoints, entry, 'vertex');
   return reads?.bindings.some((read) => read.group === 3 && read.binding === 8) === true;
 }

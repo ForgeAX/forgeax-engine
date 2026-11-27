@@ -1,5 +1,10 @@
 # @forgeax/engine-app
 
+When an Engine Worker stops on a gameplay system error, the Host exposes
+`app-system-update-failed` with the qualified system name and original cause.
+The World remains poisoned after a possible partial write and must be rebuilt
+before execution resumes. Shared kernel failures retain their kernel name.
+
 ## Engine configuration
 
 Build configuration plugins provide `devkitAppOptions.configuration` through the
@@ -70,6 +75,75 @@ Legacy App/DevKit scatter fields are mutually exclusive with `configuration`;
 DevKit converts old project declarations in one direction. The mixed
 `settings.rendering.profile` bridge and legacy bootstrap `configureRenderer` are
 deprecated for removal in 0.7. A managed App rejects the late bootstrap hook.
+
+## Level streaming
+
+Use `app.levels` on a local App or inject `levels` in a gameplay plugin in
+the World realm. Both expose the same service. The Host side of an Engine
+Worker App obtains application results through its existing game transport.
+
+```ts
+const level = levels.create({ scene: sceneGuid }).unwrap();
+const prepared = level.request('prepared').unwrap();
+(await prepared.done).unwrap();
+const activated = level.request('active').unwrap();
+(await activated.done).unwrap();
+console.log(level.inspect().current);
+```
+
+Submit requests while the App is running so preparation and participation can
+advance. Creating a handle does not load the Scene. Two handles for the same
+Scene own independent members and participation. A request to `prepared` hides
+an active Level and retains eligible preparation. An `unloaded` request settles
+after this instance retires its members and leases. A later request can prepare
+the same handle.
+
+Same-target in-flight requests share a receipt. A new target settles the old
+receipt with `level-request-superseded`. Check the returned `Result` before
+using a receipt. `done` records completion of that request. Read `inspect()`
+for current readiness and lifecycle failures. Active completion records source
+and Render participation. Use the separate `picture` when the execution route
+reports a completed selection frame. On shutdown, outstanding requests settle
+and the App drains its Level owners before destroying their asset context.
+
+The initial content contract covers cooked static Scene assets with supported
+opaque or masked rendering and the existing Rapier3D static shapes. Scene
+source, actual Renderer-native demand, and required colliders qualify together.
+An admitted Runtime Pack Scene uses the same GUID and request contract.
+A poisoned World or lost cleanup receipt can leave retirement unconfirmed.
+The result retains the failure and its owning cause.
+Render recovery requalifies retained Level targets. After an explicit World
+rebuild, the new gameplay plugin instance creates its own Level handles.
+
+### World streaming
+
+Use `createWorldStreaming(levels, { grid, cells })` in the World realm. Each
+Cell identifies cooked Scene content by GUID and describes its conservative
+XZ bounds, participation role, and optional layer or visual replacement group.
+The runtime builds the paged index incrementally from these records. The
+alternative `scene` input partitions a static keyed Scene with per-entity
+placement metadata. It groups parents and declared hard references and
+publishes a derived Scene through the realm's Runtime Pack producer when
+selected. Binary assets follow their existing references and load paths.
+
+The game submits spatial demand with `setSource` and advances the streamer
+with `step()` during World updates. A source specifies its position,
+preparation and active radii, and can specialize its coverage for visuals
+or collision. An unresolved query retains its previous complete selection.
+Overlapping sources for the same Cell share a Level. `setLayer` controls
+semantic participation.
+
+A visual replacement group has one proxy and one or more detail Cells. Its
+current representation continues until the whole next representation is
+prepared. The App submits the group exchange at one participation boundary
+and a split Renderer confirms the same completed frame for the members.
+
+Read `inspectEntry(source, point)` immediately before entering at a fixed
+step. It checks the source's latest resolved selection and actual static
+collision participation around the point. The game can also test the shape
+at the destination. Retain a temporary destination source until the regular
+player source has taken over that point. Close the streamer to cancel
+unpublished work and request retirement of its Levels.
 
 Renderer inspection field selection reaches the Render owner before inventory
 production and structured cloning. Use `execution.inspectRenderer({ fields:
@@ -881,12 +955,18 @@ between identifiers do not count pictures. For visible-frame acceptance, count
 `forgeax:frame-completed` events with `presentation: 'ready'` on the current
 canvas and World. Reattach the listener after canvas replacement.
 
-Two publication slots bound both transferred storage and simulation lead. Logic N+1
-can overlap rendering N, but the Host admits N+2 only after N's GPU receipt completes.
-The Host requests the next browser tick when it admits a frame. If Worker credit
-is still occupied at that tick, it retains one due demand without polling or
-queueing more ticks. The matching completion can consume that demand immediately,
-sampling current input and elapsed time without waiting for another refresh.
+The configured publication slots bound transferred storage and unfinished
+pictures across Source, Render Worker and GPU. Logic can advance while those
+slots are full in a healthy split session. The Host uses the same browser
+tick and simulation credit to run input, World updates and fixed steps without
+sending a picture. Source can continue preparing hidden Levels. Level visibility
+and physics membership change at a fixed boundary on a frame admitted for picture
+publication. The next picture uses the latest World state and resets temporal
+render history across the skipped pictures.
+
+The Host requests the next browser tick when it admits a frame. If simulation
+still holds its credit at that tick, the Host retains one due demand. The matching
+completion can consume it immediately, sampling current input and elapsed time.
 Pause/resume discards the old demand and starts from a new browser tick.
 When rendering runs in its own Worker, the Engine Worker can carry the requested
 native animation tick over its existing Host channel. Its callback and the owning
@@ -897,15 +977,12 @@ input, visibility and admission remain authoritative; unsupported or replaced
 Engine providers retain the owning Window callback.
 After submitting N, the Render Worker can prepare and submit N+1 while N remains
 in flight. CPU draws stay serial; GPU completion no longer blocks the next draw.
-The two slots cover the entire source-to-GPU pipeline, including queued and
-preparing frames. They are not separate two-frame queues at each boundary.
-Every admitted frame in a healthy epoch is published once, in order. The synchronous
-postMessage clone seals all frame metadata, assets and Feature input; four numeric
-buffers transfer ownership. Later asynchronous World writes affect the next frame.
-Waiting happens before Host admission, so render backpressure does not consume the
-simulation execution timeout or block DOM/input processing.
-The Source also rejects an over-capacity request before input, camera or World
-mutation. Render recovery retires the lost epoch's outstanding publications;
+The published frames share one capacity across the entire source-to-GPU pipeline,
+including queued and preparing work. Each admitted picture is published once, in
+order. The synchronous postMessage clone seals frame metadata, assets and Feature
+input, and four numeric buffers transfer ownership. Later asynchronous World
+writes affect the next picture. The Source rechecks publication capacity before
+updating the World for a picture. Render recovery retires the lost epoch's outstanding publications;
 an already admitted simulation request keeps its credit through replacement.
 Duplicate readiness cannot replace a live publisher or extend an active frame's
 deadline, and stale completion messages cannot move reported progress backward.
@@ -919,12 +996,14 @@ sequenceDiagram
     H->>S: Update N
     S->>R: Seal and transfer N
     R->>G: Submit N
-    H->>S: Update N+1
-    S->>R: Seal and transfer N+1
-    R->>G: Submit N+1 without waiting for N completion
+    loop While all publication slots are occupied
+        H->>S: Update with render disabled
+        S-->>H: Return simulation credit
+    end
     G-->>R: N completes
-    R-->>H: N completed via Source
-    H->>S: Admit N+2
+    R-->>H: Return picture credit
+    H->>S: Update for the next picture
+    S->>R: Seal current World and transfer
 ```
 
 Feature feedback and recycled buffers belong to their exact publication revision.
@@ -1202,14 +1281,15 @@ render: false })` runs the same World update (input, `Time`, `Update`,
 `FixedUpdate`, host camera reconciliation) but submits no picture and needs no
 receipt credit, on the local loop and in the Worker composition (the Engine
 Worker settles it with `simulation-complete` and publishes nothing to the Render
-Worker). The next drawn frame carries the advanced sample time and a temporal
-reset. Picture-derived answers (GPU picking, submitted terrain height) stay at
-the last drawn frame until then, so fast-forward tools render the final frame.
+Worker). Level visibility and physics membership transitions wait for a
+frame admitted for a picture. The next drawn frame carries the advanced
+sample time and a temporal reset. Picture-derived answers such as GPU picking
+and submitted terrain height stay at the last drawn frame until then.
 
-Frame pacing is part of that same authority: the loop checks receipt credit
-before the sequence above, and only a successful renderer submission consumes a
-credit. Use `app.execution.report().frame` for diagnostics; do not add a second
-queue, rAF callback, or renderer completion ledger in a game or plugin.
+The co-located frame loop checks receipt credit before an automatic update and
+draw. Split execution tracks separate simulation and picture credits. Use
+`app.execution.report().frame` for simulation progress and
+`app.execution.report().render` for split picture progress.
 The loop reserves its single next Host callback before synchronous World/render
 work, so a Host whose delay starts at the request does not add that work to every
 frame interval. Pause and stop cancel that reservation; a synchronous resume

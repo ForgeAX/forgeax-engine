@@ -10,14 +10,12 @@ import type { CameraSnapshot } from '../render-contract';
 import {
   R32FLOAT_MIP_SAMPLED_RENDER_PROFILE,
   R32FLOAT_RENDER_PROBE_STAGES,
+  type RhiDevice,
   type RhiTextureFormatCapabilityReceipt,
   validateR32FloatReceipt,
 } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import {
-  type ScreenSpaceReflectionData,
-  WaterSsrTemporalValue,
-} from '../components/screen-space-reflection';
+import type { ScreenSpaceReflectionData } from '../components/screen-space-reflection';
 import type { ReflectionFallbackReceipt } from '../inspection-types';
 import type {
   SsrConfigField,
@@ -477,6 +475,7 @@ export interface SsrSpatialCapabilities {
 /** Detached owner facts consumed by spatial admission. */
 export interface SsrSpatialEnvironment {
   readonly lane: SsrSpatialLane;
+  readonly inline?: boolean;
   readonly m0: Pick<SsrAdmissionResult, 'status'>;
   readonly sceneInputs: boolean;
   /** Forward Water supplies real 4x surface facts and a matched 1x handoff. */
@@ -555,13 +554,6 @@ function configRange(
       return { min: 0, minInclusive: false, max: maxDistance, maxInclusive: true };
     case 'maxRoughness':
       return { min: 0, minInclusive: true, max: 1, maxInclusive: true };
-    case 'waterTemporal':
-      return {
-        min: Math.min(...Object.values(WaterSsrTemporalValue)),
-        minInclusive: true,
-        max: Math.max(...Object.values(WaterSsrTemporalValue)),
-        maxInclusive: true,
-      };
   }
 }
 
@@ -626,20 +618,11 @@ export function validateScreenSpaceReflection(
       ),
     );
   }
-  if (!Object.values(WaterSsrTemporalValue).some((value) => value === config.waterTemporal))
-    return err(
-      configError(
-        'waterTemporal',
-        config.waterTemporal,
-        configRange('waterTemporal', viewRange, config.maxDistance),
-      ),
-    );
   return ok(
     Object.freeze({
       maxDistance: config.maxDistance,
       thickness: config.thickness,
       maxRoughness: config.maxRoughness,
-      waterTemporal: config.waterTemporal,
     }),
   );
 }
@@ -712,9 +695,10 @@ function admitSsrCapabilities(
   viewRange: number,
 ): SsrSpatialAdmission | undefined {
   const capabilities = environment.capabilities;
+  const rasterAttachments = environment.lane === 'deferred' ? 3 : 4;
   const raster =
     capabilities.r32floatSampledRender === true &&
-    (capabilities.maxColorAttachments ?? 0) >= 3 &&
+    (capabilities.maxColorAttachments ?? 0) >= rasterAttachments &&
     (capabilities.maxSampledTexturesPerShaderStage ?? 0) >= 7;
   if (
     ((!capabilities.compute || !capabilities.storageTexture) && !raster) ||
@@ -727,7 +711,7 @@ function admitSsrCapabilities(
         environment.lane,
         'capability-unavailable',
         [
-          'compute+storageTexture or qualified raster (MRT>=3, sampled textures>=7)',
+          `compute+storageTexture or qualified raster (MRT>=${rasterAttachments}, sampled textures>=7)`,
           'rgba16floatRenderable',
         ],
         {
@@ -777,7 +761,7 @@ export function admitSsrSpatial(input: {
     });
   }
 
-  if (environment.m0.status !== 'admitted') {
+  if (!environment.inline && environment.m0.status !== 'admitted') {
     return unavailableResult(
       environment.lane,
       viewRange,
@@ -829,14 +813,14 @@ export function admitSsrSpatial(input: {
       ),
     );
   }
-  if (!environment.temporal) {
+  if (!environment.inline && !environment.temporal) {
     return unavailableResult(
       environment.lane,
       viewRange,
       unavailable(environment.lane, 'temporal-unavailable', ['temporal-v1'], { temporal: false }),
     );
   }
-  if (!environment.reflectionFallback) {
+  if (!environment.inline && !environment.reflectionFallback) {
     return unavailableResult(
       environment.lane,
       viewRange,
@@ -857,7 +841,9 @@ export function admitSsrSpatial(input: {
       }),
     );
   }
-  const capabilityFailure = admitSsrCapabilities(environment, viewRange);
+  const capabilityFailure = environment.inline
+    ? undefined
+    : admitSsrCapabilities(environment, viewRange);
   if (capabilityFailure !== undefined) return capabilityFailure;
   return Object.freeze({
     status: 'admitted',
@@ -866,4 +852,26 @@ export function admitSsrSpatial(input: {
     viewRange,
     work: ADMITTED_SPATIAL_WORK,
   });
+}
+
+/** Shared producer admission for the Forward shader resource pair. */
+export function admitsInlineSsr(
+  device: Pick<RhiDevice, 'caps'>,
+  extendedLighting: boolean | undefined,
+  ssr: SsrSpatialAdmission | undefined,
+): boolean {
+  return (
+    ssr?.status === 'admitted' &&
+    ssr.lane === 'forward' &&
+    extendedLighting === true &&
+    device.caps.compute &&
+    device.caps.storageTexture
+  );
+}
+
+export function withInlineSsrVariant(variant: string | undefined): string {
+  if (!variant) return 'FORWARD_INLINE_SSR=true';
+  return variant.includes('FORWARD_INLINE_SSR=')
+    ? variant.replace(/FORWARD_INLINE_SSR=(true|false)/, 'FORWARD_INLINE_SSR=true')
+    : `${variant}+FORWARD_INLINE_SSR=true`;
 }

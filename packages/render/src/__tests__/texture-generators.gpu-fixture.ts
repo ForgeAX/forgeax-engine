@@ -1,16 +1,30 @@
 import type { MipmapShaderModuleFactory } from '@forgeax/engine-assets-runtime';
 import {
   AssetRegistry,
+  encodeMipmaps,
+  getOrCreateMipmapPipeline,
   gpuTextureContribution,
   textureGeneratorContribution,
   validateAssetPublication,
 } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import { AssetGuid, definePackageId, gpuTextureOutputs } from '@forgeax/engine-pack/source';
+import {
+  AssetGuid,
+  definePackageId,
+  gpuTextureOutputs,
+  PackageId,
+} from '@forgeax/engine-pack/source';
 import { type RhiDevice, RhiError, type Texture } from '@forgeax/engine-rhi';
-import type { TextureGeneratorPrograms } from '@forgeax/engine-types';
+import type {
+  Asset,
+  AssetHandle,
+  TextureGeneratorAsset,
+  TextureGeneratorPrograms,
+} from '@forgeax/engine-types';
 import { err, srgbChannelToLinear } from '@forgeax/engine-types';
 import { assert, expect, vi } from 'vitest';
+import { impulseNoiseReference } from '../../../content/src/__tests__/impulse-noise-reference';
+import { CONTENT_PACKAGE_IDS, CONTENT_SOURCE_KEYS } from '../../../content/src/ids';
 import { prepareRuntimePackContent, RuntimePackProducer } from '../../../import/src/runtime-pack';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import { worldRenderResources } from '../publication/resource-scope';
@@ -35,6 +49,7 @@ const guid = (key: string) => AssetGuid.format(AssetGuid.derive(packageId, key))
 const decoders = [gpuTextureContribution, textureGeneratorContribution];
 
 export interface TextureGeneratorFixtureOptions {
+  readonly volumeRecipe: TextureGeneratorAsset;
   readonly observe?: (
     phase: 'generation' | 'resident',
     submit: () => Promise<void>,
@@ -50,12 +65,14 @@ async function pixel(
   texture: Texture,
   mip = 0,
   layer = 0,
+  x = 0,
+  y = 0,
 ): Promise<readonly number[]> {
   const buffer = device.createBuffer({ size: 256, usage: 1 | 8 }).unwrap();
   try {
     const encoder = device.createCommandEncoder({ label: 'explicit-test-pixel-readback' }).unwrap();
     encoder.copyTextureToBuffer(
-      { texture, mipLevel: mip, origin: { x: 0, y: 0, z: layer } },
+      { texture, mipLevel: mip, origin: { x, y, z: layer } },
       { buffer, bytesPerRow: 256 },
       { width: 1, height: 1 },
     );
@@ -84,13 +101,315 @@ async function sampledMipRed(
   return red;
 }
 
+// Probes captured from the previous CPU-generated texture bytes, including tile boundaries.
+const WATER_SURFACE_PROBES = {
+  normal: [
+    [0, 0, 123, 133, 0, 220],
+    [1, 1, 123, 135, 0, 220],
+    [1023, 1023, 122, 132, 0, 220],
+    [16, 8, 124, 166, 0, 186],
+    [1023, 0, 123, 133, 0, 220],
+    [0, 1023, 122, 132, 0, 220],
+    [512, 512, 231, 122, 68, 164],
+    [512, 256, 181, 154, 0, 195],
+  ],
+  'river-diffuse': [
+    [0, 0, 175, 183, 185, 146],
+    [1, 1, 165, 173, 173, 127],
+    [511, 511, 165, 173, 174, 128],
+    [16, 8, 127, 134, 129, 57],
+    [511, 0, 176, 185, 187, 148],
+    [0, 511, 170, 179, 180, 137],
+    [256, 256, 127, 133, 129, 56],
+    [256, 128, 172, 180, 181, 140],
+  ],
+  'river-normal': [
+    [0, 0, 116, 128, 254, 255],
+    [1, 1, 113, 133, 254, 255],
+    [511, 511, 122, 132, 255, 255],
+    [16, 8, 115, 130, 254, 255],
+    [511, 0, 125, 125, 255, 255],
+    [0, 511, 115, 133, 254, 255],
+    [256, 256, 137, 144, 254, 255],
+    [256, 128, 129, 170, 248, 255],
+  ],
+  foam: [
+    [0, 0, 202, 202, 202, 255],
+    [1, 1, 201, 201, 201, 255],
+    [2047, 2047, 203, 203, 203, 255],
+    [16, 8, 191, 191, 191, 255],
+    [2047, 0, 201, 201, 201, 255],
+    [0, 2047, 205, 205, 205, 255],
+    [1024, 1024, 233, 233, 233, 255],
+    [1024, 512, 198, 198, 198, 255],
+  ],
+  'foam-normal': [
+    [0, 0, 141, 147, 253, 255],
+    [1, 1, 139, 147, 253, 255],
+    [2047, 2047, 142, 146, 253, 255],
+    [16, 8, 129, 138, 255, 255],
+    [2047, 0, 142, 147, 253, 255],
+    [0, 2047, 141, 147, 253, 255],
+    [1024, 1024, 132, 117, 254, 255],
+    [1024, 512, 127, 145, 254, 255],
+  ],
+  noise: [
+    [0, 0, 104, 104, 104, 255],
+    [1, 1, 112, 112, 112, 255],
+    [63, 63, 110, 110, 110, 255],
+    [16, 8, 177, 177, 177, 255],
+    [63, 0, 109, 109, 109, 255],
+    [0, 63, 107, 107, 107, 255],
+    [32, 32, 196, 196, 196, 255],
+    [32, 16, 149, 149, 149, 255],
+  ],
+} as const;
+
+function waterTextureFixture(
+  device: RhiDevice,
+  factory: MipmapShaderModuleFactory,
+  scopeId: string,
+) {
+  const assets = new AssetRegistry();
+  assets.installDecoder(gpuTextureContribution.kind, gpuTextureContribution.decoder);
+  assets.installDecoder(textureGeneratorContribution.kind, textureGeneratorContribution.decoder);
+  const producer: RuntimePackProducer = new RuntimePackProducer({
+    scopeId,
+    validate: (state, fetcher, dependencies) =>
+      validateAssetPublication(
+        state.rows,
+        fetcher,
+        { catalog: producer.catalog, fetcher: producer.fetch },
+        { dependencies, decoders },
+      ),
+  });
+  assets.setCatalogSource(producer.catalog, producer.fetch);
+  const world = new World({ assets });
+  const scope = worldRenderResources(world);
+  const store = new GpuResidencyCache();
+  store.configureGpuDevice(device, factory, device.caps);
+  return { assets, producer, scope, store };
+}
+
+export async function verifyWaterSurfaceTextures(
+  device: RhiDevice,
+  factory: MipmapShaderModuleFactory,
+  content: Readonly<Record<string, Asset>>,
+) {
+  const { assets, producer, scope, store } = waterTextureFixture(
+    device,
+    factory,
+    'water-surface-texture-fixture',
+  );
+  const uploads = vi.spyOn(device.queue, 'writeTexture');
+  const packageId = CONTENT_PACKAGE_IDS.waterSurface;
+  const handles: AssetHandle<'gpu-texture'>[] = [];
+  const residentGenerators = new Set<string>();
+  try {
+    const prepared = (
+      await prepareRuntimePackContent(PackageId.format(packageId), content)
+    ).unwrap();
+    (await producer.admit(prepared)).unwrap();
+    for (const name of Object.keys(WATER_SURFACE_PROBES) as (keyof typeof WATER_SURFACE_PROBES)[]) {
+      const guid = AssetGuid.format(
+        AssetGuid.derive(packageId, CONTENT_SOURCE_KEYS.waterTexture(name)),
+      );
+      const handle = (await assets.load(guid, 'gpu-texture')).unwrap();
+      handles.push(handle);
+      const source = assets.read(handle).unwrap();
+      expect(source).not.toHaveProperty('data');
+      expect(store.ensureResident(handle, source, scope).ok).toBe(
+        residentGenerators.has(source.source.generator),
+      );
+      await store.waitTextureData(Number(handle), scope);
+      const texture = store.ensureResident(handle, source, scope).unwrap().texture;
+      const generation = store.prepareTextureMips().unwrap();
+      if (generation?.buffer) {
+        device.queue.submit([generation.buffer]).unwrap();
+        generation.complete(true);
+        await device.queue.onSubmittedWorkDone();
+      }
+
+      residentGenerators.add(source.source.generator);
+      for (const [x, y, ...expected] of WATER_SURFACE_PROBES[name]) {
+        const actual = await pixel(device, texture.handle, 0, 0, x, y);
+        for (const [channel, reference] of expected.entries()) {
+          const byte = actual[channel];
+          assert(byte !== undefined);
+          expect(
+            Math.abs(byte - reference),
+            `${name} at ${x},${y} channel ${channel}`,
+          ).toBeLessThanOrEqual(1);
+        }
+      }
+      const lastMip = Math.log2(source.shape.extent.width);
+      const center = await pixel(device, texture.handle, lastMip);
+      expect(center[0]).toBeGreaterThan(0);
+      expect(center[0]).toBeLessThan(255);
+      expect(store.prepareTextureMips().unwrap()).toBeUndefined();
+    }
+    expect(uploads).not.toHaveBeenCalled();
+  } finally {
+    for (const handle of handles) assets.release(handle);
+    store.destroyAll();
+    uploads.mockRestore();
+  }
+}
+
+export async function verifyWaterImpulseMipChain(
+  device: RhiDevice,
+  factory: MipmapShaderModuleFactory,
+  content: Readonly<Record<string, Asset>>,
+) {
+  const { assets, producer, scope, store } = waterTextureFixture(
+    device,
+    factory,
+    'water-impulse-mip-fixture',
+  );
+  const uploads = vi.spyOn(device.queue, 'writeTexture');
+  try {
+    const packageId = CONTENT_PACKAGE_IDS.waterImpulse;
+    const prepared = (
+      await prepareRuntimePackContent(PackageId.format(packageId), content)
+    ).unwrap();
+    (await producer.admit(prepared)).unwrap();
+    const guid = AssetGuid.format(
+      AssetGuid.derive(packageId, CONTENT_SOURCE_KEYS.waterTexture('impulse-noise')),
+    );
+    const handle = (await assets.load(guid, 'gpu-texture')).unwrap();
+    const source = assets.read(handle).unwrap();
+    expect(source).not.toHaveProperty('data');
+    expect(store.ensureAcceptedGeneratedTexture(handle, source, scope).unwrap()).toBeUndefined();
+    await store.waitTextureData(Number(handle), scope);
+    expect(store.ensureAcceptedGeneratedTexture(handle, source, scope).unwrap()).toBeUndefined();
+    const work = store.prepareTextureMips().unwrap();
+    assert(work?.buffer);
+    device.queue.submit([work.buffer]).unwrap();
+    work.complete(true);
+    await device.queue.onSubmittedWorkDone();
+    const generated = store.ensureAcceptedGeneratedTexture(handle, source, scope).unwrap();
+    assert(generated);
+    expect(generated.receipt.mipLevelCount).toBe(9);
+    expect(uploads).not.toHaveBeenCalled();
+
+    const levels = Array.from({ length: 9 }, (_, mip) => 256 >> mip);
+    const strides = levels.map((size) => Math.ceil((size * 4) / 256) * 256);
+    const readback = device
+      .createBuffer({
+        size: levels.reduce((total, size, mip) => total + size * (strides[mip] ?? 0), 0),
+        usage: 1 | 8,
+      })
+      .unwrap();
+    try {
+      const copy = device.createCommandEncoder().unwrap();
+      let offset = 0;
+      for (const [mipLevel, size] of levels.entries()) {
+        const stride = strides[mipLevel] ?? 0;
+        copy.copyTextureToBuffer(
+          { texture: generated.texture.handle, mipLevel },
+          { buffer: readback, offset, bytesPerRow: stride, rowsPerImage: size },
+          { width: size, height: size },
+        );
+        offset += size * stride;
+      }
+      device.queue.submit([copy.finish().unwrap()]).unwrap();
+      const mapping = (await readback.mapAsync(1)).unwrap();
+      const actual = new Uint8Array(mapping.getMappedRange().unwrap());
+      const expected = impulseNoiseReference();
+      let byte = 0;
+      offset = 0;
+      for (const [mip, size] of levels.entries()) {
+        const stride = strides[mip] ?? 0;
+        let maxError = 0;
+        for (let y = 0; y < size; y++)
+          for (let x = 0; x < size * 4; x++)
+            maxError = Math.max(
+              maxError,
+              Math.abs((actual[offset + y * stride + x] ?? 0) - (expected[byte++] ?? 0)),
+            );
+        expect(maxError, `impulse noise mip ${mip}`).toBeLessThanOrEqual(1);
+        offset += size * stride;
+      }
+      expect(byte).toBe(expected.length);
+      mapping.unmap();
+    } finally {
+      device.destroyBuffer(readback).unwrap();
+    }
+    assets.release(handle);
+  } finally {
+    uploads.mockRestore();
+    store.destroyAll();
+    assets.dispose();
+    producer.dispose();
+  }
+}
+
+export async function verifyBuiltinColorMipFilters(
+  device: RhiDevice,
+  factory: MipmapShaderModuleFactory,
+) {
+  const size = 8;
+  const format = 'rgba8unorm';
+  const base = new Uint8Array(size * size * 4);
+  // A 64-step keeps the paired bilinear taps integral in RGBA8 on each backend.
+  // The narrow filter adds 8 and the broad filter adds 14.5 at the sampled pixel.
+  for (let y = 0; y < size; y++)
+    for (let x = 0; x < size; x++) {
+      const value = x < 4 ? 70 : 134;
+      base.set([value + 24, value, value - 24, 91], (y * size + x) * 4);
+    }
+  const pixels: (readonly number[])[] = [];
+  for (const filter of [
+    'box',
+    'gaussian',
+    { kind: 'sharpen', strength: 0 },
+    { kind: 'sharpen', strength: 5 },
+  ] as const) {
+    const texture = device
+      .createTexture({
+        size: [size, size],
+        format,
+        mipLevelCount: 4,
+        usage: 1 | 2 | 4 | 16,
+      })
+      .unwrap();
+    try {
+      device.queue
+        .writeTexture({ texture }, base, { bytesPerRow: size * 4 }, [size, size])
+        .unwrap();
+      (await getOrCreateMipmapPipeline(device, format, factory, filter)).unwrap();
+      const encoder = device.createCommandEncoder().unwrap();
+      const release = encodeMipmaps(device, encoder, texture, {
+        width: size,
+        height: size,
+        format,
+        filter,
+      }).unwrap();
+      try {
+        device.queue.submit([encoder.finish().unwrap()]).unwrap();
+        pixels.push(await pixel(device, texture, 1, 0, 1, 0));
+      } finally {
+        release();
+      }
+    } finally {
+      device.destroyTexture(texture).unwrap();
+    }
+  }
+  const [box, gaussian, zero, sharpened] = pixels;
+  assert(box && gaussian && zero && sharpened);
+  expect(box).toEqual([94, 70, 46, 91]);
+  expect(gaussian).toEqual([102, 78, 54, 91]);
+  expect(zero).toEqual(gaussian);
+  expect(sharpened).toEqual([99, 75, 51, 91]);
+}
+
 /** Complete Pack -> Registry -> GPU generation -> mip -> GPU sampling, without uploaded source pixels. */
 export async function verifyGpuTextureGeneration(
   device: RhiDevice,
   factory: MipmapShaderModuleFactory,
   programs: TextureGeneratorPrograms,
   derivedPrograms: TextureGeneratorPrograms,
-  options: TextureGeneratorFixtureOptions = {},
+  options: TextureGeneratorFixtureOptions,
 ) {
   const assets = new AssetRegistry();
   assets.installDecoder(gpuTextureContribution.kind, gpuTextureContribution.decoder);
@@ -131,8 +450,8 @@ export async function verifyGpuTextureGeneration(
   let activeDevice = device;
   let target: Texture | undefined;
   try {
-    const derivedContent = gpuTextureOutputs(packageId, 'derived', {
-      values: {},
+    const derivedRecipe = {
+      values: { sliceValues: [0, 0, 0, 0, 0, 1, 0, 0] },
       inputs: { source: guid('gpu-texture/paint/albedo') },
       programs: derivedPrograms,
       outputs: {
@@ -150,6 +469,17 @@ export async function verifyGpuTextureGeneration(
           writes: ['result'],
         },
       ],
+    } as const;
+    const derivedContent = gpuTextureOutputs(packageId, 'derived', derivedRecipe);
+    const volumeContent = gpuTextureOutputs(packageId, 'volume', {
+      ...derivedRecipe,
+      outputs: {
+        result: {
+          ...linear,
+          shape: { viewDimension: '3d', extent: { width: 4, height: 4, depth: 2 } },
+          mips: { kind: 'none' },
+        },
+      },
     });
     const content = gpuTextureOutputs(packageId, 'paint', {
       values: { seed: 42, wear: 0 },
@@ -177,7 +507,12 @@ export async function verifyGpuTextureGeneration(
       ],
     });
     const prepared = (
-      await prepareRuntimePackContent(packageIdText, { ...content, ...derivedContent })
+      await prepareRuntimePackContent(packageIdText, {
+        ...content,
+        ...derivedContent,
+        ...volumeContent,
+        ...gpuTextureOutputs(packageId, 'computed-volume', options.volumeRecipe),
+      })
     ).unwrap();
     (await producer.admit(prepared)).unwrap();
     const handles = await Promise.all(
@@ -340,8 +675,8 @@ export async function verifyGpuTextureGeneration(
     const derivedHandle = (
       await assets.load(guid('gpu-texture/derived/result'), 'gpu-texture')
     ).unwrap();
-    const derivedSource = () => assets.read(derivedHandle).unwrap();
-    const generateDerived = async () => {
+    const generateDerived = async (derivedHandle: AssetHandle<'gpu-texture'>) => {
+      const derivedSource = () => assets.read(derivedHandle).unwrap();
       let resident = store.ensureResident(derivedHandle, derivedSource(), scope);
       for (
         let attempt = 0;
@@ -359,7 +694,7 @@ export async function verifyGpuTextureGeneration(
       await device.queue.onSubmittedWorkDone();
       return next;
     };
-    const derived = await generateDerived();
+    const derived = await generateDerived(derivedHandle);
     const inputRed = await sampledMipRed(
       device,
       store.ensureResident(handle, source(), scope).unwrap().texture.handle,
@@ -367,9 +702,34 @@ export async function verifyGpuTextureGeneration(
     );
     expect(await pixel(device, derived.texture.handle, 2, 0)).toEqual([inputRed, 0, 0, 255]);
     expect(await pixel(device, derived.texture.handle, 2, 1)).toEqual([inputRed, 255, 0, 255]);
+    const volumeHandle = (
+      await assets.load(guid('gpu-texture/volume/result'), 'gpu-texture')
+    ).unwrap();
+    expect(assets.read(volumeHandle).unwrap()).not.toHaveProperty('data');
+    const volume = await generateDerived(volumeHandle);
+    expect(await pixel(device, volume.texture.handle, 0, 0)).toEqual([inputRed, 0, 0, 255]);
+    expect(await pixel(device, volume.texture.handle, 0, 1)).toEqual([inputRed, 255, 0, 255]);
+    const computedHandle = (
+      await assets.load(guid('gpu-texture/computed-volume/noise'), 'gpu-texture')
+    ).unwrap();
+    expect(assets.read(computedHandle).unwrap().format).toBe('r8unorm');
+    const beforeVolume = store.inspectTextureGenerators().reservedBytes;
+    const computed = await generateDerived(computedHandle);
+    for (const [x, y, z, reference] of [
+      [0, 0, 0, 244],
+      [1, 0, 0, 245],
+      [127, 127, 127, 242],
+      [40, 75, 23, 206],
+      [2, 7, 1, 227],
+      [127, 0, 1, 238],
+    ] as const) {
+      const sampled = await pixel(device, computed.texture.handle, 0, z, x, y);
+      expect(Math.abs((sampled[0] as number) - reference)).toBeLessThanOrEqual(1);
+    }
+    expect(store.inspectTextureGenerators().reservedBytes - beforeVolume).toBe(128 ** 3);
     // Effective input-version propagation invalidates the downstream output too.
     assets.update(generator, { values: { seed: 42, wear: 0 } }).unwrap();
-    const changedDerived = await generateDerived();
+    const changedDerived = await generateDerived(derivedHandle);
     expect(changedDerived.texture).not.toBe(derived.texture);
     const changedInputRed = await sampledMipRed(
       device,

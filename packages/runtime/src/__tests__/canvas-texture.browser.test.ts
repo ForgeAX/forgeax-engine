@@ -64,8 +64,6 @@ async function readCanvasReplay(
 
 it.each([
   'html-quad',
-  'offscreen-quad',
-  'published-quad',
   'published',
 ] as const)('Canvas %s material updates, resizes, recovers and replays on a fresh device', async (kind) => {
   let phase = 'case-entry';

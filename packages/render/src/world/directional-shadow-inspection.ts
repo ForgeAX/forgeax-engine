@@ -189,8 +189,11 @@ export function inspectSettledDirectionalShadow(
     shadowMapBytes: current && settled.shadowReady ? settled.shadowMapBytes : 0,
     error: current ? settled.error : (lights?.directionalShadowError ?? settled.error),
     writerPasses:
-      settled.graph?.graph.inspect().passes.filter((pass) => pass.name.startsWith('shadowCascade'))
-        .length ?? 0,
+      settled.graph?.directionalShadowViewCount === 'current'
+        ? Math.max(1, settled.cascadeCount)
+        : (settled.graph?.graph
+            .inspect()
+            .passes.filter((pass) => pass.name.startsWith('shadowCascade')).length ?? 0),
   });
   return Object.freeze({
     ...projection,

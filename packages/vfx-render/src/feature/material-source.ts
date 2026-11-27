@@ -33,13 +33,16 @@ class HostMaterialSource implements ParticleMaterialSource {
   projection(world: World, material: MaterialAsset): MaterialRenderProjection | undefined {
     return this.#project(world, material, undefined);
   }
+  static owns(source: ParticleMaterialSource | undefined): source is HostMaterialSource {
+    return source != null && #project in source;
+  }
   static project(
     source: ParticleMaterialSource | undefined,
     world: World,
     material: MaterialAsset,
     context: Context,
   ): MaterialRenderProjection | undefined {
-    return source != null && #project in source
+    return HostMaterialSource.owns(source)
       ? source.#project(world, material, context)
       : source?.projection?.(world, material);
   }
@@ -57,6 +60,8 @@ export function createHostMaterialSource(
   return new HostMaterialSource(read, captureFrame, project);
 }
 export const projectParticleMaterial = HostMaterialSource.project;
+
+export const isHostParticleMaterialSource = HostMaterialSource.owns;
 
 // Frozen contexts contain only primitive data and cannot change between frames.
 const immutableContexts = new WeakSet<object>();

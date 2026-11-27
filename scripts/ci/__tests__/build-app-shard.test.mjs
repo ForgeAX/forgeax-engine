@@ -492,9 +492,9 @@ test('Boss and SDF smokes receive their complete Pack closures through the actua
     'bbb7fc40-a40d-58e2-a6e6-209dc256e911',
   ];
   const particleMaterial = 'd58f993a-290f-59f7-9297-950c29ea5d08';
-  const bossEffect = '019e9c00-0000-7000-8000-000000000000';
-  const bossMaterial = '019e9c00-0000-7000-8000-000000000002';
-  const bossShader = '7e43f472-4c4d-4ee3-9aa1-bc89e7402811';
+  const bossEffect = 'c76202f1-8caa-5873-a899-a372ea0b5cfc';
+  const bossMaterial = '96b5ec1b-841a-5dc5-be0f-2171aacd75bc';
+  const bossShader = 'c71041d7-6193-5423-834f-bfe8de29884c';
   const fieldEffect = '8cf2368a-0ae3-579a-a479-b0df2b5f392a';
   const fieldTexture = '9207c1b4-c292-5c11-8cc0-abea04a8ed63';
   const fieldMaterial = 'd7e37f40-18a2-5541-98d2-ed9efc339891';
@@ -779,8 +779,10 @@ test('m2: DDC snapshot merge copies complete entries and excludes staging and le
   mkdirSync(join(snapshots, '0', 'entries', 'aaaa'), { recursive: true });
   mkdirSync(join(snapshots, '0', 'staging', 'attempt'), { recursive: true });
   mkdirSync(join(snapshots, '0', 'lease'), { recursive: true });
-  writeFileSync(join(snapshots, '0', 'entries', 'aaaa', 'integrity.json'), 'complete');
-  writeFileSync(join(snapshots, '0', 'entries', 'aaaa', 'receipt.json'), 'receipt');
+  writeFileSync(
+    join(snapshots, '0', 'entries', 'aaaa', 'entry.json'),
+    JSON.stringify({ schemaVersion: 'forgeax-ddc-entry/2' }),
+  );
   writeFileSync(join(snapshots, '0', 'staging', 'attempt', 'payload.bin'), 'partial');
   writeFileSync(join(snapshots, '0', 'lease', 'lock'), 'lease');
   try {
@@ -796,7 +798,7 @@ test('m2: DDC snapshot merge copies complete entries and excludes staging and le
       output,
     ]);
     assert.equal(result.exitCode, 0, result.stderr || result.stdout);
-    assert.equal(existsSync(join(output, 'entries', 'aaaa', 'integrity.json')), true);
+    assert.equal(existsSync(join(output, 'entries', 'aaaa', 'entry.json')), true);
     assert.equal(existsSync(join(output, 'staging')), false);
     assert.equal(existsSync(join(output, 'lease')), false);
     const second = runPlanner(root, [
@@ -1115,17 +1117,16 @@ test('package-owned native Pack requirements use the strict transfer closure wit
   }
 });
 
-test('core defers only forty-eight duplicate Bevy bundles and retains eighty percent of all app builds', async () => {
+test('core builds only owned Smoke inputs and omits verified shader-only duplicates', async () => {
   const { appShardRoster } = await import('../app-build-roster.mjs');
   const deferred = JSON.parse(
     readFileSync(new URL('../core-app-build-deferred.json', import.meta.url), 'utf8'),
   );
   const all = appShardRoster(repoRoot);
-  assert.equal(deferred.length, 48);
+  assert.equal(deferred.length, 49);
   assert.equal(new Set(deferred).size, deferred.length);
-  const ratio = (all.length - deferred.length) / all.length;
-  assert.ok(ratio >= 0.78 && ratio <= 0.82, String(ratio));
-  for (const app of deferred) {
+  assert.ok(deferred.includes('hello/gi'));
+  for (const app of deferred.filter((entry) => entry !== 'hello/gi')) {
     assert.ok(all.includes(app));
     assert.ok(app.startsWith('bevy/'));
     const root = join(repoRoot, 'apps', app);
@@ -1140,7 +1141,7 @@ test('core defers only forty-eight duplicate Bevy bundles and retains eighty per
     );
     assert.ok(pkg.scripts.smoke, 'native behavior remains mandatory');
   }
-  const root = fixture(['bevy/time-elapsed', 'retained']);
+  const root = fixture(['bevy/time-elapsed', 'hello/gi', 'hello/retained', 'water/example']);
   try {
     const args = ['--shard-count', '1', '--shard-index', '0', '--dry-run'];
     const full = runPlanner(root, args, { ...process.env, FORGEAX_CI_CORE_VALIDATION: '0' });
@@ -1149,11 +1150,17 @@ test('core defers only forty-eight duplicate Bevy bundles and retains eighty per
     assert.equal(core.exitCode, 0, core.stdout || core.stderr);
     const fullPlan = JSON.parse(full.stdout);
     const corePlan = JSON.parse(core.stdout);
-    assert.deepEqual(fullPlan.buildApps, ['bevy/time-elapsed', 'retained']);
+    assert.deepEqual(fullPlan.buildApps, [
+      'bevy/time-elapsed',
+      'hello/gi',
+      'hello/retained',
+      'water/example',
+    ]);
     assert.deepEqual(corePlan.apps, fullPlan.apps);
-    assert.deepEqual(corePlan.buildApps, ['retained']);
-    assert.deepEqual(corePlan.omittedTransferApps, ['bevy/time-elapsed']);
-    assert.deepEqual(corePlan.skippedBuildApps, ['bevy/time-elapsed']);
+    assert.deepEqual(corePlan.buildApps, ['hello/retained']);
+    const omitted = ['bevy/time-elapsed', 'hello/gi', 'water/example'];
+    assert.deepEqual(corePlan.omittedTransferApps.sort(), omitted);
+    assert.deepEqual(corePlan.skippedBuildApps.sort(), omitted);
     assert.ok(corePlan.artifactInventory.every((path) => !path.includes('bevy/time-elapsed')));
     assert.equal(corePlan.profile, 'core');
     assert.equal(fullPlan.profile, 'full');

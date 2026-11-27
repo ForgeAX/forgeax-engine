@@ -3,7 +3,7 @@ import type { Renderer } from '@forgeax/engine-render';
 import type { RhiInstance } from '@forgeax/engine-rhi';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminancePng, offscreenCanvas } from './hdr-evidence.fixture';
@@ -13,6 +13,7 @@ import {
   type RenderPath,
   renderFurnace,
   replayFurnace,
+  SWEEP_WIDTH,
   singleScatterPublication,
 } from './ibl-furnace.fixture';
 import { observeNativeDeviceRequests } from './native-device-work.fixture';
@@ -21,7 +22,7 @@ import { unwrap } from './specular-aa.fixture';
 
 // A uniform white panorama is indistinguishable from the white fallback cube,
 // so readiness comes from the renderer's IBL binding receipt.
-const manifest = await buildEngineShaderManifest();
+const manifest = await buildEngineShaderTemplateManifest();
 const compensatedUrl = shaderManifestUrl(manifest);
 const single = singleScatterPublication(manifest);
 const singleScatterUrl = shaderPublicationUrl(single.publication);
@@ -54,7 +55,7 @@ afterAll(async () => {
 });
 async function withRenderer<T>(
   manifestUrl: string,
-  body: (renderer: Renderer) => Promise<T>,
+  body: (renderer: Renderer, canvas: ReturnType<typeof offscreenCanvas>['canvas']) => Promise<T>,
   rhi: RhiInstance = webgpu.rhi,
 ) {
   if (rhi === webgpu.rhi) {
@@ -63,11 +64,12 @@ async function withRenderer<T>(
       pending = createFurnaceHost(manifestUrl, rhi);
       liveHosts.set(manifestUrl, pending);
     }
-    return body((await pending).host.renderer);
+    const { host, target } = await pending;
+    return body(host.renderer, target.canvas);
   }
   const { target, host } = await createFurnaceHost(manifestUrl, rhi);
   try {
-    return await body(host.renderer);
+    return await body(host.renderer, target.canvas);
   } finally {
     unwrap(await host.renderer.dispose());
     target.destroy();
@@ -93,8 +95,7 @@ function expectFurnace(label: string, withMs: Metrics, withoutMs: Metrics) {
   expect(smooth - rough, `${label} single-scatter loss`).toBeGreaterThan(0.3);
 }
 
-it('reduces every composed specular IBL program to single scattering for the falsifier', () => {
-  // Publication validates each complete source before interning its fragments.
+it('publishes a single-scattering template source for the falsifier', () => {
   expect(single.patched).toBeGreaterThan(0);
 });
 
@@ -117,6 +118,117 @@ it('white-furnace: rough white metal vanishes into a uniform environment on both
     expectFurnace(renderPath, withMs, withoutMs);
   }
   writeFileSync(`${directory}/effect.json`, JSON.stringify(report, null, 2));
+});
+
+it('white-furnace: a fully rough white dielectric matches its skybox', {
+  timeout: 300_000,
+}, async () => {
+  mkdirSync(directory, { recursive: true });
+  const report: Partial<Record<RenderPath, { white: Metrics; gray: Metrics }>> = {};
+  for (const renderPath of PATHS) {
+    const image = await withRenderer(compensatedUrl, (renderer) =>
+      renderFurnace(renderer, renderPath, 'dielectric'),
+    );
+    const control = await withRenderer(compensatedUrl, (renderer) =>
+      renderFurnace(renderer, renderPath, 'dielectric-gray'),
+    );
+    writeFileSync(
+      `${directory}/${renderPath}-dielectric.png`,
+      luminancePng(image, FURNACE_SIZE, 1),
+    );
+    writeFileSync(
+      `${directory}/${renderPath}-dielectric-gray.png`,
+      luminancePng(control, FURNACE_SIZE, 1),
+    );
+    const white = furnaceMetrics(image, 'dielectric');
+    const gray = furnaceMetrics(control, 'dielectric');
+    report[renderPath] = { white, gray };
+    writeFileSync(`${directory}/dielectric.json`, JSON.stringify(report, null, 2));
+    const sphere = white.spheres[0];
+    const graySphere = gray.spheres[0];
+    if (sphere === undefined || graySphere === undefined) throw new Error('Missing sphere pixels');
+    expect(Math.abs(white.background.mean - 1), `${renderPath} background`).toBeLessThan(0.01);
+    expect(Math.abs(sphere.albedo - 1), `${renderPath} mean relative to sky`).toBeLessThan(0.01);
+    expect(
+      sphere.min / white.background.mean,
+      `${renderPath} dimmest sphere pixel`,
+    ).toBeGreaterThan(0.98);
+    expect(sphere.max / white.background.mean, `${renderPath} brightest sphere pixel`).toBeLessThan(
+      1.02,
+    );
+    expect(graySphere.albedo, `${renderPath} gray sphere is drawn`).toBeGreaterThan(0.45);
+    expect(graySphere.albedo, `${renderPath} gray sphere stays visible`).toBeLessThan(0.6);
+  }
+});
+
+it.each([
+  {},
+  { gbufferFormat: 'default' as const },
+])('Deferred selects local diffuse only with an authored LightProbe (%o)', {
+  timeout: 300_000,
+}, async (options) => {
+  await withRenderer(compensatedUrl, async (renderer) => {
+    const sample = async (blackProbe?: true) => {
+      const pixels = await renderFurnace(renderer, 'deferred', 'dielectric', {
+        ...options,
+        ...(blackProbe === undefined ? {} : { blackProbe }),
+      });
+      const metrics = furnaceMetrics(pixels, 'dielectric');
+      expect(Math.abs(metrics.background.mean - 1)).toBeLessThan(0.01);
+      return metrics.spheres[0]?.albedo ?? -1;
+    };
+    expect(await sample()).toBeGreaterThan(0.98);
+    expect(await sample(true)).toBeLessThan(0.08);
+    expect(await sample()).toBeGreaterThan(0.98);
+  });
+});
+
+it('white-furnace: two rows sweep metallic and dielectric roughness from zero to one', {
+  timeout: 300_000,
+}, async () => {
+  mkdirSync(directory, { recursive: true });
+  const results = [];
+  for (const renderPath of PATHS) {
+    const { white, gray } = await withRenderer(compensatedUrl, async (renderer, canvas) => {
+      const width = canvas.width;
+      canvas.width = SWEEP_WIDTH;
+      try {
+        return {
+          white: await renderFurnace(renderer, renderPath, 'sweep'),
+          gray: await renderFurnace(renderer, renderPath, 'sweep-gray'),
+        };
+      } finally {
+        canvas.width = width;
+      }
+    });
+    writeFileSync(
+      `${directory}/${renderPath}-roughness-sweep.png`,
+      luminancePng(white, SWEEP_WIDTH, 1, FURNACE_SIZE),
+    );
+    writeFileSync(
+      `${directory}/${renderPath}-roughness-sweep-gray.png`,
+      luminancePng(gray, SWEEP_WIDTH, 1, FURNACE_SIZE),
+    );
+    results.push({
+      renderPath,
+      white: furnaceMetrics(white, 'sweep'),
+      gray: furnaceMetrics(gray, 'sweep'),
+    });
+  }
+  writeFileSync(`${directory}/roughness-sweep.json`, JSON.stringify(results, null, 2));
+  for (const { renderPath, white, gray } of results) {
+    expect(white.spheres).toHaveLength(22);
+    expect(Math.abs(white.background.mean - 1), `${renderPath} background`).toBeLessThan(0.01);
+    for (const [index, sphere] of white.spheres.entries()) {
+      const label = `${renderPath} metallic=${sphere.metallic} roughness=${sphere.roughness}`;
+      expect(sphere.pixels, label).toBeGreaterThan(1000);
+      expect(Math.abs(sphere.albedo - 1), `${label} mean`).toBeLessThan(0.02);
+      expect(sphere.min / white.background.mean, `${label} minimum`).toBeGreaterThan(0.97);
+      expect(sphere.max / white.background.mean, `${label} maximum`).toBeLessThan(1.03);
+      expect(gray.spheres[index]?.albedo, `${label} gray control`).toBeLessThan(0.75);
+      expect(gray.spheres[index]?.albedo, `${label} gray control`).toBeGreaterThan(0.25);
+    }
+  }
 });
 
 it('rhi-debug replay: the captured shading draw conserves energy; the same tape at single scatter does not', {

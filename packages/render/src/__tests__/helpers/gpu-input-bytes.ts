@@ -1,5 +1,6 @@
 import { type Buffer, err, type RhiDevice, type RhiError } from '@forgeax/engine-rhi';
 import { vi } from 'vitest';
+import { GPU_TASK_HEADER_BYTES } from '../../gpu-driven/task-header';
 import { GPU_DRIVEN_BATCH_STRIDE } from '../../gpu-driven/view-gpu';
 import { GPU_MEMBER_RECORD_WORDS } from '../../gpu-scene-inputs';
 
@@ -47,11 +48,20 @@ export function observeGpuInputBytes(device: RhiDevice) {
   const header = (batch = 0) => {
     const value = bytes.get(buffers().tasks);
     if (value === undefined) throw new Error('Missing uploaded task bytes');
-    return new DataView(
+    const control = new DataView(
       value.buffer,
       value.byteOffset + batch * GPU_DRIVEN_BATCH_STRIDE,
       GPU_DRIVEN_BATCH_STRIDE,
     );
+    const address = control.getUint32(4, true) * 4;
+    const arena = bytes.get(buffers().arena);
+    if (arena === undefined || address + GPU_TASK_HEADER_BYTES > arena.byteLength)
+      throw new Error('Missing uploaded task header extent');
+    // Mirror batchWord's two real bindings; no source plan supplies these values.
+    const captured = arena.slice(address, address + GPU_TASK_HEADER_BYTES);
+    const result = new DataView(captured.buffer, captured.byteOffset, captured.byteLength);
+    result.setUint32(28, control.getUint32(0, true), true);
+    return result;
   };
   const readMembers = (root: number, buffer: Buffer, count: number) => {
     const value = bytes.get(buffer);

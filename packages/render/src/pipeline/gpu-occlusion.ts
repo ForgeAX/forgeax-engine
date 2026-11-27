@@ -43,6 +43,7 @@ export function sceneViewImport(
 export function addGpuLateOcclusion(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: {
+    readonly nativeInputs?: import('../record/native-graph-inputs').NativeGraphInputs | undefined;
     readonly gpuDriven: RenderPipelineGpuDrivenProjection | undefined;
     /** Depth-only view of the early pass's depth. */
     readonly depth: GraphTextureView;
@@ -52,12 +53,26 @@ export function addGpuLateOcclusion(
     readonly height: number;
     readonly view: () => Result<GraphBuffer, RenderGraphError>;
   },
-): Result<GraphTextureView | undefined, RenderGraphError> {
+): Result<{ readonly pyramid?: GraphTextureView } | undefined, RenderGraphError> {
   const addLateOcclusion = input.gpuDriven?.addLateOcclusion;
-  if (addLateOcclusion === undefined) return ok(undefined);
+  const physical = input.gpuDriven?.recordCameraOcclusion;
+  if (physical === undefined && addLateOcclusion === undefined) return ok(undefined);
   const view = input.view();
   if (!view.ok) return view;
+  if (physical !== undefined) {
+    const late = physical(graph, {
+      depth: input.depth,
+      view: view.value,
+      width: input.width,
+      height: input.height,
+      multisampled: input.multisampled,
+    });
+    return late.ok ? ok({}) : late;
+  }
+  if (addLateOcclusion === undefined) return ok(undefined);
   const pyramid = addDepthPyramidPasses(graph, {
+    label: 'occlusion-hzb',
+    nativeInputs: input.nativeInputs,
     depth: input.depth,
     width: input.width,
     height: input.height,
@@ -68,5 +83,5 @@ export function addGpuLateOcclusion(
   if (!pyramid.ok) return pyramid;
   const late = addLateOcclusion(pyramid.value.pyramid.pyramid);
   if (!late.ok) return late;
-  return ok(pyramid.value.pyramid.pyramid);
+  return ok({ pyramid: pyramid.value.pyramid.pyramid });
 }

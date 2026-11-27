@@ -1,5 +1,9 @@
 import { normalizeSourcePackageError, type SourcePackageError } from '@forgeax/engine-import';
-import { catalogProjectionFor, metaPathForGuid } from '@forgeax/engine-pack/build';
+import {
+  catalogProjectionFor,
+  metaPathForGuid,
+  RUNTIME_PACK_SUFFIX,
+} from '@forgeax/engine-pack/build';
 import type {
   CatalogDiagnostic,
   PackIndexEntry,
@@ -11,7 +15,19 @@ import { HttpArtifactCompression } from '../http-artifact.js';
 import { stringifyPluginDiagnostic } from '../structured-plugin-error.js';
 import type { DevSession } from './dev-session.js';
 import type { DispatcherHandler, DispatcherRequest, DispatcherResponse } from './dispatcher.js';
-import type { PluginServerRouteCallbacks, PluginServerState } from './plugin-server.js';
+import {
+  type PluginServerRouteCallbacks,
+  type PluginServerState,
+  packBodyContent,
+} from './plugin-server.js';
+
+export function isMaterializedDevRow(row: PackIndexEntry, state: PluginServerState): boolean {
+  return (
+    row.lifecycle === 'current' &&
+    row.publication !== undefined &&
+    state.metaPackBodies.has(row.packageUrl)
+  );
+}
 
 export interface TransportRouteContext {
   readonly startupReady: Promise<void>;
@@ -20,7 +36,10 @@ export interface TransportRouteContext {
   readonly callbacks: PluginServerRouteCallbacks;
   readonly devSession: DevSession | undefined;
   readonly freshnessBarrier?: (() => Promise<void>) | undefined;
-  readonly scopedPackageUrl: (binding: RuntimeAssetBinding, packageUrl: string) => string;
+  readonly scopedCatalogEntry: (
+    binding: RuntimeAssetBinding | undefined,
+    entry: PackIndexEntry,
+  ) => PackIndexEntry;
   readonly scopedCatalogBody: (binding: RuntimeAssetBinding) => string;
 }
 
@@ -64,13 +83,6 @@ export function createTransportRouteHandler(context: TransportRouteContext): Dis
   return (req, res, next) => handleTransportRequest(context, req, res, next);
 }
 
-interface ResolvedScopeRoute {
-  readonly handled: boolean;
-  readonly url: string;
-  readonly scopedBinding?: RuntimeAssetBinding;
-  readonly scopedRoute?: RuntimeScopeRoute;
-}
-
 function sendJsonText(res: DispatcherResponse, text: string | Uint8Array, statusCode = 200): void {
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json');
@@ -106,12 +118,43 @@ export function catalogDiagnosticForSourcePackageError(
   };
 }
 
+/** Project one producer failure for the Catalog regardless of its request path. */
+export function projectCatalogSourceFailure(
+  catalog: PluginServerState['catalogProjection'],
+  cause: unknown,
+  affectedGuids: readonly string[],
+  sourcePath: string,
+  metaPath?: string,
+) {
+  const anchorGuid = affectedGuids[0] ?? sourcePath;
+  const owner = catalog.entries.find((row) => row.guid.toLowerCase() === anchorGuid.toLowerCase());
+  const sidecar = metaPath ?? metaPathForGuid(catalog.declarations, anchorGuid);
+  const meta = sidecar === undefined ? undefined : catalog.declarations.get(sidecar);
+  const provider = owner?.provenance?.provider ?? 'vite-plugin-pack';
+  const error = normalizeSourcePackageError(cause, {
+    sourceMeta: sidecar ?? sourcePath,
+    anchorGuid,
+    affectedGuids,
+    producer: provider,
+    importer: meta?.importer ?? owner?.provenance?.provider ?? 'unknown',
+  });
+  const diagnostic = catalogDiagnosticForSourcePackageError(error);
+  return {
+    error,
+    diagnostic,
+    catalog: {
+      ...catalog,
+      entries: projectSourcePackageFailure(catalog.entries, error, diagnostic),
+    },
+  };
+}
+
 export function projectSourcePackageFailure(
   rows: readonly PackIndexEntry[],
   error: SourcePackageError,
+  diagnostic = catalogDiagnosticForSourcePackageError(error),
 ): PackIndexEntry[] {
   const affected = new Set(error.detail.affectedGuids.map((guid) => guid.toLowerCase()));
-  const diagnostic = catalogDiagnosticForSourcePackageError(error);
   const observedAt = Date.now();
   return rows.map((row) => {
     if (!affected.has(row.guid.toLowerCase())) return row;
@@ -327,23 +370,21 @@ function currentScopedBinding(
   return latest;
 }
 
-async function resolveScopedRoute(
+async function handleScopedRoute(
   context: TransportRouteContext,
-  url: string,
+  parsed: RuntimeScopeRoute,
   req: Parameters<DispatcherHandler>[0],
   res: DispatcherResponse,
-): Promise<ResolvedScopeRoute> {
-  const parsed = parseRuntimeScopeRoute(url);
-  if (parsed === undefined) return { handled: false, url };
-
+  next: Parameters<DispatcherHandler>[2],
+): Promise<void> {
   const current = context.devSession?.runtimeScope();
   if (current === undefined) {
     sendJson(res, { error: 'runtime-scope-unbound' }, 404);
-    return { handled: true, url };
+    return;
   }
   if (current.scopeId !== parsed.scopeId) {
     sendJson(res, { error: 'runtime-scope-not-found', scopeId: parsed.scopeId }, 404);
-    return { handled: true, url };
+    return;
   }
   if (current.generation !== parsed.generation) {
     sendJson(
@@ -356,107 +397,80 @@ async function resolveScopedRoute(
       },
       410,
     );
-    return { handled: true, url };
+    return;
   }
 
-  if (!(await awaitStartupReady(context, res))) return { handled: true, url };
-  if (!(await awaitFreshness(context, res))) return { handled: true, url };
-  const latest = currentScopedBinding(context, parsed, req, res);
-  if (latest === undefined) return { handled: true, url };
+  if (!(await awaitStartupReady(context, res))) return;
+  if (!(await awaitFreshness(context, res))) return;
+  const fresh = currentScopedBinding(context, parsed, req, res);
+  if (fresh === undefined) return;
   if (parsed.suffix === '/catalog.json') {
-    sendJsonText(res, context.scopedCatalogBody(latest));
-    return { handled: true, url };
+    sendJsonText(res, context.scopedCatalogBody(fresh));
+    return;
   }
+
+  // Let queued scope transitions settle and recheck before dispatching resources.
+  await Promise.resolve();
+  const latest = currentScopedBinding(context, parsed, req, res);
+  if (latest === undefined) return;
   if (parsed.suffix.startsWith('/import/')) {
     const guid = parsed.suffix.slice('/import/'.length);
     if (guid.length === 0 || guid.includes('/')) {
       res.statusCode = 404;
       res.end('');
-      return { handled: true, url };
+      return;
     }
-    return { handled: false, url: `/__import/${guid}`, scopedBinding: latest, scopedRoute: parsed };
+    return handleImportRoute(context, req, guid, latest, res);
   }
   if (parsed.suffix.startsWith('/asset/')) {
-    return {
-      handled: false,
-      url: parsed.suffix.slice('/asset'.length),
-      scopedBinding: latest,
-      scopedRoute: parsed,
-    };
+    const url = parsed.suffix.slice('/asset'.length);
+    if (handleScopedLookupRoute(context, url, latest, res)) return;
+    if (await handlePackRoute(req, context, url, latest, res)) return;
+    next();
+    return;
   }
   sendJson(res, { error: 'runtime-scope-route-not-found' }, 404);
-  return { handled: true, url };
-}
-
-export function scopedEntry(
-  context: Pick<TransportRouteContext, 'scopedPackageUrl'>,
-  binding: RuntimeAssetBinding | undefined,
-  entry: PackIndexEntry,
-): PackIndexEntry {
-  if (binding === undefined) return entry;
-  const packageUrl = context.scopedPackageUrl(binding, entry.packageUrl);
-  const publication = entry.publication;
-  if (publication === undefined) return { ...entry, packageUrl };
-  const scopeLocator = (locator: NonNullable<typeof publication.current>) => ({
-    ...locator,
-    packageUrl: context.scopedPackageUrl(binding, locator.packageUrl),
-  });
-  return {
-    ...entry,
-    packageUrl,
-    publication: {
-      ...publication,
-      ...(publication.current === undefined ? {} : { current: scopeLocator(publication.current) }),
-      ...(publication.lastKnownGood === undefined
-        ? {}
-        : { lastKnownGood: scopeLocator(publication.lastKnownGood) }),
-    },
-  };
 }
 
 async function handleGenericImport(
   context: TransportRouteContext,
   guid: string,
   rebuildRequested: boolean,
-  scopedBinding: RuntimeAssetBinding | undefined,
+  scopedBinding: RuntimeAssetBinding,
   res: DispatcherResponse,
-): Promise<boolean> {
+): Promise<void> {
   let resultEntries: readonly PackIndexEntry[];
   try {
     resultEntries =
       (await (rebuildRequested
         ? context.callbacks.rebuildAsset?.(guid)
         : context.callbacks.materializeAsset?.(guid))) ?? [];
-    if (!gateSession(context, res)) return true;
+    if (!gateSession(context, res)) return;
   } catch (error) {
-    if (!gateSession(context, res)) return true;
+    if (!gateSession(context, res)) return;
     const catalog = context.state.catalogProjection.entries;
     const row = catalog.find((entry) => entry.guid.toLowerCase() === guid);
     if (row?.sourcePath.endsWith('.pack.ts')) {
-      const normalized = normalizeSourcePackageError(error, {
-        sourceMeta: row.sourcePath,
-        anchorGuid: row.guid,
-        affectedGuids: [row.guid],
-        producer: row.provenance?.provider ?? 'source-package',
-        importer: row.provenance?.provider ?? 'source-package',
-      });
-      context.state.catalogProjection = {
-        ...context.state.catalogProjection,
-        entries: projectSourcePackageFailure(catalog, normalized),
-      };
+      const failure = projectCatalogSourceFailure(
+        context.state.catalogProjection,
+        error,
+        [row.guid],
+        row.sourcePath,
+      );
+      context.state.catalogProjection = failure.catalog;
       sendJson(
         res,
         {
           error: 'source-package-failed',
           guid,
-          code: normalized.code,
-          expected: normalized.expected,
-          hint: normalized.hint,
-          detail: normalized.detail,
+          code: failure.error.code,
+          expected: failure.error.expected,
+          hint: failure.error.hint,
+          detail: failure.error.detail,
         },
         422,
       );
-      return true;
+      return;
     }
     const detail =
       typeof error === 'object' && error !== null && 'detail' in error
@@ -471,53 +485,46 @@ async function handleGenericImport(
         ? String((error as { hint: unknown }).hint)
         : 'importer threw while converting the source';
     sendJson(res, { error: 'import-failed', guid, code, detail, hint }, 422);
-    return true;
+    return;
   }
   if (resultEntries.length === 0) {
     sendJson(res, { error: 'import-failed', guid, hint: 'producer closure omitted the GUID' }, 422);
-    return true;
+    return;
   }
   sendJson(
     res,
-    resultEntries.map((entry) => scopedEntry(context, scopedBinding, entry)),
+    resultEntries.map((entry) => context.scopedCatalogEntry(scopedBinding, entry)),
   );
-  return true;
 }
 
 async function handleImportRoute(
   context: TransportRouteContext,
   req: Parameters<DispatcherHandler>[0],
-  url: string,
-  scopedBinding: RuntimeAssetBinding | undefined,
+  guid: string,
+  scopedBinding: RuntimeAssetBinding,
   res: DispatcherResponse,
-): Promise<boolean> {
-  const importPrefix = '/__import/';
-  if (!url.startsWith(importPrefix)) return false;
+): Promise<void> {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     sendJson(res, { error: 'method-not-allowed', hint: 'use POST to trigger lazy import' }, 405);
-    return true;
+    return;
   }
-  const guid = url.slice(importPrefix.length);
   const guidLower = guid.toLowerCase();
   const importModeHeader = req.headers?.['x-forgeax-import-mode'];
   const rebuildRequested = importModeHeader === 'rebuild';
+  const row = context.state.catalogProjection.entries.find(
+    (entry) => entry.guid.toLowerCase() === guidLower,
+  );
   if (
-    metaPathForGuid(context.state.catalogProjection.declarations, guidLower) === undefined &&
-    !context.state.importedGuids.has(guidLower) &&
-    !context.state.catalogProjection.entries.some((entry) => entry.guid.toLowerCase() === guidLower)
+    row === undefined &&
+    metaPathForGuid(context.state.catalogProjection.declarations, guidLower) === undefined
   ) {
     sendJson(res, { error: 'meta-not-found', guid, hint: 'no source declares this GUID' }, 404);
-    return true;
+    return;
   }
-  const alreadyImported = context.state.importedGuids.has(guidLower)
-    ? context.state.catalogProjection.entries.find(
-        (entry) => entry.guid.toLowerCase() === guidLower,
-      )
-    : undefined;
-  if (alreadyImported !== undefined && !rebuildRequested) {
-    sendJson(res, [scopedEntry(context, scopedBinding, alreadyImported)]);
-    return true;
+  if (row !== undefined && !rebuildRequested && isMaterializedDevRow(row, context.state)) {
+    sendJson(res, [context.scopedCatalogEntry(scopedBinding, row)]);
+    return;
   }
   return handleGenericImport(context, guidLower, rebuildRequested, scopedBinding, res);
 }
@@ -525,10 +532,10 @@ async function handleImportRoute(
 function handleScopedLookupRoute(
   context: TransportRouteContext,
   url: string,
-  scopedBinding: RuntimeAssetBinding | undefined,
+  scopedBinding: RuntimeAssetBinding,
   res: DispatcherResponse,
 ): boolean {
-  if (scopedBinding === undefined || !url.startsWith('/__pack/lookup/')) return false;
+  if (!url.startsWith('/__pack/lookup/')) return false;
   const guid = url.slice('/__pack/lookup/'.length);
   const entry = context.state.catalogProjection.entries.find(
     (candidate) => candidate.guid.toLowerCase() === guid.toLowerCase(),
@@ -537,7 +544,7 @@ function handleScopedLookupRoute(
     sendJson(res, { error: 'not-found', guid }, 404);
     return true;
   }
-  sendJson(res, scopedEntry(context, scopedBinding, entry));
+  sendJson(res, context.scopedCatalogEntry(scopedBinding, entry));
   return true;
 }
 
@@ -575,7 +582,7 @@ async function handlePackRoute(
   try {
     if (artifactOwnerGuid !== undefined) {
       await context.callbacks.ensureMetaPackBody(
-        `${DEV_PACK_PREFIX}${artifactOwnerGuid}.pack.json`,
+        `${DEV_PACK_PREFIX}${artifactOwnerGuid}${RUNTIME_PACK_SUFFIX}`,
         scopedBinding,
       );
       artifactBody = context.state.devArtifactBodies.get(url);
@@ -593,7 +600,7 @@ async function handlePackRoute(
     // the producer here would retry the known-broken source on every read.
     body =
       context.devSession?.state().status === 'degraded'
-        ? context.state.metaPackBodies.get(url)
+        ? packBodyContent(context.state.metaPackBodies.get(url))
         : undefined;
     if (body === undefined) body = await context.callbacks.ensureMetaPackBody(url, scopedBinding);
     if (!gateSession(context, res)) return true;
@@ -632,41 +639,26 @@ async function handleTransportRequest(
   res: DispatcherResponse,
   next: Parameters<DispatcherHandler>[2],
 ): Promise<void> {
-  const normalizedUrl = normalizeTransportUrl(req.url ?? '', context.transportBase);
-  const resolved = await resolveScopedRoute(context, normalizedUrl, req, res);
-  if (resolved.handled) return;
-  const { url, scopedRoute } = resolved;
-  let { scopedBinding } = resolved;
-  const requiresRuntimeScope =
+  const url = normalizeTransportUrl(req.url ?? '', context.transportBase);
+  const scopedRoute = parseRuntimeScopeRoute(url);
+  if (scopedRoute) return handleScopedRoute(context, scopedRoute, req, res, next);
+
+  if (
     url === '/__pack/index' ||
     url === '/pack-index.json' ||
     url.startsWith('/__pack/lookup/') ||
     url.startsWith('/__import/') ||
-    url.startsWith(DEV_PACK_PREFIX);
-  if (requiresRuntimeScope) {
-    if (scopedRoute !== undefined) {
-      // The source fence belongs to this request and already completed during
-      // scope resolution. Recheck a rebind/close/degradation across that await
-      // without asking the filesystem observer to walk the same roots again.
-      scopedBinding = currentScopedBinding(context, scopedRoute, req, res);
-      if (scopedBinding === undefined) return;
-    } else {
-      if (context.devSession?.runtimeScope() === undefined) {
-        if (!(await awaitStartupReady(context, res))) return;
-      }
-      if (!gateSession(context, res)) return;
-      if (!(await awaitFreshness(context, res))) return;
-    }
-  }
-  if (requiresRuntimeScope && scopedBinding === undefined) {
+    url.startsWith(DEV_PACK_PREFIX)
+  ) {
+    if (
+      context.devSession?.runtimeScope() === undefined &&
+      !(await awaitStartupReady(context, res))
+    )
+      return;
+    if (!gateSession(context, res) || !(await awaitFreshness(context, res))) return;
     sendJson(res, { error: 'global-runtime-scope-route-disabled' }, 404);
     return;
   }
-  if (handleScopedLookupRoute(context, url, scopedBinding, res)) return;
-  if (url.startsWith('/__import/')) {
-    await handleImportRoute(context, req, url, scopedBinding, res);
-    return;
-  }
-  if (await handlePackRoute(req, context, url, scopedBinding, res)) return;
+  if (await handlePackRoute(req, context, url, undefined, res)) return;
   next();
 }

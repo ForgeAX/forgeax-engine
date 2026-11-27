@@ -514,6 +514,10 @@ describe('RenderFeature persistent GPU work', () => {
 
     const pipeline = { kind: 'pipeline', generation: 1 } as const;
     const binding = { kind: 'bindings', generation: 1 } as const;
+    const viewBinding = { kind: 'bindings', generation: 1 } as const;
+    const drawBindings = (standardLighting ? [viewBinding, binding] : [binding]) as never[];
+    const materialGroup = {} as BindGroup;
+    const lightingGroup = {} as BindGroup;
     const vertices = { kind: 'vertex-data', generation: 1 } as const;
     const gpuArgs = { name: 'draw-args', generation: 1 } as never;
     const resources = new Map<object, PreparedGraphicsResolvedResource>([
@@ -541,11 +545,17 @@ describe('RenderFeature persistent GPU work', () => {
         {
           kind: 'bindings',
           reference: binding as never,
-          handle: {} as BindGroup,
+          handle: materialGroup,
         },
       ],
     ]);
-    const lightingGroup = {} as BindGroup;
+    if (standardLighting)
+      resources.set(viewBinding, {
+        kind: 'bindings',
+        reference: viewBinding as never,
+        handle: undefined,
+        descriptor: { pipeline: pipeline as never, values: { group: 0, view: true } },
+      });
     const raster = new RenderFeatureRasterGraphProjection(
       graph,
       () => ({
@@ -553,10 +563,8 @@ describe('RenderFeature persistent GPU work', () => {
         view: multisampleView ?? outputView,
         ...(multisampleView === undefined ? {} : { resolveTarget: outputView }),
       }),
-      undefined,
+      ({ binding }) => (binding.descriptor?.values.view === true ? lightingGroup : undefined),
       buffers,
-      undefined,
-      () => lightingGroup,
     );
     expect(
       raster.addPass(
@@ -578,7 +586,7 @@ describe('RenderFeature persistent GPU work', () => {
             {
               kind: 'draw-indirect',
               pipeline: pipeline as never,
-              bindings: [binding as never],
+              bindings: drawBindings,
               vertexData: [{ slot: 0, resource: vertices as never }],
               command: { buffer: gpuArgs, offset: 0 },
             },
@@ -590,7 +598,7 @@ describe('RenderFeature persistent GPU work', () => {
           attachments: [{ resource: 'output', format: 'rgba8unorm' }],
           pipeline: pipeline as never,
           pipelines: [pipeline as never],
-          bindings: [binding as never],
+          bindings: drawBindings,
           vertexData: [vertices as never],
           indexData: [],
         },
@@ -624,8 +632,13 @@ describe('RenderFeature persistent GPU work', () => {
       return pass;
     };
     expect(compiled.execute({ encoder }).ok).toBe(true);
-    expect(bound.filter((entry) => entry.index === 2)).toEqual(
-      standardLighting ? [{ index: 2, group: lightingGroup }] : [],
+    expect(bound).toEqual(
+      standardLighting
+        ? [
+            { index: 0, group: lightingGroup },
+            { index: 1, group: materialGroup },
+          ]
+        : [{ index: 0, group: materialGroup }],
     );
     expect(encoder.finish().ok).toBe(true);
   });

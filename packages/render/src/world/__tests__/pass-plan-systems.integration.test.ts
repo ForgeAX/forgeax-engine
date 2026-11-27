@@ -18,6 +18,7 @@ import { RENDER_SSR_ADMISSION_SYSTEM } from '../ssr-admission-systems';
 async function plannedScene(options: {
   readonly renderPath: 'forward' | 'deferred';
   readonly transmission: number;
+  readonly roughRefraction?: boolean;
 }) {
   const created: EcsWorld[] = [];
   const createRenderWorld = renderWorldModule.createRenderWorld;
@@ -40,7 +41,8 @@ async function plannedScene(options: {
   const profiled = renderer.setProfile({
     ...renderer.inspect().profile,
     renderPath: options.renderPath,
-    ssao: false,
+    roughRefraction: options.roughRefraction === true,
+    ambientOcclusion: { enabled: false },
   });
   if (!profiled.ok) throw profiled.error;
   const assets = renderer.assetRegistry;
@@ -77,7 +79,8 @@ async function plannedScene(options: {
   const draw = async () => {
     world.update().unwrap();
     const drawn = renderer.draw({ source: lease });
-    if (!drawn.ok) throw drawn.error;
+    if (!drawn.ok)
+      throw new Error(`${drawn.error.message} (${JSON.stringify(errors)})`, { cause: drawn.error });
     if (drawn.value !== undefined) {
       const completed = await drawn.value.completed;
       if (!completed.ok) throw completed.error;
@@ -99,6 +102,7 @@ it('compiles the transmission backdrop only from the render-transmission-plan Re
   const { renderer, errors, draw, renderWorld } = await plannedScene({
     renderPath: 'forward',
     transmission: 0.8,
+    roughRefraction: true,
   });
   try {
     await draw();
@@ -119,6 +123,29 @@ it('compiles the transmission backdrop only from the render-transmission-plan Re
     expect(JSON.stringify(errors)).toContain(RENDER_TRANSMISSION_PLAN_SYSTEM);
     expect(JSON.stringify(errors)).toContain('graph-build-failed');
     expect(JSON.stringify(errors)).toContain('pass-plan-missing');
+  } finally {
+    await renderer.dispose();
+  }
+});
+
+it.each([
+  'forward',
+  'deferred',
+] as const)('uses current scene color with one mip and no copy for ordinary %s transmission', async (renderPath) => {
+  const { renderer, draw, errors } = await plannedScene({ renderPath, transmission: 0.8 });
+  try {
+    await draw();
+    await draw();
+    expect(errors).toEqual([]);
+    const observed = renderer.inspect();
+    expect(observed.transmission).toMatchObject({
+      activeCount: 1,
+      needsRoughMips: false,
+      copyCount: 0,
+      mipCount: 1,
+    });
+    expect(observed.perFramePassNames).toContain('transmission-forward-merge');
+    expect(observed.perFramePassNames).not.toContain('transmission-backdrop-copy');
   } finally {
     await renderer.dispose();
   }

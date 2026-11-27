@@ -131,7 +131,7 @@ try {
   assert.equal((await status('chat-a')).value.root, changed.value.root);
   await pages.workspace.reload();
   await pages.workspace.bringToFront();
-  await view('workspace').getByRole('button', { name: /Pack authoring.*running/ }).waitFor({ state: 'visible' });
+  await view('workspace').getByRole('button', { name: /Pack authoring.*(?:Running|运行中)/ }).waitFor({ state: 'visible' });
   await poll(() => next.listPages(), value => value.pages.length === 1);
   await showScene('workspace', next, 'reopened');
   assert.deepEqual(errors, []);

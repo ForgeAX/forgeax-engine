@@ -29,7 +29,7 @@ export interface WorkspaceTextureFacts extends Readonly<Record<string, unknown>>
   readonly shape: Extract<Asset, { kind: 'texture' }>['shape'];
   readonly format: string;
   readonly colorSpace: string;
-  readonly mips: Extract<Asset, { kind: 'texture' }>['mips'];
+  readonly mips: Extract<Asset, { kind: 'texture' | 'gpu-texture' }>['mips'];
   readonly dataBytes: number;
   readonly source?: Extract<Asset, { kind: 'gpu-texture' }>['source'];
 }

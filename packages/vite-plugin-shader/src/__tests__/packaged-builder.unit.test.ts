@@ -170,13 +170,11 @@ describe('standalone builder input ownership', () => {
       await writeFile(
         packagePath,
         JSON.stringify({
-          schemaVersion: '1.0.0',
-          kind: 'internal-text-package',
-          assets: [
-            {
-              guid: '00000000-0000-4000-8000-000000000001',
+          schemaVersion: '3.0.0',
+          packageId: '00000000-0000-4000-8000-000000000001',
+          assets: {
+            'custom.wgsl': {
               kind: 'material',
-              sourceKey: 'custom.wgsl',
               refs: [],
               payload: {
                 kind: 'material',
@@ -193,7 +191,7 @@ describe('standalone builder input ownership', () => {
                 ],
               },
             },
-          ],
+          },
         }),
       );
       const { buildEngineShaderManifest } = await import('../index.js');

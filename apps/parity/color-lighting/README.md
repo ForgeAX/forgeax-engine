@@ -322,8 +322,10 @@ readback path.
 
 Open `render-defaults.html` on this app's dev/preview server. The page runs the
 production ForgeAX FXAA and Bloom WGSL from the shader manifest and the actual
-pinned Three r184 WebGPU nodes on identical 256x128 textures. It isolates the
-post-processing kernels; it is not whole-renderer pixel parity.
+pinned Three r187 WebGPU nodes on identical 256x128 textures. This page owns
+its r187 reference, while the existing calibration fixtures retain their r184 pin. It isolates the
+post-processing kernels. The progressive Bloom result is checked against an
+independent integer-tap reference. The page also reports the Three r187 response.
 
 ```sh
 pnpm --filter @forgeax/parity-color-lighting dev --host 127.0.0.1 --port 4276 --strictPort
@@ -332,8 +334,8 @@ node scripts/ci/local-graphics.mjs --probe browser -- node apps/parity/color-lig
 ```
 
 The verifier saves `artifacts/render-defaults/comparison.png` and `.json` and
-rejects GPU errors, missing effects, FXAA drift or Bloom gain inconsistent with
-the independent truncated-Gaussian sum. Bloom visualization uses opaque alpha
+rejects GPU errors, missing effects, FXAA drift or a Bloom gain that differs
+from the normalized ForgeAX and truncated Three reference gains. Bloom visualization uses opaque alpha
 because the isolated additive component inherits the zero scene's alpha; numeric
 comparisons use raw RGB readback. The native WebGPU fixture is outside the App
 RHI recorder: its screenshot and float readbacks do not constitute an RHI tape.

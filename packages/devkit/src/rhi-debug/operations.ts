@@ -22,6 +22,7 @@ import {
   type ReadbackSubresource,
   type ReplayBackend,
   type ReplayReadbackResult,
+  type ReplaySession,
   type RhiDebugError,
   readbackImage,
   tapeDigest,
@@ -34,6 +35,7 @@ import {
 import type { ToolJsonSchema } from '@forgeax/engine-tool-runtime';
 import { ok, type Result } from '@forgeax/engine-types';
 import type { CommandError, CommandResult } from '../types.js';
+import { completeCommand, failCommand, rejectCommand } from '../types.js';
 import {
   inspectStructure,
   isStructuralInspect,
@@ -167,19 +169,19 @@ export type {
   TimingPreflight,
 } from './timing-environment.js';
 
-export type RhiDebugOperationName =
-  | 'rhi.capture'
-  | 'rhi.summary'
-  | 'rhi.inspect'
-  | 'rhi.read'
-  | 'rhi.timing';
+interface RhiOperationContracts {
+  readonly 'rhi.capture': readonly [RhiCaptureInput, ArtifactRef];
+  readonly 'rhi.summary': readonly [RhiSummaryInput, RhiSummaryOutput];
+  readonly 'rhi.inspect': readonly [RhiInspectInput, RhiInspectOutput];
+  readonly 'rhi.read': readonly [RhiReadInput, RhiReadOutput];
+  readonly 'rhi.timing': readonly [RhiTimingInput, RhiTimingOutput];
+}
 
-export type RhiDebugOperationInput =
-  | RhiCaptureInput
-  | RhiSummaryInput
-  | RhiInspectInput
-  | RhiReadInput
-  | RhiTimingInput;
+export type RhiDebugOperationName = keyof RhiOperationContracts;
+export type RhiDebugOperationInput<Name extends RhiDebugOperationName = RhiDebugOperationName> =
+  RhiOperationContracts[Name][0];
+export type RhiDebugOperationOutput<Name extends RhiDebugOperationName = RhiDebugOperationName> =
+  RhiOperationContracts[Name][1];
 
 export interface RhiSummaryOutput {
   readonly artifact: ArtifactRef;
@@ -199,13 +201,6 @@ export interface RhiInspectOutput {
   readonly bufferRecords?: BufferRecords;
 }
 
-export type RhiDebugOperationOutput =
-  | ArtifactRef
-  | RhiSummaryOutput
-  | RhiInspectOutput
-  | RhiReadOutput
-  | RhiTimingOutput;
-
 /** A replay backend the operation owns; `release` ends the fresh device after replay. */
 export interface ReplayBackendLease extends ReplayBackend {
   readonly release: () => void;
@@ -213,6 +208,14 @@ export interface ReplayBackendLease extends ReplayBackend {
   readonly adapterInfo?: ReplayAdapterInfo;
   /** Whether the provider rounds timestamps; `rhi.timing` marks the result invalid when `enabled`. */
   readonly timestampQuantization?: TimestampQuantization;
+}
+
+export interface OpenedReplayLease {
+  readonly session: ReplaySession;
+  readonly byteLength: number;
+  readonly adapterInfo: ReplayBackendLease['adapterInfo'];
+  readonly timestampQuantization: ReplayBackendLease['timestampQuantization'];
+  readonly close: () => Promise<void>;
 }
 
 /** `rhi.timing` hooks a host may provide: host load samples and the engine build identity. */
@@ -293,26 +296,30 @@ const artifactRefSchema: ToolJsonSchema = {
   additionalProperties: false,
 };
 
-const summaryOutputSchema: ToolJsonSchema = {
-  type: 'object',
-  properties: {
-    artifact: artifactRefSchema,
-    summary: { type: 'object', additionalProperties: true },
-  },
-  required: ['artifact', 'summary'],
-  additionalProperties: false,
-};
+function artifactSchema<
+  const Fields extends Readonly<Record<string, ToolJsonSchema>>,
+  const Required extends readonly (keyof Fields & string)[],
+>(fields: Fields, required: Required) {
+  return {
+    type: 'object',
+    properties: { artifact: artifactRefSchema, ...fields },
+    required: ['artifact', ...required],
+    additionalProperties: false,
+  } as const;
+}
 
-const inspectOutputSchema: ToolJsonSchema = {
-  type: 'object',
-  properties: {
-    artifact: artifactRefSchema,
+const summaryOutputSchema = artifactSchema(
+  { summary: { type: 'object', additionalProperties: true } },
+  ['summary'],
+);
+
+const inspectOutputSchema = artifactSchema(
+  {
     inspection: { type: 'object', additionalProperties: true },
     bufferRecords: { type: 'object', additionalProperties: true },
   },
-  required: ['artifact', 'inspection'],
-  additionalProperties: false,
-};
+  ['inspection'],
+);
 
 const recordLayoutSchema: ToolJsonSchema = {
   type: 'object',
@@ -348,10 +355,8 @@ const recordsSchema: ToolJsonSchema = {
   additionalProperties: false,
 };
 
-export const RHI_INSPECT_INPUT_SCHEMA = {
-  type: 'object',
-  properties: {
-    artifact: artifactRefSchema,
+export const RHI_INSPECT_INPUT_SCHEMA = artifactSchema(
+  {
     workIndex: { type: 'integer', minimum: 0 },
     buffer: {
       type: 'object',
@@ -369,9 +374,8 @@ export const RHI_INSPECT_INPUT_SCHEMA = {
       items: { type: 'string', enum: ['bindings', 'pipeline', 'pixels', 'outputs'] },
     },
   },
-  required: ['artifact', 'workIndex'],
-  additionalProperties: false,
-} as const;
+  ['workIndex'],
+);
 
 const readImageSchema: ToolJsonSchema = {
   type: 'object',
@@ -419,10 +423,8 @@ const readImageSchema: ToolJsonSchema = {
   additionalProperties: false,
 };
 
-export const RHI_READ_INPUT_SCHEMA = {
-  type: 'object',
-  properties: {
-    artifact: artifactRefSchema,
+export const RHI_READ_INPUT_SCHEMA = artifactSchema(
+  {
     reads: {
       type: 'array',
       minItems: 1,
@@ -450,9 +452,17 @@ export const RHI_READ_INPUT_SCHEMA = {
       },
     },
   },
-  required: ['artifact', 'reads'],
-  additionalProperties: false,
-} as const;
+  ['reads'],
+);
+
+const tapeRecovery = ['tape-invalid', 'tape-version-unsupported'] as const;
+const replayRecovery = [
+  ...tapeRecovery,
+  'replay-capability-mismatch',
+  'replay-event-failed',
+  'replay-position-invalid',
+  'readback-failed',
+] as const;
 
 export const RHI_DEBUG_OPERATION_MANIFEST: RhiDebugOperationManifest = {
   schemaVersion: '1.0.0',
@@ -478,18 +488,9 @@ export const RHI_DEBUG_OPERATION_MANIFEST: RhiDebugOperationManifest = {
       name: 'rhi.summary',
       summary:
         'List passes (labels, targets, work and pipeline counts), work indices, pipeline entry points, and missing initial contents from one tape. No GPU or replay needed.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          artifact: artifactRefSchema,
-          passes: { type: 'boolean' },
-          label: { type: 'string' },
-        },
-        required: ['artifact'],
-        additionalProperties: false,
-      },
+      inputSchema: artifactSchema({ passes: { type: 'boolean' }, label: { type: 'string' } }, []),
       outputSchema: summaryOutputSchema,
-      recoveryCodes: ['tape-invalid', 'tape-version-unsupported'],
+      recoveryCodes: tapeRecovery,
     },
     {
       name: 'rhi.inspect',
@@ -497,37 +498,19 @@ export const RHI_DEBUG_OPERATION_MANIFEST: RhiDebugOperationManifest = {
         'Inspect a workIndex: pipeline and bindings with access read from the tape alone; pixels, every color/depth/storage output it wrote and buffer records replay the ArtifactRef first.',
       inputSchema: RHI_INSPECT_INPUT_SCHEMA,
       outputSchema: inspectOutputSchema,
-      recoveryCodes: [
-        'tape-invalid',
-        'tape-version-unsupported',
-        'replay-capability-mismatch',
-        'replay-event-failed',
-        'replay-position-invalid',
-        'readback-failed',
-        'readback-unsupported',
-      ],
+      recoveryCodes: [...replayRecovery, 'readback-unsupported'],
     },
     {
       name: 'rhi.read',
       summary:
         'Replay one ArtifactRef once and read up to 64 resources, bindings or named work outputs at work indices as bytes, typed records, image stats, linearized depth, atlas tiles and PNGs.',
       inputSchema: RHI_READ_INPUT_SCHEMA,
-      outputSchema: {
-        type: 'object',
-        properties: {
-          artifact: artifactRefSchema,
-          reads: { type: 'array', items: { type: 'object', additionalProperties: true } },
-        },
-        required: ['artifact', 'reads'],
-        additionalProperties: false,
-      },
+      outputSchema: artifactSchema(
+        { reads: { type: 'array', items: { type: 'object', additionalProperties: true } } },
+        ['reads'],
+      ),
       recoveryCodes: [
-        'tape-invalid',
-        'tape-version-unsupported',
-        'replay-capability-mismatch',
-        'replay-event-failed',
-        'replay-position-invalid',
-        'readback-failed',
+        ...replayRecovery,
         'readback-unsupported',
         'read-request-invalid',
         'artifact-write-failed',
@@ -537,20 +520,12 @@ export const RHI_DEBUG_OPERATION_MANIFEST: RhiDebugOperationManifest = {
       name: 'rhi.timing',
       summary:
         'Replay one ArtifactRef warmup+repeat times with replay-owned timestamps (steady GPU-copy restore, pipelined readback); report per-pass and whole-frame (sum, union, envelope) GPU p50/p95/min with 95% intervals and drift, optionally isolated, with passes/draws skipped for an interleaved cost delta, or against a `compare` baseline tape; preflight checks GPU idle, timestamp-query and quantization and mark the result invalid when they fail.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          artifact: artifactRefSchema,
-          compare: artifactRefSchema,
-          ...RHI_TIMING_OPTION_PROPERTIES,
-        },
-        required: ['artifact'],
-        additionalProperties: false,
-      },
-      outputSchema: {
-        type: 'object',
-        properties: {
-          artifact: artifactRefSchema,
+      inputSchema: artifactSchema(
+        { compare: artifactRefSchema, ...RHI_TIMING_OPTION_PROPERTIES },
+        [],
+      ),
+      outputSchema: artifactSchema(
+        {
           valid: { type: 'boolean' },
           invalidReasons: { type: 'array', items: { type: 'string' } },
           preflight: { type: 'object', additionalProperties: true },
@@ -560,20 +535,9 @@ export const RHI_DEBUG_OPERATION_MANIFEST: RhiDebugOperationManifest = {
           baseline: artifactRefSchema,
           comparison: { type: 'object', additionalProperties: true },
         },
-        required: ['artifact', 'valid', 'invalidReasons', 'preflight', 'environment'],
-        additionalProperties: false,
-      },
-      recoveryCodes: [
-        'tape-invalid',
-        'tape-version-unsupported',
-        'replay-capability-mismatch',
-        'replay-event-failed',
-        'replay-position-invalid',
-        'readback-failed',
-        'timing-timeout',
-        'timing-input-invalid',
-        'gpu-busy',
-      ],
+        ['valid', 'invalidReasons', 'preflight', 'environment'],
+      ),
+      recoveryCodes: [...replayRecovery, 'timing-timeout', 'timing-input-invalid', 'gpu-busy'],
     },
   ],
 };
@@ -601,7 +565,7 @@ export function renderRhiDebugHelp(): string {
     "  forgeax rhi timing --artifact PATH --skip 'shadow' --json   (base and ablated replays interleave; delta is a cost estimate, the ablated image is wrong)",
     "  forgeax rhi timing --artifact PATH --skip-passes '[3]' --skip-works '[120,121]' --isolate --json   (isolate: submit+wait per pass, sum >= real frame)",
     'Records decode rows [first, first+count) of stride bytes inside the selected buffer window (binding range or subresource {offset,size}); a mappable staging buffer returns readback-unsupported, so read the buffer it was copied from.',
-    'summary, and inspect with fields pipeline/bindings only, read the tape and need no replay; pixels, outputs, read and timing replay on Dawn, which macOS and Windows build from source (no prebuilt ships).',
+    'summary, and inspect with fields pipeline/bindings only, read the tape and need no replay; pixels, outputs, read and timing replay on the optional upstream Dawn Node WebGPU provider.',
     'Replay uses Dawn; a tape that builds acceleration structures needs FORGEAX_WEBGPU_NODE=wgpu-native from a contributor checkout with @forgeax/engine-rhi-wgpu-native built (otherwise replay-backend-unavailable).',
     'Read requests: one of resourceId, binding or output (binding/output need workIndex); records {layout,first,count}; image {format,width,height,offset,bytesPerRow,tile,depth,exposure,range,tonemap,png}.',
     'Optional --digest verifies the file against an expected sha256 digest.',
@@ -645,22 +609,13 @@ function coreError(error: RhiDebugError): CommandError {
   };
 }
 
-function operationError(
-  code: string,
-  expected: string,
-  hint: string,
-  detail: Readonly<Record<string, unknown>> = {},
-): CommandResult<never> {
-  return { ok: false, error: { code, expected, hint, detail } };
-}
-
 function validateArtifactRef(
   value: unknown,
 ):
   | { readonly ok: true; readonly value: ArtifactRef }
   | { readonly ok: false; readonly error: CommandError } {
   if (value === null || typeof value !== 'object') {
-    return operationError(
+    return failCommand(
       'artifact-ref-invalid',
       'an ArtifactRef object',
       'Pass the ArtifactRef returned by rhi.capture unchanged.',
@@ -668,7 +623,7 @@ function validateArtifactRef(
   }
   const candidate = value as Record<string, unknown>;
   if (candidate.kind !== RHI_TAPE_ARTIFACT_KIND) {
-    return operationError(
+    return failCommand(
       'artifact-kind-invalid',
       `ArtifactRef.kind to equal ${RHI_TAPE_ARTIFACT_KIND}`,
       'Capture a new RHI tape and pass its ArtifactRef unchanged.',
@@ -676,75 +631,56 @@ function validateArtifactRef(
     );
   }
   if (typeof candidate.digest !== 'string' || candidate.digest.length === 0) {
-    return operationError(
+    return failCommand(
       'artifact-digest-invalid',
       'ArtifactRef.digest to be a non-empty digest',
       'Use the digest returned with the captured tape.',
     );
   }
   if (typeof candidate.source !== 'string' || candidate.source.length === 0) {
-    return operationError(
+    return failCommand(
       'artifact-source-invalid',
       'ArtifactRef.source to identify the producing operation',
       'Use the complete ArtifactRef returned by rhi.capture.',
     );
   }
-  return {
-    ok: true,
-    value: {
-      kind: RHI_TAPE_ARTIFACT_KIND,
-      digest: candidate.digest,
-      source: candidate.source,
-      ...(typeof candidate.path === 'string' ? { path: candidate.path } : {}),
-    },
-  };
+  return completeCommand({
+    kind: RHI_TAPE_ARTIFACT_KIND,
+    digest: candidate.digest,
+    source: candidate.source,
+    ...(typeof candidate.path === 'string' ? { path: candidate.path } : {}),
+  });
 }
 
 async function readTape(
-  artifact: ArtifactRef,
+  reference: ArtifactRef,
   context: RhiDebugOperationContext,
-): Promise<CommandResult<Uint8Array>> {
-  const validated = validateArtifactRef(artifact);
-  if (!validated.ok) return validated;
-  const bytes = await context.readArtifact(validated.value);
+): Promise<CommandResult<{ artifact: ArtifactRef; tape: V7Tape; byteLength: number }>> {
+  const admitted = validateArtifactRef(reference);
+  if (!admitted.ok) return admitted;
+  const artifact = admitted.value;
+  const bytes = await context.readArtifact(artifact);
   if (!bytes.ok) return bytes;
   const actual = tapeDigest(bytes.value);
-  if (actual !== validated.value.digest) {
-    return operationError(
+  if (actual !== artifact.digest) {
+    return failCommand(
       'artifact-digest-mismatch',
       'the file bytes to match ArtifactRef.digest',
       'Use the original captured file or open this file by path to obtain its current digest.',
-      { expected: validated.value.digest, actual, path: validated.value.path ?? null },
+      { expected: artifact.digest, actual, path: artifact.path ?? null },
     );
   }
-  return bytes;
+  const decoded = decodeTape(bytes.value);
+  return decoded.ok
+    ? completeCommand({ artifact, tape: decoded.value, byteLength: bytes.value.byteLength })
+    : rejectCommand(coreError(decoded.error));
 }
 
-export function runRhiDebugOperation(
-  name: 'rhi.capture',
-  input: RhiCaptureInput,
+export function runRhiDebugOperation<Name extends RhiDebugOperationName>(
+  name: Name,
+  input: RhiDebugOperationInput<NoInfer<Name>>,
   context: RhiDebugOperationContext,
-): Promise<CommandResult<ArtifactRef>>;
-export function runRhiDebugOperation(
-  name: 'rhi.summary',
-  input: RhiSummaryInput,
-  context: RhiDebugOperationContext,
-): Promise<CommandResult<RhiSummaryOutput>>;
-export function runRhiDebugOperation(
-  name: 'rhi.inspect',
-  input: RhiInspectInput,
-  context: RhiDebugOperationContext,
-): Promise<CommandResult<RhiInspectOutput>>;
-export function runRhiDebugOperation(
-  name: 'rhi.read',
-  input: RhiReadInput,
-  context: RhiDebugOperationContext,
-): Promise<CommandResult<RhiReadOutput>>;
-export function runRhiDebugOperation(
-  name: 'rhi.timing',
-  input: RhiTimingInput,
-  context: RhiDebugOperationContext,
-): Promise<CommandResult<RhiTimingOutput>>;
+): Promise<CommandResult<RhiDebugOperationOutput<Name>>>;
 export function runRhiDebugOperation(
   name: RhiDebugOperationName,
   input: RhiDebugOperationInput,
@@ -765,15 +701,12 @@ export async function runRhiDebugOperation(
     }
     case 'rhi.summary': {
       const summaryInput = input as RhiSummaryInput;
-      const bytes = await readTape(summaryInput.artifact, context);
-      if (!bytes.ok) return bytes;
-      const decoded = decodeTape(bytes.value);
-      if (!decoded.ok) return { ok: false, error: coreError(decoded.error) };
-      const artifact = validateArtifactRef(summaryInput.artifact);
-      if (!artifact.ok) return artifact;
-      const summary = projectSummary(buildFrameModel(decoded.value), summaryInput);
+      const read = await readTape(summaryInput.artifact, context);
+      if (!read.ok) return read;
+      const { artifact, tape } = read.value;
+      const summary = projectSummary(buildFrameModel(tape), summaryInput);
       if (!summary.ok) return summary;
-      return { ok: true, value: { artifact: artifact.value, summary: summary.value } };
+      return completeCommand({ artifact, summary: summary.value });
     }
     case 'rhi.inspect':
       return runInspect(input as RhiInspectInput, context, name);
@@ -783,23 +716,7 @@ export async function runRhiDebugOperation(
       return runTimingOperation(input as RhiTimingInput, context, {
         validateArtifactRef,
         coreError,
-        async openTapeReplay(artifact) {
-          const opened = await openTapeReplay(artifact, context, name);
-          if (!opened.ok) return opened;
-          const { lease, byteLength, session, close } = opened.value;
-          return {
-            ok: true,
-            value: {
-              session,
-              byteLength,
-              close,
-              ...(lease.adapterInfo === undefined ? {} : { adapterInfo: lease.adapterInfo }),
-              ...(lease.timestampQuantization === undefined
-                ? {}
-                : { timestampQuantization: lease.timestampQuantization }),
-            },
-          };
-        },
+        openTapeReplay: (artifact) => openTapeReplay(artifact, context, name),
       });
   }
 }
@@ -809,20 +726,13 @@ async function inspectOffline(
   input: RhiInspectInput,
   context: RhiDebugOperationContext,
 ): Promise<CommandResult<RhiInspectOutput>> {
-  const bytes = await readTape(input.artifact, context);
-  if (!bytes.ok) return bytes;
-  const decoded = decodeTape(bytes.value);
-  if (!decoded.ok) return { ok: false, error: coreError(decoded.error) };
-  const artifact = validateArtifactRef(input.artifact);
-  if (!artifact.ok) return artifact;
-  const inspection = inspectStructure(
-    buildFrameModel(decoded.value),
-    input.workIndex,
-    input.fields,
-  );
+  const read = await readTape(input.artifact, context);
+  if (!read.ok) return read;
+  const { artifact, tape } = read.value;
+  const inspection = inspectStructure(buildFrameModel(tape), input.workIndex, input.fields);
   if (!inspection.ok) return inspection;
   const { outputs: _outputs, ...structural } = inspection.value;
-  return { ok: true, value: { artifact: artifact.value, inspection: structural } };
+  return completeCommand({ artifact, inspection: structural });
 }
 
 async function runInspect(
@@ -831,7 +741,7 @@ async function runInspect(
   name: RhiDebugOperationName,
 ): Promise<CommandResult<RhiInspectOutput>> {
   if (!Number.isInteger(inspectInput.workIndex) || inspectInput.workIndex < 0) {
-    return operationError(
+    return failCommand(
       'work-index-invalid',
       'workIndex to be a non-negative integer',
       'Choose workIndex from the work inventory returned by rhi.summary.',
@@ -848,8 +758,6 @@ async function runInspect(
       inspectInput.fields ?? ['pipeline', 'bindings'],
     );
     if (!inspection.ok) return { ok: false, error: coreError(inspection.error) };
-    const artifact = validateArtifactRef(inspectInput.artifact);
-    if (!artifact.ok) return artifact;
     const buffer = inspectInput.buffer;
     const records =
       buffer === undefined
@@ -879,70 +787,62 @@ async function runInspect(
               ),
             ),
           };
-    return {
-      ok: true,
-      value: {
-        artifact: artifact.value,
-        inspection: projected,
-        ...(records?.ok === true ? { bufferRecords: records.value } : {}),
-      },
-    };
+    return completeCommand({
+      artifact: opened.value.artifact,
+      inspection: projected,
+      ...(records?.ok === true ? { bufferRecords: records.value } : {}),
+    });
   } finally {
     await opened.value.close();
   }
 }
-
-type OpenedReplay = Extract<Awaited<ReturnType<typeof openReplay>>, { ok: true }>['value'];
 
 async function openTapeReplay(
   artifact: ArtifactRef,
   context: RhiDebugOperationContext,
   operation: RhiDebugOperationName,
 ): Promise<
-  CommandResult<{
-    readonly tape: V7Tape;
-    readonly session: OpenedReplay;
-    readonly lease: ReplayBackendLease;
-    readonly byteLength: number;
-    readonly close: () => Promise<void>;
-  }>
+  CommandResult<OpenedReplayLease & { readonly artifact: ArtifactRef; readonly tape: V7Tape }>
 > {
-  const bytes = await readTape(artifact, context);
-  if (!bytes.ok) return bytes;
-  const decoded = decodeTape(bytes.value);
-  if (!decoded.ok) return { ok: false, error: coreError(decoded.error) };
+  const read = await readTape(artifact, context);
+  if (!read.ok) return read;
+  const { tape } = read.value;
   if (context.createReplayBackend === undefined) {
-    return operationError(
+    return failCommand(
       'replay-backend-unavailable',
       'a fresh ReplayBackend factory',
       `Provide a fresh device and shader factory before running ${operation}.`,
     );
   }
-  const backend = await context.createReplayBackend(decoded.value);
+  const backend = await context.createReplayBackend(tape);
   if (!backend.ok) return backend;
-  const opened = await openReplay(decoded.value, backend.value);
-  if (!opened.ok) {
-    backend.value.release();
-    return { ok: false, error: coreError(opened.error) };
-  }
-  const session = opened.value;
-  const close = async () => {
+  const lease = backend.value;
+  let session: ReplaySession | undefined;
+  let handedOff = false;
+  async function close() {
     try {
-      await session.dispose();
+      await session?.dispose();
     } finally {
-      backend.value.release();
+      lease.release();
     }
-  };
-  return {
-    ok: true,
-    value: {
-      tape: decoded.value,
+  }
+  try {
+    const opened = await openReplay(tape, lease);
+    if (!opened.ok) return rejectCommand(coreError(opened.error));
+    session = opened.value;
+    const timing = operation === 'rhi.timing' ? lease : undefined;
+    const value = {
+      ...read.value,
       session,
-      lease: backend.value,
-      byteLength: bytes.value.byteLength,
       close,
-    },
-  };
+      adapterInfo: timing?.adapterInfo,
+      timestampQuantization: timing?.timestampQuantization,
+    };
+    handedOff = true;
+    return completeCommand(value);
+  } finally {
+    if (!handedOff) await close();
+  }
 }
 
 async function runRead(
@@ -950,17 +850,15 @@ async function runRead(
   context: RhiDebugOperationContext,
 ): Promise<CommandResult<RhiReadOutput>> {
   if (!Array.isArray(input.reads) || input.reads.length < 1 || input.reads.length > RHI_READ_LIMIT)
-    return operationError(
+    return failCommand(
       'read-request-invalid',
       `reads to hold 1..${RHI_READ_LIMIT} requests`,
       'Split large read sets into several rhi.read calls.',
       { count: Array.isArray(input.reads) ? input.reads.length : null },
     );
-  const artifact = validateArtifactRef(input.artifact);
-  if (!artifact.ok) return artifact;
   const opened = await openTapeReplay(input.artifact, context, 'rhi.read');
   if (!opened.ok) return opened;
-  const { tape, session, close } = opened.value;
+  const { artifact, tape, session, close } = opened.value;
   try {
     const needsBindings = input.reads.some(
       (read) => read.binding !== undefined || read.output !== undefined,
@@ -992,7 +890,7 @@ async function runRead(
             : await projectRead(read.value, request, context);
       }
     }
-    return { ok: true, value: { artifact: artifact.value, reads } };
+    return completeCommand({ artifact, reads });
   } finally {
     await close();
   }
@@ -1015,14 +913,13 @@ function readRequest(
     const outputs = workOutputs(work);
     const output = outputs.find((candidate) => candidate.name === read.output);
     if (output === undefined)
-      return {
-        ok: false,
-        error: readInvalid(
+      return rejectCommand(
+        readInvalid(
           `work ${work.workIndex} has no output ${read.output}; it wrote ${
             outputs.map((candidate) => candidate.name).join(', ') || 'nothing'
           }`,
         ),
-      };
+      );
     return recordWindow(read, output.request);
   }
   if (read.binding !== undefined) {
@@ -1068,12 +965,11 @@ function recordWindow(
   const offset = base + stride * first;
   const size = stride * count;
   if (window?.size !== undefined && stride * (first + count) > window.size)
-    return {
-      ok: false,
-      error: readInvalid(
+    return rejectCommand(
+      readInvalid(
         `records ${first}..${first + count - 1} (stride ${stride}) exceed the ${window.size}-byte window at offset ${base}`,
       ),
-    };
+    );
   return { ok: true, value: { ...request, subresource: { offset, size } } };
 }
 
@@ -1108,7 +1004,7 @@ async function projectRead(
     let written: string | undefined;
     if (png !== undefined) {
       if (context.writeFile === undefined)
-        return operationError(
+        return failCommand(
           'artifact-write-failed',
           'a host that can write PNG previews',
           'Run rhi.read through the forgeax CLI, or omit image.png.',
@@ -1132,17 +1028,14 @@ async function projectRead(
       ...(written === undefined ? {} : { png: written }),
     };
   }
-  return {
-    ok: true,
-    value: {
-      resourceId: read.resourceId,
-      provenance: read.provenance,
-      byteLength: read.bytes.byteLength,
-      digest: tapeDigest(read.bytes),
-      ...(records === undefined ? {} : { records }),
-      ...(image === undefined ? {} : { image }),
-    },
-  };
+  return completeCommand({
+    resourceId: read.resourceId,
+    provenance: read.provenance,
+    byteLength: read.bytes.byteLength,
+    digest: tapeDigest(read.bytes),
+    ...(records === undefined ? {} : { records }),
+    ...(image === undefined ? {} : { image }),
+  });
 }
 
 function readInvalid(cause: string): CommandError {

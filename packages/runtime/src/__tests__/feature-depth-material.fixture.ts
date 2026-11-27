@@ -2,13 +2,16 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack';
 import type { Renderer, RenderFeature, RenderFeatureWork } from '@forgeax/engine-render';
 import { MeshFilter } from '@forgeax/engine-render';
-import { createMaterialProgramArtifactReceipt } from '@forgeax/engine-shader';
+import {
+  createMaterialProgramArtifactReceipt,
+  SHADER_PROJECT_MANIFEST_VERSION,
+} from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
 import { ParticleEffectPlayer, type ParticleRendererSourceV3 } from '@forgeax/engine-vfx';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import {
-  buildEngineShaderManifest,
+  buildEngineShaderTemplateManifest,
   publishShaderManifest,
 } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, onTestFinished } from 'vitest';
@@ -16,7 +19,7 @@ import { PARTICLE_MESH_VERTEX_BUFFER } from '../../../render/src/features/partic
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { frameRequest, preparedWorld } from './render-feature-prepared-graphics.fixture';
 
-const manifest = await buildEngineShaderManifest();
+const manifest = await buildEngineShaderTemplateManifest();
 const verificationFrames = process.env.FORGEAX_DAWN_LIGHTWEIGHT === '1' ? 2 : 5;
 const schema = [
   { name: 'tint', type: 'vec4' },
@@ -78,51 +81,55 @@ struct Output { @builtin(position) position: vec4<f32>, @location(0) factor: f32
   const shaderManifestUrl = URL.createObjectURL(
     new Blob(
       [
-        JSON.stringify(
-          publishShaderManifest(manifest.entries, [
-            ...manifest.materialShaders,
-            ...(layout.writeDepth
-              ? [
-                  {
-                    identifier: `${identifier}-writer`,
-                    sourcePath: `${identifier}-writer`,
-                    composedWgsl: `@vertex fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+        JSON.stringify({
+          schemaVersion: SHADER_PROJECT_MANIFEST_VERSION,
+          templates: manifest,
+          cooked: publishShaderManifest(
+            [],
+            [
+              ...(layout.writeDepth
+                ? [
+                    {
+                      identifier: `${identifier}-writer`,
+                      sourcePath: `${identifier}-writer`,
+                      composedWgsl: `@vertex fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
                 let p = array<vec2<f32>, 3>(vec2(-1., -1.), vec2(3., -1.), vec2(-1., 3.));
                 return vec4(p[index], 0.75, 1.);
               }`,
-                    paramSchema: '[]',
-                    receipt: {
-                      ...createMaterialProgramArtifactReceipt({
-                        schema: [],
-                        directEntry: 'vs_main',
-                        vertexInputs: [],
-                      }),
-                      bindings: 'group-0',
+                      paramSchema: '[]',
+                      receipt: {
+                        ...createMaterialProgramArtifactReceipt({
+                          schema: [],
+                          directEntry: 'vs_main',
+                          vertexInputs: [],
+                        }),
+                        bindings: 'group-0',
+                      },
+                      variants: [],
                     },
-                    variants: [],
-                  },
-                ]
-              : []),
-            {
-              identifier,
-              sourcePath: identifier,
-              composedWgsl: source,
-              paramSchema: JSON.stringify(schema),
-              receipt: {
-                ...createMaterialProgramArtifactReceipt({
-                  schema,
-                  directEntry: 'vs_main',
-                  vertexInputs: [],
-                }),
-                bindings: view
-                  ? 'render-material-and-scene-depth'
-                  : 'render-material-with-scene-depth',
-                sceneDepth: 'read-only',
+                  ]
+                : []),
+              {
+                identifier,
+                sourcePath: identifier,
+                composedWgsl: source,
+                paramSchema: JSON.stringify(schema),
+                receipt: {
+                  ...createMaterialProgramArtifactReceipt({
+                    schema,
+                    directEntry: 'vs_main',
+                    vertexInputs: [],
+                  }),
+                  bindings: view
+                    ? 'render-material-and-scene-depth'
+                    : 'render-material-with-scene-depth',
+                  sceneDepth: 'read-only',
+                },
+                variants: [],
               },
-              variants: [],
-            },
-          ]),
-        ),
+            ],
+          ),
+        }),
       ],
       { type: 'application/json' },
     ),

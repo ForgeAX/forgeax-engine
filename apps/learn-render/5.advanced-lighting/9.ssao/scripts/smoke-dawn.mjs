@@ -77,8 +77,8 @@ gpu.getPreferredCanvasFormat = () => 'rgba8unorm';
 
 // --- engine shader manifest (shared by both paths) ---
 
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-const ENGINE_MANIFEST = await buildEngineShaderManifest();
+const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const ENGINE_MANIFEST = await buildEngineShaderTemplateManifest();
 const MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 
@@ -238,7 +238,7 @@ if (DISCRIMINATION) {
         standardProfile: {
           ...DEFAULT_STANDARD_PROFILE,
           renderPath: 'deferred',
-          ssao: ssaoConfig.enabled ? { algorithm } : false,
+          ambientOcclusion: ssaoConfig.enabled ? { enabled: true, method: algorithm } : { enabled: false },
         },
       },
       { shaderManifestUrl: MANIFEST_URL },
@@ -448,7 +448,7 @@ const { Transform } = await import('@forgeax/engine-scene');
 const ssaoEnabled = FALSIFY !== 'ssao-off';
 const appResult = await createApp(
   mockCanvas,
-  { platform: createSmokePlatform(mockCanvas),  standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', ssao: ssaoEnabled ? { algorithm } : false } },
+  { platform: createSmokePlatform(mockCanvas),  standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', ambientOcclusion: ssaoEnabled ? { enabled: true, method: algorithm } : { enabled: false } } },
   { shaderManifestUrl: MANIFEST_URL },
 );
 globalThis.navigator.gpu.requestAdapter = originalRequestAdapter;

@@ -5,7 +5,14 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
-import { artifact, filesUnder, stageSdkCarrier, writePackageArchive } from '../sdk-lib.mjs';
+import {
+  artifact,
+  filesUnder,
+  referenceSdkPackageCopies,
+  stageSdkCarrier,
+  verifySdkArchiveInventory,
+  writePackageArchive,
+} from '../sdk-lib.mjs';
 
 const execute = promisify(execFile);
 
@@ -104,4 +111,35 @@ test('the npm SDK omits Engine-owned bytes and retains verified references for e
     await assert.rejects(readFile(resolve(installed, path)), { code: 'ENOENT' });
   }
   assert.equal(await readFile(resolve(sdk, 'store/pnpm/content'), 'utf8'), 'offline cache\n');
+});
+
+test('the ZIP stores byte-identical package and source files once and verifies both identities', async (t) => {
+  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-zip-source-copy-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const name = 'packages/math/dist/index.mjs';
+  const packagePath = resolve(root, name);
+  const sourcePath = resolve(root, 'source/engine', name);
+  const different = resolve(root, 'packages/math/package.json');
+  const differentSource = resolve(root, 'source/engine/packages/math/package.json');
+  for (const [path, contents] of [
+    [packagePath, 'shared built bytes'],
+    [sourcePath, 'shared built bytes'],
+    [different, '{"version":"1.0.0"}'],
+    [differentSource, '{"version":"0.0.0"}'],
+  ]) {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, contents);
+  }
+  const inventory = referenceSdkPackageCopies(
+    await Promise.all((await filesUnder(root)).map((path) => artifact(root, path))),
+  );
+  assert.deepEqual(
+    inventory.filter(({ sourceCopy }) => sourceCopy).map(({ path }) => path),
+    [name],
+  );
+  await assert.rejects(verifySdkArchiveInventory(root, inventory), /sdk-artifact-source-copy/);
+  await rm(packagePath);
+  await verifySdkArchiveInventory(root, inventory);
+  await writeFile(sourcePath, 'tampered');
+  await assert.rejects(verifySdkArchiveInventory(root, inventory), /sdk-artifact-mismatch/);
 });

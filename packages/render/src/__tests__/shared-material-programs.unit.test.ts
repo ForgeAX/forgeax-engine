@@ -2,13 +2,18 @@ import { vec3 } from '@forgeax/engine-math';
 import {
   createMaterialShaderProgram,
   createStandardPbrArtifactReceipt,
+  ShaderRegistry,
 } from '@forgeax/engine-shader';
+import { freezeJson, ok, sha256 } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { BatchExecutionTable } from '../gpu-driven/batch-execution-table';
 import { BatchTopology } from '../gpu-driven/batch-topology';
+import { captureTaskMembership } from '../gpu-driven/fixed-task-plan';
 import {
   collectGpuDrivenMaterialArtifacts,
   GpuDrivenMaterialExecutionRetention,
   GpuDrivenMaterialProgramProjection,
+  prepareHiddenGpuDrivenPipelines,
   prepareHiddenMaterialExecutions,
 } from '../gpu-driven/material-artifacts';
 import { prepareGpuDrivenDraw } from '../gpu-driven/prepared-draw';
@@ -143,13 +148,13 @@ function fixture(count = 1) {
     })),
   );
   const input = {
-    batches: topology.query(topology.sourcePlan(), undefined).batches,
+    batches: topology.query(topology.sourcePlan(), undefined).active.batches,
     probeBlend: false,
     programs,
     resolve,
     clustered: false,
     reflectionFallback: false,
-    shadowViews: true,
+    demand: 'forward-and-shadow' as const,
   };
   return {
     input,
@@ -165,6 +170,62 @@ function fixture(count = 1) {
     rows,
   };
 }
+
+it('waits for the selected hidden GPU scene source before requesting its pipeline', async () => {
+  const f = fixture();
+  const row = f.rows[0];
+  if (row === undefined) throw Error('Expected a hidden row');
+  const key = 'game::surface-scene';
+  const shaders = new ShaderRegistry({ manifestUrl: undefined });
+  const bytes = new TextEncoder().encode('fixture');
+  const build = Promise.withResolvers<ReturnType<typeof ok<Uint8Array>>>();
+  shaders.installMaterialArtifactSource(key, {
+    digest: `sha256:${sha256(bytes)}`,
+    paramSchema: [],
+    receipt: f.artifact.receipt,
+    prepare: () => build.promise,
+  });
+  const resolve = (id: string) => {
+    if (id !== key) return undefined;
+    return shaders.prepareMaterialArtifact(id).unwrap() ? f.artifact : undefined;
+  };
+  const entry: ValidatedRenderable = {
+    ...row,
+    source: { ...row.source, authorVisible: false },
+    meshSlot: 0,
+    mesh: {} as ValidatedRenderable['mesh'],
+    renderState: undefined,
+    stencilReference: undefined,
+  };
+  const onPending = vi.fn();
+  const factory = vi.fn(() => null);
+  const prepare = () =>
+    prepareHiddenGpuDrivenPipelines({
+      entries: [entry],
+      materials: f.owner.materials(),
+      shaders,
+      resolve,
+      artifacts: undefined,
+      factory,
+      formats: ['rgba16float'],
+      sampleCount: 1,
+      shaderUvSetCount: 0,
+      filter: undefined,
+      fragmentEntry: undefined,
+      coverageOnly: false,
+      visibleSurface: false,
+      onPending,
+    });
+  expect(prepare()).toBe(false);
+  expect(onPending).toHaveBeenCalledWith(expect.objectContaining({ shader: key }));
+  expect(factory).not.toHaveBeenCalled();
+  const completion = shaders.pendingMaterialPreparations();
+  expect(completion).toBeDefined();
+  build.resolve(ok(bytes));
+  expect(await completion).toMatchObject({ ok: true });
+  prepare();
+  expect(factory).toHaveBeenCalled();
+});
 
 it('retains hidden preparation joins across rows and passes, but rechecks accepted inputs', () => {
   const f = fixture(2);
@@ -222,6 +283,27 @@ it('retains hidden preparation joins across rows and passes, but rechecks accept
   const next = read(changed);
   expect(next.draw.binding).not.toBe(first.draw.binding);
   expect(next.draw.key.count).toBe(3);
+});
+
+it('prepares a hidden shadow caster while its unused Forward program is unavailable', () => {
+  const f = fixture();
+  const row = f.rows[0];
+  if (row === undefined) throw new Error('Expected a hidden row');
+  const entry = {
+    ...row,
+    meshSlot: 0,
+    mesh: {} as ValidatedRenderable['mesh'],
+    renderState: undefined,
+    stencilReference: undefined,
+  };
+  const resolve = vi.fn((shader: string) =>
+    shader === 'game::shadow-scene' ? f.artifact : undefined,
+  );
+  const selected = [
+    ...prepareHiddenMaterialExecutions(entry, f.owner.materials(), 'shadow', resolve),
+  ];
+  expect(selected.map(({ execution }) => execution.route)).toEqual(['gpu']);
+  expect(resolve.mock.calls.map(([id]) => id)).toEqual(['game::shadow-scene']);
 });
 
 it('selects shared Forward and Shadow programs without expanding dispatch', () => {
@@ -376,7 +458,7 @@ it('resolves availability on each collection and only requests demanded shadow p
     'missing-material-receipt',
   );
   expect(
-    collectGpuDrivenMaterialArtifacts({ ...f.input, shadowViews: false }).materialArtifacts.size,
+    collectGpuDrivenMaterialArtifacts({ ...f.input, demand: 'forward' }).materialArtifacts.size,
   ).toBe(1);
   expect(f.input.resolve.mock.calls.map(([id]) => id)).toEqual(['game::surface-scene']);
   f.input.resolve.mockClear();
@@ -505,7 +587,7 @@ it('distinguishes skin and color ABI variants under one material identity', () =
 
 it('keeps geometry membership while Forward switches between transparent and opaque', () => {
   const f = fixture(128);
-  const before = f.topology.query(f.topology.sourcePlan(), undefined);
+  const before = f.topology.query(f.topology.sourcePlan(), undefined).active;
   const transparent = {
     ...f.snapshot,
     passes: f.snapshot.passes?.map((pass) =>
@@ -539,7 +621,7 @@ it('keeps geometry membership while Forward switches between transparent and opa
   });
   expect(result.batchExecutions.values().next().value?.forward.route).toBe('direct');
   expect(result.batchExecutions.values().next().value?.shadow.route).toBe('gpu');
-  expect(f.topology.query(f.topology.sourcePlan(), undefined)).toBe(before);
+  expect(f.topology.query(f.topology.sourcePlan(), undefined).active).toBe(before);
   const fresh = new BatchTopology();
   fresh.rebuild(
     f.rows.map((row, index) => ({
@@ -550,7 +632,7 @@ it('keeps geometry membership while Forward switches between transparent and opa
       snapshot: row.source,
     })),
   );
-  expect(fresh.query(fresh.sourcePlan(), undefined).candidateCount).toBe(128);
+  expect(fresh.query(fresh.sourcePlan(), undefined).active.candidateCount).toBe(128);
   f.material.adopt(f.snapshot);
   f.owner.adopt(f.material);
   const opaque = collectGpuDrivenMaterialArtifacts({
@@ -558,7 +640,7 @@ it('keeps geometry membership while Forward switches between transparent and opa
     programs: f.projection.project(f.guarded, f.owner.materials()),
   });
   expect(opaque.batchExecutions.values().next().value?.forward.route).toBe('gpu');
-  expect(f.topology.query(f.topology.sourcePlan(), undefined)).toBe(before);
+  expect(f.topology.query(f.topology.sourcePlan(), undefined).active).toBe(before);
 });
 
 it('observes replacement program bytes without changing the fixed material root', () => {
@@ -627,7 +709,7 @@ it('deduplicates only identical shader, Pass, deformation and color requests', (
       layoutIdentity: receipt.reflection.layoutIdentity,
     };
   });
-  const result = collectGpuDrivenMaterialArtifacts({
+  const input = {
     ...f.input,
     batches,
     programs: f.projection.project(f.guarded, frame),
@@ -635,7 +717,8 @@ it('deduplicates only identical shader, Pass, deformation and color requests', (
     clustered: true,
     probeBlend: true,
     reflectionFallback: true,
-  });
+  };
+  const result = collectGpuDrivenMaterialArtifacts(input);
   expect(resolve).toHaveBeenCalledTimes(16);
   const requests = resolve.mock.calls.map(([id, request]) => {
     if (typeof request !== 'object') throw new Error('Expected concrete artifact request');
@@ -655,6 +738,52 @@ it('deduplicates only identical shader, Pass, deformation and color requests', (
       if (pass.route === 'gpu') expect(pass.artifact.specializationKey).toBe(shader);
     }
   }
+  const issued = new Map(requests.map((key, index) => [key, resolve.mock.results[index]?.value]));
+  resolve.mockImplementation((id, request) => {
+    if (typeof request !== 'object') throw new Error('Expected concrete artifact request');
+    return issued.get(
+      `${id}:${request.pass}:${request.deformation}:${request.vertexColorAvailable}`,
+    );
+  });
+  resolve.mockClear();
+  const reduced = collectGpuDrivenMaterialArtifacts({ ...input, batches: batches.slice(-1) });
+  expect(reduced.batchExecutions.size).toBe(1);
+  expect(resolve).toHaveBeenCalledTimes(2);
+  for (const [, request] of resolve.mock.calls)
+    expect(request).toMatchObject({ deformation: 'skin', vertexColorAvailable: true });
+  resolve.mockClear();
+  expect(collectGpuDrivenMaterialArtifacts({ ...input, batches: [] }).batchExecutions.size).toBe(0);
+  expect(resolve).not.toHaveBeenCalled();
+  expect(result.batchExecutions.size).toBe(batches.length / 2);
+});
+
+it('selects each geometry tangent encoding when batches share the same material', () => {
+  const f = fixture();
+  const batch = f.input.batches.at(0);
+  if (!batch?.binding) throw new Error('Expected shared geometry');
+  const geometry = batch.binding.geometry;
+  const packed = {
+    ...batch,
+    binding: {
+      ...batch.binding,
+      geometry: {
+        ...geometry,
+        receipt: {
+          ...geometry.receipt,
+          vertexInputs: [
+            ...geometry.receipt.vertexInputs,
+            { semantic: 'tangentFrame', location: 14, format: 'uint32' },
+          ],
+        },
+      },
+    },
+  };
+  collectGpuDrivenMaterialArtifacts({ ...f.input, batches: [batch, packed, packed] });
+  expect(f.input.resolve).toHaveBeenCalledTimes(4);
+  expect(f.input.resolve).toHaveBeenCalledWith(
+    expect.any(String),
+    expect.objectContaining({ tangentFrame32: true }),
+  );
 });
 
 it('deduplicates unavailable artifacts locally and retries with current collection flags', () => {
@@ -691,6 +820,32 @@ it('deduplicates unavailable artifacts locally and retries with current collecti
       reflectionFallback: enabled,
     });
   }
+});
+
+it('uses the observed shader replacement in this join and samples each address only once', () => {
+  const f = fixture(4);
+  const old = f.artifact;
+  const replacement = { ...old, deps: [...old.deps] };
+  let replace = false;
+  let replacements = 0;
+  const resolve = vi.fn((shader: string) => {
+    if (replace && shader === 'game::shadow-scene' && replacements++ === 0) return replacement;
+    return old;
+  });
+  const retention = new GpuDrivenMaterialExecutionRetention();
+  const collect = () => collectGpuDrivenMaterialArtifacts({ ...f.input, resolve, retention });
+  const first = collect();
+  resolve.mockClear();
+  replace = true;
+  const second = collect();
+  expect(resolve.mock.calls.map(([name]) => name)).toEqual([
+    'game::surface-scene',
+    'game::shadow-scene',
+  ]);
+  expect([...second.shadowMaterialArtifacts.values()][0]?.deps).toBe(replacement.deps);
+  expect([...first.shadowMaterialArtifacts.values()][0]?.deps).toBe(old.deps);
+  const third = collect();
+  expect([...third.shadowMaterialArtifacts.values()][0]?.deps).toBe(old.deps);
 });
 
 it('keeps a direct ShadowCaster on its declared route when no scene program pair is published', () => {
@@ -791,6 +946,43 @@ it('retains executions across frames while programs, geometry and artifacts are 
   expect(execution?.route !== 'none' && execution?.material.roughness).toBe(0.25);
 });
 
+it('updates material values and readiness independently of captured draw geometry', () => {
+  const f = fixture();
+  const retention = new GpuDrivenMaterialExecutionRetention();
+  const fixed = freezeJson(structuredClone(f.artifact.receipt));
+  let receipt = fixed;
+  const resolve = vi.fn((id: string) => ({ ...f.artifact, material: id, receipt }));
+  const collect = (snapshot: MaterialSnapshot) => {
+    f.material.adopt(snapshot);
+    f.owner.adopt(f.material);
+    const result = collectGpuDrivenMaterialArtifacts({
+      ...f.input,
+      resolve,
+      retention,
+      programs: f.projection.project(f.guarded, f.owner.materials()),
+    });
+    return result.batchExecutions.values().next().value?.forward;
+  };
+  const first = collect(f.snapshot);
+  const updated = collect({ ...f.snapshot, roughness: 0.75 });
+  if (first?.route !== 'gpu' || updated?.route !== 'gpu') throw Error('Expected GPU draws');
+  expect(updated.prepared).toBe(first.prepared);
+  expect(updated.material.roughness).toBe(0.75);
+  expect(first.material.roughness).toBe(0.5);
+  const required = fixed.resourceSlots.find((slot) => slot.kind === 'texture');
+  if (required === undefined) throw Error('Expected a texture binding');
+  expect(() =>
+    collect({ ...f.snapshot, authoredTextureFields: new Set([required.parameter]) }),
+  ).toThrow();
+  receipt = structuredClone(fixed);
+  const reissued = collect({ ...f.snapshot, roughness: 0.25 });
+  if (reissued?.route !== 'gpu') throw Error('Expected reissued draw');
+  expect(reissued.prepared).not.toBe(first.prepared);
+  const borrowed = collect({ ...f.snapshot, roughness: 0.8 });
+  if (borrowed?.route !== 'gpu') throw Error('Expected borrowed receipt draw');
+  expect(borrowed.prepared).not.toBe(reissued.prepared);
+});
+
 it('keeps the collected frame identity when every retained execution is unchanged', () => {
   const f = fixture(4);
   const artifacts = new Map<string, typeof f.artifact>();
@@ -806,9 +998,22 @@ it('keeps the collected frame identity when every retained execution is unchange
   f.input = { ...f.input, resolve };
   const first = collectGpuDrivenMaterialArtifacts({ ...f.input, retention });
   expect(collectGpuDrivenMaterialArtifacts({ ...f.input, retention })).toBe(first);
-  const noShadow = collectGpuDrivenMaterialArtifacts({ ...f.input, retention, shadowViews: false });
+  const noShadow = collectGpuDrivenMaterialArtifacts({ ...f.input, retention, demand: 'forward' });
   expect(noShadow).not.toBe(first);
   expect(noShadow.shadowMaterialArtifacts.size).toBe(0);
+  for (const demand of [
+    'forward-with-direct-shadows',
+    'forward-and-shadow',
+    'forward-with-direct-shadows',
+  ] as const) {
+    resolve.mockClear();
+    const collected = collectGpuDrivenMaterialArtifacts({ ...f.input, retention, demand });
+    const indirect = demand === 'forward-and-shadow';
+    expect(collected.batchExecutions.values().next().value?.shadow.route).toBe(
+      indirect ? 'gpu' : 'direct',
+    );
+    expect(resolve.mock.calls.some(([id]) => id === 'game::shadow-scene')).toBe(indirect);
+  }
 });
 
 it('retains the native program join across dispatch-only changes without revisiting batches', () => {
@@ -859,6 +1064,240 @@ it('retains the native program join across dispatch-only changes without revisit
   expect(first.batchExecutions.get(binding)?.forward).toMatchObject({
     material: { roughness: 0.5 },
   });
+});
+
+it('reconciles an issued layout with Scene edits and retains its live shader observations', () => {
+  const f = fixture(4);
+  f.material.adopt(captureMaterialSnapshot(f.snapshot));
+  f.owner.adopt(f.material);
+  const unrelated = new MaterialResource(
+    captureMaterialSnapshot({ ...f.snapshot, materialHandle: 2 }),
+  );
+  let frame = f.owner.materials().with(unrelated);
+  let surface = f.artifact;
+  const resolve = vi.fn((shader: string) =>
+    shader === 'game::surface-scene' ? surface : f.artifact,
+  );
+  const retention = new GpuDrivenMaterialExecutionRetention();
+  const collect = () =>
+    collectGpuDrivenMaterialArtifacts({
+      ...f.input,
+      resolve,
+      retention,
+      programs: f.projection.project(f.guarded, frame),
+    });
+  const first = collect();
+  const prepared = retention.prepared;
+  unrelated.adopt(captureMaterialSnapshot({ ...unrelated.snapshot, roughness: 0.125 }));
+  frame = frame.with(unrelated);
+  resolve.mockClear();
+  expect(collect()).toBe(first);
+  expect(retention.prepared).toBe(prepared);
+  expect(retention.reused).toBe(0);
+  expect(resolve.mock.calls.map(([id]) => id)).toEqual([
+    'game::surface-scene',
+    'game::shadow-scene',
+  ]);
+
+  surface = { ...surface };
+  const second = collect();
+  expect(second.firstArtifact).not.toBe(first.firstArtifact);
+  expect(retention.prepared).toBe(prepared + 1);
+  const roster = vi.spyOn(BatchExecutionTable.prototype, 'forEach');
+  try {
+    for (let edit = 1; edit <= 12; edit++) {
+      const roughness = edit / 16;
+      frame = frame.with(f.material, 4, captureMaterialSnapshot({ ...f.snapshot, roughness }));
+      const updated = collect();
+      const execution = updated.batchExecutions.values().next().value;
+      if (execution?.forward.route !== 'gpu' || execution.shadow.route !== 'gpu')
+        throw Error('Expected updated GPU batches');
+      expect(execution.forward.material.roughness).toBe(roughness);
+      expect(updated.materialArtifacts.values().next().value).toBe(execution.forward.artifact);
+      expect(updated.shadowMaterialArtifacts.values().next().value).toBe(execution.shadow.artifact);
+      expect(updated.firstArtifact).toBe(execution.forward.artifact);
+    }
+    expect(roster).not.toHaveBeenCalled();
+  } finally {
+    roster.mockRestore();
+  }
+  f.material.adopt(captureMaterialSnapshot({ ...f.snapshot, materialSceneIndexProgramKeys: {} }));
+  frame = frame.with(f.material);
+  resolve.mockClear();
+  const direct = collect();
+  expect(direct.materialArtifacts.size).toBe(0);
+  expect(direct.shadowMaterialArtifacts.size).toBe(0);
+  expect(direct.batchExecutions.values().next().value?.forward.route).toBe('direct');
+  expect(first.batchExecutions.values().next().value?.forward.route).toBe('gpu');
+  expect(resolve).not.toHaveBeenCalled();
+});
+
+it('visits precisely the bindings of changed materials and shader addresses on an issued layout', () => {
+  const f = fixture();
+  const batch = f.input.batches.at(0);
+  if (!batch?.binding) throw Error('Expected a batch');
+  const base = batch.binding;
+  const resources = Array.from(
+    { length: 64 },
+    (_, index) =>
+      new MaterialResource(
+        captureMaterialSnapshot({
+          ...f.snapshot,
+          materialHandle: index + 1,
+          materialSceneIndexProgramKeys: {
+            ...f.snapshot.materialSceneIndexProgramKeys,
+            forward: {
+              pass: 'forward',
+              specializationKey: index % 8 === 0 ? 'game::rare' : 'game::common',
+            },
+          },
+        }),
+      ),
+  );
+  const { batches } = captureTaskMembership(
+    {
+      ...f.topology.sourcePlan(),
+      batches: resources.map((material) => ({ ...batch, binding: { ...base, material } })),
+    },
+    Symbol(),
+  );
+  let frame = new MaterialFrame(undefined);
+  for (const resource of resources) frame = frame.with(resource);
+  let rare = f.artifact;
+  const resolve = vi.fn((id: string) => (id === 'game::rare' ? rare : f.artifact));
+  const collect = () =>
+    collectGpuDrivenMaterialArtifacts({
+      ...f.input,
+      batches,
+      resolve,
+      programs: f.projection.project(f.guarded, frame),
+    });
+  const first = collect();
+  let visited = 0;
+  const reconcile = BatchExecutionTable.prototype.reconcile;
+  const probe = vi.spyOn(BatchExecutionTable.prototype, 'reconcile').mockImplementation(function (
+    this: BatchExecutionTable,
+    visit,
+    ...args
+  ) {
+    return reconcile.call(
+      this,
+      (...inputs) => {
+        visited++;
+        return visit(...inputs);
+      },
+      ...args,
+    );
+  });
+  const edit = (resource: MaterialResource) => {
+    frame = frame.with(
+      resource,
+      1,
+      captureMaterialSnapshot({ ...resource.snapshot, roughness: 0.25 }),
+    );
+  };
+  try {
+    const independent = resources[1],
+      overlapping = resources[0];
+    if (!independent || !overlapping) throw Error('Expected two materials');
+    edit(independent);
+    resolve.mockClear();
+    collect();
+    expect(visited).toBe(1);
+    expect(resolve).toHaveBeenCalledTimes(3);
+    visited = 0;
+    edit(overlapping);
+    rare = { ...rare };
+    resolve.mockClear();
+    collect();
+    expect(visited).toBe(8);
+    expect(resolve).toHaveBeenCalledTimes(3);
+    visited = 0;
+    for (const resource of resources) edit(resource);
+    collect();
+    expect(visited).toBe(64);
+    const old = first.batchExecutions.values().next().value?.forward;
+    if (old?.route !== 'gpu') throw Error('Expected an issued GPU draw');
+    expect(old.material.roughness).toBe(f.snapshot.roughness);
+  } finally {
+    probe.mockRestore();
+  }
+});
+
+it('publishes the last binding for a shared shader key while earlier draws change', () => {
+  const f = fixture();
+  const batch = f.input.batches.at(0);
+  if (!batch?.binding) throw Error('Expected a batch');
+  const make = (id: number) =>
+    new MaterialResource(captureMaterialSnapshot({ ...f.snapshot, materialHandle: id }));
+  const a = make(51),
+    b = make(52);
+  const first = { ...batch.binding, material: a },
+    last = { ...batch.binding, material: b };
+  const { batches } = captureTaskMembership(
+    {
+      ...f.topology.sourcePlan(),
+      batches: [
+        { ...batch, binding: first },
+        { ...batch, binding: last },
+      ],
+    },
+    Symbol(),
+  );
+  let frame = new MaterialFrame(undefined).with(a).with(b);
+  const resolve = () => f.artifact;
+  const collect = () =>
+    collectGpuDrivenMaterialArtifacts({
+      ...f.input,
+      batches,
+      resolve,
+      programs: f.projection.project(f.guarded, frame),
+    });
+  const original = collect();
+  expect(original.materialArtifacts.size).toBe(1);
+  frame = frame.with(a, 1, captureMaterialSnapshot({ ...a.snapshot, roughness: 0.75 }));
+  const edited = collect();
+  expect(edited.batchExecutions.get(first)).not.toBe(original.batchExecutions.get(first));
+  expect(edited.materialArtifacts).toBe(original.materialArtifacts);
+  frame = frame.with(b, 1, captureMaterialSnapshot({ ...b.snapshot, roughness: 0.25 }));
+  const replaced = collect();
+  const winner = replaced.batchExecutions.get(last)?.forward;
+  if (winner?.route !== 'gpu') throw Error('Expected a GPU shader');
+  expect(replaced.firstArtifact).toBe(winner.artifact);
+  expect(replaced.firstArtifact).not.toBe(original.firstArtifact);
+});
+
+it('reconciles changed direct materials without probing unaffected pass bindings and admits the first GPU route', () => {
+  const f = fixture(4);
+  const direct = captureMaterialSnapshot({ ...f.snapshot, materialSceneIndexProgramKeys: {} });
+  f.material.adopt(direct);
+  f.owner.adopt(f.material);
+  const other = new MaterialResource(captureMaterialSnapshot({ ...direct, materialHandle: 8 }));
+  let frame = f.owner.materials().with(other);
+  const retention = new GpuDrivenMaterialExecutionRetention();
+  const get = vi.spyOn(retention, 'get');
+  const resolve = vi.fn(() => f.artifact);
+  const collect = () =>
+    collectGpuDrivenMaterialArtifacts({
+      ...f.input,
+      programs: f.projection.project(f.guarded, frame),
+      retention,
+      resolve,
+    });
+  const original = collect();
+  const binding = original.batchExecutions.keys().next().value;
+  if (binding === undefined) throw Error('Expected a batch binding');
+  expect(original.batchExecutions.get(binding)?.forward.route).toBe('direct');
+  get.mockClear();
+  frame = frame.with(other, 2, captureMaterialSnapshot({ ...direct, roughness: 0.2 }));
+  expect(collect()).toBe(original);
+  expect(get).not.toHaveBeenCalled();
+  expect(resolve).not.toHaveBeenCalled();
+  frame = frame.with(f.material, 3, captureMaterialSnapshot(f.snapshot));
+  const next = collect();
+  expect(next.batchExecutions.get(binding)?.forward.route).toBe('gpu');
+  expect(original.batchExecutions.get(binding)?.forward.route).toBe('direct');
+  expect(resolve).toHaveBeenCalledTimes(2);
 });
 
 it('keeps overwritten native program getters on the original observed path', () => {

@@ -79,8 +79,7 @@ it('preserves distinct native view exposures in one submission through Grade and
       })
       .unwrap();
     const parameters = addNativeOutputParameters(graph, {
-      bloom: false,
-      lutStrength: 0,
+      bloomIntensity: 0,
       sharpen: 0,
       dither,
       finishInGrade: false,
@@ -158,6 +157,42 @@ it('preserves distinct native view exposures in one submission through Grade and
               255,
             ]);
           }
+      }
+    }
+    // The same view, targets, Grade and Final pipelines receive alternating camera values.
+    // Read a corner after every submission so a retained uniform cannot satisfy the oracle.
+    const moving = builds[0];
+    if (moving === undefined) throw Error('Missing Grade view');
+    let neutral: Uint8Array | undefined;
+    for (let i = 0; i < 12; i++) {
+      const active = i % 2 === 1;
+      const camera = {
+        ...moving.frame.camera,
+        lensEffects: active
+          ? {
+              vignetteIntensity: 1,
+              vignetteRadius: 0,
+              vignetteSoftness: 0.05,
+              vignetteColor: [0, 0, 0],
+              grainIntensity: 0,
+              grainSize: 1,
+              chromaticAberration: 0.5 + i / 12,
+              chromaticAberrationStartOffset: 0,
+            }
+          : undefined,
+      };
+      const commands = device.createCommandEncoder().unwrap();
+      moving.compiled.execute({ ...moving.frame, camera, encoder: commands }).unwrap();
+      device.queue.submit([commands.finish().unwrap()]).unwrap();
+      await device.queue.onSubmittedWorkDone();
+      const mapped = (await moving.readback.mapAsync(1)).unwrap();
+      const pixel = new Uint8Array(mapped.getMappedRange().unwrap()).slice(0, 4);
+      mapped.unmap();
+      if (active) expect(Array.from(pixel)).toEqual([0, 0, 0, 255]);
+      else if (neutral !== undefined) expect(pixel).toEqual(neutral);
+      else {
+        neutral = pixel;
+        expect(pixel[2]).toBeGreaterThan(40);
       }
     }
   } finally {

@@ -81,7 +81,7 @@ async function fixture(counter: number) {
       rotation: [0, 0, 0, 1],
     },
     undefined,
-  );
+  ).tickets;
   const state = {
     frameNumber: 7,
     graphGeneration: counter,

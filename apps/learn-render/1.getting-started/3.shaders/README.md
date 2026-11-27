@@ -1,26 +1,29 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # Shaders (LearnOpenGL §1.3)
 
 > [!NOTE]
-> **对应 LO 原章节**：[LearnOpenGL §1.3 Shaders](https://learnopengl.com/Getting-started/Shaders)
+> **Original chapter**: [LearnOpenGL 1.3 Shaders](https://learnopengl.com/Getting-started/Shaders)
 >
-> **对应引擎能力**：feat-20260515-learn-render-getting-started — 材质 `passes[].program` 选择 `forgeax::default-unlit` + 自定义 WGSL fragment uniform 脉动播放（`packages/shader/src/unlit.wgsl` 实际驱动；本目录 `src/shaders/play.wgsl` 是 LO §1.3 → forgeax 的 shader 阶段映射文档伴侣）。
+> **Engine capability**: feat-20260515-learn-render-getting-started -- material `passes[].program` selects `forgeax::default-unlit` with a pulsing fragment uniform. `packages/shader/src/unlit.wgsl` drives rendering; `src/shaders/play.wgsl` documents the LO-to-ForgeaX shader-stage mapping.
 
-## 这个示例展示什么
+## What This Example Shows
 
-LO §1.3 的核心论点是「用 uniform 把 CPU 数据塞进 fragment shader，让颜色随时间脉动」。forgeax 把同样的语义切成三层：
+LO 1.3 sends CPU data to a fragment shader through uniforms so color pulses over time. ForgeaX separates that into three layers:
 
-1. **创建材质资产** — `assets.create` 接收包含 `passes` 与 `values.baseColor` 的材质声明，返回运行时身份。
-2. **ECS 引用资产** — `MeshFilter.assetHandle` 引用三角形，`MeshRenderer.materials` 引用材质；Pass 的程序声明决定管线。
-3. **rAF 内驱 pulse 标量** — `Math.sin(elapsedSeconds)` 每帧驱动一个 `pulse: number`，挂在 `globalThis.__captureShadersPulse` 上让 AI 用户从 DevTools / bench-screenshot 单点观测
+1. **Create a material asset**: `assets.create` accepts a declaration with `passes` and `values.baseColor`, returning runtime identity.
+2. **Reference assets in ECS**: `MeshFilter.assetHandle` references the triangle; `MeshRenderer.materials` references the material. Pass program declarations select the pipeline.
+3. **Drive pulse in rAF**: `Math.sin(elapsedSeconds)` updates `pulse: number` each frame, exposed through `globalThis.__captureShadersPulse` for DevTools / bench-screenshot observation.
 
 > [!IMPORTANT]
-> **forgeax 不暴露 `glUseProgram` / `glGetUniformLocation` 这类 OpenGL 全局状态机入口**；shader 选择由材质 Pass 的程序声明完成（charter P4 一致抽象）。AI 用户写「我要 unlit 颜色脉动」就是写 `MaterialAsset` POD + 一个 sin 驱动的 pulse 数值，不用学 GL 状态机词汇。
+> **ForgeaX does not expose OpenGL state-machine entries such as `glUseProgram` / `glGetUniformLocation`.** Material Pass program declarations choose shaders (charter P4). An unlit pulsing color requires MaterialAsset POD and a sine-driven scalar, without GL state-machine vocabulary.
 
-## 渲染流程
+## Rendering Flow
 
 ```mermaid
 flowchart LR
-  CPU["CPU 每帧"] --> Pulse["pulse = (sin(t)+1)/2"]
+  CPU["CPU each frame"] --> Pulse["pulse = (sin(t)+1)/2"]
   Pulse --> Mat["MaterialAsset.values.baseColor"]
   Mat --> Reg["AssetRegistry"]
   Reg --> RS["Renderer consumes material Pass"]
@@ -29,9 +32,9 @@ flowchart LR
   FS --> Frame["swap-chain frame"]
 ```
 
-## 引擎用法
+## Engine Usage
 
-[src/index.ts](src/index.ts) 从当前 World 的资产 owner 创建三角形与一份带 Forward Pass 的 unlit 材质：
+[src/index.ts](src/index.ts) creates a triangle and an unlit Forward Pass material through the current World's asset owner:
 
 ```ts
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
@@ -53,48 +56,48 @@ world.spawn(
 ).unwrap();
 ```
 
-示例的 pulse 观测钩子与相机装配见源码。需要改变实际材质颜色时，调用 `assets.update(material, { values: { baseColor: [1, pulse, 0.2, 1] } }).unwrap()`；资产 owner 自动发布版本，Renderer 消费更新。
+See source for the pulse observation hook and camera assembly. To change actual material color, call `assets.update(material, { values: { baseColor: [1, pulse, 0.2, 1] } }).unwrap()`. The asset owner publishes versions and Renderer consumes updates.
 
-## 与 LO 原版的差异
+## Differences From LO
 
-| 维度 | LO 原版（C++ / GLSL 330） | forgeax 这里（TS / WGSL） |
+| Dimension | Original LO (C++ / GLSL 330) | ForgeaX (TS / WGSL) |
 |:--|:--|:--|
-| Shader 语言 | GLSL 330（`#version 330 core` + `void main()`） | WGSL（`@vertex` / `@fragment` + `fn vs_main` / `fn fs_main`） |
-| Shader 选择 | `glCreateShader` + `glShaderSource` + `glCompileShader` + `glAttachShader` + `glLinkProgram` + `glUseProgram` 串行手写状态机 | `MaterialAsset.passes[].program` 选择已编译程序 |
-| Uniform 设置 | `glGetUniformLocation(program, "ourColor")` + `glUniform4f(loc, r, g, b, a)` 每帧手动设置 | `assets.create(material)` 创建，`assets.update(handle, patch)` 更新；ECS `MeshRenderer.materials` 引用句柄 |
-| 时间脉动 | `float timeValue = glfwGetTime(); float green = sin(timeValue) / 2.0 + 0.5;` 在 GLFW 主循环内 | `computePulse(performance.now(), basePulseTime)` 在 rAF tick 内；`globalThis.__captureShadersPulse` 暴露给观测者 |
-| 错误处理 | `glGetShaderiv(GL_COMPILE_STATUS) + glGetShaderInfoLog` 字符串解析；编译失败可静默或 `cerr` 打印 | forgeax 用结构化错误（`err.code` 闭族 `ShaderErrorCode 7` 成员 + `err.expected` / `err.hint` / `err.detail`）替代 LO C++ 抛异常 / 静默失败；AI 用户 `switch (err.code)` exhaustive narrow，不解析 `err.message`（charter P3） |
-| 资源加载 | 直接路径 `Shader ourShader("vs.vs", "fs.fs")` 读文件 | 渲染期不存在路径加载；shader 由引擎注册表（`@forgeax/engine-shader` ShaderRegistry）通过 manifest hash 索引；自定义 wgsl 走 `vite-plugin-shader` 构建期编译 |
-| 顶点输入 | `glVertexAttribPointer(0, 3, GL_FLOAT, ...)` 手布局 | `MeshFilter { assetHandle: triangle }` 引用受管理的 Geometry 产物；引擎自动绑定 `@location(0) pos` |
+| Shader language | GLSL 330 (`#version 330 core`, `void main()`) | WGSL (`@vertex` / `@fragment`, `fn vs_main` / `fn fs_main`) |
+| Shader selection | Manually sequence `glCreateShader`, `glShaderSource`, `glCompileShader`, `glAttachShader`, `glLinkProgram`, `glUseProgram` | `MaterialAsset.passes[].program` selects a compiled program |
+| Uniforms | Manually call `glGetUniformLocation(program, "ourColor")` and `glUniform4f(loc, r, g, b, a)` every frame | Create with `assets.create(material)`, update with `assets.update(handle, patch)`; ECS `MeshRenderer.materials` references handles |
+| Time pulse | `float timeValue = glfwGetTime(); float green = sin(timeValue) / 2.0 + 0.5;` in the GLFW loop | `computePulse(performance.now(), basePulseTime)` in rAF; `globalThis.__captureShadersPulse` exposes observation |
+| Errors | Parse `glGetShaderiv(GL_COMPILE_STATUS)` / `glGetShaderInfoLog` strings; compilation may fail silently or print to cerr | Structured `err.code` (`ShaderErrorCode`, seven members) with `expected`, `hint`, `detail`; exhaustive switch instead of parsing messages (charter P3) |
+| Resources | `Shader ourShader("vs.vs", "fs.fs")` loads file paths | No render-time paths: `@forgeax/engine-shader` ShaderRegistry indexes manifest hashes; `vite-plugin-shader` compiles custom WGSL at build time |
+| Vertex inputs | Manual `glVertexAttribPointer(0, 3, GL_FLOAT, ...)` layout | `MeshFilter { assetHandle: triangle }` references managed Geometry output; Engine binds `@location(0) pos` |
 
-## 关键代码量
+## Key Source Files
 
-| 文件 | 行数 | 角色 |
+| File | Lines | Role |
 |:--|---:|:--|
-| `src/index.ts` | ~250 | 三段式（引擎使用 + 示例胶水 + 启动）+ pulse 计算 + capture hook |
-| `src/shaders/play.wgsl` | ~75 | LO §1.3 → forgeax shader 阶段映射文档（vertex + fragment + pulse uniform） |
-| `src/__tests__/shaders.browser.test.ts` | ~130 | vitest browser e2e（AC-05 + AC-06 + AC-22 三段断言） |
+| `src/index.ts` | ~250 | Three sections (Engine usage, example glue, bootstrap), pulse calculation and capture hook |
+| `src/shaders/play.wgsl` | ~75 | LO 1.3 shader-stage mapping: vertex, fragment and pulse uniform |
+| `src/__tests__/shaders.browser.test.ts` | ~130 | Vitest browser e2e (AC-05, AC-06, AC-22) |
 
-## 运行
+## Run
 
 ```bash
-# 开发服务器（vite preview 端口 5182）
+# Dev server (Vite preview port 5182)
 pnpm --filter "@forgeax/app-learn-render-1-getting-started-3-shaders" dev
 
-# 构建（产出 dist/）
+# Build dist/
 pnpm --filter "@forgeax/app-learn-render-1-getting-started-3-shaders" build
 
 # vitest browser e2e（chromium + WebGPU）
 pnpm test:browser
 
-# 录制 golden PNG（forgeax-engine-assets 子模块）
+# Record a golden PNG in the forgeax-engine-assets submodule
 pnpm --filter "@forgeax/app-learn-render-1-getting-started-3-shaders" exec node scripts/bench-screenshot.mjs
 ```
 
 <details>
-<summary>LO 原版 C++/GLSL 关键片段（参考用）</summary>
+<summary>Original LO C++/GLSL excerpts (reference)</summary>
 
-LO §1.3 在 `src/1.getting_started/3.1.shaders_uniform/shaders_uniform.cpp` + `3.1.shader.fs` / `3.1.shader.vs` 的核心代码（来自 [JoeyDeVries/LearnOpenGL master 分支](https://github.com/JoeyDeVries/LearnOpenGL)）：
+Core LO 1.3 code from `src/1.getting_started/3.1.shaders_uniform/shaders_uniform.cpp`, `3.1.shader.fs` and `3.1.shader.vs` ([JoeyDeVries/LearnOpenGL master](https://github.com/JoeyDeVries/LearnOpenGL)):
 
 ```glsl
 // 3.1.shader.vs (vertex shader, GLSL 330)
@@ -162,6 +165,6 @@ while (!glfwWindowShouldClose(window))
 }
 ```
 
-`glUseProgram` / `glGetUniformLocation` / `glUniform4f` / shader compile fragment / `void main` / `gl_Position` / `glClear` 七个 GL 关键标识在本折叠块全部命中（grep 闸门 AC-23）。
+This block contains all seven required GL identifiers: `glUseProgram`, `glGetUniformLocation`, `glUniform4f`, shader compilation fragment, `void main`, `gl_Position`, `glClear` (AC-23 grep gate).
 
 </details>

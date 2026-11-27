@@ -3,12 +3,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import {
+  admitShaderTemplateManifest,
   expandShaderManifestPublication,
   LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
   LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
   type ManifestEntry,
   type MaterialShaderManifestEntry,
   SHADER_MANIFEST_PUBLICATION_VERSION,
+  type ShaderTemplateManifest,
   shaderSourceDigestInput,
 } from '@forgeax/engine-shader';
 import { MATERIAL_WGSL_PROFILE } from '@forgeax/engine-shader-compiler';
@@ -482,4 +484,55 @@ export async function loadSharedEngineShaderManifest(
     materialShaders: [...input.materialShaders],
     publication: input.publication,
   };
+}
+
+/** Admit the canonical template producer's explicit consumer handoff. */
+export function loadSharedEngineShaderTemplates(
+  manifestPath: string,
+  options: { readonly pointShadows: boolean; readonly hdrpSsao: boolean },
+): ShaderTemplateManifest | undefined {
+  const receipt = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+    readonly producer?: string;
+    readonly schemaVersion?: number;
+    readonly shaderPublication?: string;
+    readonly shaderBuild?: { readonly outputFingerprint?: string };
+    readonly inventory?: readonly string[];
+    readonly payload?: { readonly engineShaderManifest?: string };
+  };
+  // Older envelopes are still available to the explicit compiled path.
+  if (receipt.shaderPublication !== 'source') return undefined;
+  const path = resolve(dirname(manifestPath), 'shaders/manifest.json');
+  const declaredPath = receipt.payload?.engineShaderManifest;
+  // A verified receipt can move with its source tree into a disposable project.
+  // Its declared relative layout and digest survive that move.
+  const mountedPath =
+    typeof declaredPath === 'string' ? declaredPath.replace(/^(?:\.\.\/)+/, '') : undefined;
+  if (
+    (receipt.producer !== 'shared-app-inputs' || receipt.schemaVersion !== 1) &&
+    (receipt.producer !== 'repo-build-inputs' || receipt.schemaVersion !== 2)
+  ) {
+    throw new Error(`Unexpected shared shader template producer: ${manifestPath}`);
+  }
+  if (
+    declaredPath === undefined ||
+    !mountedPath ||
+    !path.replaceAll('\\', '/').endsWith(`/${mountedPath}`) ||
+    !Array.isArray(receipt.inventory) ||
+    !receipt.inventory.includes(declaredPath)
+  ) {
+    throw new Error(`Shared shader template payload path mismatch: ${manifestPath}`);
+  }
+  const bytes = readFileSync(path);
+  const digest = createHash('sha256').update(declaredPath).update('\0').update(bytes).update('\0');
+  if (receipt.shaderBuild?.outputFingerprint !== `sha256:${digest.digest('hex')}`)
+    throw new Error(`Shared shader template payload digest mismatch: ${path}`);
+  const result = admitShaderTemplateManifest(JSON.parse(bytes.toString('utf8')));
+  if (!result.ok)
+    throw new Error(`Shared shader template admission failed: ${path}`, { cause: result.error });
+  const wire = result.value.wire;
+  const pointShadows = Object.values(wire.library.programs).some(
+    ({ engine }) => engine?.pointShadows === true,
+  );
+  const hdrpSsao = wire.entries.some(({ role }) => role === 'ssao');
+  return pointShadows === options.pointShadows && hdrpSsao === options.hdrpSsao ? wire : undefined;
 }

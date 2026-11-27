@@ -2,6 +2,7 @@ import {
   buildMeshDistanceField,
   buildVisibilityDistanceField,
   distanceFieldTexel,
+  type MeshDistanceField,
 } from '@forgeax/engine-geometry';
 import { assert, expect, it } from 'vitest';
 import { brickDistanceFieldValues } from '../../../../geometry/src/distance-field-bricks';
@@ -28,6 +29,39 @@ function codeAt(bytes: Uint8Array, dims: readonly [number, number, number], inde
 
 const transform = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
+// Independent typed-pool ABI oracle: four scene words, twenty header words and
+// four coverage words per slot, followed by aligned payload spans.
+// Compare signed code tuples, independently of production hashes and packers.
+function meshWords(field: MeshDistanceField) {
+  assert(field.policy.kind === 'sampled-visibility');
+  assert(field.surface);
+  const band = field.policy.distanceBand;
+  const payloads = new Set<string>();
+  for (const offset of field.bricks) {
+    const tuple = Array.from(field.values.subarray(offset, offset + 64), (value) =>
+      Math.max(-32767, Math.min(32767, Math.round((value / band) * 32767))),
+    );
+    payloads.add(tuple.join(','));
+  }
+  return [
+    field.bricks.length + payloads.size * 32,
+    field.surface.positions.length,
+    field.surface.indices.length,
+    field.surface.nodes.byteLength / 4,
+    field.surface.primitiveOrder.length,
+    field.surface.triangleSidedness.length,
+  ].reduce((sum, length) => sum + Math.ceil(length / 4) * 4, 0);
+}
+function sampleSpan(fields: Uint8Array, row: number) {
+  const view = new DataView(fields.buffer, fields.byteOffset, fields.byteLength),
+    header = 4 + 20 * row,
+    first = view.getUint32((header + 4) * 4, true),
+    length = view.getUint32((header + 5) * 4, true);
+  assert(first >= 4 + view.getUint32(8, true) * 24);
+  assert(first + length <= fields.byteLength / 4);
+  return fields.subarray(first * 4, (first + length) * 4);
+}
+
 it('packs sampled visibility into SNORM16 distances with a half-step scalar error bound', async () => {
   const field = (
     await buildVisibilityDistanceField([-1, -1, 0, 1, -1, 0, 0, 1, 0], [0, 1, 2], {
@@ -41,8 +75,11 @@ it('packs sampled visibility into SNORM16 distances with a half-step scalar erro
   const packed = packSdfScene([source, { ...source, instanceId: 3 }]).unwrap();
   expect(packed.fields.byteLength % 4).toBe(0);
   const instances = new DataView(packed.instances.buffer);
-  expect(instances.getUint32(80, true)).toBe(0);
-  expect(instances.getUint32(144 + 80, true)).toBe(0);
+  expect(instances.getUint32(80, true)).toBe(4);
+  expect(instances.getUint32(144 + 80, true)).toBe(4 + 20);
+  const samples = sampleSpan(packed.fields, 0);
+  expect(sampleSpan(packed.fields, 1)).toEqual(samples);
+  expect(packed.fields.byteLength).toBe((4 + 2 * 24 + meshWords(field)) * 4);
   expect(instances.getFloat32(124, true)).toBe(field.policy.distanceBand);
   const band = field.policy.distanceBand;
   let negative = 0,
@@ -55,7 +92,7 @@ it('packs sampled visibility into SNORM16 distances with a half-step scalar erro
       Math.floor(i / field.dimensions[0]) % field.dimensions[1],
       Math.floor(i / (field.dimensions[0] * field.dimensions[1])),
     );
-    const code = codeAt(packed.fields, field.dimensions, i);
+    const code = codeAt(samples, field.dimensions, i);
     expect(code).toBe(Math.max(-32767, Math.min(32767, Math.round((value / band) * 32767))));
     const restored = (code / 32767) * band;
     expect(Math.abs(restored - value)).toBeLessThanOrEqual(band / (2 * 32767) + 1e-12);
@@ -91,11 +128,12 @@ it('keeps geometric fields bit-exact after boundary SNORM16 bricks and shares im
     { ...source, instanceId: 3, geometryId: 4, field: geometric },
     { ...source, instanceId: 5 },
   ]).unwrap();
-  const offset = packSdfScene([source]).unwrap().fields.byteLength;
+  const offset = (4 + 3 * 24 + meshWords(sampled)) * 4;
   expect(sampled.dimensions.reduce((a, b) => a * b) % 2).not.toBe(0);
   const instances = new DataView(packed.instances.buffer);
   expect(instances.getUint32(144 + 80, true)).toBe(offset / 4);
-  expect(instances.getUint32(288 + 80, true)).toBe(0);
+  expect(instances.getUint32(288 + 80, true)).toBe(4 + 2 * 20);
+  expect(sampleSpan(packed.fields, 0)).toEqual(sampleSpan(packed.fields, 2));
   const dense = Float32Array.from(
     { length: geometric.dimensions.reduce((a, b) => a * b) },
     (_, i) =>
@@ -141,11 +179,13 @@ it.each([
     },
   ]).unwrap();
   const bricks = field.dimensions.reduce((n, d) => n * Math.ceil(d / 4), 1);
-  expect(packed.fields.byteLength).toBe((bricks + 32) * 4);
-  const words = new Uint32Array(packed.fields.buffer);
+  expect(packed.fields.byteLength).toBe((4 + 24 + meshWords(field)) * 4);
+  const samples = sampleSpan(packed.fields, 0),
+    words = new Uint32Array(samples.buffer, samples.byteOffset, samples.byteLength / 4);
+  expect(samples.byteLength).toBe((bricks + 32) * 4);
   for (const word of words.subarray(0, bricks)) expect(word).toBe(bricks);
   for (let i = 0; i < field.dimensions.reduce((a, b) => a * b); i++)
-    expect(codeAt(packed.fields, field.dimensions, i)).toBe(sign * 32767);
+    expect(codeAt(samples, field.dimensions, i)).toBe(sign * 32767);
 });
 
 // Keep the full pool admission/rejection/reuse workload under V8 instrumentation.
@@ -168,7 +208,8 @@ it('counts tables and payloads against the shared 16 MiB pool before publication
   const field = { ...original, ...storage, quality: { ...original.quality, negativeSamples: 0 } };
   const source = { instanceId: 0, geometryId: 1, mask: 255, transform, field };
   const one = packSdfScene([source]).unwrap();
-  const limit = Math.floor((16 * 1024 * 1024) / one.fields.byteLength);
+  const bodyWords = meshWords(field),
+    limit = Math.floor((4_194_304 - 4) / (20 + bodyWords));
   expect(limit).toBeLessThan(1024);
   const admitted = Array.from({ length: limit }, (_, i) => ({
     ...source,
@@ -176,7 +217,7 @@ it('counts tables and payloads against the shared 16 MiB pool before publication
     field: { ...field },
   }));
   expect(packSdfScene(admitted, 1024).unwrap().fields.byteLength).toBe(
-    limit * one.fields.byteLength,
+    (4 + limit * (24 + bodyWords)) * 4,
   );
   const rejected = packSdfScene(
     [...admitted, { ...source, instanceId: limit, field: { ...field } }],
@@ -185,12 +226,12 @@ it('counts tables and payloads against the shared 16 MiB pool before publication
   assert(!rejected.ok);
   expect(rejected.error.code).toBe('ray-reference-limit');
   // The same field object across the same roster occupies the pool only once.
-  expect(
-    packSdfScene(
-      admitted.map((m) => ({ ...m, field })),
-      1024,
-    ).unwrap().fields,
-  ).toEqual(one.fields);
+  const shared = packSdfScene(
+    admitted.map((m) => ({ ...m, field })),
+    1024,
+  ).unwrap().fields;
+  expect(shared.byteLength).toBe((4 + limit * 24 + bodyWords) * 4);
+  expect(shared.subarray((4 + limit * 24) * 4)).toEqual(one.fields.subarray((4 + 24) * 4));
   const uploads = admitted.map((item) => ({
     ...item,
     fieldUpload: SdfFieldUpload.capture(item.field).unwrap(),

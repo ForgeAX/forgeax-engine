@@ -1072,7 +1072,7 @@ async function verifyPointShadowReceiver(
 }
 
 // A directional HDR panorama falsifies the constant-white fallback and
-// exercises the renderer-owned diffuse, specular mip, and BRDF LUT path.
+// exercises the renderer-owned diffuse, specular mips, and environment BRDF.
 function spawnDirectionalSkylight(world: World): EntityHandle {
   const environmentBytes = new Uint8Array(16 * 8 * 8);
   const environmentView = new DataView(environmentBytes.buffer);

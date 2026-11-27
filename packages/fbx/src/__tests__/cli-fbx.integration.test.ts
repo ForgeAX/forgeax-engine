@@ -1,7 +1,12 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ImporterRegistry, type RunImportMeta, runImport } from '@forgeax/engine-import';
+import {
+  ImporterRegistry,
+  projectImportPack,
+  type RunImportMeta,
+  runImport,
+} from '@forgeax/engine-import';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runCliFbx } from '../cli-fbx.js';
 import { fbxImporter } from '../fbx-importer.js';
@@ -66,8 +71,8 @@ describe('FBX sidecar producer', () => {
       }),
     });
     expect(imported.ok).toBe(true);
-    if (imported.ok && 'pack' in imported.value) {
-      expect(imported.value.pack.assets.map((asset) => asset.kind)).toEqual([
+    if (imported.ok && !('skipped' in imported.value)) {
+      expect(projectImportPack(imported.value.product).assets.map((asset) => asset.kind)).toEqual([
         'mesh',
         'mesh',
         'material',

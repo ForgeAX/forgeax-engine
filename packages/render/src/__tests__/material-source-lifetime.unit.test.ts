@@ -25,6 +25,7 @@ import {
   type ExtractedFrame,
   type RenderableSnapshot,
 } from '../render-system-extract';
+import { MaterialSourceEntries } from '../scene/material-source-entries';
 import { PersistentRenderScene } from '../scene/render-scene';
 
 function texture(fill: number): TextureAsset {
@@ -78,6 +79,72 @@ async function fixture() {
     source,
   };
 }
+
+it('owns only live dependency edges, retries and planar receivers across partial edits', () => {
+  const rows = new MaterialSourceEntries();
+  const versions = new Map<number, number>();
+  const assetRevision = vi.fn((handle: number) => versions.get(handle) ?? 1);
+  const scope = { ...worldRenderResources(new World()), assetRevision };
+  const install = (root: number, dependency: number) => {
+    const revision = versions.get(dependency) ?? 1;
+    rows.set(root, {
+      assetRevision: 1,
+      ...(root === 1 ? { planarRouted: true } : {}),
+      snapshot: {
+        ...defaultMaterialSnapshot(root),
+        sourceAssets: {
+          root,
+          revision: 1,
+          assets: [
+            { handle: root, revision: 1 },
+            { handle: dependency, revision },
+          ],
+        },
+      },
+    });
+  };
+  const changed = new Set<number>();
+  const collect = (changes: readonly { handle: number }[], retry: 'source' | 'all' = 'all') => {
+    changed.clear();
+    rows.collectSourceChanges(scope, changes, changed, retry);
+    return [...changed];
+  };
+  for (let i = 1; i <= 128; i++) install(i, 1000 + Math.ceil(i / 2));
+  expect(collect([])).toEqual([]);
+  for (let index = 0; index < 60; index++) {
+    const first = index * 2 + 1;
+    const dependency = 1001 + index;
+    versions.set(dependency, 2);
+    assetRevision.mockClear();
+    expect(collect([{ handle: dependency }, { handle: dependency }])).toEqual([first, first + 1]);
+    expect(assetRevision.mock.calls.flat()).toEqual([first, dependency, first + 1, dependency]);
+    // Unaccepted work must remain visible even after an observer advances.
+    expect(collect([])).toEqual([first, first + 1]);
+    install(first, 2000 + index);
+    rows.delete(first + 1);
+    expect(collect([{ handle: dependency }])).toEqual([]);
+  }
+  changed.clear();
+  rows.collectPlanarReceivers(changed);
+  expect([...changed]).toEqual([1]);
+  const previous = rows.get(1);
+  if (previous === undefined) throw new Error('missing material');
+  rows.set(1, { ...previous, retry: { cause: 'texture pending' } });
+  rows.set(8000, {
+    snapshot: defaultMaterialSnapshot(8000),
+    assetRevision: 1,
+    retry: { cause: 'program pending' },
+  });
+  expect(collect([], 'source')).toEqual([1]);
+  expect(collect([])).toEqual([1, 8000]);
+  // The next observer may have opened after a source was edited.
+  rows.set(1, previous);
+  versions.set(2000, 8);
+  rows.resetSourceObserver();
+  expect(collect([], 'source')).toEqual([1]);
+  rows.clear();
+  expect(collect([{ handle: 2000 }])).toEqual([]);
+});
 
 it('SceneComposition owns accepted sources through removal, failed preparation, recovery and disposal', async () => {
   const { device, store, scope, assets, world, base, image, textureHandle, source } =
@@ -162,6 +229,24 @@ it('SceneComposition owns accepted sources through removal, failed preparation, 
     expect(retained).toHaveBeenCalledTimes(3);
     const last = store.ensureResident(textureHandle, image, fixed).unwrap();
     expect(last.texture.isDestroyed).toBe(false);
+
+    // One new lease succeeds before the next source fails to acquire.
+    const provisional = { track: vi.fn(), release: vi.fn() };
+    retained.mockReturnValueOnce(provisional).mockImplementationOnce(() => {
+      throw new Error('material-source-unavailable');
+    });
+    for (let i = 0; i < 2; i++) {
+      const material = new MaterialResource({
+        ...defaultMaterialSnapshot(),
+        sourceAssets: source(),
+      });
+      const nextEntity = world.spawn({ component: Transform, data: {} }).unwrap();
+      rows.push({ ...row, entityKey: nextEntity, material, materials: [material] });
+    }
+    persistent.shared.invalidate();
+    expect(extract).toThrow('material-source-unavailable');
+    expect(provisional.release).toHaveBeenCalledExactlyOnceWith(true);
+    expect(extract().renderables).toHaveLength(3);
     persistent.dispose();
     expect(last.texture.isDestroyed).toBe(true);
     expect(created.mock.calls.length).toBe(destroyed.mock.calls.length);

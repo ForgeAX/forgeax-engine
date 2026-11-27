@@ -1,3 +1,7 @@
+import { startOrdinaryLitDepthServer } from './ordinary-lit-depth.server';
+
+const litDepthServers = new Map<string, Awaited<ReturnType<typeof startOrdinaryLitDepthServer>>>();
+
 import { serializeCookedMaterialRecord, validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
@@ -26,6 +30,17 @@ const vertexColorServers = new Map<
   Awaited<ReturnType<typeof startVertexColorPublicationServer>>
 >();
 export const materialPublicationCommands = {
+  async startOrdinaryLitDepth(_context: unknown) {
+    const server = await startOrdinaryLitDepthServer();
+    const id = server.binding.catalogUrl;
+    litDepthServers.set(id, server);
+    return { id, binding: server.binding, guid: server.guid };
+  },
+  async stopOrdinaryLitDepth(_context: unknown, id: string) {
+    const server = litDepthServers.get(id);
+    litDepthServers.delete(id);
+    await server?.close();
+  },
   async prepareChannelPhysicalMaterial(_context: unknown, source: MaterialAsset) {
     const cooked = await createMaterialPackCooker().cook({ guid: CHANNEL_PHYSICAL_GUID, source });
     const record = validateCookedMaterialRecord(

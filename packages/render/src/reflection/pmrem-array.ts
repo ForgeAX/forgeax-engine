@@ -1,5 +1,12 @@
 import type { RenderGraphBuilder, RenderGraphError } from '@forgeax/engine-render-graph';
-import type { RhiDevice, RhiError, Texture, TextureFormat, TextureView } from '@forgeax/engine-rhi';
+import type {
+  RhiCommandEncoder,
+  RhiDevice,
+  RhiError,
+  Texture,
+  TextureFormat,
+  TextureView,
+} from '@forgeax/engine-rhi';
 import { ok, type Result, textureFormatBlock } from '@forgeax/engine-types';
 import { createPmremAtlas, type PmremAtlas, pmremExtent } from '../ibl/pmrem';
 import type { RenderPipelineFrame } from '../render-pipeline';
@@ -348,6 +355,26 @@ export class PmremArrayPool {
   }
 }
 
+export function pmremMigrationName(migration: PmremArrayMigration): string {
+  return `reflection-pmrem.${migration.key}.migrate-${migration.target.generation}`;
+}
+
+/** Only the migration ticket's live layers move to the new physical array. */
+export function copyPmremLayers(
+  encoder: RhiCommandEncoder,
+  migration: PmremArrayMigration,
+  source: Texture,
+  target: Texture,
+): void {
+  const size = { ...pmremExtent(migration.size), depthOrArrayLayers: 1 };
+  for (const layer of migration.layers)
+    encoder.copyTextureToTexture(
+      { texture: source, origin: [0, 0, layer] },
+      { texture: target, origin: [0, 0, layer] },
+      size,
+    );
+}
+
 /** GPU copies share the physical frame encoder; no readback or detached submission. */
 export function addPmremArrayMigrations(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
@@ -383,23 +410,20 @@ export function addPmremArrayMigrations(
     );
     if (!sourceView.ok) return sourceView;
     if (!targetView.ok) return targetView;
-    const added = graph.addCopyPass(
-      `reflection-pmrem.${migration.key}.migrate-${migration.target.generation}`,
-      {
-        accesses: [
-          { resource: sourceView.value, usage: 'copy-src' },
-          { resource: targetView.value, usage: 'copy-dst' },
-        ],
-        encodeDirect: (encoder, _frame, resources) => {
-          for (const layer of migration.layers)
-            encoder.copyTextureToTexture(
-              { texture: resources.texture(source.value).unwrap(), origin: [0, 0, layer] },
-              { texture: resources.texture(target.value).unwrap(), origin: [0, 0, layer] },
-              { ...pmremExtent(migration.size), depthOrArrayLayers: 1 },
-            );
-        },
+    const added = graph.addCopyPass(pmremMigrationName(migration), {
+      accesses: [
+        { resource: sourceView.value, usage: 'copy-src' },
+        { resource: targetView.value, usage: 'copy-dst' },
+      ],
+      encodeDirect: (encoder, _frame, resources) => {
+        copyPmremLayers(
+          encoder,
+          migration,
+          resources.texture(source.value).unwrap(),
+          resources.texture(target.value).unwrap(),
+        );
       },
-    );
+    });
     if (!added.ok) return added;
   }
   return ok(undefined);

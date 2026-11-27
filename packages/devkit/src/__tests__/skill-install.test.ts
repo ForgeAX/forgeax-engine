@@ -62,6 +62,32 @@ describe('project-local skill installation', () => {
     await expect(installProjectSkills(root)).rejects.toThrow('skill-mount-conflict');
   });
 
+  it('rolls back earlier mounts when a later ignore file is inaccessible', async () => {
+    const root = await projectFixture();
+    const firstMount = resolve(root, '.codebuddy/skills');
+    const laterIgnore = resolve(root, '.cursor/skills/.gitignore');
+    await mkdir(firstMount, { recursive: true });
+    const originalIgnore = resolve(firstMount, '.gitignore');
+    await writeFile(originalIgnore, '# user settings\n/other\n');
+    await mkdir(laterIgnore, { recursive: true });
+
+    await expect(installProjectSkills(root)).rejects.toThrow();
+    await expect(readFile(originalIgnore, 'utf8')).resolves.toBe('# user settings\n/other\n');
+    await expect(lstat(resolve(firstMount, 'forgeax-engine-app'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect((await lstat(laterIgnore)).isDirectory()).toBe(true);
+    await expect(
+      lstat(resolve(root, '.forgeax/skill-install-manifest.json')),
+    ).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+
+    await rm(laterIgnore, { recursive: true });
+    await installProjectSkills(root);
+    await expect(verifyProjectSkills(root)).resolves.toMatchObject({ root });
+  });
+
   it('removes only stale links declared by the prior install manifest', async () => {
     const root = await projectFixture();
     await installProjectSkills(root);

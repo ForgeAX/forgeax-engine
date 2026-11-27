@@ -1,35 +1,58 @@
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { it } from 'vitest';
+import * as wgpu from '@forgeax/engine-rhi-wgpu';
+import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { verifySmaa } from './smaa.fixture';
 
-it('verifies Smaa pixels and capture/replay through browser WebGPU', {
+it.each([
+  { name: 'webgpu', backend: webgpu },
+  { name: 'wgpu-webgl2', backend: wgpu },
+] as const)('verifies SMAA blending and stencil on $name', {
   timeout: 180_000,
-}, async () => {
+}, async ({ name, backend }) => {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 128;
   document.body.append(canvas);
-  const recorder = attachRecorder(webgpu).unwrap();
-  const result = await constructRuntimeRendererHost(canvas, { rhi: recorder.backend.rhi });
-  if (!result.ok) throw result.error;
+  const descriptor = Object.getOwnPropertyDescriptor(navigator, 'gpu');
+  const portable = name === 'wgpu-webgl2';
+  if (portable) Object.defineProperty(navigator, 'gpu', { configurable: true, value: undefined });
+  const recorder = attachRecorder(backend).unwrap();
   try {
-    await verifySmaa(
-      result.value.renderer,
-      recorder,
-      canvas,
-      async (name, bytes) => {
-        let binary = '';
-        for (let i = 0; i < bytes.length; i += 8192)
-          binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-        await commands.writeFile(`artifacts/smaa/browser/${name}`, btoa(binary), 'base64');
-      },
-      import.meta.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1' ? 8 : 60,
-    );
+    const host = await constructRuntimeRendererHost(canvas, { rhi: recorder.backend.rhi });
+    if (!host.ok) throw host.error;
+    const result = host.value;
+    try {
+      const initialized = await result.initialization;
+      if (!initialized.ok) throw initialized.error;
+      expect(result.renderer.inspect().capabilities.backendKind).toBe(name);
+      await verifySmaa(
+        result.renderer,
+        recorder,
+        canvas,
+        async (filename, bytes) => {
+          let binary = '';
+          for (let i = 0; i < bytes.length; i += 8192)
+            binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+          await commands.writeFile(
+            `artifacts/smaa/browser-${name}/${filename}`,
+            btoa(binary),
+            'base64',
+          );
+        },
+        import.meta.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1' ? 8 : 60,
+        !portable,
+      );
+    } finally {
+      await result.renderer.dispose();
+    }
   } finally {
-    await result.value.renderer.dispose();
     canvas.remove();
     (await recorder.dispose()).unwrap();
+    if (portable) {
+      if (descriptor !== undefined) Object.defineProperty(navigator, 'gpu', descriptor);
+      else Reflect.deleteProperty(navigator, 'gpu');
+    }
   }
 });

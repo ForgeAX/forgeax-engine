@@ -20,11 +20,11 @@ import type {
 import { createRenderPipelineTarget } from '../render-pipeline';
 import type { RendererState } from '../render-system';
 import { FORWARD_PASS_SELECTOR } from '../systems/pass-selector';
-import { STANDARD_SURFACE_MSAA_NORMAL } from '../temporal/scene-data';
 import { addTypedFullscreenPass, addTypedScenePass } from '../typed-render-graph-primitives';
 import type { WaterInfoGraphTargets } from './standard-build-context';
 
 const MSAA_SURFACE_RESOLVE = 'forgeax.single-layer-medium-msaa-surface';
+const MSAA_DEPTH_RESOLVE = 'forgeax.single-layer-medium-msaa-depth';
 const MSAA_SELECTED_COLOR = 'forgeax.single-layer-medium-msaa-selected-color';
 const MSAA_SELECTED_COLOR_FALLBACK = 'forgeax.single-layer-medium-msaa-selected-color-fallback';
 const MSAA_FULLSCREEN_VERTEX = `
@@ -47,26 +47,28 @@ ${fallback ? '@group(1) @binding(3) var fallback: texture_multisampled_2d<f32>;\
 }`;
 }
 
-export const SINGLE_LAYER_MEDIUM_MSAA_SURFACE_PROGRAMS = [
-  {
-    name: MSAA_SURFACE_RESOLVE,
+function surfaceResolveProgram(motion: boolean) {
+  return {
+    name: motion ? MSAA_SURFACE_RESOLVE : MSAA_DEPTH_RESOLVE,
     kind: 'fullscreen' as const,
     depthOutput: 'depth32float-stencil8' as const,
     reads: [
       { key: 'input', sampleType: 'multisampled-float' as const },
       { key: 'depth', sampleType: 'depth' as const },
-      { key: 'normal', sampleType: 'multisampled-uint' as const },
-      { key: 'temporal', sampleType: 'multisampled-float' as const },
+      ...(motion ? [{ key: 'temporal', sampleType: 'multisampled-float' as const }] : []),
     ],
     source: `${MSAA_FULLSCREEN_VERTEX}
 @group(1) @binding(0) var color: texture_multisampled_2d<f32>;
 @group(1) @binding(1) var colorSampler: sampler;
 @group(1) @binding(3) var depth: texture_depth_multisampled_2d;
 @group(1) @binding(4) var depthSampler: sampler;
-@group(1) @binding(5) var normal: texture_multisampled_2d<u32>;
-@group(1) @binding(6) var temporal: texture_multisampled_2d<f32>;
-struct Output { @location(0) selectedSample: u32, @location(1) normal: u32,
-  @location(2) temporal: vec4<f32>, @location(3) rawDepth: f32, @builtin(frag_depth) depth: f32 };
+${motion ? '@group(1) @binding(5) var temporal: texture_multisampled_2d<f32>;' : ''}
+struct Output {
+  @location(0) selectedSample: u32,
+  ${motion ? '@location(1) temporal: vec4<f32>,' : ''}
+  @location(${motion ? 2 : 1}) rawDepth: f32,
+  @builtin(frag_depth) depth: f32,
+};
 @fragment fn fs_main(input: VertexOutput) -> Output {
   let pixel = vec2<i32>(input.position.xy);
   var selected = 0;
@@ -75,12 +77,13 @@ struct Output { @location(0) selectedSample: u32, @location(1) normal: u32,
     let candidate = textureLoad(depth, pixel, sampleIndex);
     if (candidate > nearest) { nearest = candidate; selected = sampleIndex; }
   }
-  let normalBytes = textureLoad(normal, pixel, selected);
-  let packedNormal = normalBytes.x | (normalBytes.y << 8u) | (normalBytes.z << 16u) | (normalBytes.w << 24u);
-  return Output(u32(selected), packedNormal,
-    textureLoad(temporal, pixel, selected), nearest, nearest);
+  return Output(u32(selected), ${motion ? 'textureLoad(temporal, pixel, selected), ' : ''}nearest, nearest);
 }`,
-  },
+  };
+}
+
+export const SINGLE_LAYER_MEDIUM_MSAA_SURFACE_PROGRAMS = [
+  surfaceResolveProgram(true),
   {
     name: MSAA_SELECTED_COLOR,
     kind: 'fullscreen' as const,
@@ -100,6 +103,7 @@ struct Output { @location(0) selectedSample: u32, @location(1) normal: u32,
       { key: 'fallback', sampleType: 'multisampled-float' as const },
     ],
   },
+  surfaceResolveProgram(false),
 ];
 
 /** Fixed opaque sample identity survives later color writers, including underwater translucency. */
@@ -107,15 +111,13 @@ export function addSingleLayerMediumMsaaSurfaceProducer(input: {
   readonly graph: RenderGraphBuilder<RenderPipelineFrame>;
   readonly sourceColor: RenderPipelineTarget;
   readonly sourceDepth: RenderPipelineTarget;
-  readonly sourceNormal: RenderPipelineTarget;
-  readonly sourceTemporal: RenderPipelineTarget;
+  readonly sourceTemporal?: RenderPipelineTarget;
   readonly sourceFallback?: RenderPipelineTarget;
   readonly size: GraphTextureDescriptor['size'];
 }): Result<
   {
     readonly selectedSample: RenderPipelineTarget;
-    readonly normal: RenderPipelineTarget;
-    readonly temporal: RenderPipelineTarget;
+    readonly temporal?: RenderPipelineTarget;
     readonly rawDepth: RenderPipelineTarget;
     readonly depth: RenderPipelineTarget;
     readonly color: RenderPipelineTarget;
@@ -127,15 +129,14 @@ export function addSingleLayerMediumMsaaSurfaceProducer(input: {
   const sources = [
     input.sourceColor,
     input.sourceDepth,
-    input.sourceNormal,
-    input.sourceTemporal,
+    ...(input.sourceTemporal === undefined ? [] : [input.sourceTemporal]),
     ...(input.sourceFallback === undefined ? [] : [input.sourceFallback]),
   ];
   if (sources.some((target) => target.sampleCount !== 4))
     return err(
       new RenderGraphError({
         code: 'resource-descriptor-invalid',
-        expected: 'matched 4x opaque color/depth/normal/temporal inputs',
+        expected: 'matched 4x opaque color, depth and temporal inputs',
         hint: 'produce all opaque surface facts at four samples before resolving them',
         detail: {
           resourceLabel: 'single-layer-medium-msaa-surface',
@@ -145,28 +146,13 @@ export function addSingleLayerMediumMsaaSurfaceProducer(input: {
         },
       }),
     );
-  if (input.sourceNormal.format !== STANDARD_SURFACE_MSAA_NORMAL.format)
-    return err(
-      new RenderGraphError({
-        code: 'resource-descriptor-invalid',
-        expected: 'a byte-exact four-sample packed normal carrier',
-        hint: 'use the Standard multisampled normal entry with its rgba8uint attachment',
-        detail: {
-          resourceLabel: 'single-layer-medium-msaa-surface',
-          field: 'sourceNormal.format',
-          expected: STANDARD_SURFACE_MSAA_NORMAL.format,
-          actual: input.sourceNormal.format,
-        },
-      }),
-    );
   const make = (label: string, format: RenderPipelineTarget['format']) =>
     createRenderPipelineTarget(input.graph, label, { format, size: input.size, sampleCount: 1 });
   const selectedSample = make('water-opaque-selected-sample', 'r32uint');
   if (!selectedSample.ok) return selectedSample;
-  const normal = make('water-opaque-normal', 'r32uint');
-  if (!normal.ok) return normal;
-  const temporal = make('standard-scene-temporal', 'rgba16float');
-  if (!temporal.ok) return temporal;
+  const temporal =
+    input.sourceTemporal === undefined ? undefined : make('standard-scene-temporal', 'rgba16float');
+  if (temporal !== undefined && !temporal.ok) return temporal;
   const rawDepth = make('water-opaque-raw-depth', 'r32float');
   if (!rawDepth.ok) return rawDepth;
   const depth = make('water-opaque-depth', 'depth32float-stencil8');
@@ -180,21 +166,23 @@ export function addSingleLayerMediumMsaaSurfaceProducer(input: {
   if (fallback !== undefined && !fallback.ok) return fallback;
   const produced = addTypedFullscreenPass(input.graph, {
     name: 'water-opaque-msaa-surface-resolve',
-    shader: MSAA_SURFACE_RESOLVE,
+    shader: temporal === undefined ? MSAA_DEPTH_RESOLVE : MSAA_SURFACE_RESOLVE,
     input: input.sourceColor,
     depth: input.sourceDepth,
-    outputs: [selectedSample.value, normal.value, temporal.value, rawDepth.value],
-    depthOutput: depth.value,
-    additionalReads: [
-      { key: 'normal', target: input.sourceNormal },
-      { key: 'temporal', target: input.sourceTemporal },
+    outputs: [
+      selectedSample.value,
+      ...(temporal === undefined ? [] : [temporal.value]),
+      rawDepth.value,
     ],
+    depthOutput: depth.value,
+    ...(input.sourceTemporal === undefined
+      ? {}
+      : { additionalReads: [{ key: 'temporal', target: input.sourceTemporal }] }),
   });
   if (!produced.ok) return produced;
   return ok({
     selectedSample: selectedSample.value,
-    normal: normal.value,
-    temporal: temporal.value,
+    ...(temporal === undefined ? {} : { temporal: temporal.value }),
     rawDepth: rawDepth.value,
     depth: depth.value,
     color: color.value,

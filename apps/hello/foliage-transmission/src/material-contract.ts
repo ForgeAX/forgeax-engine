@@ -10,7 +10,7 @@ import leaf from './leaf-diffuse-transmission.pack.json' with { type: 'json' };
  */
 export const FOLIAGE_MATERIAL_PACKAGES = ['leaf-diffuse-transmission.pack.json'] as const;
 
-const contract = leaf.assets[0]?.payload as unknown as MaterialRootAsset;
+const contract = leaf.assets['default-standard-pbr.wgsl'].payload as unknown as MaterialRootAsset;
 const selectedContract = selectMaterialStaticContract(contract, true);
 const declaredModule = contract.passes?.[0]?.program.module;
 if (declaredModule === undefined) throw new Error('Foliage material package has no pass module');

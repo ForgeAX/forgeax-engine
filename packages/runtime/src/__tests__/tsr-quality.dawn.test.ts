@@ -5,7 +5,7 @@ import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -151,7 +151,7 @@ it.each([
   timeout: 240_000,
 }, async (scale) => {
   const evidence = output ? `${output}/scale-${scale.toFixed(3)}` : undefined;
-  qualityManifest ??= buildEngineShaderManifest().then(shaderManifestUrl);
+  qualityManifest ??= buildEngineShaderTemplateManifest().then(shaderManifestUrl);
   const manifest = await qualityManifest;
   rasterReference ??= qualityRoute(
     manifest,

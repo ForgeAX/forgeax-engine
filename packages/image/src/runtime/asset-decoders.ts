@@ -19,6 +19,7 @@ import {
   type AssetLoadError,
   type EquirectAsset,
   err,
+  freezeJson,
   ok,
   type Result,
   type TextureAsset,
@@ -138,14 +139,9 @@ export function prepareRuntimeTexture(value: TextureAsset): Result<TextureAsset,
     ...(value.encoding === undefined ? { actualByteLength: value.data.byteLength } : {}),
   });
   if (!layout.ok) return fail(layout.error.expected);
-  return ok(value);
-}
-
-function validTextureSurface(
-  value: unknown,
-): value is Pick<TextureAsset, 'shape' | 'format' | 'data' | 'colorSpace' | 'mips'> {
-  if (value === null || typeof value !== 'object') return false;
-  return prepareRuntimeTexture(value as TextureAsset).ok;
+  // Parsing created these records. Publish precisely the validated descriptor
+  // alongside the source pixels for the lifetime of this accepted texture.
+  return ok({ ...value, shape: freezeJson(shape), mips: Object.freeze(mips) });
 }
 
 /** The image owner shares complete equirect admission across decode and runtime edits. */
@@ -452,14 +448,13 @@ function readDecodedSurface<P extends TextureAsset | EquirectAsset>(
   kind: P['kind'],
   candidate: unknown,
 ): ReturnType<typeof ok<P>> | ReturnType<typeof err<AssetLoadError>> {
-  if (
+  const prepared =
     kind === 'texture'
-      ? !validTextureSurface(candidate)
-      : !prepareRuntimeEquirect(candidate as EquirectAsset).ok
-  ) {
-    return invalid(guid, expected, 'image owner validation failed');
-  }
-  return ok(candidate as P);
+      ? prepareRuntimeTexture(candidate as TextureAsset)
+      : prepareRuntimeEquirect(candidate as EquirectAsset);
+  return prepared.ok
+    ? ok(prepared.value as P)
+    : invalid(guid, expected, 'image owner validation failed');
 }
 
 export const textureContribution: AssetDecoderContribution<TextureAsset, 'texture'> = {

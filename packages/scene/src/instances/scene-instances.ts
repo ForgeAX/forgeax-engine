@@ -1,4 +1,4 @@
-import { sceneTopoSort } from './scene-topology';
+import { sceneTopoSort, sceneTopoSortSteps } from './scene-topology';
 // @forgeax/engine-scene — scene instantiation and instance-state subsystem.
 
 import {
@@ -14,7 +14,7 @@ import {
   type World,
 } from '@forgeax/engine-ecs';
 import { classifyEntityField, remapEntityFieldValue } from '@forgeax/engine-ecs/externalization';
-import { componentSchema } from '@forgeax/engine-ecs/internal';
+import { componentSchema, releaseUnadoptedUniqueRef } from '@forgeax/engine-ecs/internal';
 import {
   fillComponentDefaults,
   readRenderArrayView,
@@ -44,8 +44,11 @@ import { resolveSceneEntity, sceneEntityAddressKey } from './binding.js';
 import {
   type CompiledSceneAsset,
   type CompiledSceneEntity,
+  type CompiledSceneResult,
   compileKeyedSceneAsset,
+  compileKeyedSceneAssetSteps,
 } from './keyed.js';
+import { sceneMemberSlotCountSteps } from './member-layout';
 import type { MountOverride, SceneInstanceMount } from './runtime-types.js';
 import { retainSceneSourceReferences } from './source-references.js';
 import {
@@ -131,14 +134,15 @@ export interface SceneMembersSpawn {
  * represented as the same string/tuple key accepted by `SceneEntityRef`, while
  * the numeric mapping stays local to the Scene owner.
  */
-function collectSceneEntityBindings(
+function* collectSceneEntityBindingsSteps(
   world: World,
   root: EntityHandle,
   prefix: readonly string[],
   bindings: Map<string, EntityHandle>,
   addresses: Map<EntityHandle, SceneEntityAddress>,
+  incremental: boolean,
   visited = new Set<number>(),
-): void {
+): Generator<void, void, void> {
   const rootRaw = root as unknown as number;
   if (visited.has(rootRaw)) return;
   visited.add(rootRaw);
@@ -148,8 +152,11 @@ function collectSceneEntityBindings(
   if (sceneInstance === undefined) return;
   const component = world.get(root, sceneInstance);
   if (!component.ok) return;
-  const mapping = (component.value as unknown as { mapping: ArrayLike<number> }).mapping;
+  const mapping = Array.from(
+    (component.value as unknown as { mapping: ArrayLike<number> }).mapping,
+  );
   for (const [slot, key] of state.value.keyByLocalId) {
+    if (incremental) yield;
     const raw = mapping[slot];
     if (raw === undefined || raw === ENTITY_NULL_RAW) continue;
     const address: SceneEntityAddress =
@@ -158,18 +165,61 @@ function collectSceneEntityBindings(
     addresses.set(raw as unknown as EntityHandle, address);
   }
   for (const childRoot of state.value.mountRoots) {
+    if (incremental) yield;
     const childState = worldGetSceneInstanceState(world, childRoot);
     const childKey = childState.ok ? childState.value.instanceKey : undefined;
     if (childKey === undefined) continue;
-    collectSceneEntityBindings(
+    yield* collectSceneEntityBindingsSteps(
       world,
       childRoot,
       [...prefix, childKey],
       bindings,
       addresses,
+      incremental,
       visited,
     );
   }
+}
+
+/** Explicit owner capabilities for fixed-content, suspended instance construction.
+ * The owner validates its captured content/schema guard before each resume and
+ * retains every newly materialized entity, including a partial failed instance.
+ * This type is engine-internal; it does not make content Prepared by itself.
+ */
+export interface SceneInstantiationContext {
+  readonly incremental: boolean;
+  /** The owner guarantees deterministic source resolution under its fixed closure and schema guard. */
+  readonly fixedSource?: true;
+  readonly resolveAsset: (handle: AssetHandle<'scene'>) => Result<SceneAsset, EcsError>;
+  readonly resolveSource: (
+    source: number | string,
+    parent: AssetHandle<'scene'>,
+  ) => Result<AssetHandle<'scene'>, EcsError>;
+  readonly materialize: (components: readonly ComponentData[]) => Result<EntityHandle, EcsError>;
+  readonly retainSource: (asset: SceneAsset) => Result<() => void, EcsError>;
+  /** Track effective author intent after a successfully applied, remapped override. */
+  readonly applyOverride: (entity: EntityHandle, override: MountOverride) => Result<void, EcsError>;
+}
+
+type SceneMaterialization = SceneInstantiationContext & {
+  readonly fixedPlans?: Map<AssetHandle<'scene'>, CompiledSceneResult>;
+};
+
+function synchronousSceneContext(world: World): SceneInstantiationContext {
+  return {
+    incremental: false,
+    resolveAsset: (handle) => worldResolveSceneAsset(world, handle),
+    resolveSource: (source, parent) => worldResolveMountSource(world, source, parent),
+    materialize: (components) => world.spawn(...components),
+    retainSource: (asset) => retainSceneSourceReferences(world, asset),
+    applyOverride: (entity, override) => worldApplyMountOverride(world, entity, override),
+  };
+}
+
+function finishSceneSteps<T>(steps: Generator<void, T, void>): T {
+  let next = steps.next();
+  while (!next.done) next = steps.next();
+  return next.value;
 }
 
 export type SceneAssetResolver = (
@@ -272,6 +322,50 @@ export function worldInstantiateSceneRec(
   instanceKey?: string,
   sceneSourceKey?: string,
 ): Result<EntityHandle, EcsError> {
+  return finishSceneSteps(
+    worldInstantiateSceneSteps(
+      world,
+      handle,
+      synchronousSceneContext(world),
+      parent,
+      stack,
+      instanceKey,
+      sceneSourceKey,
+    ),
+  );
+}
+
+/** Resume only at an exclusive legal World boundary, after the owner guard. */
+export function* worldInstantiateSceneSteps(
+  world: World,
+  handle: AssetHandle<'scene'>,
+  context: SceneInstantiationContext,
+  parent?: EntityHandle,
+  stack = new Set<number>(),
+  instanceKey?: string,
+  sceneSourceKey?: string,
+): Generator<void, Result<EntityHandle, EcsError>, void> {
+  return yield* instantiateSceneSteps(
+    world,
+    handle,
+    context.fixedSource === true ? { ...context, fixedPlans: new Map() } : context,
+    parent,
+    stack,
+    instanceKey,
+    sceneSourceKey,
+  );
+}
+
+function* instantiateSceneSteps(
+  world: World,
+  handle: AssetHandle<'scene'>,
+  context: SceneMaterialization,
+  parent: EntityHandle | undefined,
+  stack: Set<number>,
+  instanceKey?: string,
+  sceneSourceKey?: string,
+): Generator<void, Result<EntityHandle, EcsError>, void> {
+  if (context.incremental) yield;
   const handleKey = handle as number;
   if (stack.has(handleKey)) {
     const cycleArr: string[] = [];
@@ -289,17 +383,18 @@ export function worldInstantiateSceneRec(
       detail,
     } as unknown as EcsError);
   }
-  const resolved = worldResolveSceneAsset(world, handle);
+  const resolved = context.resolveAsset(handle);
   if (!resolved.ok) return resolved;
   const asset = resolved.value;
   stack.add(handleKey);
   try {
-    return worldInstantiateSceneAsset(
+    return yield* worldInstantiateSceneAssetSteps(
       world,
       handle,
       asset,
       parent,
       stack,
+      context,
       instanceKey,
       sceneSourceKey,
     );
@@ -328,14 +423,7 @@ export function worldResolveSceneAsset(
   const result = owner.read(handle);
   return result.ok ? ok(result.value) : err(result.error as EcsError);
 }
-/**
- * @internal Spawn one SceneAsset's members — the shared body of both scene
- * finishers. Recurses into `mounts[]` (each nested prefab becomes its own
- * SceneInstance anchor), spawns `entities[]` honouring their authored
- * `ChildOf`, and wires deferred owned-parent mount edges. Does NOT create a
- * synthetic root or force any `ChildOf` — that is the caller's (finisher's)
- * job. `_instantiateSceneRec` owns cycle bookkeeping.
- */
+/** Spawn owned members and nested anchors, leaving outer-root attachment to the finisher. */
 export function worldSpawnSceneMembers(
   world: World,
   handle: AssetHandle<'scene'>,
@@ -343,109 +431,60 @@ export function worldSpawnSceneMembers(
   stack: Set<number>,
   mountKeys?: ReadonlyMap<number, string>,
 ): Result<SceneMembersSpawn, EcsError> {
+  return finishSceneSteps(
+    worldSpawnSceneMembersSteps(
+      world,
+      handle,
+      asset,
+      stack,
+      synchronousSceneContext(world),
+      mountKeys,
+    ),
+  );
+}
+
+interface SceneMemberWork extends SceneMembersSpawn {
+  readonly mountEntitiesNeedingDeferredParent: Array<[EntityHandle, number]>;
+  readonly mountInstances: Array<SceneMembersSpawn['mountInstances'][number]>;
+}
+
+function setSceneParent(
+  world: World,
+  entity: EntityHandle,
+  childOf: Component,
+  parent: EntityHandle,
+): Result<void, EcsError> {
+  return world.hasComponent(entity, childOf)
+    ? world.set(entity, childOf, { parent } as never)
+    : world.addComponent(entity, { component: childOf, data: { parent } as never });
+}
+
+function* worldSpawnSceneMembersSteps(
+  world: World,
+  handle: AssetHandle<'scene'>,
+  asset: CompiledSceneAsset,
+  stack: Set<number>,
+  context: SceneMaterialization,
+  mountKeys?: ReadonlyMap<number, string>,
+): Generator<void, Result<SceneMembersSpawn, EcsError>, void> {
   const sceneInstanceToken = world.components.resolve('SceneInstance');
   if (sceneInstanceToken === undefined) {
     return err(new ComponentNotDefinedError('SceneInstance'));
   }
   const childOfToken = world.components.resolve('ChildOf');
-  // ChildOf is optional — only needed if the asset declares ChildOf or a
-  // caller-supplied parent must be wired. If absent and we need it, we
-  // fail-fast at the wiring site below.
 
   const ownEntities = asset.entities;
   const ownMounts = asset.mounts ?? [];
-  const memberSum = ownMounts.reduce((s, m) => s + m.memberCount, 0);
-  const countBaseline = ownEntities.length + ownMounts.length + memberSum;
-  // C-R1 (studio-issues #6): mapping table must be sized to maxLocalId+1,
-  // not to the entity count. An editor scene may have non-contiguous
-  // localIds (deleted entities leave gaps); sizing to count means any
-  // localId >= count is a silent Uint32Array OOB no-op -> entity spawns
-  // but is unreachable by localId -> users report "character can't move".
-  // Take the max of count-baseline and id-range so both packed and
-  // sparse scenes work without over-allocation in the common case.
-  let maxLocalId = ownEntities.reduce((m, e) => Math.max(m, e.localId as unknown as number), -1);
-  for (const mount of ownMounts) {
-    maxLocalId = Math.max(maxLocalId, mount.localId as unknown as number);
-    const last = (mount.memberFirst as unknown as number) + mount.memberCount - 1;
-    maxLocalId = Math.max(maxLocalId, last);
-  }
-  const totalSlots = Math.max(countBaseline, maxLocalId + 1);
+  const slots = yield* sceneMemberSlotCountSteps(ownEntities, ownMounts, context.incremental);
+  if (!slots.ok) return slots;
+  const totalSlots = slots.value;
 
-  // R2/Bonus: namespace-overlap fail-fast (AC-05 /
-  // pack-mount-localid-overlap). Each LocalEntityId in
-  // [0, totalSlots) must be claimed by exactly one of:
-  //   - entities[i].localId
-  //   - mounts[i].localId
-  //   - mounts[i] window slot (memberFirst .. memberFirst+memberCount-1)
-  // Overlap or duplicate claim => fail-fast with the offending localIds
-  // and human-readable origin labels.
-  {
-    const claims = new Map<number, string>();
-    const overlapLids = new Set<number>();
-    const overlapSources: string[] = [];
-    const claim = (lid: number, src: string): void => {
-      const prior = claims.get(lid);
-      if (prior !== undefined) {
-        if (!overlapLids.has(lid)) {
-          overlapLids.add(lid);
-          overlapSources.push(prior);
-          overlapSources.push(src);
-        } else {
-          overlapSources.push(src);
-        }
-        return;
-      }
-      claims.set(lid, src);
-    };
-    for (const ent of ownEntities) {
-      claim(ent.localId as unknown as number, `entities[${ent.localId as unknown as number}]`);
-    }
-    for (const mount of ownMounts) {
-      const mLid = mount.localId as unknown as number;
-      claim(mLid, `mount[${mLid}]`);
-      const first = mount.memberFirst as unknown as number;
-      for (let k = 0; k < mount.memberCount; k += 1) {
-        claim(first + k, `mount[${mLid}].member[${k}]`);
-      }
-    }
-    if (overlapLids.size > 0) {
-      const overlapping = Array.from(overlapLids).sort((a, b) => a - b);
-      return err({
-        code: 'pack-mount-localid-overlap' as PackErrorCode,
-        expected: 'each LocalEntityId claimed by exactly one entity or mount slot',
-        hint: PACK_ERROR_HINTS['pack-mount-localid-overlap'],
-        detail: {
-          code: 'pack-mount-localid-overlap',
-          overlapping,
-          sources: overlapSources,
-        } as PackErrorDetail,
-      } as unknown as EcsError);
-    }
-  }
-
-  // Slot table: indexed by LocalEntityId; populated as entities / mounts /
-  // members are spawned. mapping[localId] = encoded Entity u32. Unspawned
-  // slots hold ENTITY_NULL_RAW (0xffffffff) — NOT 0, because a fresh World's
-  // first spawn encodes to gen=0+idx=0=raw 0, which is a valid Entity. The
-  // remap path in `_buildSceneEntityComponentDatas` distinguishes the two
-  // (live=ENTITY_NULL_RAW => parent unspawned at remap time => surface as
-  // null sentinel; live=any other u32 => valid live Entity, including 0).
+  // Raw entity zero is live; empty slots must use the explicit null sentinel.
   const mapping = new Uint32Array(totalSlots).fill(ENTITY_NULL_RAW);
   const entityToLocalId = new Map<EntityHandle, LocalEntityId>();
   const rootEntities: EntityHandle[] = [];
   const mountEntities: EntityHandle[] = [];
-  // R2/B-1: mount entities whose `mount.parent === undefined` need their
-  // ChildOf wired to the outer synthetic root (this scene's root). Step 5
-  // does the wiring once the synthetic root entity is materialised; we
-  // collect them here in step 1.
   const mountEntitiesNeedingRootParent: EntityHandle[] = [];
-  // D-8 (feat-20260707): mount entities whose `mount.parent` points at an
-  // OWNED entity slot are wired AFTER step 2 spawns the owned entities —
-  // mounts are processed first (step 1), so the owned parent slot is still
-  // ENTITY_NULL_RAW at mount-processing time. Same deferred-wiring shape as
-  // mountEntitiesNeedingRootParent: register [mountEntity, parentSlot] here,
-  // wire ChildOf once the slot is live. Without this the edge was silently
-  // dropped, and the mount carrier stayed unreachable from its owned parent.
   const mountEntitiesNeedingDeferredParent: Array<[EntityHandle, number]> = [];
   const mountInstances: Array<{
     readonly mount: SceneInstanceMount;
@@ -453,54 +492,124 @@ export function worldSpawnSceneMembers(
     readonly mapping: Uint32Array;
   }> = [];
 
-  // 1. Recurse into mounts[] FIRST so the mount-window slots
-  //    (`mount.localId` + `[memberFirst, memberFirst+memberCount)`) are
-  //    populated before any owned entity tries to remap a LocalEntityId
-  //    pointing into the mount window (AC-24 cross-boundary reference).
+  const members: SceneMemberWork = {
+    mapping,
+    entityToLocalId,
+    rootEntities,
+    mountEntitiesNeedingRootParent,
+    mountEntitiesNeedingDeferredParent,
+    mountEntities,
+    mountInstances,
+    totalSlots,
+  };
+  const mounted = yield* spawnSceneMountsSteps(
+    world,
+    handle,
+    ownMounts,
+    stack,
+    context,
+    members,
+    mountKeys,
+  );
+  if (!mounted.ok) return mounted;
+
+  const own = yield* spawnSceneOwnMembersSteps(world, ownEntities, context, members);
+  if (!own.ok) return own;
+
+  const rebound = yield* rebindSceneMembersSteps(
+    world,
+    ownEntities,
+    ownMounts,
+    mapping,
+    context.incremental,
+  );
+  if (!rebound.ok) return rebound;
+
+  if (childOfToken !== undefined) {
+    for (const [mountEntity, parentSlot] of mountEntitiesNeedingDeferredParent) {
+      const parentEntity = mapping[parentSlot];
+      if (parentEntity === undefined || parentEntity === ENTITY_NULL_RAW) continue;
+      if (context.incremental) yield;
+      const attached = setSceneParent(
+        world,
+        mountEntity,
+        childOfToken,
+        parentEntity as EntityHandle,
+      );
+      if (!attached.ok) return attached;
+    }
+  }
+
+  return ok({
+    mapping,
+    entityToLocalId,
+    rootEntities,
+    mountEntitiesNeedingRootParent,
+    mountEntities,
+    mountInstances,
+    totalSlots,
+  });
+}
+function* spawnSceneMountsSteps(
+  world: World,
+  handle: AssetHandle<'scene'>,
+  ownMounts: readonly SceneInstanceMount[],
+  stack: Set<number>,
+  context: SceneMaterialization,
+  members: SceneMemberWork,
+  mountKeys?: ReadonlyMap<number, string>,
+): Generator<void, Result<void, EcsError>, void> {
+  const sceneInstanceToken = world.components.resolve('SceneInstance');
+  if (sceneInstanceToken === undefined) return err(new ComponentNotDefinedError('SceneInstance'));
+  const childOfToken = world.components.resolve('ChildOf');
+  const {
+    mapping,
+    mountEntities,
+    mountEntitiesNeedingRootParent,
+    mountEntitiesNeedingDeferredParent,
+    mountInstances,
+  } = members;
+  // Mount windows exist before owned members resolve cross-instance references.
   for (const mount of ownMounts) {
-    // R2/B-3 + R2/B-4: validate overrides BEFORE child resolution so a
-    // malformed override fails fast without observable side-effects.
+    if (context.incremental) yield;
     const overrideValidationRes = worldValidateMountOverrides(world, mount);
     if (!overrideValidationRes.ok) {
       return overrideValidationRes;
     }
 
-    // Spawn the mount entity (carries mount.components).
     const mountLid = mount.localId as unknown as number;
-    const mountSpawnRes = worldSpawnMountEntity(world, mount, mapping);
+    const mountSpawnRes = worldSpawnMountEntity(world, mount, mapping, context.materialize);
     if (!mountSpawnRes.ok) return mountSpawnRes;
     const mountEntity = mountSpawnRes.value;
     mountEntities.push(mountEntity);
     mapping[mountLid] = mountEntity as unknown as number;
 
-    // Resolve mount.source -> child SceneAsset handle.
-    const childHandleRes = worldResolveMountSource(world, mount.source, handle);
+    const childHandleRes = context.resolveSource(mount.source, handle);
     if (!childHandleRes.ok) return childHandleRes;
     const childHandle = childHandleRes.value;
 
-    // Recursively instantiate the child. Its synthetic root attaches as a
-    // child of the mount entity.
-    const childRes = worldInstantiateSceneRec(
+    const childRes = yield* instantiateSceneSteps(
       world,
       childHandle,
+      context,
       mountEntity,
       stack,
       mountKeys?.get(mountLid),
     );
     if (!childRes.ok) return childRes;
 
-    // R2/B-2: cross-check mount.memberCount === child.totalSlots BEFORE
-    // copying the mount window. The child SceneInstance.mapping length is
-    // the authoritative `totalSlots` of the child. AC-04 / requirements
-    // S-5 mandate fail-fast at runtime for this disagreement.
     const childInstRes = world.get(childRes.value, sceneInstanceToken);
     if (!childInstRes.ok) return childInstRes;
-    const childMapping = (childInstRes.value as unknown as { mapping: Uint32Array }).mapping;
+    // Copy before yielding: ordinary World array reads are only synchronous borrows.
+    const childMapping = Uint32Array.from(
+      (childInstRes.value as unknown as { mapping: Uint32Array }).mapping,
+    );
+    const key = mountKeys?.get(mountLid);
     mountInstances.push({
       mount,
       root: childRes.value,
       mapping: childMapping,
-      ...(mountKeys?.get(mountLid) === undefined ? {} : { key: mountKeys.get(mountLid) }),
+      ...(key === undefined ? {} : { key }),
     });
     if (childMapping.length !== mount.memberCount) {
       return err({
@@ -516,71 +625,49 @@ export function worldSpawnSceneMembers(
       } as unknown as EcsError);
     }
 
-    // Pull the child's mapping into our parent window. Default unset slots
-    // to ENTITY_NULL_RAW so downstream "live" checks distinguish them from
-    // the first Entity (gen=0+idx=0 encodes to raw u32 0).
     const window = mount.memberCount;
     for (let k = 0; k < window; k += 1) {
+      if (context.incremental) yield;
       mapping[(mount.memberFirst as unknown as number) + k] = childMapping[k] ?? ENTITY_NULL_RAW;
     }
 
-    // Apply mount.overrides at instantiate-time (AC-19).
-    // Each override.localId addresses a slot in *this* (parent) namespace
-    // (R2/F-8 cement: parent-namespace + memberFirst+offset addressing).
-    // The state map will be populated below with these overrides — but we
-    // must also write the value through to the live entity column so the
-    // readback invariant holds.
-    // Mount-entity itself never has children attached by the caller other
-    // than via the recursive child; nothing else to wire here.
-    if (childOfToken !== undefined) {
-      if (mount.parent !== undefined) {
-        // Reparent the mount-entity ChildOf to the caller-specified parent.
-        const parentSlot = mount.parent as unknown as number;
-        const parentEntity = mapping[parentSlot];
-        if (parentEntity !== undefined && parentEntity !== ENTITY_NULL_RAW) {
-          const r = world.addComponent(mountEntity, {
-            component: childOfToken,
-            data: { parent: parentEntity } as never,
-          });
-          if (!r.ok) {
-            // ChildOf may already be present from layer-1; reparent via set.
-            const set = world.set(mountEntity, childOfToken, {
-              parent: parentEntity,
-            } as never);
-            if (!set.ok) return set as Result<SceneMembersSpawn, EcsError>;
-          }
-        } else {
-          // D-8: the owned parent slot is not spawned yet (owned entities
-          // spawn in step 2, after this mount loop). Defer the ChildOf wire
-          // to step 2's tail once mapping[parentSlot] is live.
-          mountEntitiesNeedingDeferredParent.push([mountEntity, parentSlot]);
-        }
-      } else {
-        // R2/B-1: default semantic — mount.parent === undefined wires the
-        // mount entity ChildOf to *this* scene's synthetic root (created
-        // in step 3 below). Defer the actual wire to step 5 after the
-        // synthetic root spawn; record the mount entity here.
-        mountEntitiesNeedingRootParent.push(mountEntity);
-      }
+    if (childOfToken === undefined) continue;
+    if (mount.parent === undefined) {
+      mountEntitiesNeedingRootParent.push(mountEntity);
+      continue;
     }
+    const parentSlot = Number(mount.parent);
+    const parentEntity = mapping[parentSlot];
+    if (parentEntity === undefined || parentEntity === ENTITY_NULL_RAW) {
+      mountEntitiesNeedingDeferredParent.push([mountEntity, parentSlot]);
+      continue;
+    }
+    const attach = setSceneParent(world, mountEntity, childOfToken, parentEntity as EntityHandle);
+    if (!attach.ok) return attach;
   }
 
-  // 2. Spawn entities[] entities. Topo-sort by ChildOf so parents are
-  //    spawned before children (so localId remap can read mapping live).
-  //    This runs AFTER mount processing (step 1) so cross-boundary
-  //    `ChildOf {parent: <mount-window-localId>}` references resolve
-  //    correctly (AC-24).
-  const order = sceneTopoSort(world, ownEntities);
+  return ok(undefined);
+}
+
+function* spawnSceneOwnMembersSteps(
+  world: World,
+  ownEntities: readonly CompiledSceneEntity[],
+  context: SceneInstantiationContext,
+  members: SceneMembersSpawn,
+): Generator<void, Result<void, EcsError>, void> {
+  const { mapping, entityToLocalId, rootEntities } = members;
+  const order = context.incremental
+    ? yield* sceneTopoSortSteps(ownEntities)
+    : sceneTopoSort(world, ownEntities);
   for (const idx of order) {
+    if (context.incremental) yield;
     const node = ownEntities[idx];
     if (node === undefined) continue;
     const lid = node.localId as unknown as number;
     const compDataRes = worldBuildSceneEntityComponentDatas(world, node, mapping);
     if (!compDataRes.ok) return compDataRes;
-    const sp = (world.spawn as (...c: ComponentData[]) => Result<EntityHandle, EcsError>)(
-      ...compDataRes.value,
-    );
-    if (!sp.ok) return sp as Result<SceneMembersSpawn, EcsError>;
+    const sp = context.materialize(compDataRes.value);
+    if (!sp.ok) return sp;
     const e = sp.value;
     mapping[lid] = e as unknown as number;
     entityToLocalId.set(e, lid as unknown as LocalEntityId);
@@ -589,60 +676,46 @@ export function worldSpawnSceneMembers(
     }
   }
 
-  // Hierarchy order cannot order arbitrary entity references (including
-  // cycles). Once every slot is live, rebind schema-declared entity fields
-  // through the same projection used at spawn. No asset-specific fixups.
+  return ok(undefined);
+}
+
+function* rebindSceneMembersSteps(
+  world: World,
+  ownEntities: readonly CompiledSceneEntity[],
+  ownMounts: readonly SceneInstanceMount[],
+  mapping: Uint32Array,
+  incremental: boolean,
+): Generator<void, Result<void, EcsError>, void> {
+  // Rebind non-hierarchy references after every local slot exists, including cycles.
+  const remap = sceneSlotRemap(mapping);
   for (const node of [
     ...ownEntities,
     ...ownMounts.map((mount) => ({ localId: mount.localId, components: mount.components ?? {} })),
   ]) {
+    if (incremental) yield;
     const entity = mapping[node.localId as unknown as number] as EntityHandle;
-    const componentDatas = worldBuildSceneEntityComponentDatas(world, node, mapping);
-    if (!componentDatas.ok) return componentDatas;
-    for (const { component, data } of componentDatas.value) {
-      const references = Object.fromEntries(
-        Object.entries(data).filter(
-          ([field]) =>
-            Object.hasOwn(node.components[component.name] ?? {}, field) &&
-            classifyEntityField(component, field) !== null,
-        ),
-      );
-      if (Object.keys(references).length === 0) continue;
+    for (const [name, fields] of Object.entries(node.components)) {
+      const component = world.components.resolve(name);
+      if (component === undefined) return err(new ComponentNotDefinedError(name));
+      // Spawn has already validated and filled the other fields. Only authored
+      // entity references depend on slots that may have been unresolved then.
+      let references: Record<string, unknown> | undefined;
+      for (const [field, value] of Object.entries(fields ?? {})) {
+        const kind = classifyEntityField(component, field);
+        if (kind === null) continue;
+        references ??= Object.create(null) as Record<string, unknown>;
+        references[field] = remapEntityFieldValue(value, kind, remap);
+      }
+      if (references === undefined) continue;
+      if (incremental) yield;
       const rebound = world.set(entity, component, references as never);
       if (!rebound.ok) return rebound;
     }
   }
 
-  // 2b. D-8 (feat-20260707): wire deferred owned-parent mount ChildOf edges.
-  //     Owned entities are now live (step 2 above), so mapping[parentSlot]
-  //     resolves. Same shape as the mountEntitiesNeedingRootParent wiring in
-  //     step 5. The relationship mirror hook (relationshipOnInsert) pushes the
-  //     carrier into the owned parent's Children mirror automatically.
-  if (childOfToken !== undefined) {
-    for (const [mountEntity, parentSlot] of mountEntitiesNeedingDeferredParent) {
-      const parentEntity = mapping[parentSlot];
-      if (parentEntity === undefined || parentEntity === ENTITY_NULL_RAW) continue;
-      const set = world.set(mountEntity, childOfToken, { parent: parentEntity } as never);
-      if (!set.ok) {
-        const r = world.addComponent(mountEntity, {
-          component: childOfToken,
-          data: { parent: parentEntity } as never,
-        });
-        if (!r.ok) return r as Result<SceneMembersSpawn, EcsError>;
-      }
-    }
-  }
-
-  return ok({
-    mapping,
-    entityToLocalId,
-    rootEntities,
-    mountEntitiesNeedingRootParent,
-    mountEntities,
-    mountInstances,
-    totalSlots,
-  });
+  return ok(undefined);
 }
+
 /**
  * @internal Spawn one SceneAsset's entities + apply mounts recursively, then
  * wrap them in a synthetic SceneInstance root (the anchor). This is the
@@ -659,110 +732,170 @@ export function worldInstantiateSceneAsset(
   instanceKey?: string,
   sceneSourceKey?: string,
 ): Result<EntityHandle, EcsError> {
+  return finishSceneSteps(
+    worldInstantiateSceneAssetSteps(
+      world,
+      handle,
+      asset,
+      parent,
+      stack,
+      synchronousSceneContext(world),
+      instanceKey,
+      sceneSourceKey,
+    ),
+  );
+}
+
+function* worldInstantiateSceneAssetSteps(
+  world: World,
+  handle: AssetHandle<'scene'>,
+  asset: SceneAsset,
+  parent: EntityHandle | undefined,
+  stack: Set<number>,
+  context: SceneMaterialization,
+  instanceKey?: string,
+  sceneSourceKey?: string,
+): Generator<void, Result<EntityHandle, EcsError>, void> {
   const sceneInstanceToken = world.components.resolve('SceneInstance');
   if (sceneInstanceToken === undefined) {
     return err(new ComponentNotDefinedError('SceneInstance'));
   }
-  const childOfToken = world.components.resolve('ChildOf');
 
-  const compiled = compileKeyedSceneAsset(world, handle, asset, {
-    resolveSource: (source, parentHandle) => worldResolveMountSource(world, source, parentHandle),
-    resolveAsset: (childHandle) => worldResolveSceneAsset(world, childHandle),
-    stack,
-  });
-  if (!compiled.ok) return err(compiled.error as EcsError);
-  const compiledAsset = compiled.value.asset;
-  // Validate and acquire source references before any child or member can spawn.
-  const sourceReferences = retainSceneSourceReferences(world, asset);
-  if (!sourceReferences.ok) return sourceReferences;
-  const releaseSourceReferences = sourceReferences.value;
-  const membersRes = worldSpawnSceneMembers(
+  const compiled = yield* compileKeyedSceneAssetSteps(
     world,
     handle,
-    compiledAsset,
-    stack,
-    compiled.value.mountKeyByLocalId,
-  );
-  if (!membersRes.ok) {
-    releaseSourceReferences();
-    return membersRes;
-  }
-  const { mapping, entityToLocalId, rootEntities, mountEntitiesNeedingRootParent, totalSlots } =
-    membersRes.value;
-  const { mountInstances } = membersRes.value;
-  const ownMounts = compiledAsset.mounts ?? [];
-
-  // Allocate the actual instance state once. The managed store owns payload
-  // identity and release; Scene holds no parallel handle-to-state registry.
-  const detached = new Set<LocalEntityId>();
-  const bindings = new Map<string, EntityHandle>();
-  const entityAddresses = new Map<EntityHandle, SceneEntityAddress>();
-  const state: SceneInstanceState = {
-    source: handle,
-    sourceContent: asset,
-    ...(sceneSourceKey === undefined ? {} : { sceneSourceKey }),
-    keyByLocalId: new Map(compiled.value.keyByLocalId),
-    ...(instanceKey === undefined ? {} : { instanceKey }),
-    bindings,
-    entityAddresses,
-    entityToLocalId,
-    detachedLocalIds: detached,
-    overrides: new Map(),
-    rootEntities,
-    mountRoots: mountInstances.map(({ root }) => root),
-    totalSlots,
-    mountTimeOverrides: ownMounts.flatMap((m) => m.overrides ?? []),
-  };
-  const stateRef = world.allocUniqueRef('SceneInstanceState', state, releaseSourceReferences);
-  // Spawn the root with SceneInstance component, mapping snapshot, and
-  // state ref. The mapping is a Uint32Array (array<entity> field shape).
-  // Convert mapping Uint32Array to plain number[] for spawn write — the
-  // ECS array<entity> arm copies element-by-element and accepts both, but
-  // the plain-array form sidesteps a Uint32Array.length=0 corner case
-  // observed during M2 testing where a non-empty Uint32Array was written
-  // as if empty (suspect: archetype write-array dispatch on instanceof
-  // Array vs TypedArray).
-  const mappingPlain: number[] = Array.from(mapping);
-  // The synthetic root is the ChildOf parent of every owned root entity
-  // (step 5 below) and may itself become a ChildOf parent of a caller-
-  // supplied `parent` chain. propagateTransforms expands the ECS-maintained
-  // Children lists parent-first and treats a parent missing Transform
-  // as `hierarchy-broken`, so the synthetic root must carry Transform
-  // (identity TRS via layer-2 defaults) when Transform is defined.
-  const rootComponents: ComponentData[] = [
+    asset,
     {
-      component: sceneInstanceToken,
-      data: {
-        source: handle,
-        mapping: mappingPlain,
-        state: stateRef,
-      } as never,
+      resolveSource: context.resolveSource,
+      resolveAsset: context.resolveAsset,
+      stack,
+      ...(context.fixedPlans === undefined ? {} : { fixedPlans: context.fixedPlans }),
     },
-  ];
-  const transformToken = world.components.resolve('Transform');
-  if (transformToken !== undefined) {
-    rootComponents.push({
-      component: transformToken,
-      data: {} as never,
-    });
-  }
-  const rootSpawn = (world.spawn as (...c: ComponentData[]) => Result<EntityHandle, EcsError>)(
-    ...rootComponents,
+    context.incremental,
   );
-  if (!rootSpawn.ok) {
-    releaseSourceReferences();
-    return rootSpawn;
-  }
-  const rootEntity = rootSpawn.value;
+  if (!compiled.ok) return err(compiled.error as EcsError);
+  const compiledAsset = compiled.value.asset;
+  const sourceReferences = context.retainSource(asset);
+  if (!sourceReferences.ok) return sourceReferences;
+  let sourceReferencesActive = true;
+  const releaseSourceReferences = () => {
+    if (!sourceReferencesActive) return;
+    sourceReferencesActive = false;
+    sourceReferences.value();
+  };
+  let transferred = false;
+  try {
+    const membersRes = yield* worldSpawnSceneMembersSteps(
+      world,
+      handle,
+      compiledAsset,
+      stack,
+      context,
+      compiled.value.mountKeyByLocalId,
+    );
+    if (!membersRes.ok) {
+      return membersRes;
+    }
+    const { mapping, entityToLocalId, rootEntities, mountEntitiesNeedingRootParent, totalSlots } =
+      membersRes.value;
+    const { mountInstances } = membersRes.value;
+    const ownMounts = compiledAsset.mounts ?? [];
 
-  // Apply mount overrides after the synthetic root has been spawned.
+    const detached = new Set<LocalEntityId>();
+    const bindings = new Map<string, EntityHandle>();
+    const entityAddresses = new Map<EntityHandle, SceneEntityAddress>();
+    const state: SceneInstanceState = {
+      source: handle,
+      sourceContent: asset,
+      ...(sceneSourceKey === undefined ? {} : { sceneSourceKey }),
+      keyByLocalId: new Map(compiled.value.keyByLocalId),
+      ...(instanceKey === undefined ? {} : { instanceKey }),
+      bindings,
+      entityAddresses,
+      entityToLocalId,
+      detachedLocalIds: detached,
+      overrides: new Map(),
+      rootEntities,
+      mountRoots: mountInstances.map(({ root }) => root),
+      totalSlots,
+      mountTimeOverrides: ownMounts.flatMap((m) => m.overrides ?? []),
+    };
+    // The managed payload owns source cleanup after the root accepts it.
+    const stateRef = world.allocUniqueRef('SceneInstanceState', state, releaseSourceReferences);
+    const mappingPlain: number[] = Array.from(mapping);
+    const rootComponents: ComponentData[] = [
+      {
+        component: sceneInstanceToken,
+        data: {
+          source: handle,
+          mapping: mappingPlain,
+          state: stateRef,
+        } as never,
+      },
+    ];
+    // Synthetic parents participate in the same Transform hierarchy as members.
+    const transformToken = world.components.resolve('Transform');
+    if (transformToken !== undefined) {
+      rootComponents.push({
+        component: transformToken,
+        data: {} as never,
+      });
+    }
+    const rootSpawn = context.materialize(rootComponents);
+    if (!rootSpawn.ok) {
+      if (world.resolveUniqueRef(stateRef).ok) {
+        const released = releaseUnadoptedUniqueRef(world, stateRef);
+        if (!released.ok) return released;
+      }
+      return rootSpawn;
+    }
+    transferred = true;
+    const rootEntity = rootSpawn.value;
+
+    const overridden = yield* applySceneMountOverridesSteps(
+      world,
+      ownMounts,
+      mapping,
+      state,
+      context,
+    );
+    if (!overridden.ok) return overridden;
+
+    yield* collectSceneEntityBindingsSteps(
+      world,
+      rootEntity,
+      [],
+      bindings,
+      entityAddresses,
+      context.incremental,
+    );
+
+    const attached = yield* attachSceneRootsSteps(
+      world,
+      rootEntity,
+      parent,
+      rootEntities,
+      mountEntitiesNeedingRootParent,
+      context.incremental,
+    );
+    if (!attached.ok) return attached;
+
+    return ok(rootEntity);
+  } finally {
+    if (!transferred) releaseSourceReferences();
+  }
+}
+
+function* applySceneMountOverridesSteps(
+  world: World,
+  ownMounts: readonly SceneInstanceMount[],
+  mapping: Uint32Array,
+  state: SceneInstanceState,
+  context: SceneInstantiationContext,
+): Generator<void, Result<void, EcsError>, void> {
   for (const mount of ownMounts) {
     for (const ov of mount.overrides ?? []) {
-      // feat-20260713 M2 / w8: `MountOverride.field` is optional (add-or-patch
-      // discriminant carried by the shape itself). Record the override into
-      // the SceneInstanceState map keyed by comp (no field) or comp:field
-      // (field-patch), then apply it to the live member column via the shared
-      // add-or-patch helper.
+      if (context.incremental) yield;
       const lid = ov.localId as unknown as LocalEntityId;
       let fieldMap = state.overrides.get(lid);
       if (fieldMap === undefined) {
@@ -771,68 +904,48 @@ export function worldInstantiateSceneAsset(
       }
       const { localId: _localId, ...record } = ov;
       fieldMap.set(mountOverrideStateKey(ov), record);
-      // Apply override to the live member entity column.
       const memberEntityRaw = mapping[lid as unknown as number];
       if (memberEntityRaw !== undefined && memberEntityRaw !== ENTITY_NULL_RAW) {
         const memberEntity = memberEntityRaw as unknown as EntityHandle;
-        const applyRes = worldApplyMountOverride(
-          world,
+        const applyRes = context.applyOverride(
           memberEntity,
           worldRemapMountOverride(world, ov, mapping),
         );
         if (!applyRes.ok) {
-          return applyRes as Result<EntityHandle, EcsError>;
+          return applyRes;
         }
       }
     }
   }
 
-  // Populate direct and nested keyed addresses only after this root state is
-  // visible. Child SceneInstance states were published by the recursive spawn
-  // above, so the same walk can project the complete address closure.
-  collectSceneEntityBindings(world, rootEntity, [], bindings, entityAddresses);
-
-  // 5. Wire ChildOf for every owned root entity (no ChildOf at layer-1)
-  //    to the synthetic root.
-  if (childOfToken !== undefined) {
-    for (const rootE of rootEntities) {
-      if (!world.hasComponent(rootE, childOfToken)) {
-        // No ChildOf yet — attach to synthetic root.
-        const r = world.addComponent(rootE, {
-          component: childOfToken,
-          data: { parent: rootEntity } as never,
-        });
-        if (!r.ok) return r as Result<EntityHandle, EcsError>;
-      }
-    }
-    // R2/B-1: wire mount entities with default `mount.parent === undefined`
-    // to this scene's synthetic root. _spawnMountEntity may have attached a
-    // placeholder ChildOf {parent: ENTITY_NULL_RAW} when mount.components
-    // was empty; overwrite via set so the ChildOf chain meshRenderer ->
-    // childSyntheticRoot -> mountEntity -> outerSyntheticRoot resolves
-    // through Transform-bearing parents (AC-16 / requirements S-7).
-    for (const mountE of mountEntitiesNeedingRootParent) {
-      const set = world.set(mountE, childOfToken, { parent: rootEntity } as never);
-      if (!set.ok) {
-        const r = world.addComponent(mountE, {
-          component: childOfToken,
-          data: { parent: rootEntity } as never,
-        });
-        if (!r.ok) return r as Result<EntityHandle, EcsError>;
-      }
-    }
-    // Caller-supplied parent: synthetic root's ChildOf -> parent.
-    if (parent !== undefined) {
-      const r = world.addComponent(rootEntity, {
-        component: childOfToken,
-        data: { parent } as never,
-      });
-      if (!r.ok) return r as Result<EntityHandle, EcsError>;
-    }
-  }
-
-  return ok(rootEntity);
+  return ok(undefined);
 }
+
+function* attachSceneRootsSteps(
+  world: World,
+  rootEntity: EntityHandle,
+  parent: EntityHandle | undefined,
+  rootEntities: readonly EntityHandle[],
+  mountEntities: readonly EntityHandle[],
+  incremental: boolean,
+): Generator<void, Result<void, EcsError>, void> {
+  const childOf = world.components.resolve('ChildOf');
+  if (childOf === undefined) return ok(undefined);
+  for (const entity of rootEntities) {
+    if (incremental) yield;
+    if (world.hasComponent(entity, childOf)) continue;
+    const attached = setSceneParent(world, entity, childOf, rootEntity);
+    if (!attached.ok) return attached;
+  }
+  for (const entity of mountEntities) {
+    if (incremental) yield;
+    const attached = setSceneParent(world, entity, childOf, rootEntity);
+    if (!attached.ok) return attached;
+  }
+  if (parent !== undefined) return setSceneParent(world, rootEntity, childOf, parent);
+  return ok(undefined);
+}
+
 /**
  * @internal Flat finisher — spawn one SceneAsset's members WITHOUT wrapping
  * them in a synthetic SceneInstance root and WITHOUT forcing `ChildOf` onto
@@ -928,6 +1041,13 @@ export function worldInstantiateSceneAssetFlat(
     sourceReferences.value();
   }
 }
+function sceneSlotRemap(mapping: Uint32Array): (localId: number) => number {
+  return (localId) =>
+    localId >= 0 && localId < mapping.length
+      ? (mapping[localId] ?? ENTITY_NULL_RAW)
+      : ENTITY_NULL_RAW;
+}
+
 /** @internal Build ComponentData[] for one SceneEntity, remapping localIds.
  *
  * SceneAsset payloads use the same schema contract as explicit ECS writes.
@@ -941,6 +1061,7 @@ export function worldBuildSceneEntityComponentDatas(
 ): Result<ComponentData[], EcsError> {
   const out: ComponentData[] = [];
   const nodeLocalId = node.localId as unknown as number;
+  let remap: ReturnType<typeof sceneSlotRemap> | undefined;
   for (const compName of Object.keys(node.components)) {
     const token = world.components.resolve(compName);
     if (token === undefined) {
@@ -969,17 +1090,11 @@ export function worldBuildSceneEntityComponentDatas(
       }
       const value = (raw as Record<string, unknown>)[fieldName];
       const kind = classifyEntityField(token, fieldName);
-      if (kind !== null) {
-        // Entity / array<entity> field — remap through the shared kernel.
-        // localId -> live Entity. Slots not yet spawned hold ENTITY_NULL_RAW.
-        const sceneRemap = (localId: number): number => {
-          if (localId < 0 || localId >= mapping.length) return ENTITY_NULL_RAW;
-          const live = mapping[localId];
-          return live === undefined || live === ENTITY_NULL_RAW ? ENTITY_NULL_RAW : live;
-        };
-        remappedRaw[fieldName] = remapEntityFieldValue(value, kind, sceneRemap);
-      } else {
-        remappedRaw[fieldName] = value;
+      if (kind === null) remappedRaw[fieldName] = value;
+      else {
+        // Slots not yet spawned hold ENTITY_NULL_RAW.
+        remap ??= sceneSlotRemap(mapping);
+        remappedRaw[fieldName] = remapEntityFieldValue(value, kind, remap);
       }
     }
     const filled = fillComponentDefaults(token, remappedRaw);
@@ -1001,14 +1116,10 @@ function worldRemapMountOverride(
 ): MountOverride {
   const token = world.components.resolve(override.comp);
   if (token === undefined) return override;
+  const remap = sceneSlotRemap(mapping);
   const remapField = (field: string, value: unknown): unknown => {
     const kind = classifyEntityField(token as Component, field);
-    if (kind === null) return value;
-    const toLive = (slot: number): number => {
-      if (slot < 0 || slot >= mapping.length) return ENTITY_NULL_RAW;
-      return mapping[slot] ?? ENTITY_NULL_RAW;
-    };
-    return remapEntityFieldValue(value, kind, toLive);
+    return remapEntityFieldValue(value, kind, remap);
   };
   if (override.field !== undefined) {
     return { ...override, value: remapField(override.field, override.value) };
@@ -1178,6 +1289,8 @@ export function worldSpawnMountEntity(
   world: World,
   mount: SceneInstanceMount,
   mapping: Uint32Array,
+  materialize: SceneInstantiationContext['materialize'] = (components) =>
+    world.spawn(...components),
 ): Result<EntityHandle, EcsError> {
   const fakeNode: CompiledSceneEntity = {
     localId: mount.localId,
@@ -1209,7 +1322,7 @@ export function worldSpawnMountEntity(
       data: { parent: ENTITY_NULL_RAW } as never,
     });
   }
-  return (world.spawn as (...c: ComponentData[]) => Result<EntityHandle, EcsError>)(...cdRes.value);
+  return materialize(cdRes.value);
 }
 /** @internal Resolve mount.source through the wired SceneAssetResolver. */
 export function worldResolveMountSource(

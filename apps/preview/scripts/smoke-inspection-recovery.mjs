@@ -167,7 +167,7 @@ try {
     assetLabAfterReset.value.videoTexture?.hitReactions !== 0 ||
     assetLabAfterReset.value.videoTexture?.lastHitPlayhead !== null ||
     assetLabAfterReset.value.spriteAtlas?.active !== false ||
-    assetLabAfterReset.value.worldScoreText?.fontSource !== 'legacy-pack' ||
+    assetLabAfterReset.value.worldScoreText?.fontSource !== 'baked-pack' ||
     !assetLabResetStatus.startsWith('Asset Lab reset · authored RedBox baseline')
   ) {
     throw new Error(`guided Asset Lab reset failed: ${JSON.stringify({ assetLabResetStatus, assetLabAfterReset })}`);
@@ -350,7 +350,7 @@ try {
     throw new Error(`TTF font catalog rows failed: ${JSON.stringify(fontCatalog)}`);
   }
   const fontBefore = before.value.worldScoreText;
-  if (fontBefore?.available !== true || fontBefore.fontSource !== 'legacy-pack' || Math.abs(fontBefore.fontSize - 0.024) > 1e-5 || Math.abs((fontBefore.color?.[0] ?? 0) - 1) > 1e-5 || Math.abs((fontBefore.color?.[1] ?? 0) - 0.8) > 1e-5 || Math.abs((fontBefore.color?.[2] ?? 0) - 0.2) > 1e-5 || fontBefore.toggles !== 0) {
+  if (fontBefore?.available !== true || fontBefore.fontSource !== 'baked-pack' || Math.abs(fontBefore.fontSize - 0.024) > 1e-5 || Math.abs((fontBefore.color?.[0] ?? 0) - 1) > 1e-5 || Math.abs((fontBefore.color?.[1] ?? 0) - 0.8) > 1e-5 || Math.abs((fontBefore.color?.[2] ?? 0) - 0.2) > 1e-5 || fontBefore.toggles !== 0) {
     throw new Error(`legacy font baseline failed: ${JSON.stringify(fontBefore)}`);
   }
   const fontToggle = await page.evaluate(() => globalThis.__forgeaxPreviewInspection.run('game-default.toggle-font-source'));
@@ -378,7 +378,7 @@ try {
   await page.keyboard.up('y');
   await page.waitForTimeout(120);
   const fontRestoreKey = await page.evaluate(() => globalThis.__forgeaxPreviewInspection.read('game-default.snapshot'));
-  if (!fontRestoreKey.ok || fontRestoreKey.value.worldScoreText?.fontSource !== 'legacy-pack' || Math.abs(fontRestoreKey.value.worldScoreText?.fontSize - 0.024) > 1e-5 || Math.abs((fontRestoreKey.value.worldScoreText?.color?.[0] ?? 0) - 1) > 1e-5 || Math.abs((fontRestoreKey.value.worldScoreText?.color?.[1] ?? 0) - 0.8) > 1e-5 || Math.abs((fontRestoreKey.value.worldScoreText?.color?.[2] ?? 0) - 0.2) > 1e-5) {
+  if (!fontRestoreKey.ok || fontRestoreKey.value.worldScoreText?.fontSource !== 'baked-pack' || Math.abs(fontRestoreKey.value.worldScoreText?.fontSize - 0.024) > 1e-5 || Math.abs((fontRestoreKey.value.worldScoreText?.color?.[0] ?? 0) - 1) > 1e-5 || Math.abs((fontRestoreKey.value.worldScoreText?.color?.[1] ?? 0) - 0.8) > 1e-5 || Math.abs((fontRestoreKey.value.worldScoreText?.color?.[2] ?? 0) - 0.2) > 1e-5) {
     throw new Error(`TTF font keyboard restore failed: ${JSON.stringify(fontRestoreKey)}`);
   }
   const atlasToggle = await page.evaluate(() => globalThis.__forgeaxPreviewInspection.run('game-default.toggle-sprite-atlas'));
@@ -508,7 +508,7 @@ try {
     afterReset.value.spriteAtlas?.trackedEntities !== 0 ||
     afterReset.value.spriteAtlas?.animatedShots !== 0 ||
     afterReset.value.spriteAtlas?.animatedHits !== 0
-    || afterReset.value.worldScoreText?.fontSource !== 'legacy-pack'
+    || afterReset.value.worldScoreText?.fontSource !== 'baked-pack'
     || afterReset.value.worldScoreText?.toggles !== 0
     || afterReset.value.vfxHit?.mode !== 'hit'
     || afterReset.value.vfxHit?.guid !== 'cbc4f40d-d148-53ee-89e7-310ef3abcfe9'

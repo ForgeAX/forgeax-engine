@@ -33,14 +33,14 @@ const { createRenderer } = await import('@forgeax/engine-runtime');
 const { propagateTransforms } = await import('@forgeax/engine-scene');
 const {
   BIAS_DEFAULTS, CAMERA_POSITION, CAMERA_TARGET, FILTERS, cycleFilter, moveLight, setBiases, spawnBiasesScene,
-  toggleLight,
+  SHADOW_BIAS_PROFILE, toggleLight,
 } = await import('../src/scene.mjs');
 
 const here = dirname(fileURLToPath(import.meta.url));
 
 let renderer;
 try {
-  const hostResult = await constructRuntimeRendererHost(dawn.canvas, {}, {
+  const hostResult = await constructRuntimeRendererHost(dawn.canvas, { standardProfile: SHADOW_BIAS_PROFILE }, {
     shaderManifestUrl: processShaderManifestUrl(resolve(here, '..', 'dist', 'shaders', 'manifest.json')),
   });
 if (!hostResult.ok) throw hostResult.error;

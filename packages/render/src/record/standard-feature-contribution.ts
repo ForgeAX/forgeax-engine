@@ -1,25 +1,17 @@
-import type {
-  GraphAccess,
-  RenderGraphBuilder,
-  RenderGraphFrame,
-} from '@forgeax/engine-render-graph';
-import type {
-  BindGroup,
-  BindGroupLayout,
-  RenderPipeline as RhiRenderPipeline,
-} from '@forgeax/engine-rhi';
+import type { GraphAccess, RenderGraphBuilder } from '@forgeax/engine-render-graph';
+import type { TextureFormat } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import { atmosphereTextures } from '../environment/luts';
-import type { RenderError } from '../errors/render';
+import { type RenderError, RenderFeatureStageFailedError } from '../errors/render';
 import {
   type FeatureGraphConformanceEvent,
   recordFeatureGraphConformanceEvent,
 } from '../features/feature-graph-conformance-trace';
 import type { RenderFeaturePlanExecution } from '../features/host';
 import type { createRenderFeatureProjectionState } from '../features/render-graph-contribution';
+import { isRenderFeatureTargetHandle, POST_PROCESS_OUTPUT_DEPTH } from '../features/targets';
 import { projectTransientViewPlans } from '../features/transient-view-graph';
 import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
-import { createStandardSurfaceLightingBindGroup } from '../hdrp-buffers';
 import type {
   RenderPipelineBuildContext,
   RenderPipelineFrame,
@@ -206,27 +198,6 @@ function resolveFeatureTargets(
   return { ok: true, resolveTarget, viewAccesses };
 }
 
-export function resolveLightingBinding(
-  frame: RenderGraphFrame,
-  pipeline: import('@forgeax/engine-rhi').RenderPipeline,
-): BindGroup | undefined {
-  const context = frame as import('./render-context')._InternalRenderPipelineContext;
-  if (context.standardLighting?.kind !== 'clustered') return undefined;
-  const layout = (
-    pipeline as RhiRenderPipeline & { getBindGroupLayout?: (index: number) => BindGroupLayout }
-  ).getBindGroupLayout?.(2);
-  if (layout === undefined) return undefined;
-  const binding = createStandardSurfaceLightingBindGroup(
-    context.runtime,
-    layout,
-    context.standardLighting.prepared.layout.grid,
-    context.hdrpSsaoBlurredView === undefined
-      ? { enabled: false }
-      : { enabled: true, ssaoBlurredView: context.hdrpSsaoBlurredView },
-  );
-  return binding ?? undefined;
-}
-
 function projectSelectedExecutions(
   context: StandardFeatureContributionContext,
   request: ContributionRequest,
@@ -254,9 +225,8 @@ function projectSelectedExecutions(
           context.featurePostProcessEntries,
           request.atmosphere,
           request.waterInfoTargets,
-          request.postProcessView,
+          request.unjitteredDepth,
         ),
-      resolveStandardLighting: resolveLightingBinding,
       reportError: context.reportError,
     },
     {
@@ -289,6 +259,64 @@ function projectSelectedExecutions(
   return ok(undefined);
 }
 
+function isCurrentColor(resource: unknown): boolean {
+  return (
+    resource === 'color' ||
+    (isRenderFeatureTargetHandle(resource) &&
+      resource.kind === 'scene-color' &&
+      (resource.name === undefined || resource.name === 'color'))
+  );
+}
+
+function isOutputDepth(resource: unknown): boolean {
+  return (
+    resource === POST_PROCESS_OUTPUT_DEPTH ||
+    (isRenderFeatureTargetHandle(resource) &&
+      resource.kind === 'scene-depth' &&
+      resource.name === POST_PROCESS_OUTPUT_DEPTH)
+  );
+}
+
+/** Analyze the physical attachment and read roles of the same plans we project. */
+export function standardAfterTonemapOutput(
+  executions: readonly RenderFeaturePlanExecution[],
+  fullscreenFeatureIds: ReadonlySet<string>,
+  endpointFormat: TextureFormat,
+): Exclude<RenderPipelineBuildContext<RenderPipelineFrame>['afterTonemapOutput'], undefined> {
+  let needsIntermediate = false;
+  let needsOutputDepth = false;
+  let hasWork = false;
+  const endpointFeatures: string[] = [];
+  for (const execution of executions) {
+    if (
+      execution.placement !== 'after-tonemap' ||
+      execution.passes.length === 0 ||
+      fullscreenFeatureIds.has(execution.featureIdentity)
+    )
+      continue;
+    hasWork = true;
+    let writesEndpoint = false;
+    for (const pass of execution.passes) {
+      needsOutputDepth ||=
+        pass.graphics?.sampledTargets?.some(isOutputDepth) === true ||
+        pass.resolvedGpuCompute?.sampledTargets?.some(isOutputDepth) === true;
+      for (const { resource, format } of pass.graphics?.attachments.colors ?? []) {
+        if (resource === 'swapchain') writesEndpoint = true;
+        if (isCurrentColor(resource) && format !== endpointFormat) needsIntermediate = true;
+      }
+      if (
+        pass.graphics?.sampledTargets?.some(isCurrentColor) ||
+        pass.resolvedGpuCompute?.sampledTargets?.some(isCurrentColor) ||
+        pass.resolvedGpuCompute?.storageTargets?.some(isCurrentColor) ||
+        pass.textureReadbacks?.some(({ target }) => isCurrentColor(target))
+      )
+        needsIntermediate = true;
+    }
+    if (writesEndpoint) endpointFeatures.push(execution.featureIdentity);
+  }
+  return hasWork ? { needsIntermediate, endpointFeatures, needsOutputDepth } : null;
+}
+
 export function standardFeatureContribution(
   context: StandardFeatureContributionContext,
 ): Contribution {
@@ -296,6 +324,32 @@ export function standardFeatureContribution(
     const selection = selectFeatureExecutions(context, request);
     recordFeatureSelection(context, request, selection);
     if (selection.executions.length === 0) return ok(undefined);
+    if (
+      request.placement === 'after-tonemap' &&
+      request.targets.some(({ name }) => name === 'swapchain')
+    ) {
+      const mixed = selection.executions.find((execution) =>
+        execution.passes.some(
+          (pass) =>
+            pass.graphics?.attachments.colors.some(({ resource }) => isCurrentColor(resource)) ||
+            pass.resolvedGpuCompute?.storageTargets?.some(isCurrentColor),
+        ),
+      );
+      if (mixed !== undefined)
+        return err(
+          new RenderFeatureStageFailedError(
+            mixed.featureIdentity,
+            mixed.order,
+            'plan',
+            'next-frame',
+            {
+              kind: 'after-tonemap-output',
+              expected:
+                'terminal overlay work writes swapchain and uses current color only as input',
+            },
+          ),
+        );
+    }
     return projectSelectedExecutions(context, request, selection.executions);
   };
 }

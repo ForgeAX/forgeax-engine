@@ -71,7 +71,7 @@ describe('IBL precompute completion boundaries', () => {
       expect(result.ok).toBe(true);
       expect(device.framePassNames).not.toContain('ibl-equirect-to-cube');
       expect(device.framePassNames.filter((name) => name === 'ibl-prefilter')).toHaveLength(60);
-      expect(device.totalDrawCount).toBe(67);
+      expect(device.totalDrawCount).toBe(61);
     } finally {
       scope.dispose();
     }
@@ -114,8 +114,8 @@ describe('IBL precompute completion boundaries', () => {
     const result = await runIblPrecompute(options);
 
     expect(result.unwrap().prefilterTexture).toBeDefined();
-    expect(device.framePassNames).toHaveLength(73);
-    expect(device.totalDrawCount).toBe(73);
+    expect(device.framePassNames).toHaveLength(69);
+    expect(device.totalDrawCount).toBe(67);
     expect([cache.irradianceBakeCount, cache.prefilterBakeCount, cache.brdfLutBakeCount]).toEqual([
       1, 1, 1,
     ]);
@@ -155,14 +155,15 @@ describe('IBL precompute completion boundaries', () => {
     });
     try {
       await vi.waitFor(() => expect(passes.at(-1)).toEqual(['ibl-brdf-lut']));
-      expect(passes.filter((batch) => batch.includes('ibl-prefilter'))).toEqual(
-        Array.from({ length: 60 }, () => ['ibl-prefilter']),
-      );
+      expect(passes.filter((batch) => batch.includes('ibl-prefilter'))).toEqual([
+        ['sky-sh-project', 'sky-sh-reduce', 'ibl-prefilter'],
+        ...Array.from({ length: 59 }, () => ['ibl-prefilter']),
+      ]);
       expect(settled).toBe(false);
-      expect(passes).toHaveLength(68);
-      expect(renderOpportunities).toEqual([1, 7, 13, 19, 25, 31, 37, 43, 49, 55, 61, 67]);
+      expect(passes).toHaveLength(62);
+      expect(renderOpportunities).toEqual([1, 7, 13, 19, 25, 31, 37, 43, 49, 55, 61]);
       expect(fences).toBe(1);
-      expect(device.totalDrawCount).toBe(73);
+      expect(device.totalDrawCount).toBe(67);
     } finally {
       release();
     }
@@ -187,12 +188,12 @@ describe('IBL precompute completion boundaries', () => {
     const result = await runIblPrecompute(options);
     expect(result).toMatchObject({ ok: false, error: { code: 'ibl-precompute-not-dispatched' } });
     expect(device.framePassNames.filter((name) => name === 'ibl-prefilter')).toHaveLength(60);
-    expect(device.framePassNames.filter((name) => name === 'ibl-irradiance')).toHaveLength(6);
-    expect(device.framePassNames.lastIndexOf('ibl-prefilter')).toBeLessThan(
-      device.framePassNames.indexOf('ibl-irradiance'),
+    expect(device.framePassNames.filter((name) => name === 'sky-sh-project')).toHaveLength(1);
+    expect(device.framePassNames.indexOf('sky-sh-reduce')).toBeLessThan(
+      device.framePassNames.indexOf('ibl-prefilter'),
     );
     expect(device.framePassNames).toContain('ibl-brdf-lut');
-    expect(device.totalDrawCount).toBe(73);
+    expect(device.totalDrawCount).toBe(67);
     expect([cache.irradianceBakeCount, cache.prefilterBakeCount, cache.brdfLutBakeCount]).toEqual([
       0, 0, 0,
     ]);
@@ -226,11 +227,11 @@ describe('IBL precompute completion boundaries', () => {
     const result = await runIblPrecompute(options);
     expect(result).toMatchObject({ ok: false, error: { code: 'ibl-precompute-not-dispatched' } });
     expect(submitted).toBe(8);
-    expect(fence).not.toHaveBeenCalled();
-    // Submission order: one equirect-to-cube batch, then the PMREM prefilter
-    // faces, then the irradiance faces that read the finished atlas.
+    // A live device fences partially submitted scratch before retiring it.
+    expect(fence).toHaveBeenCalledTimes(failure === 'submission rejection' ? 1 : 0);
+    // The first PMREM batch runs after the two projection dispatches.
     expect(device.framePassNames.filter((name) => name === 'ibl-prefilter')).toHaveLength(7);
-    expect(device.framePassNames).not.toContain('ibl-irradiance');
+    expect(device.framePassNames).toContain('sky-sh-reduce');
     expect(device.framePassNames).not.toContain('ibl-brdf-lut');
     expect([cache.irradianceBakeCount, cache.prefilterBakeCount, cache.brdfLutBakeCount]).toEqual([
       0, 0, 0,
@@ -266,7 +267,7 @@ describe('IBL precompute completion boundaries', () => {
     });
     try {
       await vi.waitFor(() => expect(fence).toHaveBeenCalledTimes(1));
-      expect(device.totalDrawCount).toBe(73);
+      expect(device.totalDrawCount).toBe(67);
       expect(settled).toBe(false);
       scope.abandon();
     } finally {

@@ -1,13 +1,13 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { LOD_SIZE, value, verifyLodTransition } from './lod-transition.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 
 it.each([
   { renderPath: 'forward' as const, masked: false },
@@ -51,7 +51,7 @@ it.each([
       captured: async (encoded, _pixels, covered) => {
         if (!covered) return;
         const model = buildFrameModel(decodeTape(encoded.bytes).unwrap());
-        const entry = options.renderPath === 'forward' ? 'fs_opaque' : 'fs_gbuffer';
+        const entry = options.renderPath === 'forward' ? 'fs_forward_sun_shadow' : 'fs_gbuffer';
         const draws = model.works.filter((work) =>
           work.pipeline.shaders.some(
             (shader) => shader.stage === 'fragment' && shader.entryPoint === entry,

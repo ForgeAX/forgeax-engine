@@ -24,6 +24,14 @@ export async function runChannelBrowserCase(
   receiver: ChannelReceiver,
   path: 'forward' | 'deferred' | 'both',
 ) {
+  // Keep replay witnesses for both graphs and both receiver variants.
+  // Every path below still renders and checks its full live HDR matrix.
+  const capturePaths =
+    mode === 'world'
+      ? receiver === 'skin'
+        ? (['deferred'] as const)
+        : (['forward'] as const)
+      : undefined;
   const paths = path === 'both' ? (['forward', 'deferred'] as const) : [path];
   const progress = async (phase: string) =>
     commands.writeFile(
@@ -69,6 +77,7 @@ export async function runChannelBrowserCase(
         );
       },
       captureLights: ['directional'],
+      ...(capturePaths === undefined ? {} : { capturePaths }),
       ...(mode === 'publication' ? { publication: { assets: host.assets, identity } } : {}),
       recorder,
       ...(loss === undefined ? {} : { recover: () => loss.recover(host.renderer) }),

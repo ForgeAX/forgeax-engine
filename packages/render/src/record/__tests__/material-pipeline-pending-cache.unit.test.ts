@@ -1,5 +1,10 @@
 import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
-import { createMaterialShaderProgram } from '@forgeax/engine-shader';
+import {
+  createMaterialShaderProgram,
+  createStandardPbrArtifactReceipt,
+  ShaderRegistry,
+} from '@forgeax/engine-shader';
+import { ok, sha256 } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { resolveMaterialPipelineBindGroups } from '../../assembly/material/pipeline-helpers';
 import { buildBindGroupLayoutDescriptor } from '../../pbr-pipeline';
@@ -31,7 +36,7 @@ describe('direct medium geometry pipeline layout', () => {
   const state = {
     meshBindGroupLayout: mesh,
     hdrpMeshBindGroupLayout: cluster,
-    gpuDrivenClusterMeshBindGroupLayout: cluster,
+    gpuDrivenPrimitiveBindGroupLayout: { label: 'scene-primitive' } as never,
     pbrSkinMeshBindGroupLayout: null,
     hdrpSkinMeshBindGroupLayout: null,
     instancesBindGroupLayout: probe as never,
@@ -48,7 +53,8 @@ describe('direct medium geometry pipeline layout', () => {
     ['temporal', false, 'standard', false],
     ['deferred', false, 'single-layer-medium', false],
     ['shadow-caster', false, 'single-layer-medium', false],
-  ] as const)('resolves %s, clustered=%s, surface=%s to its address contract', (passKind, clustered, surfaceModel, directAddress) => {
+    ['forward', false, 'standard', false, true],
+  ] as const)('resolves %s, clustered=%s, surface=%s to its address contract', (passKind, clustered, surfaceModel, directAddress, coldFog) => {
     const program = createMaterialShaderProgram(`
       @group(3) @binding(1) var<storage, read> probes: array<vec4<f32>>;
       @group(3) @binding(6) var<uniform> surfaceDirectAddress: vec4<u32>;
@@ -57,6 +63,16 @@ describe('direct medium geometry pipeline layout', () => {
       }
       @fragment fn fs_temporal() -> @location(0) vec4<f32> { return probes[0]; }
     `);
+    const shaders = new ShaderRegistry({ manifestUrl: undefined });
+    const prepare = vi.fn(async () => ok(new TextEncoder().encode(program.source)));
+    if (coldFog === true) {
+      shaders.installMaterialArtifactSource('test::medium', {
+        digest: `sha256:${sha256(program.source)}`,
+        paramSchema: [],
+        receipt: { ...createStandardPbrArtifactReceipt(), forwardFog: 'height-vertex/1' },
+        prepare,
+      });
+    }
     const ready = { pipeline: {} } as MaterialShaderPipelineEntry;
     const lookup = vi.fn().mockReturnValue(ready);
     const requests = createGeometryPipelineRequests(
@@ -64,11 +80,13 @@ describe('direct medium geometry pipeline layout', () => {
         runtime: {
           device: { caps, limits: { maxSampledTexturesPerShaderStage: 32 } },
           getMaterialArtifact: () => ({ program }),
-          getMaterialShaderArtifact: () => ({ program }),
+          getMaterialShaderArtifact: () => (coldFog === true ? undefined : { program }),
+          shaderRegistry: shaders,
           getMaterialShaderPipelineEntry: lookup,
           prepareMaterialShaderPipelineEntry: lookup,
         },
         pipelineState: {},
+        vertexHeightFog: coldFog === true,
         lightingKind: clustered ? 'clustered' : 'no-local-lights',
         warnedNineSliceScaleEntities: new Set<number>(),
       } as unknown as GeometryPipelineRequestContext,
@@ -111,6 +129,8 @@ describe('direct medium geometry pipeline layout', () => {
         passKind === 'temporal' ? 'fs_temporal' : undefined,
         false,
         undefined,
+        projection,
+        false,
       ),
     ).toBe(true);
     const call = lookup.mock.calls[0];
@@ -124,19 +144,17 @@ describe('direct medium geometry pipeline layout', () => {
     const layouts = resolveMaterialPipelineBindGroups(
       call?.[15] ?? (clustered ? 'hdrp-pbr' : 'pbr'),
       state,
-      clustered,
       program.probeBlendRecordRequired,
     );
     expect(layouts?.instancesLayout).toBe(directAddress ? direct : probe);
     expect(layouts?.meshLayout).toBe(clustered ? cluster : mesh);
     expect(direct.entries.find((entry) => entry.binding === 6)?.buffer?.type).toBe('uniform');
     expect(requests.pipelineSelection.sceneDirect).toBe(false);
+    expect(prepare).not.toHaveBeenCalled();
   });
 
   it('keeps the ordinary probe and scene-index address contracts separate', () => {
-    expect(resolveMaterialPipelineBindGroups('pbr', state, false, true)?.instancesLayout).toBe(
-      probe,
-    );
+    expect(resolveMaterialPipelineBindGroups('pbr', state, true)?.instancesLayout).toBe(probe);
     expect(probe.entries.some((entry) => entry.binding === 6)).toBe(false);
     expect(resolveMaterialPipelineBindGroups('gpu-driven-pbr', state)?.instancesLayout).toBe(scene);
     expect(scene.entries.find((entry) => entry.binding === 6)?.buffer?.type).toBe(
@@ -191,6 +209,55 @@ describe('main-pass material pipeline cache', () => {
       expect(prepare).toHaveBeenCalledTimes(1);
       expect(getter).not.toHaveBeenCalled();
     }
+  });
+
+  it('keeps immediate and prepared temporal requests with their issuing factory', () => {
+    const visible = {} as MaterialShaderPipelineEntry;
+    const staged = {} as MaterialShaderPipelineEntry;
+    const get = vi.fn().mockReturnValue(visible);
+    const prepare = vi.fn().mockReturnValueOnce(null).mockReturnValue(staged);
+    const requests = createGeometryPipelineRequests(
+      {
+        runtime: {
+          getMaterialShaderPipelineEntry: get,
+          prepareMaterialShaderPipelineEntry: prepare,
+        },
+      } as unknown as GeometryPipelineRequestContext,
+      {
+        passKind: 'temporal',
+        sampleCount: 1,
+        colorFormats: ['rgba8unorm'],
+        coverageOnly: false,
+        tonemapActive: false,
+        msaaActive: false,
+        viewBindGroupDynamicOffset: 0,
+        transparentDepthWrite: false,
+        oit: undefined,
+      },
+    );
+    const layout = deriveVertexLayoutProjection({ position: new Float32Array(9) });
+    const resolve = (preparation: boolean) =>
+      requests.resolveMaterialPipeline(
+        'test::temporal',
+        undefined,
+        'triangle-list',
+        'uint16',
+        undefined,
+        undefined,
+        layout,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        preparation,
+      );
+    expect(resolve(false)).toBe(visible);
+    expect(resolve(true)).toBeNull();
+    expect(resolve(true)).toBe(staged);
+    expect(resolve(false)).toBe(visible);
+    expect(resolve(true)).toBe(staged);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledTimes(2);
   });
 
   it('keeps transient pending pipelines retryable across a tight frame loop', () => {
@@ -283,18 +350,33 @@ describe('main-pass material pipeline cache', () => {
         undefined,
         projection,
       );
+    // A device callback may resolve an unrelated draw while this specialization is pending.
+    lookup.mockImplementationOnce(() => {
+      expect(
+        requests.resolveMaterialPipeline(
+          'test::nested',
+          {},
+          'triangle-list',
+          'uint16',
+          undefined,
+          undefined,
+          projection,
+        ),
+      ).toBe(general);
+      return null;
+    });
     // A frame that just turned simple (e.g. the light stopped casting) is not held.
     expect(resolve()).toBe(general);
     const requested = lookup.mock.calls.map((call) => String(call[5]));
     expect(requested[0]).toContain(`DIRECTIONAL_SHADOW_SIMPLE=${simpleReceiver}`);
     expect(requested[0]).toContain(`LEAN_LIGHTING=${leanLighting}`);
-    expect(requested[1]).not.toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
-    expect(requested[1]).not.toContain('LEAN_LIGHTING=true');
+    expect(requested[2]).not.toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
+    expect(requested[2]).not.toContain('LEAN_LIGHTING=true');
     // The fallback is not memoized under the simple key.
     simpleReady = true;
     expect(resolve()).toBe(simple);
     expect(resolve()).toBe(simple);
-    expect(lookup).toHaveBeenCalledTimes(3);
+    expect(lookup).toHaveBeenCalledTimes(4);
   });
 });
 

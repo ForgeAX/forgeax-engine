@@ -1217,6 +1217,18 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
     expect(rhiContext.supportedAlphaModes).toEqual([]);
   });
 
+  it('forwards concrete surface usages live and preserves an explicit empty mask', async () => {
+    const { rhiContext, rawContext } = await freshDeviceAndContext();
+    expect(rhiContext.supportedTextureUsages).toBeUndefined();
+    Object.defineProperty(rawContext, 'supportedTextureUsages', {
+      value: 0x13,
+      configurable: true,
+    });
+    expect(rhiContext.supportedTextureUsages).toBe(0x13);
+    Object.defineProperty(rawContext, 'supportedTextureUsages', { value: 0, configurable: true });
+    expect(rhiContext.supportedTextureUsages).toBe(0);
+  });
+
   describe('w20 RhiCanvasContext - format gate maps to webgpu-runtime-error (research §3.2 supported context formats)', () => {
     it("format = 'rgba8unorm-srgb' (NOT in {'bgra8unorm','rgba8unorm','rgba16float'}) returns webgpu-runtime-error with the spec-aligned expected template", async () => {
       const { device, rhiContext } = await freshDeviceAndContext();

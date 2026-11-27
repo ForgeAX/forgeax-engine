@@ -80,7 +80,6 @@ export function directionalShadowProfileFromQuality(
   quality: DirectionalShadowQuality | undefined,
 ): DirectionalShadowProfile {
   if (quality === undefined) return 'off';
-  if (quality.kind === 'variance') return 'variance';
   if (quality.kind === 'pcf-soft') return 'pcfSoft';
   if (quality.kind === 'pcf-vogel') return 'pcfVogel';
   if (quality.kind === 'pcf') return `pcf${quality.kernel}` as 'pcf1' | 'pcf3' | 'pcf5';

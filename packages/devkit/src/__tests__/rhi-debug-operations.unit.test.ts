@@ -108,6 +108,24 @@ async function createReplayBackend(): Promise<CommandResult<ReplayBackendLease>>
 }
 
 describe('DevKit RHI debug operations', () => {
+  it('reports the artifact admitted for reading if the input reference changes in flight', async () => {
+    const bytes = encodeTape(tape).unwrap();
+    const fixture = makeContext(bytes);
+    const artifact = { ...fixture.artifact };
+    const result = await runRhiDebugOperation(
+      'rhi.summary',
+      { artifact },
+      {
+        ...fixture.context,
+        async readArtifact(ref) {
+          artifact.digest = 'replaced-after-admission';
+          return fixture.context.readArtifact(ref);
+        },
+      },
+    );
+    expect(result).toMatchObject({ ok: true, value: { artifact: fixture.artifact } });
+  });
+
   it('discovers only the five canonical operations from an empty context', () => {
     expect(discoverRhiDebugOperations().map((operation) => operation.name)).toEqual([
       'rhi.capture',
@@ -257,6 +275,33 @@ describe('DevKit RHI debug operations', () => {
     await runRhiDebugOperation('rhi.timing', { artifact }, leased);
     expect(leases.opened - before.opened).toBe(3);
     expect(leases.released - before.released).toBe(3);
+  });
+
+  it('releases the backend if replay admission throws', async () => {
+    const { context, artifact } = makeContext(encodeTape(workTape).unwrap());
+    const error = new Error('replay admission fault');
+    const before = leases.released;
+    await expect(
+      runRhiDebugOperation(
+        'rhi.read',
+        { artifact, reads: [{ resourceId: 'buffer:probes' }] },
+        {
+          ...context,
+          async createReplayBackend() {
+            const backend = await createReplayBackend();
+            if (!backend.ok) return backend;
+            const device = new Proxy(backend.value.device, {
+              get(target, key, receiver) {
+                if (key === 'caps') throw error;
+                return Reflect.get(target, key, receiver);
+              },
+            });
+            return ok({ ...backend.value, device });
+          },
+        },
+      ),
+    ).rejects.toBe(error);
+    expect(leases.released - before).toBe(1);
   });
 
   it('answers pipeline and bindings inspection and the per-pass summary without a replay device', async () => {

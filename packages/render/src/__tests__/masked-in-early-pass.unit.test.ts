@@ -145,11 +145,10 @@ describe('GPU-driven seeded raster class', () => {
     expect(a2c.calls()[0]?.state?.depthWriteEnabled).toBeUndefined();
   });
 
-  it('selects the normal-producing entry for a primary normal attachment', () => {
+  it('selects the colorless coverage entry for the primary depth pass', () => {
     const { pipelines, calls } = shapeFor(OPAQUE, undefined, true);
     expect(pipelines.predepthPipelineFor([]).ok).toBe(true);
-    expect(pipelines.predepthPipelineFor(['rgba16float']).ok).toBe(true);
-    expect(calls().map((call) => call.fragmentEntry)).toEqual(['fs_depth_masked', 'fs_ao_input']);
+    expect(calls().map((call) => call.fragmentEntry)).toEqual(['fs_depth_masked']);
   });
 
   it('keeps an opaque seeded row on less-equal with its simple receiver', () => {

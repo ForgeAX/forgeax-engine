@@ -1,28 +1,39 @@
 // @forgeax/engine-render - SSAO parameter authority.
 
-import { err, ok, type RenderPipelineAsset, type Result } from '@forgeax/engine-types';
+import {
+  type CompactGBufferLayout,
+  err,
+  type MaterialGBufferLayout,
+  ok,
+  type RenderPipelineAsset,
+  type Result,
+} from '@forgeax/engine-types';
 import { PostProcessError } from './post-process-errors';
 
-export const SSAO_DEFAULT_RADIUS = 0.25;
-export const SSAO_DEFAULT_BIAS = 0;
-export const SSAO_DEFAULT_INTENSITY = 1.0;
+export const SSAO_DEFAULT_RADIUS = 2;
+export const SSAO_DEFAULT_BIAS = 3;
+export const SSAO_DEFAULT_INTENSITY = 0.5;
+export const DEFAULT_AMBIENT_OCCLUSION_METHOD = 'ssao';
 
-export type SsaoParameterConfig = Omit<
-  NonNullable<NonNullable<RenderPipelineAsset['config']>['ssao']>,
-  'enabled'
+export type DeferredAoNormalLayout = MaterialGBufferLayout | CompactGBufferLayout;
+
+export type AmbientOcclusionSettings = NonNullable<
+  NonNullable<RenderPipelineAsset['config']>['ambientOcclusion']
 >;
+export type SsaoParameterConfig = Omit<AmbientOcclusionSettings, 'enabled'>;
 
-/** Stock Standard graphs upload direct AO strength as a frame value. */
-export function ssaoStructuralIdentity<
-  T extends { readonly directLightingStrength?: number | undefined },
->(
-  config: T | undefined,
-  stockStandard: boolean,
-): T | Omit<T, 'directLightingStrength'> | undefined {
-  if (!stockStandard || config === undefined) return config;
-  const { directLightingStrength: _directLightingStrength, ...structure } = config;
-  return structure;
+// Retained by the low-level legacy shader fixtures. Stock profile validation
+// accepts only the published AO contract.
+interface LegacySsaoProgramOptions {
+  readonly method?: 'ssao' | 'gtao' | undefined;
+  readonly sampleCount?: number;
+  readonly thickness?: number;
+  readonly distanceExponent?: number;
+  readonly distanceFallOff?: number;
+  readonly resolutionScale?: number;
 }
+
+type SsaoProgramConfig = Omit<SsaoParameterConfig, 'method'> & LegacySsaoProgramOptions;
 
 export const GTAO_SAMPLE_COUNTS = { low: 4, medium: 10, high: 16 } as const;
 export const SSAO_DEFAULT_THICKNESS = 1;
@@ -30,16 +41,21 @@ export const SSAO_DEFAULT_DISTANCE_EXPONENT = 1;
 export const SSAO_DEFAULT_DISTANCE_FALL_OFF = 1;
 export const SSAO_DEFAULT_RESOLUTION_SCALE = 1;
 
-export const SPIRAL_SSAO_SAMPLE_COUNTS = { low: 8, medium: 12, high: 12 } as const;
-
 export const SSAO_SAMPLE_COUNTS = { low: 16, medium: 32, high: 64 } as const;
 
 interface ResolvedSsaoParameters {
-  readonly algorithm: 'ssao' | 'gtao' | 'spiral-ssao';
-  readonly application: 'lighting' | 'scene-color';
-  readonly sceneColorStrength: number;
+  readonly method: NonNullable<SsaoProgramConfig['method']>;
+  readonly levels: SsaoParameterConfig['levels'];
+  readonly gtao: Required<NonNullable<SsaoParameterConfig['gtao']>>;
+  readonly maxQuality: number;
+  readonly power: number;
+  readonly fadeDistance: number;
+  readonly fadeRadius: number;
+  readonly radiusInWorldSpace: boolean;
+  readonly mipBlend: number;
+  readonly mipScale: number;
+  readonly mipThreshold: number;
   readonly sampleCount: number;
-  readonly directLightingStrength: number;
   readonly radius: number;
   readonly bias: number;
   readonly intensity: number;
@@ -47,29 +63,53 @@ interface ResolvedSsaoParameters {
   readonly distanceExponent: number;
   readonly distanceFallOff: number;
   readonly resolutionScale: number;
-  readonly quality: 'low' | 'medium' | 'high';
+  readonly quality: NonNullable<SsaoParameterConfig['quality']>;
+}
+
+function getGtaoParameters(config: SsaoParameterConfig['gtao']): ResolvedSsaoParameters['gtao'] {
+  return {
+    useNormals: config?.useNormals ?? false,
+    downsample: config?.downsample ?? false,
+    spatialFilter: config?.spatialFilter ?? true,
+    temporalFilter: config?.temporalFilter ?? true,
+    filterWidth: config?.filterWidth ?? 5,
+    numAngles: config?.numAngles ?? 2,
+    thicknessBlend: config?.thicknessBlend ?? 0.5,
+    falloffEnd: config?.falloffEnd ?? 2,
+    temporalBlendWeight: config?.temporalBlendWeight ?? 0.1,
+  };
+}
+
+function resolveLegacySampleCount(
+  config: SsaoProgramConfig | undefined,
+  method: ResolvedSsaoParameters['method'],
+  quality: ResolvedSsaoParameters['quality'],
+): number {
+  const counts = method === 'gtao' ? GTAO_SAMPLE_COUNTS : SSAO_SAMPLE_COUNTS;
+  return config?.sampleCount ?? counts[typeof quality === 'number' ? 'high' : quality];
 }
 
 /**
  * Apply the public defaults without deciding whether the values are valid.
  * The record stage uses this only after the graph build has validated the
- * active HDRP configuration, or for the disabled/default fallback payload.
+ * active Standard configuration, or for the disabled/default fallback payload.
  */
-export function getSsaoParameters(config: SsaoParameterConfig | undefined): ResolvedSsaoParameters {
-  const algorithm = config?.algorithm ?? 'gtao';
-  const quality = config?.quality ?? 'high';
-  const counts =
-    algorithm === 'gtao'
-      ? GTAO_SAMPLE_COUNTS
-      : algorithm === 'spiral-ssao'
-        ? SPIRAL_SSAO_SAMPLE_COUNTS
-        : SSAO_SAMPLE_COUNTS;
+export function getSsaoParameters(config: SsaoProgramConfig | undefined): ResolvedSsaoParameters {
+  const method = config?.method ?? DEFAULT_AMBIENT_OCCLUSION_METHOD;
+  const quality = config?.quality ?? 50;
   return {
-    algorithm,
-    application: config?.application ?? 'lighting',
-    sceneColorStrength: config?.sceneColorStrength ?? 0.95,
-    sampleCount: config?.sampleCount ?? counts[quality],
-    directLightingStrength: config?.directLightingStrength ?? 0,
+    method,
+    levels: config?.levels,
+    gtao: getGtaoParameters(config?.gtao),
+    maxQuality: config?.maxQuality ?? 100,
+    power: config?.power ?? 2,
+    fadeDistance: config?.fadeDistance ?? 80,
+    fadeRadius: config?.fadeRadius ?? 50,
+    radiusInWorldSpace: config?.radiusInWorldSpace ?? false,
+    mipBlend: config?.mipBlend ?? 0.6,
+    mipScale: config?.mipScale ?? 1.7,
+    mipThreshold: config?.mipThreshold ?? 0.01,
+    sampleCount: resolveLegacySampleCount(config, method, quality),
     radius: config?.radius ?? SSAO_DEFAULT_RADIUS,
     bias: config?.bias ?? SSAO_DEFAULT_BIAS,
     intensity: config?.intensity ?? SSAO_DEFAULT_INTENSITY,
@@ -82,30 +122,10 @@ export function getSsaoParameters(config: SsaoParameterConfig | undefined): Reso
 }
 
 function invalidSsaoMode(resolved: ResolvedSsaoParameters): PostProcessError | undefined {
-  if (
-    resolved.algorithm !== 'ssao' &&
-    resolved.algorithm !== 'gtao' &&
-    resolved.algorithm !== 'spiral-ssao'
-  ) {
+  if (resolved.method !== 'ssao' && resolved.method !== 'gtao') {
     return new PostProcessError({
       code: 'ssao-parameter-invalid',
-      detail: { paramName: 'algorithm', value: resolved.algorithm },
-    });
-  }
-  if (resolved.application !== 'lighting' && resolved.application !== 'scene-color') {
-    return new PostProcessError({
-      code: 'ssao-parameter-invalid',
-      detail: { paramName: 'application', value: resolved.application },
-    });
-  }
-  if (
-    !Number.isFinite(resolved.sceneColorStrength) ||
-    resolved.sceneColorStrength < 0 ||
-    resolved.sceneColorStrength > 1
-  ) {
-    return new PostProcessError({
-      code: 'ssao-parameter-invalid',
-      detail: { paramName: 'sceneColorStrength', value: resolved.sceneColorStrength },
+      detail: { paramName: 'method', value: resolved.method },
     });
   }
   return undefined;
@@ -120,16 +140,6 @@ function invalidSsaoSampling(resolved: ResolvedSsaoParameters): PostProcessError
     return new PostProcessError({
       code: 'ssao-parameter-invalid',
       detail: { paramName: 'sampleCount', value: resolved.sampleCount },
-    });
-  }
-  if (
-    !Number.isFinite(resolved.directLightingStrength) ||
-    resolved.directLightingStrength < 0 ||
-    resolved.directLightingStrength > 1
-  ) {
-    return new PostProcessError({
-      code: 'ssao-parameter-invalid',
-      detail: { paramName: 'directLightingStrength', value: resolved.directLightingStrength },
     });
   }
   for (const [paramName, min, max] of [
@@ -155,7 +165,7 @@ function invalidSsaoSampling(resolved: ResolvedSsaoParameters): PostProcessError
  * NaNs or silently falling back to shader literals.
  */
 export function resolveSsaoParameters(
-  config: SsaoParameterConfig | undefined,
+  config: SsaoProgramConfig | undefined,
 ): Result<ResolvedSsaoParameters, PostProcessError> {
   const resolved = getSsaoParameters(config);
   const modeFailure = invalidSsaoMode(resolved);
@@ -179,7 +189,9 @@ export function resolveSsaoParameters(
   if (
     !Number.isFinite(resolved.intensity) ||
     resolved.intensity < 0 ||
-    !Object.hasOwn(SSAO_SAMPLE_COUNTS, resolved.quality)
+    (typeof resolved.quality === 'number'
+      ? !Number.isFinite(resolved.quality) || resolved.quality < 0 || resolved.quality > 100
+      : !Object.hasOwn(SSAO_SAMPLE_COUNTS, resolved.quality))
   ) {
     const paramName =
       !Number.isFinite(resolved.intensity) || resolved.intensity < 0 ? 'intensity' : 'quality';
@@ -190,14 +202,179 @@ export function resolveSsaoParameters(
       }),
     );
   }
+  const parameterFailure = invalidSsaoFilterSettings(config);
+  if (parameterFailure !== undefined) return err(parameterFailure);
+  const gtaoFailure = config?.gtao === undefined ? undefined : invalidGtaoSettings(resolved.gtao);
+  if (gtaoFailure !== undefined) return err(gtaoFailure);
   const samplingFailure = invalidSsaoSampling(resolved);
   if (samplingFailure !== undefined) return err(samplingFailure);
   return ok(resolved);
 }
 
-/** Scene-color AO must never darken lighting a second time. */
+function invalidSsaoFilterSettings(
+  config: SsaoProgramConfig | undefined,
+): PostProcessError | undefined {
+  for (const [name, min, max] of [
+    ['power', 0, 100],
+    ['maxQuality', -100, 100],
+    ['fadeDistance', 0.01, Number.MAX_VALUE],
+    ['fadeRadius', 0.01, Number.MAX_VALUE],
+    ['mipBlend', 0, 1],
+    ['mipScale', 0.001, 10],
+    ['mipThreshold', 0, 1],
+  ] as const) {
+    const value = config?.[name];
+    if (value !== undefined && (!Number.isFinite(value) || value < min || value > max))
+      return new PostProcessError({
+        code: 'ssao-parameter-invalid',
+        detail: { paramName: name, value },
+      });
+  }
+  const levels = config?.levels;
+  if (levels !== undefined && ![0, 1, 2, 3].includes(levels))
+    return new PostProcessError({
+      code: 'ssao-parameter-invalid',
+      detail: { paramName: 'levels', value: levels },
+    });
+  return undefined;
+}
+
+function invalidGtaoSettings(gtao: ResolvedSsaoParameters['gtao']): PostProcessError | undefined {
+  for (const name of ['useNormals', 'downsample', 'spatialFilter', 'temporalFilter'] as const) {
+    if (typeof gtao[name] !== 'boolean')
+      return new PostProcessError({
+        code: 'ssao-parameter-invalid',
+        detail: { paramName: `gtao.${name}`, value: gtao[name] },
+      });
+  }
+  for (const [name, min, max] of [
+    ['filterWidth', 4, 5],
+    ['numAngles', 1, 16],
+    ['thicknessBlend', 0, 1],
+    ['falloffEnd', 0.01, Number.MAX_VALUE],
+    ['temporalBlendWeight', 0.01, 1],
+  ] as const) {
+    const value = gtao[name];
+    if (
+      !Number.isFinite(value) ||
+      value < min ||
+      value > max ||
+      ((name === 'filterWidth' || name === 'numAngles') && !Number.isInteger(value))
+    )
+      return new PostProcessError({
+        code: 'ssao-parameter-invalid',
+        detail: { paramName: `gtao.${name}`, value },
+      });
+  }
+  return undefined;
+}
+
 export function ssaoUsesLighting(
-  config: NonNullable<RenderPipelineAsset['config']>['ssao'],
+  config: NonNullable<RenderPipelineAsset['config']>['ambientOcclusion'],
 ): boolean {
-  return config?.enabled === true && config.application !== 'scene-color';
+  return config?.enabled === true && config.levels !== 0 && config.intensity !== 0;
+}
+
+/** Shader permutation, spatial level count and graphics preset limit are distinct. */
+export function resolveSsaoQuality(config: SsaoParameterConfig | undefined) {
+  const authored = config?.quality ?? 50;
+  const quality =
+    typeof authored === 'number' ? authored : { low: 20, medium: 50, high: 100 }[authored];
+  const ceiling = config?.maxQuality ?? 100;
+  const effective = ceiling < 0 ? -ceiling : Math.min(quality, ceiling);
+  return {
+    permutation:
+      Number(effective > 5) +
+      Number(effective > 25) +
+      Number(effective > 55) +
+      Number(effective > 75),
+    levels: config?.levels ?? 1 + Number(effective > 35) + Number(effective > 70),
+  };
+}
+
+const STANDARD_AO_KEYS = new Set<string>([
+  'enabled',
+  'method',
+  'radius',
+  'bias',
+  'intensity',
+  'quality',
+  'maxQuality',
+  'levels',
+  'power',
+  'fadeDistance',
+  'fadeRadius',
+  'radiusInWorldSpace',
+  'mipBlend',
+  'mipScale',
+  'mipThreshold',
+  'gtao',
+]);
+
+const GTAO_KEYS = new Set<string>([
+  'useNormals',
+  'downsample',
+  'spatialFilter',
+  'temporalFilter',
+  'filterWidth',
+  'numAngles',
+  'thicknessBlend',
+  'falloffEnd',
+  'temporalBlendWeight',
+]);
+
+export function hasStandardAoKeys(config: AmbientOcclusionSettings): boolean {
+  return (
+    Object.keys(config).every((name) => STANDARD_AO_KEYS.has(name)) &&
+    (config.method === undefined || config.method === 'ssao' || config.method === 'gtao') &&
+    (config.radiusInWorldSpace === undefined || typeof config.radiusInWorldSpace === 'boolean') &&
+    (config.gtao === undefined ||
+      (config.method === 'gtao' &&
+        typeof config.gtao === 'object' &&
+        config.gtao !== null &&
+        !Array.isArray(config.gtao) &&
+        Object.keys(config.gtao).every((name) => GTAO_KEYS.has(name))))
+  );
+}
+
+/** Saved estimator-specific numbers cannot be read with the new UE meanings. */
+export function migrateSavedAmbientOcclusion(value: unknown, oldRoute = false): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  const source = value as Record<string, unknown>;
+  const direct = source.directLightingStrength;
+  if (
+    direct !== undefined &&
+    (typeof direct !== 'number' || !Number.isFinite(direct) || direct < 0 || direct > 1)
+  )
+    return value;
+  const legacyFields = [
+    'application',
+    'sceneColorStrength',
+    'directLightingStrength',
+    'sampleCount',
+    'resolutionScale',
+    'thickness',
+    'distanceExponent',
+    'distanceFallOff',
+  ];
+  const legacy =
+    oldRoute ||
+    source.method === 'spiral-ssao' ||
+    legacyFields.some((field) => Object.hasOwn(source, field));
+  if (!legacy) return value;
+  const settings = { ...source };
+  for (const field of [...legacyFields, 'radius', 'bias', 'intensity']) delete settings[field];
+  if (settings.method === 'spiral-ssao') settings.method = 'ssao';
+  if (settings.quality === 'low') settings.quality = 25;
+  if (settings.quality === 'medium') settings.quality = 50;
+  if (settings.quality === 'high') settings.quality = 100;
+  return settings;
+}
+
+/** Optional Engine shader publications may omit the AO family. */
+export function hasScreenAoPrograms(
+  pipeline: Pick<import('./record/render-context').PipelineState, 'perPassResources'> | null,
+  depth: import('./record/render-context').RenderSystemInternals['depthPyramidShaders'],
+): boolean {
+  return pipeline?.perPassResources?.ssaoScreenPipeline !== undefined && depth?.seed !== undefined;
 }

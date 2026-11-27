@@ -75,6 +75,43 @@ it('keeps tick-local inputs out of view topology while retaining transitive shar
   expect(catchup[0]?.closure.resources).toHaveLength(10);
 });
 
+it('uses the scoped texture key for feature texture aliases', () => {
+  const [frame, view] = resolveFeatureWorkResources([
+    {
+      scope: 'frame',
+      resources: [
+        {
+          kind: 'texture',
+          name: 'foam-buffer',
+          width: 4,
+          height: 4,
+          format: 'rgba16float',
+          usage: ['sampled'],
+        },
+        { kind: 'texture-alias', name: 'foam', resource: 'foam-buffer' },
+      ],
+      passes: [],
+    },
+    {
+      scope: { view: 'main' },
+      resources: [{ kind: 'texture-alias', name: 'view-foam', resource: 'foam-buffer' }],
+      passes: [],
+    },
+  ]);
+
+  expect(frame?.resources[1]).toEqual({
+    kind: 'texture-alias',
+    name: '["frame","foam"]',
+    resource: '["frame","foam-buffer"]',
+  });
+  expect(view?.resources[0]).toEqual({
+    kind: 'texture-alias',
+    name: '["view:main","view-foam"]',
+    resource: '["frame","foam-buffer"]',
+  });
+  expect(view?.closure.resources.map(({ name }) => name)).toEqual(['foam-buffer', 'view-foam']);
+});
+
 it('retains shared graphics buffers referenced inside binding values and source order', () => {
   const rows = resolveFeatureWorkResources([
     {

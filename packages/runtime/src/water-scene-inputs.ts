@@ -106,6 +106,7 @@ export interface WaterSceneAssetAccess {
   version(handle: number): number | undefined;
   read(handle: number): Asset | undefined;
   publication?(handle: number): WaterBodySnapshot['sourcePublication'];
+  referenceKind?(guid: string): string | undefined;
   dependency?(guid: string, kind: string): WaterDependencySnapshot | undefined;
   dependencyParents?(guid: string, kind: string): readonly string[];
   syncWaterGeometryMeshes?(guids: readonly string[]): void;
@@ -561,6 +562,7 @@ export function registryAccess(
       }
     },
     sourceGuid: (handle) => runtimeAssetSource(assets, handle),
+    referenceKind: (guid) => assets.catalogEntry(guid)?.kind,
     version: (handle) => {
       try {
         const result = runtimeAssets(assets).version(handle as AssetHandle);

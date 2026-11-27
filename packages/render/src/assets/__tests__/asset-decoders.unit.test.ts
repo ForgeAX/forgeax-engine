@@ -208,7 +208,7 @@ describe('Render owner decoders', () => {
         gpuOcclusion: true,
         passCount: 2,
         clusterGrid: { x: 16, y: 8, z: 24 },
-        ssao: { enabled: true },
+        ambientOcclusion: { enabled: true },
         postEffects: ['bloom'],
       },
     };
@@ -224,7 +224,7 @@ describe('Render owner decoders', () => {
     { passCount: 0 },
     { outputDither: 1 },
     { clusterGrid: { x: 65, y: 2, z: 2 } },
-    { ssao: { enabled: 'yes' } },
+    { ambientOcclusion: { enabled: 'yes' } },
     { gpuOcclusion: 1 },
     { postEffects: [''] },
   ])('rejects malformed pipeline config in inline and artifact sources %j', async (config) => {
@@ -241,35 +241,29 @@ describe('Render owner decoders', () => {
   });
 });
 
-it('preserves scene-color AO through both native pipeline JSON routes', async () => {
+it('migrates old scene-color and spiral AO to the lighting SSAO contract', async () => {
   const value = {
     kind: 'render-pipeline',
     pipelineId: 'forgeax::standard',
     config: {
-      ssao: {
+      ambientOcclusion: {
         enabled: true,
-        algorithm: 'spiral-ssao',
+        method: 'spiral-ssao',
         application: 'scene-color',
         sceneColorStrength: 0.95,
         sampleCount: 12,
         resolutionScale: 0.5,
+        radius: 0.9,
+        intensity: 1.6,
       },
     },
   };
-  expect(await decode(renderPipelineContribution, JSON.parse(JSON.stringify(value)))).toMatchObject(
-    { ok: true, value },
-  );
-  expect(await decode(renderPipelineContribution, {}, [], value)).toMatchObject({
-    ok: true,
-    value,
-  });
-  for (const application of ['unknown', 1])
-    expect(
-      await decode(renderPipelineContribution, {
-        ...value,
-        config: { ssao: { ...value.config.ssao, application } },
-      }),
-    ).toMatchObject({ ok: false });
+  for (const decoded of [
+    await decode(renderPipelineContribution, JSON.parse(JSON.stringify(value))),
+    await decode(renderPipelineContribution, {}, [], value),
+  ]) {
+    expect(decoded.unwrap().config?.ambientOcclusion).toEqual({ enabled: true, method: 'ssao' });
+  }
 });
 
 it('normalizes saved output omission to V1 while preserving an explicit V2 JSON contract', async () => {
@@ -289,4 +283,19 @@ it('normalizes saved output omission to V1 while preserving an explicit V2 JSON 
     }),
   ).toMatchObject({ ok: true, value: { config: { outputContract: 'standard-output-v2' } } });
   expect(saved).not.toHaveProperty('config');
+});
+
+it('preserves the method of saved AO and publishes the current pipeline configuration', async () => {
+  const artifact = {
+    kind: 'render-pipeline',
+    pipelineId: 'forgeax::standard',
+    config: { ssao: { enabled: true, radius: 0.5 } },
+  };
+  const decoded = await decode(renderPipelineContribution, artifact);
+  expect(decoded).toMatchObject({
+    ok: true,
+    value: { config: { ambientOcclusion: { enabled: true, method: 'gtao' } } },
+  });
+  if (!decoded.ok) throw decoded.error;
+  expect(decoded.value.config).not.toHaveProperty('ssao');
 });

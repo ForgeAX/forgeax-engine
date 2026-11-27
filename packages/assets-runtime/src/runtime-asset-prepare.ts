@@ -37,7 +37,11 @@ export function prepareRuntimeAsset(
           hint: 'supply complete finite mesh channels and matching interleaved vertices',
         }),
       );
-    return ok(interleavedMesh(prepared.value));
+    return ok(
+      prepared.value.attributeStorage === 'static-streams'
+        ? prepared.value
+        : interleavedMesh(prepared.value),
+    );
   }
   if (prepared.ok && prepared.value.kind === 'texture-generator')
     return validateTextureGenerator(prepared.value);
@@ -119,7 +123,7 @@ function validTextureSourceToken(token: RenderTextureSourceToken): boolean {
 /** Resolve authored texture references once; runtime material values contain owner identities. */
 export function linkRuntimeMaterial(
   material: MaterialAsset,
-  owner: AssetReferenceOwner,
+  owner: Pick<AssetReferenceOwner, 'validate'>,
   source: (guid: string) => AssetHandle | undefined,
   textureFields: ReadonlySet<string>,
 ): Result<

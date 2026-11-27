@@ -37,7 +37,7 @@ import { testAssets } from './helpers/runtime-assets';
 import { World } from '@forgeax/engine-ecs';
 import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 
 const W = 256;
@@ -96,14 +96,41 @@ async function buildRenderer(canvas: HTMLCanvasElement): Promise<EngineRenderer>
 describe('clamp-to-last e2e browser (m3-w6)', () => {
   let canvas: HTMLCanvasElement | undefined;
   let renderer: EngineRenderer | undefined;
+  let rendererBuildStartedAt = 0;
 
-  afterEach(async () => {
-    await renderer?.dispose();
-    renderer = undefined;
-    if (canvas !== undefined && canvas.parentNode !== null) {
-      canvas.parentNode.removeChild(canvas);
+  beforeAll(async () => {
+    const target = document.createElement('canvas');
+    target.id = 'clamp-to-last-test-canvas';
+    target.width = W;
+    target.height = H;
+    target.style.width = `${W}px`;
+    target.style.height = `${H}px`;
+    target.style.display = 'block';
+    document.body.appendChild(target);
+    canvas = target;
+
+    rendererBuildStartedAt = performance.now();
+    const built = await buildRenderer(target);
+    if (canvas !== target) {
+      await built.dispose();
+      return;
     }
+    renderer = built;
+    console.log(
+      `[clamp-to-last-timing] renderer-ready elapsedMs=${(performance.now() - rendererBuildStartedAt).toFixed(1)}`,
+    );
+  }, 30_000);
+
+  afterAll(async () => {
+    const target = canvas;
+    const built = renderer;
     canvas = undefined;
+    renderer = undefined;
+    try {
+      await built?.dispose();
+    } finally {
+      target?.remove();
+    }
   });
 
   it.skipIf(!browserReady)(
@@ -130,21 +157,7 @@ describe('clamp-to-last e2e browser (m3-w6)', () => {
   // swiftshader timing artifact, known issue-466). These are excluded
   // from the error count; only SUT-attributable codes fail the test.
   it('AC-08/AC-12: single-UV mesh + built-in standard PBR builds PSO and renders without SUT-attributable error', async () => {
-    canvas = document.createElement('canvas');
-    canvas.id = 'clamp-to-last-test-canvas';
-    canvas.width = W;
-    canvas.height = H;
-    canvas.style.width = `${W}px`;
-    canvas.style.height = `${H}px`;
-    canvas.style.display = 'block';
-    document.body.appendChild(canvas);
-
-    const rendererBuildStartedAt = performance.now();
-    renderer = await buildRenderer(canvas);
-    console.log(
-      `[clamp-to-last-timing] renderer-ready elapsedMs=${(performance.now() - rendererBuildStartedAt).toFixed(1)}`,
-    );
-
+    if (renderer === undefined) throw new Error('Runtime renderer fixture is unavailable');
     const world = new World();
     world.spawn(
       {

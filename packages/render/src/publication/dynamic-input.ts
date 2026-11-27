@@ -34,9 +34,23 @@ function addresses(input: PublishedSurfaceDynamicInput): string {
   );
 }
 
+function receiverRangeAddresses(
+  ranges: PublishedSurfaceDynamicInput['ranges'],
+  sceneIdentity: string | undefined,
+): PublishedSurfaceDynamicInput['ranges'] {
+  return sceneIdentity === undefined
+    ? ranges
+    : ranges?.map((range) => ({
+        ...range,
+        member: { ...range.member, worldIdentity: sceneIdentity },
+      }));
+}
+
 /** One receiver owns the current source page and its renderer-local physical addresses. */
 export class SurfaceDynamicInputReceiver {
-  private current: { frame: SurfaceDynamicInputFrame; addresses: string } | undefined;
+  private current:
+    | { frame: SurfaceDynamicInputFrame; addresses: string; sceneIdentity: string | undefined }
+    | undefined;
   private disposed = false;
   get active(): boolean {
     return this.current !== undefined;
@@ -45,6 +59,7 @@ export class SurfaceDynamicInputReceiver {
   restore(
     input: PublishedSurfaceDynamicInput | undefined,
     generation: number,
+    sceneIdentity?: string,
   ): DynamicInputResult<SurfaceDynamicInputFrame | undefined> {
     if (this.disposed) return err(rejected('released', 'a live Surface publication receiver'));
     if (input === undefined) {
@@ -61,7 +76,9 @@ export class SurfaceDynamicInputReceiver {
       if (!configured.ok) return configured;
       const previous = this.current;
       const samePage =
-        previous?.frame.page.sourceId === input.page.sourceId &&
+        previous !== undefined &&
+        previous.sceneIdentity === sceneIdentity &&
+        previous.frame.page.sourceId === input.page.sourceId &&
         previous.frame.page.pageId === input.page.pageId;
       const validatePreviousRevision = () => {
         if (samePage && input.page.contentRevision < previous.frame.page.contentRevision)
@@ -85,18 +102,19 @@ export class SurfaceDynamicInputReceiver {
           ),
         );
       let page = candidate.value;
-      let ranges: SurfaceDynamicInputFrame['ranges'] =
-        input.ranges === undefined
-          ? undefined
-          : input.ranges.map((range) => page.reserveRange(range).unwrap());
+      // Published rows use the receiver's scene identity at draw time.
+      const snapshots = receiverRangeAddresses(input.ranges, sceneIdentity);
+      let ranges: SurfaceDynamicInputFrame['ranges'] = snapshots?.map((range) =>
+        page.reserveRange(range).unwrap(),
+      );
       if (retain) {
         page = previous.frame.page;
         const applied = page.applySnapshot(input.page);
         if (!applied.ok) return applied;
         const changedDevice = page.deviceGeneration !== generation;
-        page.reconfigureDevice(generation).unwrap();
+        if (changedDevice) page.reconfigureDevice(generation).unwrap();
         ranges = changedDevice
-          ? input.ranges?.map((range) => page.reserveRange(range).unwrap())
+          ? snapshots?.map((range) => page.reserveRange(range).unwrap())
           : previous.frame.ranges;
       } else adopted = true;
       const frame: SurfaceDynamicInputFrame = {
@@ -106,7 +124,7 @@ export class SurfaceDynamicInputReceiver {
         frameTime: input.frameTime,
       };
       if (!retain) previous?.frame.page.release().unwrap();
-      this.current = { frame, addresses: nextAddresses };
+      this.current = { frame, addresses: nextAddresses, sceneIdentity };
       return ok(frame);
     } finally {
       if (!adopted) candidate.value.release().unwrap();

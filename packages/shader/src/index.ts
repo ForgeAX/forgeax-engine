@@ -21,6 +21,12 @@
 // - ManifestEntry — re-exported from `@forgeax/engine-types` (manifest schema SSOT)
 
 export type { ManifestEntry, ParamSchemaEntry } from '@forgeax/engine-types';
+export {
+  CANONICAL_RECEIVER_REASON,
+  CANONICAL_RECEIVER_RECONSTRUCTION_BODY_WGSL,
+  CANONICAL_RECEIVER_RECONSTRUCTION_WGSL,
+  CANONICAL_RECEIVER_STATE,
+} from './canonical-receiver-reconstruction-wgsl.js';
 export { DIRECT_DFG_LUT_SIZE, directDfgLutBytes } from './direct-dfg-lut-data.js';
 export {
   expandShaderManifestPublication,
@@ -30,6 +36,36 @@ export {
   SHADER_MANIFEST_PUBLICATION_VERSION,
   shaderSourceDigestInput,
 } from './manifest-publication.js';
+export { SCREEN_PROBE_CANDIDATE_WGSL } from './screen-probe-candidate-source';
+export {
+  SCREEN_PROBE_CURRENT_SUPPORT_MASK,
+  SCREEN_PROBE_RECONSTRUCTION_WGSL,
+} from './screen-probe-reconstruction';
+export { SDF_INSTANCE_WORD_GUARDS_WGSL } from './sdf-instance-word-guards-wgsl.js';
+export { SDF_MESH_DF_APPROX_WGSL } from './sdf-mesh-df-approx-wgsl.js';
+export { SDF_MESH_MARCH_STATE, SDF_MESH_MARCH_WGSL } from './sdf-mesh-march-wgsl.js';
+export { SDF_SCENE_TEXTURE_LAYOUT, SDF_SCENE_TEXTURE_READ_WGSL } from './sdf-scene-texture-wgsl.js';
+export {
+  SDF_SURFACE_CANDIDATE_STATE,
+  SDF_SURFACE_CANDIDATES_WGSL,
+  sdfSurfaceCandidatesWgsl,
+} from './sdf-surface-candidates-wgsl.js';
+export {
+  SDF_SURFACE_INTERSECTION_WGSL,
+  SDF_SURFACE_LOCAL_RAY_WGSL,
+} from './sdf-surface-intersection-wgsl.js';
+export { SDF_SURFACE_MARCH_FOUNDATION_WGSL } from './sdf-surface-march-wgsl.js';
+export { SDF_SURFACE_POOL_LAYOUT, SDF_SURFACE_POOL_WGSL } from './sdf-surface-pool-wgsl.js';
+export {
+  SDF_SURFACE_ROOT_PREPARATION_WGSL,
+  SDF_SURFACE_ROOT_PREPARE_WGSL,
+  SDF_SURFACE_ROOT_REQUEST_BYTES,
+  SDF_SURFACE_ROOT_REQUEST_WGSL,
+} from './sdf-surface-root-request-wgsl.js';
+export {
+  SDF_SURFACE_TRACE_HINTED_RECEIVER_WGSL,
+  SDF_SURFACE_TRACE_RECEIVER_WGSL,
+} from './sdf-surface-trace-wgsl.js';
 
 import type { MaterialAsset, MaterialParameter, MaterialValue } from '@forgeax/engine-types';
 import { standardSurfaceParameters, unlitMaterialParameters } from '@forgeax/engine-types';
@@ -81,6 +117,8 @@ export {
   STANDARD_DERIVED_LAYOUT_PROJECTIONS,
   STANDARD_DIRECT_DFG_LUT_BINDING,
   STANDARD_OBJECT_SPACE_NORMAL_BIT,
+  STANDARD_ORM_REUSE_BIT,
+  STANDARD_ORM_REUSE_OVERRIDE,
   STANDARD_PARALLAX_DISPLACEMENT_BIT,
   STANDARD_PARALLAX_HEIGHT_DEFINE,
   STANDARD_PARALLAX_HEIGHT_PAIR,
@@ -105,6 +143,7 @@ export {
   STANDARD_TRIPLANAR_PROJECTION_BIT,
   type StandardPhysicalTextureField,
   type StandardSharedTransmissionHost,
+  standardCoverageTextureMask,
   standardLeanInputDefines,
   standardLeanInputMaskCompatible,
   standardMaskHasBit,
@@ -114,13 +153,17 @@ export {
   standardSampleReuseMask,
   standardSharedTransmissionConflicts,
   standardSharedTransmissionDefines,
+  standardTextureDefaultMask,
   standardTextureMask,
+  standardTextureValueMask,
+  standardVertexTextureMask,
 } from './material-schemas.js';
 export {
   DEPTH_PYRAMID_SHADER_MODULES,
   FORGEAX_RESERVED_PATH_PREFIX,
   type MaterialShaderByteEntry,
   type MaterialShaderEntry,
+  type MaterialShaderSourceEntry,
   type MaterialShaderVariantReference,
   type RegisteredMaterialShaderEntry,
   ShaderRegistry,
@@ -131,6 +174,7 @@ export {
   type ShaderRegistryOptions as ShaderCatalogOptions,
   SSR_SHADER_MODULES,
 } from './ShaderRegistry.js';
+export { supportedVariantDefines } from './supported-variant-defines.js';
 export {
   type ExpandedShaderManifest,
   findVariantByDefines,
@@ -141,6 +185,7 @@ export {
 export {
   isSupportedVariantDefines,
   isSupportedVariantKey,
+  projectStandardCoverageDefines,
   VARIANT_PERMUTATION_RULES,
   type VariantPermutationRule,
   violatedVariantPermutationRules,
@@ -178,6 +223,7 @@ export {
   SINGLE_LAYER_MEDIUM_MSAA_RAW_DEPTH_WGSL,
   SINGLE_LAYER_MEDIUM_RAW_DEPTH_WGSL,
 } from './single-layer-medium-raw-depth.js';
+export { SKY_SH_WGSL } from './sky-sh-source';
 
 /**
  * Material modules whose shader source and parameter contract are owned by
@@ -191,6 +237,8 @@ export const ENGINE_MATERIAL_MODULES = [
   'forgeax::default-standard-pbr',
   'forgeax::standard-terrain',
   'forgeax::standard-terrain-ids',
+  'forgeax::standard-terrain-detail',
+  'forgeax::standard-terrain-detail-shadow',
   'forgeax::standard-terrain-shadow',
   'forgeax::standard-terrain-ids-shadow',
   'forgeax::single-layer-medium',
@@ -298,8 +346,17 @@ export function createBuiltinMaterialAsset(kind: BuiltinMaterialKind): MaterialA
  */
 export const TONEMAP_LUMINANCE_EPSILON = 1e-5;
 
+export { BLOOM_PREFILTER_WGSL, POST_SCENE_COLOR_HALF_WGSL } from './bloom-source';
+export { DEPTH_OF_FIELD_TILES_WGSL } from './depth-of-field-tiles-source';
+export { FIELD_VISIBILITY_BOUNDS_WGSL } from './field-visibility-wgsl';
 export { manifestShaderSource } from './manifest-publication';
 export { materialShaderSource } from './manifest-publication.js';
+export {
+  findMaterialShaderEntry,
+  materialDepthCoversEntry,
+  materialDepthFragmentEntry,
+  PREDEPTH_FRAGMENT_ENTRY,
+} from './material/depth-entries.js';
 export {
   createMaterialShaderProgram,
   type MaterialShaderProgram,
@@ -316,10 +373,16 @@ export {
   rayMaterialFailure,
   rayMaterialNeedsCoverage,
 } from './material/ray-program';
+export { isRuntimeMaterialVariantFamily } from './material/variant-family.js';
 export { declaredMaterialVertexInputs } from './material/vertex-inputs.js';
 export {
   type AdmittedShaderProgramTemplate,
   admitShaderProgramTemplate,
+  type MaterialShaderSelection,
+  type MaterialShaderSelectionResult,
+  type MaterialShaderTemplate,
+  type MaterialShaderTemplateProgram,
+  type PreparedMaterialShaderTemplate,
   publishShaderProgramTemplates,
   readShaderProgramTemplates,
   type ShaderProgramCompilation,
@@ -328,28 +391,54 @@ export {
   type ShaderProgramTemplate,
   type ShaderTemplateLibrary,
   selectShaderProgramDefines,
+  shaderCompilerProfilesEqual,
 } from './program-template.js';
 export {
   admitShaderTemplateManifest,
   isShaderTemplateManifestRow,
   materialShaderPreparedSourceRows,
+  materialShaderVariantsWithAxis,
+  preferredMaterialShaderTemplateVariant,
+  prepareMaterialShaderTemplateVariant,
+  SHADER_PROJECT_MANIFEST_VERSION,
   SHADER_TEMPLATE_MANIFEST_VERSION,
   type ShaderTemplateManifest,
   shaderTemplateVariantEntry,
 } from './program-template-manifest.js';
+export {
+  MOTION_BLUR_SCENE_VELOCITY_WGSL,
+  SCENE_VELOCITY_RECONSTRUCTION_WGSL,
+  SCENE_VELOCITY_WITH_DEPTH_OVERRIDE,
+  TAA_SCENE_VELOCITY_WGSL,
+} from './scene-velocity-source';
+export {
+  SDF_SURFACE_BOUNDS_WGSL,
+  SDF_SURFACE_TRACE_ROOT_WGSL,
+  SDF_SURFACE_TRACE_WGSL,
+  SDF_SURFACE_TRACE_WITH_BOUNDS_WGSL,
+} from './sdf-surface-trace-wgsl';
+export { SMAA_BLEND_WGSL } from './smaa-blend-source';
 export { STANDARD_OUTPUT_V2_PARAMS_LAYOUT } from './standard-output.js';
 export {
   TEXTURE_GENERATOR_VERTEX_ENTRY,
   TEXTURE_GENERATOR_VERTEX_SOURCE,
+  TEXTURE_GENERATOR_VOLUME_GROUP,
+  TEXTURE_GENERATOR_VOLUME_SOURCE,
 } from './texture-generator-source.js';
 export { TONEMAP_PARAMS_LAYOUT, TONEMAP_SHADER_MODE } from './tonemap.js';
 /** Renderer-owned TSR analysis and reconstruction programs. */
 export {
+  TSR_ANALYZE_FRAGMENT_VELOCITY_WGSL,
   TSR_ANALYZE_FRAGMENT_WGSL,
+  TSR_ANALYZE_VELOCITY_WGSL,
   TSR_ANALYZE_WGSL,
   TSR_OPAQUE_FRAGMENT_WGSL,
   TSR_OPAQUE_WGSL,
+  TSR_RECONSTRUCT_FRAGMENT_VELOCITY_WGSL,
   TSR_RECONSTRUCT_FRAGMENT_WGSL,
+  TSR_RECONSTRUCT_HALF_VELOCITY_WGSL,
+  TSR_RECONSTRUCT_HALF_WGSL,
+  TSR_RECONSTRUCT_VELOCITY_WGSL,
   TSR_RECONSTRUCT_WGSL,
 } from './tsr-source';
-export { materialShaderAxes } from './types.js';
+export { materialShaderAxes, materialShaderHasVariants } from './types.js';

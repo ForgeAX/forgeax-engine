@@ -78,6 +78,7 @@ export async function startClippingPlanesServer(mode: 'local' | 'view' = 'local'
     `import { definePack, definePackageId } from '@forgeax/engine-pack/source';\nimport { ok } from '@forgeax/engine-types';\nexport default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('${packageId}'), build() { return ok(${JSON.stringify(objects)}); } });\n`,
   );
   const binding = createStandaloneRuntimeAssetBinding('clipping-planes-test');
+  const cooker = createMaterialPackCooker([assets]);
   const server = await createServer({
     root,
     configFile: false,
@@ -87,7 +88,17 @@ export async function startClippingPlanesServer(mode: 'local' | 'view' = 'local'
         roots: [assets],
         runtimeBinding: binding,
         producerReadiness: 'before-consume',
-        cookers: [createMaterialPackCooker([assets])],
+        // The view case inspects the entire compiled family. The local case
+        // still exercises the ordinary Scriptable Pack template route.
+        cookers: [
+          mode === 'view'
+            ? {
+                ...cooker,
+                cook: (input: unknown) =>
+                  cooker.cook({ ...(input as object), publication: undefined }),
+              }
+            : cooker,
+        ],
         ddc: { projectDdcRoot: join(root, '.ddc') },
       }),
     ],

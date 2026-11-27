@@ -12,7 +12,7 @@ export interface PointsLinesExpandedGeometry {
    * neighbor and distance. Points: center, (size scale, 0, 0), corner, RGBA tint.
    */
   readonly vertices: Float32Array;
-  /** Six indices per expanded quad. */
+  /** Six indices per expanded quad. Shared Points indices are read-only to consumers. */
   readonly indices: Uint32Array;
   readonly sourceVertexCount: number;
   readonly pointCount: number;
@@ -48,11 +48,12 @@ export class PointsLinesExpansionCache {
       this.entries.set(key, cached);
       return cached;
     }
-    const geometry = deriveExpandedGeometry(snapshot, mesh, key);
-    // Per-frame JS writes (moving particles) bump the generation every frame;
-    // retaining each superseded expansion would hold up to 256 stale copies.
     const slot = pointsLinesSourceSlot(snapshot);
     const superseded = this.latest.get(slot);
+    const previous = superseded === undefined ? undefined : this.entries.get(superseded);
+    const geometry = deriveExpandedGeometry(snapshot, mesh, key, previous);
+    // Per-frame JS writes (moving particles) bump the generation every frame;
+    // retaining each superseded expansion would hold up to 256 stale copies.
     if (superseded !== undefined && superseded !== key) this.entries.delete(superseded);
     this.latest.set(slot, key);
     this.entries.set(key, geometry);
@@ -89,12 +90,13 @@ function deriveExpandedGeometry(
   snapshot: PointsLinesPreparedSnapshot,
   mesh: MeshAsset,
   key: string,
+  previous: PointsLinesExpandedGeometry | undefined,
 ): PointsLinesExpandedGeometry {
   const component = snapshot.component;
   const style = snapshot.style;
   if (component === undefined || style === undefined) return emptyGeometry(snapshot);
   const sourcePositions = readPositions(mesh);
-  if (component === 'Points') return expandPoints(mesh, sourcePositions, key);
+  if (component === 'Points') return expandPoints(mesh, sourcePositions, key, previous?.indices);
   const positions: number[] = [];
   const vertices: number[] = [];
   const indices: number[] = [];
@@ -218,6 +220,7 @@ function expandPoints(
   mesh: MeshAsset,
   sourcePositions: Float32Array,
   key: string,
+  previousIndices: Uint32Array | undefined,
 ): PointsLinesExpandedGeometry {
   const elements = pointElements(mesh);
   const colors = floatStream(
@@ -231,15 +234,23 @@ function expandPoints(
   const count = elements.length;
   const positions = new Float32Array(count * 3);
   const vertices = new Float32Array(count * 48);
-  const indices = new Uint32Array(count * 6);
+  // Quad indices address expanded ordinals, regardless of source index order.
+  const indices = previousIndices?.length === count * 6 ? previousIndices : pointQuadIndices(count);
   for (let point = 0; point < count; point++) {
     const source = elements[point] ?? 0;
     const x = sourcePositions[source * 3] ?? 0;
     const y = sourcePositions[source * 3 + 1] ?? 0;
     const z = sourcePositions[source * 3 + 2] ?? 0;
-    positions.set([x, y, z], point * 3);
-    const scale = sizes === undefined ? 1 : (sizes[source * 2] ?? 1);
-    const tint = colors?.subarray(source * 4, source * 4 + 4);
+    positions[point * 3] = x;
+    positions[point * 3 + 1] = y;
+    positions[point * 3 + 2] = z;
+    const scale = sizes?.[source * 2] ?? 1;
+    const colorOffset = source * 4;
+    const hasTint = colors !== undefined && colorOffset + 4 <= colors.length;
+    const r = hasTint ? (colors[colorOffset] as number) : 1;
+    const g = hasTint ? (colors[colorOffset + 1] as number) : 1;
+    const b = hasTint ? (colors[colorOffset + 2] as number) : 1;
+    const a = hasTint ? (colors[colorOffset + 3] as number) : 1;
     for (let corner = 0; corner < 4; corner++) {
       const offset = (point * 4 + corner) * 12;
       vertices[offset] = x;
@@ -248,11 +259,11 @@ function expandPoints(
       vertices[offset + 3] = scale;
       vertices[offset + 6] = POINT_CORNERS[corner * 2] ?? 0;
       vertices[offset + 7] = POINT_CORNERS[corner * 2 + 1] ?? 0;
-      if (tint?.length === 4) vertices.set(tint, offset + 8);
-      else vertices.fill(1, offset + 8, offset + 12);
+      vertices[offset + 8] = r;
+      vertices[offset + 9] = g;
+      vertices[offset + 10] = b;
+      vertices[offset + 11] = a;
     }
-    const base = point * 4;
-    indices.set([base, base + 1, base + 2, base + 2, base + 1, base + 3], point * 6);
   }
   return {
     key,
@@ -269,6 +280,21 @@ function expandPoints(
     derivedBytes: vertices.byteLength + indices.byteLength,
     bounds: boundsOf(positions),
   };
+}
+
+function pointQuadIndices(count: number): Uint32Array {
+  const indices = new Uint32Array(count * 6);
+  for (let point = 0; point < count; point++) {
+    const base = point * 4;
+    const offset = point * 6;
+    indices[offset] = base;
+    indices[offset + 1] = base + 1;
+    indices[offset + 2] = base + 2;
+    indices[offset + 3] = base + 2;
+    indices[offset + 4] = base + 1;
+    indices[offset + 5] = base + 3;
+  }
+  return indices;
 }
 
 function emitQuad(

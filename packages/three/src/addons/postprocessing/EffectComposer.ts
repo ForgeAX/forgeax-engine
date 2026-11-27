@@ -19,12 +19,8 @@ function aoSettings(pass: GTAOPass, surfaceWidth: number): ThreePostProcessing['
   };
   return {
     radius: scalar('radius'),
-    thickness: scalar('thickness'),
-    intensity: scalar('scale') * pass.blendIntensity,
-    distanceExponent: scalar('distanceExponent'),
-    distanceFallOff: scalar('distanceFallOff'),
-    directLightingStrength: Math.min(pass.blendIntensity, 1),
-    resolutionScale: Math.min(1, pass.width / surfaceWidth),
+    intensity: Math.min(1, scalar('scale') * pass.blendIntensity),
+    downsample: pass.width * 2 <= surfaceWidth,
     samples: typeof samples === 'number' ? samples : undefined,
   };
 }
@@ -96,9 +92,11 @@ export class EffectComposer {
   render(_deltaTime?: number): void {
     if (this.disposed) throw invalidError('EffectComposer is disposed');
     if (!this.renderToScreen) throw unsupportedError('EffectComposer offscreen output');
-    const enabled = this.passes.filter((pass) => pass.enabled);
-    const scene = enabled.shift();
-    const output = enabled.pop();
+    const first = this.passes.findIndex((pass) => pass.enabled);
+    let last = this.passes.length - 1;
+    while (last > first && !this.passes[last]?.enabled) last--;
+    const scene = this.passes[first];
+    const output = this.passes[last];
     if (!(scene instanceof RenderPass) || !(output instanceof OutputPass)) {
       throw unsupportedError('EffectComposer requires an enabled RenderPass and final OutputPass');
     }
@@ -112,13 +110,16 @@ export class EffectComposer {
       throw unsupportedError('EffectComposer RenderPass overrides');
     let ao: ThreePostProcessing['ao'];
     let bloom: ThreePostProcessing['bloom'];
-    for (const pass of enabled) {
+    for (let i = first + 1; i < last; i++) {
+      const pass = this.passes[i];
+      if (!pass?.enabled) continue;
       if (pass instanceof GTAOPass && ao === undefined && bloom === undefined) {
         validateAoPass(pass, scene);
         ao = aoSettings(pass, this.size.x * this.pixelRatio);
       } else if (pass instanceof UnrealBloomPass && bloom === undefined) {
         bloom = {
-          intensity: pass.strength,
+          // Three r187 composites with 3 * strength; native Bloom uses intensity / 3.
+          intensity: pass.strength * 9,
           radius: pass.radius ?? 0,
           threshold: pass.threshold ?? 0,
         };

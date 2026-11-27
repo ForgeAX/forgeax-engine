@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { createPluginPackInternal } from '../plugin-pack.js';
 
 it('connects authored dev transport DDC across owners and invalidates changed source', async () => {
@@ -48,18 +48,15 @@ it('connects authored dev transport DDC across owners and invalidates changed so
       await plugin.closeBundle();
     }
   };
-  try {
-    await writeFile(path, source(1));
-    const first = await serve('first');
-    expect(await readdir(entries)).toHaveLength(1);
-    expect(await serve('second')).toBe(first);
-    expect(cook).toHaveBeenCalledTimes(1);
-    expect(await readdir(entries)).toHaveLength(1);
-    await writeFile(path, source(2));
-    expect(await serve('edited')).not.toBe(first);
-    expect(await readdir(entries)).toHaveLength(2);
-    expect(cook).toHaveBeenCalledTimes(2);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path, source(1));
+  const first = await serve('first');
+  expect(await readdir(entries)).toHaveLength(1);
+  expect(await serve('second')).toBe(first);
+  expect(cook).toHaveBeenCalledTimes(1);
+  expect(await readdir(entries)).toHaveLength(1);
+  await writeFile(path, source(2));
+  expect(await serve('edited')).not.toBe(first);
+  expect(await readdir(entries)).toHaveLength(2);
+  expect(cook).toHaveBeenCalledTimes(2);
 });

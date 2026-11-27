@@ -2,10 +2,10 @@ import { mat4, vec3 } from '@forgeax/engine-math';
 import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
 import { describe, expect, it } from 'vitest';
 import { earthAtmosphere } from '../../__tests__/atmosphere-fixture';
+import { materialSurfaceModel } from '../../material-program-selection';
 import { MaterialResource } from '../../material-resource';
 import type { CameraSnapshot } from '../../render-contract';
 import type { MaterialSnapshot, RenderableSnapshot } from '../../render-system-extract';
-import { materialSurfaceModel } from '../../render-system-extract';
 import type { TemporalView } from '../../temporal/temporal-view';
 import type { ValidatedRenderable } from '../frame-snapshot';
 import {
@@ -224,7 +224,7 @@ describe('temporal GPU payloads', () => {
     expect(Array.from(payload.slice(24, 27))).toEqual(Array.from(camera().position));
   });
   it('detaches capture clipping and never overwrites the shared point-shadow slots', () => {
-    const { queue, uploads } = recordingQueue();
+    const { queue, uploads, offsets } = recordingQueue();
     const light = {
       kind: 'directional' as const,
       direction: vec3.create(0, -1, 0),
@@ -235,7 +235,9 @@ describe('temporal GPU payloads', () => {
     const lights = {
       point: [],
       spot: [],
-      pointShadow: [{ shadowAtlasLayer: 0, shadowMatrices: new Float32Array(96) }],
+      pointShadow: [
+        { shadowAtlasLayer: 2, shadowMatrices: Float32Array.from({ length: 96 }, (_, i) => i + 1) },
+      ],
     } as never;
     writeViewUbo(
       queue,
@@ -246,7 +248,25 @@ describe('temporal GPU payloads', () => {
       [],
     );
     // Main slot, three translucent-fog composition copies, six point-shadow faces.
-    expect(uploads).toHaveLength(10);
+    expect(uploads).toHaveLength(3);
+    expect(offsets[2]).toBe(VIEW_UNIFORM_SLOT_STRIDE * 13);
+    const faces = uploads[2];
+    expect(faces?.byteLength).toBe(5 * VIEW_UNIFORM_SLOT_STRIDE + VIEW_UNIFORM_BYTES);
+    if (faces === undefined) throw Error('missing point-shadow upload');
+    for (let face = 0; face < 6; face++) {
+      const expected = new Float32Array(uploads[0]?.slice().buffer ?? new ArrayBuffer(0));
+      expected.set(
+        Float32Array.from({ length: 16 }, (_, i) => 16 * face + i + 1),
+        28,
+      );
+      expect(
+        new Float32Array(
+          faces.buffer,
+          faces.byteOffset + face * VIEW_UNIFORM_SLOT_STRIDE,
+          VIEW_UNIFORM_BYTES / 4,
+        ),
+      ).toEqual(expected);
+    }
     const main = new Float32Array(uploads[0]?.buffer ?? new ArrayBuffer(0));
     expect(Array.from(main.slice(256, 260))).toEqual([1, 0, 0, -2]);
     expect(Array.from(main.slice(280, 284))).toEqual([1, 0, 1, 0]);
@@ -259,8 +279,8 @@ describe('temporal GPU payloads', () => {
       [],
       VIEW_UNIFORM_SLOT_STRIDE * 25,
     );
-    expect(uploads).toHaveLength(11);
-    const capture = new Float32Array(uploads[10]?.buffer ?? new ArrayBuffer(0));
+    expect(uploads).toHaveLength(4);
+    const capture = new Float32Array(uploads[3]?.buffer ?? new ArrayBuffer(0));
     expect(Array.from(capture.slice(256, 260))).toEqual([0, 1, 0, -1]);
     expect(Array.from(main.slice(256, 260))).toEqual([1, 0, 0, -2]);
   });
@@ -609,7 +629,7 @@ describe('View upload invocation ownership', () => {
       });
     writeViewUbo(queue, buffer, source, light, lights, []);
     expect(entered).toBe(true);
-    expect(recorded.uploads).toHaveLength(5);
+    expect(recorded.uploads).toHaveLength(3);
     expect(recorded.offsets.slice(0, 2)).toEqual([VIEW_UNIFORM_BYTES * 25, 0]);
     const inner = new Float32Array(recorded.uploads[0]?.buffer ?? new ArrayBuffer(0));
     const outer = new Float32Array(recorded.uploads[1]?.buffer ?? new ArrayBuffer(0));
@@ -617,8 +637,9 @@ describe('View upload invocation ownership', () => {
     expect(inner[280]).toBe(0);
     expect(Array.from(outer.slice(24, 27))).toEqual([0, 0, 5]);
     expect(Array.from(outer.slice(256, 260))).toEqual([1, 0, 0, -2]);
-    for (const bytes of recorded.uploads.slice(2))
-      expect(new Float32Array(bytes.buffer)[280]).toBe(1);
+    const family = new Float32Array(recorded.uploads[2]?.buffer ?? new ArrayBuffer(0));
+    for (let slot = 0; slot < 3; slot++)
+      expect(family[(slot * VIEW_UNIFORM_SLOT_STRIDE) / 4 + 280]).toBe(1);
   });
 
   it('clears disabled lanes and preserves copied uploads after a failed write', () => {
@@ -635,7 +656,7 @@ describe('View upload invocation ownership', () => {
     const rejecting = { writeBuffer: () => ({ ok: false, error: failure }) } as unknown as RhiQueue;
     expect(() => writeViewUbo(rejecting, buffer, source, light, lights, [])).toThrow(failure);
     writeViewUbo(recorded.queue, buffer, camera(), light, lights, []);
-    expect(recorded.uploads[recorded.uploads.length - 4]).toEqual(before);
+    expect(recorded.uploads[recorded.uploads.length - 2]).toEqual(before);
     expect(recorded.uploads[0]).toEqual(before);
   });
 });

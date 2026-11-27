@@ -8,6 +8,7 @@ import {
 } from '../../raytracing/card-lookup';
 import { createSdfQuery, SdfQueryStatus } from '../../raytracing/sdf-query';
 import { createSurfaceCapture } from '../../raytracing/surface-cards';
+import { cardQueryReplayStages } from './card-capture-replay.fixture';
 import type { SdfCardsFixture } from './sdf-cards.commands';
 import { sdfCubeIndices as indices, sdfCubePositions as positions } from './sdf-cards.geometry';
 
@@ -158,8 +159,8 @@ export async function verifyVisibilityCards(
   }
   const tape = decodeTape(tapeBytes).unwrap(),
     model = buildFrameModel(tape);
-  if (model.works.length !== 3 || model.unseededResources.length !== 0)
-    throw Error('Visibility/card tape must contain the complete raster and query chain');
+  const { lastIdentity, traceWork, lookupWork } = cardQueryReplayStages(tape, model, 1);
+  if (model.unseededResources.length !== 0) throw Error('Visibility/card tape has unseeded inputs');
   const fresh = (await (await webgpu.rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const raw = webgpu._internal_getRawDevice(fresh);
   raw?.addEventListener('uncapturederror', (e) => errors.push(e.error.message));
@@ -167,13 +168,14 @@ export async function verifyVisibilityCards(
     await openReplay(tape, { device: fresh, createShaderModule: webgpu.createShaderModule })
   ).unwrap();
   try {
-    for (const [workIndex, binding, expected] of [
-      [1, 3, hitBytes],
-      [2, 2, lookupBytes],
+    for (const [work, binding, expected] of [
+      [traceWork, 3, hitBytes],
+      [lookupWork, 2, lookupBytes],
     ] as const) {
-      const id = model.works[workIndex]?.bindings.find((b) => b.binding === binding)?.resourceId;
+      const { workIndex } = work;
+      const id = work.bindings.find((b) => b.binding === binding)?.resourceId;
       if (!id) throw Error('Missing production work binding');
-      const before = (await replay.readResourceAtWork(id, 0)).unwrap().bytes;
+      const before = (await replay.readResourceAtWork(id, lastIdentity.workIndex)).unwrap().bytes;
       if (before.some((v) => v !== 0)) throw Error('Unexecuted query/lookup produced data');
       const actual = (await replay.readResourceAtWork(id, workIndex)).unwrap().bytes;
       if (actual.length !== expected.length || actual.some((v, i) => v !== expected[i]))

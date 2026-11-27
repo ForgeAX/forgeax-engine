@@ -78,46 +78,29 @@ describe('Render World post receipts', () => {
     expect(cleanup?.systems.map((system) => system.name)).toContain(RENDER_POST_CLEANUP_SYSTEM);
   });
 
-  it('publishes receipts and registers SSR history completion for an accepted view', () => {
-    const { world, frameState, owner, candidate, commitBloomFrameReceipts } = scenario(true);
+  it('publishes post receipts for an accepted view', () => {
+    const { world, frameState, commitBloomFrameReceipts } = scenario(true);
     endRenderFrame(world);
     expect(frameState.motionBlurExecution).toBe(RECEIPT);
     expect(frameState.stagedMotionBlurExecution).toBeUndefined();
     expect(commitBloomFrameReceipts).toHaveBeenCalledWith({ receipts: 1 });
-    expect(owner.submitFrame).toHaveBeenCalledWith(
-      candidate,
-      expect.objectContaining({ onSubmittedWorkDone: expect.any(Function) }),
-    );
-    expect(owner.abortFrame).not.toHaveBeenCalled();
-    expect(owner.retireReplacedAfterFence).toHaveBeenCalledWith(
-      expect.objectContaining({ onSubmittedWorkDone: expect.any(Function) }),
-      expect.any(Function),
-    );
-    expect(owner.submitFrame.mock.invocationCallOrder[0]).toBeLessThan(
-      owner.retireReplacedAfterFence.mock.invocationCallOrder[0] as number,
-    );
   });
 
-  it('never publishes or advances history for a rejected view', () => {
-    const { world, frameState, owner, candidate, commitBloomFrameReceipts } = scenario(false);
+  it('never publishes receipts for a rejected view', () => {
+    const { world, frameState, commitBloomFrameReceipts } = scenario(false);
     endRenderFrame(world);
     expect(frameState.motionBlurExecution).toBeUndefined();
     expect(frameState.stagedMotionBlurExecution).toBeUndefined();
     expect(frameState.bloomFrameReceipts).toBeUndefined();
     expect(commitBloomFrameReceipts).not.toHaveBeenCalled();
-    expect(owner.submitFrame).not.toHaveBeenCalled();
-    expect(owner.retireReplacedAfterFence).not.toHaveBeenCalled();
-    expect(owner.abortFrame).toHaveBeenCalledWith(candidate, 'submit');
   });
 
   it('publishes nothing without the post commit system', () => {
-    const { world, frameState, owner } = scenario(true);
+    const { world, frameState } = scenario(true);
     world
       .removeSystem(RenderCommit, registeredSystem(world, RenderCommit, 'render-post-commit'))
       .unwrap();
     endRenderFrame(world);
     expect(frameState.motionBlurExecution).toBeUndefined();
-    expect(owner.submitFrame).not.toHaveBeenCalled();
-    expect(owner.retireReplacedAfterFence).not.toHaveBeenCalled();
   });
 });

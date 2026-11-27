@@ -15,7 +15,6 @@ import {
   CharacterController,
   type CharacterControllerData,
   type CharacterSynchronization,
-  Collider,
   ColliderShapeValue,
   type ColliderSnapshot,
   cloneDerivedPhysicsInput,
@@ -89,6 +88,7 @@ import {
 } from '@forgeax/engine-physics';
 import type { ColliderDesc, Collider as RapierCollider } from '../pkg/rapier.mjs';
 import {
+  cleanupAuthoredBody,
   runComputeMove,
   runEnsureBody,
   runReconcilePhysicsEntity,
@@ -145,6 +145,11 @@ import {
 } from './derived-shape-preparation.js';
 import { GroupedContactEvents } from './grouped-contact-events.js';
 import {
+  restoreStaticContactObservations,
+  StaticContactTransitions,
+} from './native-body-contacts.js';
+import {
+  type CompletedSensorStep,
   runAdmitFixedForce,
   runAuthoredColliderDesc,
   runBodiesShareCollision,
@@ -166,21 +171,21 @@ import {
 import { sweepNativeShape } from './shape-sweep-query.js';
 import { SolverParticipants } from './solver-participants.js';
 import { SolverWorkerDriver } from './solver-worker-driver.js';
+import {
+  StaticPhysicsResidency,
+  StaticResidencyError,
+  type StaticResidentMember,
+} from './static-residency.js';
 // Three-phase pipeline (plan-strategy D-1):
 //   1. syncBackend: reconcile authored bodies and kinematic positions.
 //   2. stepSimulation: call rapierWorld.step(eventQueue).
 //   3. writeback: read Rapier body positions (dynamic only).
 //
-// Entity-to-body mapping (plan-strategy D-7): Rapier RigidBody.userData holds
-// the ECS entity raw value for reverse lookup in collision events.
-//
 // Despawn cleanup (plan-strategy D-5): removeEntity() removes the Rapier body
 // and colliders from the physics world.
 
-import { createStateProjection } from '@forgeax/engine-ecs/projection';
 import { type Vec3, vec3 } from '@forgeax/engine-math';
 
-import { ChildOf } from '@forgeax/engine-scene';
 import { err, ok, type Result, type RigidBodyType, unpackSlot } from '@forgeax/engine-types';
 import { allowedBodyVelocity } from './body-axis-locks.js';
 import { writeNativeBodyMotion } from './body-motion.js';
@@ -217,11 +222,12 @@ import {
   type RapierWorld,
 } from './physics-entity-records.js';
 import {
+  createPhysicsSyncState,
   PHYSICS_DT_MAX,
   type PhysicsSyncDescriptor,
-  type PhysicsSyncQuery,
   type PhysicsSyncState,
   type PhysicsTransform3D,
+  physicsSourcePoseKey,
 } from './physics-sync-descriptor.js';
 import { SharedCollisionGeometry } from './shared-collision-geometry.js';
 import type { Rapier3DModule } from './wasm-loader.js';
@@ -329,6 +335,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
   private colliderGeneration = 0;
   private readonly sensorColliderIdentities = new Map<number, PhysicsSensorOverlap>();
   private readonly completedSensorRosters = new Map<number, PhysicsSensorOverlaps>();
+  private completedSensorStep: CompletedSensorStep | undefined;
   private readonly forceAccumulatorBodies = new Set<number>();
   private contactDeltaTime = 0;
   private derivedPublicationPending = false;
@@ -359,6 +366,76 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
 
   /** Persistent ECS query + projection cursor for incremental backend sync. */
   private syncState: PhysicsSyncState | undefined;
+
+  private readonly staticContactTransitions = new StaticContactTransitions((entity) =>
+    this.bodyForEntity(entity),
+  );
+  private readonly staticResidency = new StaticPhysicsResidency({
+    check: () => this.assertActive('staticResidency'),
+    exclusive: (run) => {
+      this.nativeExecuting = true;
+      try {
+        return run();
+      } finally {
+        this.nativeExecuting = false;
+      }
+    },
+    create: (entity, descriptor) => {
+      this.ensureBody(
+        entity,
+        descriptor.transform,
+        descriptor.rigidBody,
+        descriptor.collider,
+        false,
+      );
+      return this.bodyForEntity(entity).handle;
+    },
+    body: (entity) => this.bodyForEntity(entity),
+    participate: (handles, enabled) => this.raw.setStaticBodyParticipation(handles, enabled),
+    preflight: (handles, enabled) => this.raw.validateStaticBodyParticipation(handles, enabled),
+    meshVersion: (handle) => this.sharedGeometry?.version(handle),
+    prepareMeshService: () => {
+      this.geometryOwner();
+    },
+    remove: (entity, handle) => {
+      this.staticContactTransitions.forget(entity, handle);
+      if (this.bodyForEntity(entity)?.handle === handle) this.removeEntity(entity);
+    },
+    stopContacts: (entity) => {
+      this.contactDeltaTime = 0;
+      for (const other of [...(this.collisionPairs.get(entity) ?? [])]) {
+        this.staticContactTransitions.remember(entity, other);
+        if (this.removePair(entity, other))
+          this.pushCollisionEvent({ type: 'stopped', entityA: entity, entityB: other });
+      }
+    },
+  });
+
+  /** @internal The App caller owns fixed-boundary source acceptance and its exact content guard. */
+  _beginStaticResidency(
+    world: World,
+    members: readonly StaticResidentMember[],
+    guard: () => Result<void, unknown>,
+    sourceParticipants?: number,
+  ) {
+    this.assertActive('beginStaticResidency');
+    if (this.worldIdentity !== undefined && this.worldIdentity !== world)
+      return err(
+        new StaticResidencyError('static-residency-invalid', {
+          reason: 'native owner is bound to another World',
+        }),
+      );
+    this.bindIsolationWorld(world);
+    return this.staticResidency.begin(world, members, guard, sourceParticipants);
+  }
+
+  /** @internal Owner facts used to settle frame-independent retirement. */
+  _inspectStaticResidency() {
+    return {
+      ...this.staticResidency.inspect(),
+      pendingContactPairs: this.staticContactTransitions.size,
+    };
+  }
 
   private disposed = false;
 
@@ -806,6 +883,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
   step(deltaTime: number): void {
     this.assertActive('step');
     if (!Number.isFinite(deltaTime) || deltaTime <= 0 || deltaTime > PHYSICS_DT_MAX) return;
+    if (this.recoveryBlocked()) return;
     this.contactDeltaTime = 0;
     try {
       // Native integration must consume the same fixed delta as force controllers.
@@ -813,7 +891,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       const geometryCommitted = this.processDerivedCandidates();
       // A failed native rollback is an explicit rebuild boundary. Physics does
       // not advance or publish a mixed state after this point.
-      if (this.derivedPoisonedEntities.size > 0) return;
+      if (this.recoveryBlocked()) return;
       // Geometry commits may replace ordinary ECS terrain after the scheduled
       // sync. Consume those changes before collision detection can see both
       // the old source and its newly admitted fragment.
@@ -854,7 +932,10 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
         this.nativeExecuting = true;
         this.solverPending = true;
         this.solverSourcePoses = new Map(
-          [...this.entityMap.keys()].map((entity) => [entity, this.solverSourcePose(entity)]),
+          [...this.entityMap.keys()].map((entity) => [
+            entity,
+            physicsSourcePoseKey(this.syncState, entity),
+          ]),
         );
         const oldWorld = this.raw;
         const completion = this.solverWorker
@@ -869,7 +950,9 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
                 throw new Error('Solver snapshot lost a registered body');
               }
               body.userData = entity;
-              if (this.solverSourcePoses.get(entity) !== this.solverSourcePose(entity))
+              if (
+                this.solverSourcePoses.get(entity) !== physicsSourcePoseKey(this.syncState, entity)
+              )
                 this.solverAuthoredPoseChanges.add(entity);
             }
             for (const controller of this.kccCache.values())
@@ -968,7 +1051,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     if (this.activeDerivedPreflight) this.assertActive('finalizeDerivedFixedStep');
     if (!this.derivedPublicationPending) return;
     this.derivedPublicationPending = false;
-    if (this.derivedPoisonedEntities.size > 0) return;
+    if (this.recoveryBlocked()) return;
     this.publishDerivedCandidates();
     this.retireDerivedBodies();
     this.contactDeltaTime = this.raw.timestep;
@@ -1169,8 +1252,9 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       (entity) => this.bodyForEntity(entity),
       (body) => this.bodyColliders(body),
       this.completedSensorRosters,
-      () => this.fixedStep,
+      this.fixedStep,
     );
+    this.completedSensorStep = { step: this.fixedStep, throughGeneration: this.bodyGeneration };
   }
 
   getSensorOverlaps(
@@ -1183,6 +1267,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       this.entityMap,
       this.completedSensorRosters,
       this.sensorColliderIdentities,
+      this.completedSensorStep,
       rootEntity,
       filterMask,
     );
@@ -1214,6 +1299,16 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       this.retiredColliderOwners,
       workerEvents,
     );
+    restoreStaticContactObservations(
+      this.staticContactTransitions,
+      this.raw,
+      this.fixedStep,
+      (a, b) => this.addPair(a, b),
+      (handle) => this.derivedColliderToShape.get(handle)?.id,
+      (observation, first, second) => this.recordContactObservation(observation, first, second),
+      (event) => this.pushCollisionEvent(event),
+    );
+    this.retiredColliderOwners.clear();
   }
 
   private recordContactObservation(
@@ -3149,7 +3244,9 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
 
   private recoveryBlocked(): boolean {
     return (
-      this.derivedPoisonedEntities.size > 0 || this.syncState?.world.execution.health === 'poisoned'
+      this.staticResidency.faulted ||
+      this.derivedPoisonedEntities.size > 0 ||
+      this.syncState?.world.execution.health === 'poisoned'
     );
   }
 
@@ -3277,6 +3374,8 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     this.raw.profilerEnabled = false;
     if (typeof this.raw.free === 'function') this.raw.free();
     if (typeof this.eventQueue.free === 'function') this.eventQueue.free();
+    this.staticResidency.close();
+    this.staticContactTransitions.clear();
     this.entityMap.clear();
     this.dirtyPairPolicies.clear();
     this.collisionPairs.clear();
@@ -3311,6 +3410,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
 
   /** Release the persistent ECS readers owned by one system registration. */
   clearEcsContext(world: World): void {
+    this.staticResidency.detach(world);
     this.assertActive('clearEcsContext');
     this.contactDeltaTime = 0;
     if (this.worldIdentity === world) this.clearPairIsolation();
@@ -3440,7 +3540,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
   /** Remove backend rows whose Collider disappeared from the World query. */
   pruneMissingEntities(active: ReadonlySet<number>): void {
     for (const entity of this.entityMap.keys()) {
-      if (!active.has(entity)) this.removeEntity(entity);
+      if (!active.has(entity) && !this.staticResidency.owns(entity)) this.removeEntity(entity);
     }
   }
 
@@ -3487,7 +3587,6 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     }
   }
 
-  /** Prepare before changing a native body; reuse shape parameters for unchanged source/scale. */
   private authoredColliderDesc(
     transform: PhysicsTransform3D,
     collider: ColliderSnapshot,
@@ -3510,20 +3609,6 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     return ((this.raw as any).bodies.get(record.bodyHandle) as RapierRigidBody | null) ?? undefined;
   }
 
-  private isCommittedFixedBody(entity: number): boolean {
-    return this.bodyForEntity(entity)?.bodyType() === this.rapierModule.RigidBodyType.Fixed;
-  }
-
-  private reconcileTransformlessCompatibility(entity: number, staticByEcs: boolean): void {
-    if (!staticByEcs || !this.isCommittedFixedBody(entity)) {
-      this.removeEntity(entity);
-      return;
-    }
-    // A fixed body cannot be controller-owned. Clear stale KCC state defensively
-    // while retaining the already-committed body and collider receipt.
-    this.removeKccController(entity);
-  }
-
   private reconcilePhysicsEntity(
     state: PhysicsSyncState,
     entity: EntityHandle,
@@ -3532,7 +3617,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
   ): PhysicsSyncDescriptor | undefined {
     return runReconcilePhysicsEntity(
       (entity) => this.removeEntity(entity),
-      (entity, staticByEcs) => this.reconcileTransformlessCompatibility(entity, staticByEcs),
+      this.rapierModule.RigidBodyType.Fixed,
       (entity) => this.hasBody(entity),
       (entity, descriptor, sourceOwnedTypeRejections) =>
         this.syncAuthoredEcsMutation(entity, descriptor, sourceOwnedTypeRejections),
@@ -3723,6 +3808,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     this.assertActive('syncFromEcs');
     this.contactDeltaTime = 0;
     this.bindIsolationWorld(world);
+    this.staticResidency.validateSources(world);
     this.sharedGeometry?.adopt();
     if (globalTransformComponent === undefined) {
       this.syncTerrain(world);
@@ -3735,43 +3821,8 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       state.transformComponent !== transformComponent ||
       state.globalTransformComponent !== globalTransformComponent
     ) {
-      const queryResult = world.query({
-        read: [Collider],
-        optional: [
-          transformComponent,
-          globalTransformComponent,
-          RigidBody,
-          CharacterController,
-          ChildOf,
-        ],
-      });
-      if (!queryResult.ok) return;
-      const bodyQuery = world.query({
-        read: [RigidBody],
-        without: [Collider],
-        optional: [transformComponent, globalTransformComponent, CharacterController, ChildOf],
-      });
-      if (!bodyQuery.ok) throw bodyQuery.error;
-      state = {
-        world,
-        transformComponent,
-        globalTransformComponent,
-        queries: [queryResult.value, bodyQuery.value] as unknown as readonly PhysicsSyncQuery[],
-        projection: createStateProjection(
-          world,
-          [
-            transformComponent,
-            globalTransformComponent,
-            Collider,
-            RigidBody,
-            CharacterController,
-            ChildOf,
-            Disabled,
-          ],
-          [Collider, RigidBody],
-        ),
-        accepted: new Map(),
-      };
+      state = createPhysicsSyncState(world, transformComponent, globalTransformComponent);
+      if (state === undefined) return;
       this.syncState = state;
     }
 
@@ -3786,12 +3837,14 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
         updates.push({ index, descriptor: undefined });
         continue;
       }
-      const descriptor = this.reconcilePhysicsEntity(
-        state,
-        entity,
-        previous?.entity === entity ? previous : undefined,
-        sourceOwnedTypeRejections,
-      );
+      const descriptor =
+        this.staticResidency.reconcile(state.world, entity) ??
+        this.reconcilePhysicsEntity(
+          state,
+          entity,
+          previous?.entity === entity ? previous : undefined,
+          sourceOwnedTypeRejections,
+        );
       updates.push({ index, descriptor });
     }
     batch.accept();
@@ -3848,6 +3901,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       additionalSolverIterations?: number;
     },
     collider: ColliderSnapshot | undefined,
+    enabled = true,
   ): void {
     runEnsureBody(
       (operation) => this.assertActive(operation),
@@ -3873,6 +3927,17 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       transform,
       rigidBody,
       collider,
+      enabled,
+      (body) =>
+        cleanupAuthoredBody(
+          entity,
+          body,
+          collider,
+          this.entityMap,
+          this.raw,
+          (entity) => this.removeEntity(entity),
+          this.sharedGeometry,
+        ),
     );
   }
   /**
@@ -3968,22 +4033,8 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     return this.motionReadback.writeback(this.raw, this.entityMap, this.rapierModule.RigidBodyType);
   }
 
-  private solverSourcePose(entity: number): string {
-    if (!this.syncState) return '';
-    const read = this.syncState.world.get(
-      entity as EntityHandle,
-      this.syncState.transformComponent,
-    );
-    if (!read.ok) return '';
-    const value = read.value as unknown as {
-      pos: ArrayLike<number>;
-      quat: ArrayLike<number>;
-      scale: ArrayLike<number>;
-    };
-    return JSON.stringify([Array.from(value.pos), Array.from(value.quat), Array.from(value.scale)]);
-  }
-
   removeEntity(entity: number): void {
+    this.staticContactTransitions.forget(entity);
     runRemoveEntity(
       () => this.solverPending,
       this.solverRetiredEntities,

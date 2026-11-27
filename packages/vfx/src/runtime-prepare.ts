@@ -193,6 +193,54 @@ function reflectedBindingKeys(
   return ok(bindingKeys);
 }
 
+/** Entry-local layouts may only name reflected executable bindings, once each. */
+function entryPointBindingReadsValid(
+  reflection: ReflectionTables,
+  bindingKeys: ReadonlySet<string>,
+): boolean {
+  const reads = reflection.entryPointBindings;
+  if (reads === undefined)
+    return !reflection.dataInterfaces.some(
+      (entry) => record(entry) && entry.kind === 'structured-input',
+    );
+  if (!Array.isArray(reads)) return false;
+  const names = new Set<string>();
+  for (const entry of reads) {
+    if (
+      !record(entry) ||
+      typeof entry.name !== 'string' ||
+      entry.stage !== 'compute' ||
+      !reflection.entryPoints.includes(entry.name) ||
+      names.has(entry.name) ||
+      !Array.isArray(entry.bindings)
+    )
+      return false;
+    names.add(entry.name);
+    if (!entryResourceReadsValid(entry.bindings, bindingKeys)) return false;
+  }
+  return reflection.entryPoints.every((name) => typeof name === 'string' && names.has(name));
+}
+
+function entryResourceReadsValid(
+  reads: readonly unknown[],
+  bindingKeys: ReadonlySet<string>,
+): boolean {
+  const used = new Set<string>();
+  for (const read of reads) {
+    if (!record(read) || !Number.isSafeInteger(read.group) || !Number.isSafeInteger(read.binding))
+      return false;
+    const key = `${read.group}:${read.binding}`;
+    if (!bindingKeys.has(key) || used.has(key)) return false;
+    used.add(key);
+    if (
+      read.fields !== undefined &&
+      (!Array.isArray(read.fields) || read.fields.some((field) => typeof field !== 'string'))
+    )
+      return false;
+  }
+  return true;
+}
+
 /** Force fields are valid and declared exactly when the reflection requires the force-field binding. */
 function forceFieldsMatchReflection(
   fields: unknown,
@@ -431,6 +479,8 @@ function prepareRuntimeEmitter(
     return invalid(`${path}.reflection`);
   const bindingKeys = reflectedBindingKeys(reflection.bindings, executable, path);
   if (!bindingKeys.ok) return bindingKeys;
+  if (!entryPointBindingReadsValid(reflection, bindingKeys.value))
+    return invalid(`${path}.reflection.entryPointBindings`);
   if (!dataInterfacesMatchBindings(reflection.dataInterfaces, bindingKeys.value, waterGridEmission))
     return invalid(`${path}.reflection.dataInterfaces`);
   const fields = value.forceFields;

@@ -1,6 +1,7 @@
 import {
   ImporterRegistry,
   type ImportRunnerFs,
+  projectImportPack,
   type RunImportMeta,
   runImport,
 } from '@forgeax/engine-import';
@@ -92,14 +93,16 @@ describe('malformed glTF buffer data URI recovery', () => {
     expect(repaired.ok).toBe(true);
     if (!repaired.ok || 'skipped' in repaired.value)
       throw new Error('repaired import must publish a Pack');
-    expect(repaired.value.pack.assets).toHaveLength(1);
+    expect(projectImportPack(repaired.value.product).assets).toHaveLength(1);
     expect(repaired.value.cookProducts).toHaveLength(1);
 
     const retried = await runImport(meta, registry, source.fs);
     expect(retried.ok).toBe(true);
     if (!retried.ok || 'skipped' in retried.value)
       throw new Error('same-registry retry must publish a Pack');
-    expect(retried.value.pack).toEqual(repaired.value.pack);
+    expect(projectImportPack(retried.value.product)).toEqual(
+      projectImportPack(repaired.value.product),
+    );
     expect(retried.value.cookProducts).toEqual(repaired.value.cookProducts);
     expect(registry.registeredImporters()).toEqual(['gltf']);
   });

@@ -1,5 +1,5 @@
 import { vec3 } from '@forgeax/engine-math';
-import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
+import type { Buffer, RhiQueue, Sampler, TextureView } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import { assert, describe, expect, it, vi } from 'vitest';
 import { MaterialResource } from '../material-resource';
@@ -7,6 +7,7 @@ import type { RenderResourceScope } from '../publication/resource-scope';
 import type { PerSubmeshMaterialBgDeps } from '../record/main-pass-material';
 import {
   MaterialUniformRecording,
+  materialBindingUniformResources,
   materialUniformResources,
   materialUniformSlot,
   prepareMaterialUniform,
@@ -66,6 +67,43 @@ describe('draw-owned shared material storage', () => {
     expect(writeBuffer).toHaveBeenCalledTimes(1);
   });
 
+  it('completes a reserved address after an unrelated lower slot retires', () => {
+    const { deps, world } = fixture();
+    const retired = material();
+    const active = material();
+    let frame = new MaterialFrame(undefined).with(retired);
+    prepareMaterialUniformFrame(deps.runtime, frame);
+    frame = frame.with(active);
+    prepareMaterialUniformFrame(deps.runtime, frame);
+    const reserved = materialUniformSlot(deps.runtime, active.snapshot);
+    expect(reserved).toBeGreaterThan(materialUniformSlot(deps.runtime, retired.snapshot));
+    prepareMaterialUniformFrame(deps.runtime, frame.without(retired));
+    expect(prepareMaterialUniform(deps, active.snapshot, world, materialUniformResources([]))).toBe(
+      reserved,
+    );
+  });
+
+  it('uses the same ordered identity for assembled user and physical bindings', () => {
+    const buffer = {} as Buffer;
+    const sampler = {} as Sampler;
+    const view = {} as TextureView;
+    const physicalView = {} as TextureView;
+    const entries = [
+      { binding: 0, resource: { kind: 'buffer' as const, value: { buffer } } },
+      { binding: 1, resource: { kind: 'sampler' as const, value: sampler } },
+      { binding: 2, resource: { kind: 'textureView' as const, value: view } },
+    ];
+    const physical = [{ slot: 0, sampler, view: physicalView }];
+    expect(materialBindingUniformResources(entries, physical)).toBe(
+      materialUniformResources([sampler, view, sampler, physicalView]),
+    );
+    expect(materialBindingUniformResources([], [])).toBe(materialUniformResources([]));
+    physical[0] = { slot: 0, sampler, view };
+    expect(materialBindingUniformResources(entries, physical)).toBe(
+      materialUniformResources([sampler, view, sampler, view]),
+    );
+  });
+
   it('native resource tuples invalidate only the actually changed root', () => {
     const { deps, world, writeBuffer } = fixture();
     const roots = Array.from({ length: 1000 }, () => material());
@@ -104,6 +142,62 @@ describe('draw-owned shared material storage', () => {
     const bytes = writeBuffer.mock.calls.at(-1)?.[2] as Uint8Array;
     expect(Array.from(new Float32Array(bytes.buffer).slice(0, 3))).toEqual([1, 0, 0]);
     expect(deps.frameState.materialUboCounters?.packMisses).toBe(2);
+  });
+
+  it('packs the same snapshot for each installed schema, including while the old slot is held', () => {
+    const a = fixture();
+    const b = fixture();
+    const { materialParamSchema: _schema, ...base } = material().snapshot;
+    const snapshot = {
+      ...base,
+      materialShaderId: 'test::uniform',
+      paramSnapshot: { strength: 0.75 },
+    };
+    const compact = [{ name: 'strength', type: 'f32' }];
+    const extended = [{ name: 'pad', type: 'vec4' }, ...compact];
+    let selected = compact;
+    Object.assign(a.deps.runtime, { getParamSchema: () => selected });
+    Object.assign(b.deps.runtime, { getParamSchema: () => extended });
+    const tuple = materialUniformResources([]);
+    const bind = (scope: typeof a) =>
+      prepareMaterialUniform(scope.deps, snapshot, scope.world, tuple);
+    const floats = (scope: typeof a) =>
+      new Float32Array((scope.writeBuffer.mock.lastCall?.[2] as Uint8Array).buffer);
+    const held = new MaterialUniformRecording();
+    const original = held.run(() => bind(a));
+    expect(floats(a)[0]).toBe(0.75);
+    bind(b);
+    expect(floats(b)[4]).toBe(0.75);
+    selected = extended;
+    expect(bind(a)).not.toBe(original);
+    expect(floats(a)[4]).toBe(0.75);
+    selected = compact;
+    expect(held.run(() => bind(a))).toBe(original);
+    compact.unshift({ name: 'prefix', type: 'vec4' });
+    expect(bind(a)).not.toBe(original);
+    expect(floats(a)[4]).toBe(0.75);
+    held.complete();
+  });
+
+  it('keeps simultaneous texture tuples addressable until each recording completes', () => {
+    const { deps, world } = fixture();
+    const snapshot = material().snapshot;
+    const first = new MaterialUniformRecording();
+    const second = new MaterialUniformRecording();
+    const a = {},
+      b = {},
+      c = {};
+    const bind = (tuple: object) => prepareMaterialUniform(deps, snapshot, world, tuple);
+    const slotA = first.run(() => bind(a));
+    const slotB = second.run(() => bind(b));
+    const slotC = bind(c);
+    expect(new Set([slotA, slotB, slotC]).size).toBe(3);
+    expect(first.run(() => bind(a))).toBe(slotA);
+    first.complete();
+    expect(second.run(() => bind(b))).toBe(slotB);
+    expect(bind(c)).toBe(slotC);
+    second.complete();
+    expect(bind(c)).toBe(slotC);
   });
 
   it('retries all overlapping physical pages after a partial failure and admits new pages', () => {
@@ -247,4 +341,81 @@ it('pins earlier versions across suspended preparation without leaking into anot
   expect(prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(root))).toBe(
     1,
   );
+});
+
+it('holds a prepared uniform address across inactive frames and transfers it back to active ownership', () => {
+  const { deps, world } = fixture();
+  const a = material(),
+    b = material(),
+    c = material(),
+    d = material();
+  const resources = materialUniformResources([]);
+  prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(a).with(b));
+  prepareMaterialUniform(deps, b.snapshot, world, resources);
+  const held = new MaterialUniformRecording();
+  const slot = held.hold(deps.runtime, b.snapshot);
+  prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(a));
+  prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(a).with(c));
+  expect(materialUniformSlot(deps.runtime, c.snapshot)).not.toBe(slot);
+  prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(a).with(b).with(c));
+  expect(materialUniformSlot(deps.runtime, b.snapshot)).toBe(slot);
+  held.complete();
+  held.complete();
+  prepareMaterialUniformFrame(
+    deps.runtime,
+    new MaterialFrame(undefined).with(a).with(b).with(c).with(d),
+  );
+  expect(materialUniformSlot(deps.runtime, d.snapshot)).not.toBe(slot);
+  expect(materialUniformSlot(deps.runtime, b.snapshot)).toBe(slot);
+});
+
+it('keeps an adopted old uniform version active after its prepared hold transfers', () => {
+  const { deps, world } = fixture();
+  const root = material(),
+    other = material();
+  const old = root.snapshot;
+  const oldFrame = new MaterialFrame(undefined).with(root);
+  prepareMaterialUniformFrame(deps.runtime, oldFrame);
+  prepareMaterialUniform(deps, old, world, materialUniformResources([]));
+  const held = new MaterialUniformRecording();
+  const oldSlot = held.hold(deps.runtime, old);
+  root.adopt({ ...old, roughness: 0.25 });
+  prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(root));
+  expect(materialUniformSlot(deps.runtime, root.snapshot)).not.toBe(oldSlot);
+  prepareMaterialUniformFrame(deps.runtime, oldFrame);
+  expect(materialUniformSlot(deps.runtime, old)).toBe(oldSlot);
+  held.complete();
+  expect(materialUniformSlot(deps.runtime, other.snapshot)).not.toBe(oldSlot);
+  expect(materialUniformSlot(deps.runtime, old)).toBe(oldSlot);
+});
+
+it('releases a canceled cold uniform root that never entered the active MaterialFrame', () => {
+  const { deps, world } = fixture();
+  const a = material(),
+    b = material(),
+    c = material();
+  const active = new MaterialFrame(undefined).with(a);
+  prepareMaterialUniformFrame(deps.runtime, active);
+  const held = new MaterialUniformRecording();
+  prepareMaterialUniform(deps, b.snapshot, world, materialUniformResources([]));
+  const prepared = held.hold(deps.runtime, b.snapshot);
+  prepareMaterialUniformFrame(deps.runtime, active);
+  held.complete();
+  expect(
+    prepareMaterialUniformFrame(deps.runtime, new MaterialFrame(undefined).with(a).with(c)),
+  ).toBe(2);
+  expect(materialUniformSlot(deps.runtime, c.snapshot)).toBe(prepared);
+});
+
+it('releases a canceled native preparation before any MaterialFrame was adopted', () => {
+  const { deps, world } = fixture();
+  const cold = material(),
+    next = material();
+  const held = new MaterialUniformRecording();
+  held.runPrepared(() =>
+    prepareMaterialUniform(deps, cold.snapshot, world, materialUniformResources([])),
+  );
+  const slot = held.hold(deps.runtime, cold.snapshot);
+  held.complete();
+  expect(materialUniformSlot(deps.runtime, next.snapshot)).toBe(slot);
 });

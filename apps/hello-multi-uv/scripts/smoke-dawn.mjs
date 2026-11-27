@@ -20,7 +20,7 @@ import { solidTexture } from './texture-fixture.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { emitSmokeReceipt } from '../../shared/scripts/smoke-receipt.mjs';
-import { readShaderManifestText } from '../../../scripts/lib/shader-manifest.mjs';
+import { readCookedShaderManifestPublication, readShaderManifestText } from '../../../scripts/lib/shader-manifest.mjs';
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const SMOKE_PIXEL_THRESHOLD = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
@@ -205,7 +205,6 @@ const enginePkg = await import('@forgeax/engine-runtime');
 const { createRenderer } = enginePkg;
 const { Transform } = await import('@forgeax/engine-scene');
 const { Camera, DirectionalLight, MeshFilter, MeshRenderer } = await import('@forgeax/engine-render');
-const { readShaderManifestPublication } = await import('@forgeax/engine-shader');
 
 const { createPublicationAssets } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const ASSETS_MANIFEST_URL = URL.createObjectURL(
@@ -298,7 +297,7 @@ let manifestParsed;
 try {
   const manifestRaw = readShaderManifestText(MANIFEST_PATH);
   MANIFEST_URL = URL.createObjectURL(new Blob([manifestRaw], { type: 'application/json' }));
-  manifestParsed = await readShaderManifestPublication(JSON.parse(manifestRaw));
+  manifestParsed = await readCookedShaderManifestPublication(JSON.parse(manifestRaw));
 } catch {
   console.error('[smoke] FAIL - manifest.json missing or invalid. Run: pnpm --filter @forgeax/hello-multi-uv build first');
   process.exit(1);

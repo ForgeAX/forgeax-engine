@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { DdcEntryStore } from '@forgeax/engine-ddc';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { expect, it, onTestFinished } from 'vitest';
 import { createPluginPackInternal } from '../plugin-pack.js';
+import { recordIndexedBundle } from './vite-fixtures.js';
 
 it('uses the existing product cache through the normal production owner and rechecks source/cooker identities', async () => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-production-product-cache-'));
@@ -67,40 +68,37 @@ it('uses the existing product cache through the normal production owner and rech
       await plugin.closeBundle();
     }
   };
-  try {
-    await writeFile(source, authored(1));
-    const cold = await run();
-    expect(cooks).toBe(1);
-    const warm = await run();
-    expect(cooks).toBe(1);
-    // Compare every emitted byte and the complete public catalog, not just producer output.
-    expect(warm).toEqual(cold);
-    const store = new DdcEntryStore(join(root, 'cache', 'scriptable-pack-products'));
-    const keys = await store.listKeys();
-    expect(keys).toHaveLength(1);
-    const uncached = await run(1, false);
-    expect(cooks).toBe(2);
-    expect(uncached).toEqual(cold);
-    const newGeneration = await run(7);
-    expect(cooks).toBe(2);
-    const catalog = newGeneration.find((row) => row.name === 'pack-index.json');
-    expect(JSON.parse(String(catalog?.source))).toMatchObject({ generation: 7 });
-    await writeFile(source, authored(2));
-    const edited = await run();
-    expect(cooks).toBe(3);
-    expect(edited).not.toEqual(cold);
-    identity = 'fixture-cooker/2';
-    await run();
-    expect(cooks).toBe(4);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
+  await writeFile(source, authored(1));
+  const cold = await run();
+  expect(cooks).toBe(1);
+  const warm = await run();
+  expect(cooks).toBe(1);
+  // Compare every emitted byte and the complete public catalog, not just producer output.
+  expect(warm).toEqual(cold);
+  const store = new DdcEntryStore(join(root, 'cache', 'scriptable-pack-products'));
+  const keys = await store.listKeys();
+  expect(keys).toHaveLength(1);
+  const uncached = await run(1, false);
+  expect(cooks).toBe(2);
+  expect(uncached).toEqual(cold);
+  const newGeneration = await run(7);
+  expect(cooks).toBe(2);
+  const catalog = newGeneration.find((row) => row.name === 'pack-index.json');
+  expect(JSON.parse(String(catalog?.source))).toMatchObject({ generation: 7 });
+  await writeFile(source, authored(2));
+  const edited = await run();
+  expect(cooks).toBe(3);
+  expect(edited).not.toEqual(cold);
+  identity = 'fixture-cooker/2';
+  await run();
+  expect(cooks).toBe(4);
 });
 
 it('revalidates current references after a cached material product and retains the uncached failure', async () => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-production-cache-reference-'));
   const dependency = join(root, 'dependency.pack.json');
-  const guid = '019ffa97-0000-7000-8000-000000000093';
+  const guid = '25723c48-d199-5476-ab7f-b24a0bae07b7';
   const cache = join(root, 'cache');
   let cooks = 0;
   const run = async (cached: boolean) => {
@@ -128,16 +126,7 @@ it('revalidates current references after a cached material product and retains t
     });
     const emitted: Array<{ fileName?: string; name?: string; source: string | Uint8Array }> = [];
     try {
-      await plugin.generateBundle.call({
-        emitFile(asset) {
-          emitted.push(asset);
-          return String(emitted.length - 1);
-        },
-        getFileName(id) {
-          const item = emitted[Number(id)];
-          return item?.fileName ?? `assets/${item?.name ?? id}`;
-        },
-      });
+      await plugin.generateBundle.call(recordIndexedBundle(emitted));
       return { error: undefined, emitted };
     } catch (error) {
       return { error: error as { code?: string; detail?: unknown }, emitted };
@@ -145,18 +134,18 @@ it('revalidates current references after a cached material product and retains t
       await plugin.closeBundle();
     }
   };
-  try {
-    await writeFile(
-      dependency,
-      JSON.stringify({
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [{ guid, kind: 'sampler', payload: { magFilter: 'linear' }, refs: [] }],
-      }),
-    );
-    await writeFile(
-      join(root, 'material.pack.ts'),
-      `export default {
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
+  await writeFile(
+    dependency,
+    JSON.stringify({
+      schemaVersion: '3.0.0',
+      packageId: '019ffa97-0000-7000-8000-000000000093',
+      assets: { output: { kind: 'sampler', payload: { magFilter: 'linear' }, refs: [] } },
+    }),
+  );
+  await writeFile(
+    join(root, 'material.pack.ts'),
+    `export default {
       schemaVersion: '2.0.0',
       packageId: new Uint8Array([1,159,250,151,0,0,112,0,128,0,0,0,0,0,0,94]),
       build: async ({ readByGuid }) => {
@@ -171,24 +160,21 @@ it('revalidates current references after a cached material product and retains t
         } } };
       },
     };`,
-    );
-    const cold = await run(true);
-    expect(cold.error).toBeUndefined();
-    expect(
-      await new DdcEntryStore(join(cache, 'scriptable-pack-products')).listKeys(),
-    ).toHaveLength(1);
-    const warm = await run(true);
-    expect(warm.error).toBeUndefined();
-    expect(warm.emitted).toEqual(cold.emitted);
-    expect(cooks).toBe(1);
-    await rm(dependency);
-    const cachedFailure = await run(true);
-    const uncachedFailure = await run(false);
-    expect(cachedFailure.error?.code).toBe('pack-output-reference-missing');
-    expect(cachedFailure.error?.code).toBe(uncachedFailure.error?.code);
-    expect(cachedFailure.error?.detail).toEqual(uncachedFailure.error?.detail);
-    expect(cachedFailure.emitted.some((row) => row.fileName === 'pack-index.json')).toBe(false);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  );
+  const cold = await run(true);
+  expect(cold.error).toBeUndefined();
+  expect(await new DdcEntryStore(join(cache, 'scriptable-pack-products')).listKeys()).toHaveLength(
+    1,
+  );
+  const warm = await run(true);
+  expect(warm.error).toBeUndefined();
+  expect(warm.emitted).toEqual(cold.emitted);
+  expect(cooks).toBe(1);
+  await rm(dependency);
+  const cachedFailure = await run(true);
+  const uncachedFailure = await run(false);
+  expect(cachedFailure.error?.code).toBe('pack-output-reference-missing');
+  expect(cachedFailure.error?.code).toBe(uncachedFailure.error?.code);
+  expect(cachedFailure.error?.detail).toEqual(uncachedFailure.error?.detail);
+  expect(cachedFailure.emitted.some((row) => row.fileName === 'pack-index.json')).toBe(false);
 });

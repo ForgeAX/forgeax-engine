@@ -211,7 +211,7 @@ try {
     await client.openAsset(guid, { projectId: state.project.id });
   }, sceneAsset.guid);
   const playStarted = performance.now();
-  await viewOf(page).getByRole('button', { name: 'Play', exact: true }).click();
+  await viewOf(page).locator('button[data-action="scene.play"]').click();
   const play = viewOf(page).locator('iframe[data-forgeax-scene-play]');
   await play.waitFor({ state: 'attached' });
   const playFrame = await (await play.elementHandle()).contentFrame();
@@ -221,7 +221,7 @@ try {
   const playPng = await play.screenshot();
   records.push({ stage: 'play-after-restart', pixels: await assertScenePixels(page, `data:image/png;base64,${playPng.toString('base64')}`, 'Play') });
   await writeFile(join(evidence, 'play-after-restart.png'), playPng);
-  await viewOf(page).getByRole('button', { name: 'Stop', exact: true }).click();
+  await viewOf(page).locator('button[data-action="scene.stop"]').click();
   await play.waitFor({ state: 'detached' });
   assert.deepEqual(errors, []);
   assert.deepEqual(records.filter(record => record.consoleError), []);

@@ -1,9 +1,14 @@
 import { createHash } from 'node:crypto';
-import { readdir, readFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve } from 'node:path';
-import type { SourceDeclarationEvidence } from '@forgeax/engine-types';
+import type { PackIndexEntry, SourceDeclarationEvidence } from '@forgeax/engine-types';
 import { parsePackSourceJson } from '../pack-authoring.js';
-import { declaredPackAssets, SCANNER_BLACKLIST, scan } from '../scanner.js';
+import { resolveAssetSource } from '../resolve-asset-source.js';
+import {
+  declaredPackAssets,
+  enumeratePackSourcePaths,
+  type MetaInventoryDocument,
+  readAuthorJson,
+  type ScanSourceDeclaration,
+} from '../scanner.js';
 
 /** Project root and GUID used to locate an authoritative source declaration. */
 interface SourceInventoryRequest {
@@ -11,120 +16,182 @@ interface SourceInventoryRequest {
   readonly guid: string;
 }
 
-function fingerprint(meta: string, source: Uint8Array | undefined): string {
-  const hash = createHash('sha256').update(meta);
-  if (source !== undefined) hash.update(source);
-  return hash.digest('base64');
-}
-
-function sourceFromMeta(
-  metaPath: string,
-  meta: {
-    readonly source?: unknown;
-    readonly inputFingerprint?: unknown;
-    readonly importSettings?: unknown;
-    readonly subAssets?: readonly { readonly guid?: unknown }[];
-  },
-  guid: string,
-  raw: string,
-): SourceDeclarationEvidence | undefined {
-  if (
-    !meta.subAssets?.some(
-      (asset) => typeof asset.guid === 'string' && asset.guid.toLowerCase() === guid.toLowerCase(),
-    )
-  ) {
-    return undefined;
-  }
-  const source =
-    typeof meta.source === 'string' ? meta.source : basename(metaPath).replace(/\.meta\.json$/, '');
-  const sourcePath = resolve(dirname(metaPath), source);
-  const inputFingerprint =
-    typeof meta.inputFingerprint === 'string' ? meta.inputFingerprint : fingerprint(raw, undefined);
-  return { origin: 'sourceMeta', sourcePath, inputFingerprint };
-}
-
-async function collectDeclarationPaths(root: string): Promise<string[]> {
-  const paths: string[] = [];
-  async function visit(dir: string): Promise<void> {
-    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!SCANNER_BLACKLIST.has(entry.name)) await visit(path);
-        continue;
-      }
-      if (
-        entry.isFile() &&
-        (entry.name.endsWith('.meta.json') ||
-          entry.name.endsWith('.pack.json') ||
-          entry.name.endsWith('.pack.ts'))
-      ) {
-        paths.push(path);
-      }
-    }
-  }
-  await visit(root);
-  return paths;
-}
-
-/** Read `.meta.json` or `.pack.json` source declarations without runtime imports. */
+/** Read author declarations even when a different source in the tree is damaged. */
 export async function readSourceInventory(
   request: SourceInventoryRequest,
 ): Promise<SourceDeclarationEvidence | undefined> {
-  const result = await scan([request.projectRoot]);
-  const paths = result.ok ? result.value : await collectDeclarationPaths(request.projectRoot);
+  const { paths } = await enumeratePackSourcePaths([request.projectRoot], { skipUnreadable: true });
   const guid = request.guid.toLowerCase();
   let authored: SourceDeclarationEvidence | undefined;
-  for (const path of paths) {
-    if (path.endsWith('.pack.ts')) {
-      // ScriptablePack source identity is a build result, not a declaration
-      // table. The source index therefore records the source only after the
-      // producer publishes its materialized Pack output.
-      continue;
+  for (const path of paths.sort()) {
+    if (path.endsWith('.pack.ts')) continue;
+    const isMeta = path.endsWith('.meta.json');
+    const loaded = await readAuthorJson(
+      path,
+      isMeta ? 'pack-malformed-meta' : 'pack-malformed-pack',
+    );
+    if (!loaded.ok) continue;
+    const { raw, parsed } = loaded.value;
+    if (isMeta) {
+      const meta = parsed as MetaInventoryDocument & { readonly inputFingerprint?: unknown };
+      if (!meta.subAssets.some((asset) => asset.guid.toLowerCase() === guid)) continue;
+      return {
+        origin: 'sourceMeta',
+        sourcePath: resolveAssetSource(path, meta.source),
+        inputFingerprint:
+          typeof meta.inputFingerprint === 'string'
+            ? meta.inputFingerprint
+            : createHash('sha256').update(raw).digest('base64'),
+      };
     }
-    const raw = await readFile(path, 'utf8').catch(() => undefined);
-    if (raw === undefined) continue;
-    let parsed: Record<string, unknown>;
-    try {
-      const value: unknown = JSON.parse(raw);
-      if (value === null || typeof value !== 'object' || Array.isArray(value)) continue;
-      parsed = value as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    if (path.endsWith('.pack.json')) {
-      if (parsed.schemaVersion === '3.0.0') {
-        const document = parsePackSourceJson(parsed);
-        if (
-          document.ok &&
-          declaredPackAssets(document.value).some((asset) => asset.guid.toLowerCase() === guid)
-        )
-          authored = { origin: 'authoredPack', sourcePath: path };
-      } else if (
-        Array.isArray(parsed.assets) &&
-        parsed.assets.some(
-          (asset) =>
-            asset !== null &&
-            typeof asset === 'object' &&
-            !Array.isArray(asset) &&
-            typeof (asset as { readonly guid?: unknown }).guid === 'string' &&
-            ((asset as { readonly guid: string }).guid === request.guid ||
-              (asset as { readonly guid: string }).guid.toLowerCase() === guid),
-        )
-      ) {
-        authored = { origin: 'authoredPack', sourcePath: path };
-      }
-      continue;
-    }
-    if (path.endsWith('.meta.json')) {
-      const source = sourceFromMeta(
-        path,
-        parsed as Parameters<typeof sourceFromMeta>[1],
-        request.guid,
-        raw,
-      );
-      if (source !== undefined) return source;
-    }
+    const document = parsePackSourceJson(parsed);
+    if (
+      document.ok &&
+      declaredPackAssets(document.value).some((asset) => asset.guid.toLowerCase() === guid)
+    )
+      authored = { origin: 'authoredPack', sourcePath: path };
   }
   return authored;
+}
+
+export interface AssetVerificationReport {
+  readonly schemaVersion: 'asset-verification-v1';
+  readonly root: string;
+  /** The bounded source scope used for this read-only report. */
+  readonly scope: {
+    readonly sourceCount: number;
+    readonly assetCount: number;
+    readonly sourcePaths: readonly string[];
+    readonly omittedSourceCount: number;
+    readonly assetLimit: number;
+    readonly truncated: boolean;
+    readonly scriptablePackSourceCount: number;
+    readonly scriptablePackSources: readonly {
+      readonly sourcePath: string;
+      readonly packageId: string;
+      readonly output: 'unproduced';
+      readonly reason: 'producer-not-run';
+    }[];
+    readonly omittedScriptablePackSourceCount: number;
+  };
+  readonly assets: readonly {
+    readonly guid: string;
+    readonly type: string;
+    readonly source: {
+      readonly path: string;
+      readonly format: 'meta.json' | 'pack.json' | 'pack.ts';
+      readonly revision?: string;
+      readonly role: 'author';
+    };
+    readonly output: {
+      readonly status: 'produced' | 'unproduced' | 'unknown';
+      readonly availability: 'available' | 'missing' | 'unknown';
+      readonly freshness: 'unknown';
+      readonly packagePath?: string;
+      readonly artifactPaths?: readonly string[];
+    };
+    readonly dependencies: readonly string[];
+    readonly producer: { readonly state: 'not-run' | 'published' | 'unknown' };
+    readonly name?: string;
+    readonly sourceKey?: string;
+    readonly sourceIndex?: number;
+  }[];
+  readonly summary: {
+    readonly assetCount: number;
+    readonly emittedAssetCount: number;
+    readonly materialCount: number;
+    readonly unproducedAssetCount: number;
+    readonly unknownAssetCount: number;
+    readonly unmaterializedScriptablePackCount: number;
+  };
+}
+
+type VerificationAsset = AssetVerificationReport['assets'][number];
+
+export function verificationSourceFacts(
+  entry: Pick<
+    PackIndexEntry,
+    'guid' | 'kind' | 'sourcePath' | 'sourceKey' | 'sourceIndex' | 'name'
+  > & {
+    readonly sourceRevision?: string;
+  },
+  declaration: ScanSourceDeclaration | undefined,
+  fallback: VerificationAsset['source']['format'],
+): Omit<VerificationAsset, 'output' | 'producer'> {
+  const asset =
+    declaration?.format === 'pack.json' &&
+    declaration.value.format === 'direct' &&
+    entry.sourceKey !== undefined
+      ? declaration.value.assets[entry.sourceKey]
+      : undefined;
+  const name = entry.name ?? asset?.name;
+  return {
+    guid: entry.guid,
+    type: entry.kind,
+    source: {
+      path: entry.sourcePath,
+      format: declaration?.format ?? fallback,
+      role: 'author',
+      ...(entry.sourceRevision === undefined ? {} : { revision: entry.sourceRevision }),
+    },
+    dependencies: asset?.refs ?? [],
+    ...(name === undefined ? {} : { name }),
+    ...(entry.sourceKey === undefined ? {} : { sourceKey: entry.sourceKey }),
+    ...(entry.sourceIndex === undefined ? {} : { sourceIndex: entry.sourceIndex }),
+  };
+}
+
+const VERIFY_PROVENANCE_LIMIT = 256;
+
+/** Bound report projection without inspecting or loading omitted asset payloads. */
+export function projectAssetVerificationReport<T>(
+  root: string,
+  declarations: ReadonlyMap<string, ScanSourceDeclaration>,
+  entries: readonly T[],
+  projectEntry: (entry: T) => AssetVerificationReport['assets'][number],
+  materialCount: number,
+  publishedSources?: ReadonlySet<string>,
+): AssetVerificationReport {
+  const sourcePaths = [...declarations.keys()].sort();
+  const scriptable = [...declarations.values()]
+    .filter((declaration) => declaration.format === 'pack.ts')
+    .sort((left, right) => left.sourcePath.localeCompare(right.sourcePath));
+  const unmaterialized = scriptable.filter(
+    (source) =>
+      !publishedSources?.has(source.sourcePath) &&
+      !publishedSources?.has(source.value.packageId.toLowerCase()),
+  );
+  const assets = entries.slice(0, VERIFY_PROVENANCE_LIMIT).map(projectEntry);
+  return {
+    schemaVersion: 'asset-verification-v1',
+    root,
+    scope: {
+      sourceCount: sourcePaths.length,
+      assetCount: entries.length,
+      sourcePaths: sourcePaths.slice(0, VERIFY_PROVENANCE_LIMIT),
+      omittedSourceCount: Math.max(0, sourcePaths.length - VERIFY_PROVENANCE_LIMIT),
+      assetLimit: VERIFY_PROVENANCE_LIMIT,
+      truncated: entries.length > VERIFY_PROVENANCE_LIMIT,
+      scriptablePackSourceCount: scriptable.length,
+      scriptablePackSources: unmaterialized.slice(0, VERIFY_PROVENANCE_LIMIT).map((source) => ({
+        sourcePath: source.sourcePath,
+        packageId: source.value.packageId,
+        output: 'unproduced',
+        reason: 'producer-not-run',
+      })),
+      omittedScriptablePackSourceCount: Math.max(
+        0,
+        unmaterialized.length - VERIFY_PROVENANCE_LIMIT,
+      ),
+    },
+    assets,
+    summary: {
+      assetCount: entries.length,
+      emittedAssetCount: assets.length,
+      materialCount,
+      unproducedAssetCount: assets.filter((asset) => asset.output.status === 'unproduced').length,
+      unknownAssetCount: assets.filter((asset) => asset.output.status === 'unknown').length,
+      unmaterializedScriptablePackCount: unmaterialized.length,
+    },
+  };
 }

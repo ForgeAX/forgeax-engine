@@ -135,7 +135,8 @@ describe('camera LensFlare', () => {
       Array.from(new Float32Array(packLensFlareParams(undefined).buffer).subarray(4, 7)),
     ).toEqual([0, 0, 0]);
     for (const program of LENS_FLARE_PROGRAMS)
-      expect(program.params?.byteSize).toBe(LENS_FLARE_PARAMS_BYTES);
+      if (program.params !== undefined)
+        expect(program.params.byteSize).toBe(LENS_FLARE_PARAMS_BYTES);
     expect(lensFlareGuardBandSize({ width: 1921, height: 1 })).toEqual({ width: 301, height: 1 });
   });
 

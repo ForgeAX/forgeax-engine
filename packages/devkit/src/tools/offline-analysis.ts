@@ -1,14 +1,15 @@
 import {
+  isPreviewArtifactRole,
+  isToolEvidenceKind,
   type PreviewArtifactManifest,
   type PreviewArtifactRole,
-  validatePreviewArtifactManifest,
-} from '@forgeax/engine-preview';
-import {
   type ToolArtifactManifest,
   type ToolDomainFailure,
   type ToolEvidenceKind,
   validateArtifactManifest,
+  validatePreviewArtifactManifest,
 } from '@forgeax/engine-tool-runtime';
+import { completeCommand } from '../types.js';
 
 export interface OfflineAnalysisRequest {
   readonly manifest: PreviewArtifactManifest | ToolArtifactManifest;
@@ -29,7 +30,7 @@ export function analyzePreviewArtifacts(
   const required = request.required ?? [];
   const validated =
     request.manifest.schemaVersion === '1.0.0'
-      ? required.some((kind) => kind !== 'rhi-tape' && kind !== 'png' && kind !== 'profile-capture')
+      ? !required.every(isToolEvidenceKind)
         ? {
             ok: false as const,
             error: {
@@ -39,26 +40,13 @@ export function analyzePreviewArtifacts(
               detail: { reason: 'unsupported required evidence kind' },
             },
           }
-        : validateArtifactManifest(request.manifest, required as readonly ToolEvidenceKind[])
-      : validatePreviewArtifactManifest(
-          request.manifest,
-          (request.required ?? []).filter(
-            (role): role is PreviewArtifactRole =>
-              role === 'report' ||
-              role === 'rhi-tape' ||
-              role === 'capture' ||
-              role === 'fresh-replay' ||
-              role === 'profile-capture' ||
-              role === 'contact-sheet',
-          ),
-        );
-  if (!validated.ok) return { ok: false, error: validated.error as ToolDomainFailure };
-  return {
-    ok: true,
-    value: {
-      runId: request.manifest.identity.runId,
-      captureId: request.manifest.identity.captureId,
-      artifacts: request.manifest.artifacts.map(({ kind, digest }) => ({ kind, digest })),
-    },
-  };
+        : validateArtifactManifest(request.manifest, required)
+      : validatePreviewArtifactManifest(request.manifest, required.filter(isPreviewArtifactRole));
+  if (!validated.ok) return validated;
+  const { identity, artifacts } = validated.value;
+  return completeCommand({
+    runId: identity.runId,
+    captureId: identity.captureId,
+    artifacts: artifacts.map(({ kind, digest }) => ({ kind, digest })),
+  });
 }

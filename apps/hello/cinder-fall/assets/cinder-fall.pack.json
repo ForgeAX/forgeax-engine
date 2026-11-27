@@ -1,74 +1,255 @@
 {
-  "schemaVersion": "2.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "c1de0000-0000-7000-8000-000000000000",
+  "schemaVersion": "3.0.0",
+  "packageId": "f7746023-e810-5ed1-9fdf-e812cf7fee0a",
+  "assets": {
+    "particle-effect/cinder-fall": {
       "kind": "particle-effect",
-      "execution": "cooked",
       "payload": {
         "schemaVersion": 3,
         "emitters": [
           {
             "id": "cinder.travel",
             "capacity": 64,
-            "backend": { "required": "gpu" },
+            "backend": {
+              "required": "gpu"
+            },
             "space": "world",
-            "bounds": { "kind": "sphere", "center": [0, 0, 0], "radius": 64 },
-            "schedule": { "rate": 0, "bursts": [{ "time": 0, "count": 8 }] },
-            "program": { "module": "cinder-travel.vfx.wgsl" },
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 64
+            },
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 8
+                }
+              ]
+            },
+            "program": {
+              "module": "cinder-travel.vfx.wgsl"
+            },
             "channels": [
-              { "id": "impact", "payload": "impact", "capacity": 8, "overflow": "drop-newest" }
+              {
+                "id": "impact",
+                "payload": "impact",
+                "capacity": 8,
+                "overflow": "drop-newest"
+              }
             ],
             "events": [
-              { "id": "travel-impact", "channel": "impact", "subEmitter": "cinder.impact", "fanOut": 1, "recursionDepth": 1 }
+              {
+                "id": "travel-impact",
+                "channel": "impact",
+                "subEmitter": "cinder.impact",
+                "fanOut": 1,
+                "recursionDepth": 1
+              }
             ],
             "renderers": [
-              { "kind": "mesh", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000001", "mesh": "2cce5d80-5960-4e4e-82f7-feaf5608eb60", "lighting": "standard", "castShadows": true, "receiveShadows": true },
-              { "kind": "billboard", "material": "c1de0000-0000-7000-8000-000000000002", "sorting": "custom-ascending", "attributes": { "sort": { "source": "custom", "name": "heat" } }, "materialInputs": ["heat"] },
-              { "kind": "billboard", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000002", "sorting": "custom-descending", "attributes": { "sort": { "source": "custom", "name": "heat" } }, "materialInputs": ["heat"] },
-              { "kind": "trail", "material": "c1de0000-0000-7000-8000-000000000002", "historyLength": 6, "capacity": 32, "width": 0.034, "taper": 0.9 }
+              {
+                "kind": "mesh",
+                "enabled": false,
+                "material": "33824ebe-2258-5b46-9ed0-93240d60957d",
+                "mesh": "8c4c2432-fe9e-5502-ae74-20d583a2296d",
+                "lighting": "standard",
+                "castShadows": true,
+                "receiveShadows": true
+              },
+              {
+                "kind": "billboard",
+                "material": "2dad36f7-99bb-5aad-8dbe-321db767a727",
+                "sorting": "custom-ascending",
+                "attributes": {
+                  "sort": {
+                    "source": "custom",
+                    "name": "heat"
+                  }
+                },
+                "materialInputs": [
+                  "heat"
+                ]
+              },
+              {
+                "kind": "billboard",
+                "enabled": false,
+                "material": "2dad36f7-99bb-5aad-8dbe-321db767a727",
+                "sorting": "custom-descending",
+                "attributes": {
+                  "sort": {
+                    "source": "custom",
+                    "name": "heat"
+                  }
+                },
+                "materialInputs": [
+                  "heat"
+                ]
+              },
+              {
+                "kind": "trail",
+                "material": "2dad36f7-99bb-5aad-8dbe-321db767a727",
+                "historyLength": 6,
+                "capacity": 32,
+                "width": 0.034,
+                "taper": 0.9
+              }
             ]
           },
           {
             "id": "cinder.impact",
             "capacity": 128,
-            "backend": { "required": "gpu" },
+            "backend": {
+              "required": "gpu"
+            },
             "space": "world",
-            "bounds": { "kind": "sphere", "center": [0, 0, 0], "radius": 16 },
-            "schedule": { "rate": 0, "bursts": [{ "time": 0, "count": 16 }] },
-            "program": { "module": "cinder-impact.vfx.wgsl" },
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 16
+            },
+            "schedule": {
+              "rate": 0,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 16
+                }
+              ]
+            },
+            "program": {
+              "module": "cinder-impact.vfx.wgsl"
+            },
             "channels": [
-              { "id": "burn", "payload": "impact", "capacity": 8, "overflow": "drop-newest" }
+              {
+                "id": "burn",
+                "payload": "impact",
+                "capacity": 8,
+                "overflow": "drop-newest"
+              }
             ],
             "events": [
-              { "id": "impact-burn", "channel": "burn", "subEmitter": "cinder.burn", "fanOut": 1, "recursionDepth": 1 }
+              {
+                "id": "impact-burn",
+                "channel": "burn",
+                "subEmitter": "cinder.burn",
+                "fanOut": 1,
+                "recursionDepth": 1
+              }
             ],
             "renderers": [
-              { "kind": "mesh", "material": "c1de0000-0000-7000-8000-000000000001", "mesh": "2cce5d80-5960-4e4e-82f7-feaf5608eb60", "lighting": "standard", "castShadows": true, "receiveShadows": true },
-              { "kind": "billboard", "material": "c1de0000-0000-7000-8000-000000000002", "sorting": "custom-descending", "attributes": { "sort": { "source": "custom", "name": "heat" } }, "materialInputs": ["heat"] },
-              { "kind": "ribbon", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000002", "stripKey": "alive-index", "capacity": 32, "facing": "velocity", "width": 0.008 },
-              { "kind": "beam", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000002", "endpointField": "velocity", "capacity": 16, "width": 0.01 }
+              {
+                "kind": "mesh",
+                "material": "33824ebe-2258-5b46-9ed0-93240d60957d",
+                "mesh": "8c4c2432-fe9e-5502-ae74-20d583a2296d",
+                "lighting": "standard",
+                "castShadows": true,
+                "receiveShadows": true
+              },
+              {
+                "kind": "billboard",
+                "material": "2dad36f7-99bb-5aad-8dbe-321db767a727",
+                "sorting": "custom-descending",
+                "attributes": {
+                  "sort": {
+                    "source": "custom",
+                    "name": "heat"
+                  }
+                },
+                "materialInputs": [
+                  "heat"
+                ]
+              },
+              {
+                "kind": "ribbon",
+                "enabled": false,
+                "material": "2dad36f7-99bb-5aad-8dbe-321db767a727",
+                "stripKey": "alive-index",
+                "capacity": 32,
+                "facing": "velocity",
+                "width": 0.008
+              },
+              {
+                "kind": "beam",
+                "enabled": false,
+                "material": "2dad36f7-99bb-5aad-8dbe-321db767a727",
+                "endpointField": "velocity",
+                "capacity": 16,
+                "width": 0.01
+              }
             ]
           },
           {
             "id": "cinder.burn",
             "capacity": 64,
-            "backend": { "required": "gpu" },
+            "backend": {
+              "required": "gpu"
+            },
             "space": "world",
-            "bounds": { "kind": "sphere", "center": [0, 0, 0], "radius": 12 },
-            "schedule": { "rate": 1.5, "bursts": [{ "time": 0, "count": 8 }] },
-            "program": { "module": "cinder-burn.vfx.wgsl" },
+            "bounds": {
+              "kind": "sphere",
+              "center": [
+                0,
+                0,
+                0
+              ],
+              "radius": 12
+            },
+            "schedule": {
+              "rate": 1.5,
+              "bursts": [
+                {
+                  "time": 0,
+                  "count": 8
+                }
+              ]
+            },
+            "program": {
+              "module": "cinder-burn.vfx.wgsl"
+            },
             "renderers": [
-              { "kind": "mesh", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000003", "mesh": "2cce5d80-5960-4e4e-82f7-feaf5608eb60", "lighting": "standard", "receiveShadows": true },
-              { "kind": "billboard", "material": "c1de0000-0000-7000-8000-000000000003", "sorting": "view-depth" },
-              { "kind": "billboard", "enabled": false, "material": "c1de0000-0000-7000-8000-000000000002", "sorting": "custom-descending", "attributes": { "sort": { "source": "custom", "name": "heat" } }, "materialInputs": ["heat"] }
+              {
+                "kind": "mesh",
+                "enabled": false,
+                "material": "36594983-f28c-5bbc-a95a-3f1a66238c0c",
+                "mesh": "8c4c2432-fe9e-5502-ae74-20d583a2296d",
+                "lighting": "standard",
+                "receiveShadows": true
+              },
+              {
+                "kind": "billboard",
+                "material": "36594983-f28c-5bbc-a95a-3f1a66238c0c",
+                "sorting": "view-depth"
+              },
+              {
+                "kind": "billboard",
+                "enabled": false,
+                "material": "2dad36f7-99bb-5aad-8dbe-321db767a727",
+                "sorting": "custom-descending",
+                "attributes": {
+                  "sort": {
+                    "source": "custom",
+                    "name": "heat"
+                  }
+                },
+                "materialInputs": [
+                  "heat"
+                ]
+              }
             ]
           }
         ]
       },
-      "refs": [],
-      "artifacts": {}
+      "refs": []
     }
-  ]
+  }
 }

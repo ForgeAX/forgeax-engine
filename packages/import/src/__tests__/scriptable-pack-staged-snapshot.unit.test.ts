@@ -2,6 +2,7 @@ import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { AssetGuid as AssetGuidType, MeshAsset } from '@forgeax/engine-types';
 import { AssetError, err, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import {
   createScriptablePackStagedAssetSnapshotSource,
   type ScriptablePackStagedOwner,
@@ -180,10 +181,7 @@ describe('ScriptablePack staged asset snapshot source', () => {
     let dependencyBuilds = 0;
     let healthyBuilds = 0;
     let repaired = false;
-    let releaseRepair!: () => void;
-    const repairBuildGate = new Promise<void>((resolve) => {
-      releaseRepair = resolve;
-    });
+    const { promise: repairBuildGate, resolve: releaseRepair } = testGate();
     const failure = new AssetError({
       code: 'asset-not-imported',
       expected: 'the repaired local ScriptablePack capability',

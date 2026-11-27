@@ -19,7 +19,11 @@ import {
   transpileTextDigest,
   validSnapshotTranspileText,
 } from './scriptable-pack-transpile-text.js';
-import { isScriptablePackField, projectFailure } from './scriptable-pack-wire.js';
+import {
+  isScriptablePackField,
+  projectFailure,
+  type ScriptablePackPackageBinding,
+} from './scriptable-pack-wire.js';
 
 if (parentPort === null) throw new Error('ScriptablePack worker requires a parent port');
 
@@ -28,6 +32,7 @@ const flushCompileCache = (
   nodeModule as typeof nodeModule & { readonly flushCompileCache?: () => void }
 ).flushCompileCache;
 const port = parentPort;
+let selectedPackage: { readonly name: string; readonly manifestPath: string } | undefined;
 let capturedSources: Readonly<Record<string, string>> | undefined;
 let capturedJsonInputs: CapturedJsonInputs | undefined;
 let capturedTranspiles: readonly SnapshotTranspileText[] | undefined;
@@ -142,7 +147,13 @@ function resolveBareImport(importer: string, specifier: string): string | undefi
   // packages. Relocation must neither borrow the loader's dependencies nor
   // redirect a domain export into the Pack implementation's dependency graph.
   try {
-    const resolved = resolver(specifier, pathToFileURL(importer).href);
+    const binding = selectedPackage;
+    const parent =
+      binding !== undefined &&
+      (specifier === binding.name || specifier.startsWith(`${binding.name}/`))
+        ? binding.manifestPath
+        : importer;
+    const resolved = resolver(specifier, pathToFileURL(parent).href);
     if (resolved.startsWith('file:')) return fileURLToPath(resolved);
   } catch {
     // Resolution refusal remains a missing author edge with its original path.
@@ -463,6 +474,15 @@ function compileModuleClosure(
   return join(outputRoot, outputName(resolve(entryPath)));
 }
 
+function validateRuntimeExport(runtime: unknown, namespace: Readonly<Record<string, unknown>>) {
+  if (runtime === null || typeof runtime !== 'object' || !('export' in runtime)) return;
+  const named = runtime.export;
+  if (typeof named !== 'string') return;
+  const generator = namespace[named];
+  if (typeof generator !== 'function')
+    throw new TypeError(`Pack runtime export "${named}" must be a function`);
+}
+
 async function loadDefinition(task: {
   readonly sourcePath: string;
   readonly compileRoot: string;
@@ -472,7 +492,20 @@ async function loadDefinition(task: {
   readonly transpiles?: readonly SnapshotTranspileText[];
   /** Metadata loads compile only the statically imported closure. */
   readonly staticOnly: boolean;
+  readonly packageBinding?: ScriptablePackPackageBinding;
 }): Promise<void> {
+  selectedPackage = undefined;
+  const binding = task.packageBinding;
+  if (binding !== undefined) {
+    const manifestPath = join(binding.root, 'package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+      name?: unknown;
+      exports?: unknown;
+    };
+    if (manifest.name !== binding.name || manifest.exports == null)
+      throw new Error('Selected authored package must declare its bound name and exports');
+    selectedPackage = { name: binding.name, manifestPath };
+  }
   capturedSources = task.sources;
   capturedJsonInputs = task.jsonInputs;
   capturedTranspiles = task.transpiles;
@@ -487,11 +520,11 @@ async function loadDefinition(task: {
       const executablePath = compiled
         ? compileModuleClosure(task.sourcePath, task.compileRoot, loadKey, staticOnly)
         : task.sourcePath;
-      return (await import(`${pathToFileURL(executablePath).href}?load=${loadKey}`)) as {
-        readonly default?: unknown;
-      };
+      return (await import(`${pathToFileURL(executablePath).href}?load=${loadKey}`)) as Readonly<
+        Record<string, unknown>
+      >;
     };
-    let loaded: { readonly default?: unknown } | undefined;
+    let loaded: Readonly<Record<string, unknown>> | undefined;
     if (compiled && task.staticOnly === true) {
       const flags = globalThis as unknown as Record<symbol, unknown>;
       delete flags[DEFERRED_IMPORT_FLAG];
@@ -510,6 +543,7 @@ async function loadDefinition(task: {
       false,
     );
     definition = loaded.default as LoadedDefinition | undefined;
+    validateRuntimeExport(definition?.runtime, loaded);
     // Preserve only Node's validated bytecode for the next fresh Worker. The
     // module graph and its retained values still die at the existing task fence.
     try {
@@ -559,6 +593,30 @@ function capturedLoadInputs(value: Record<string, unknown>) {
       ? {}
       : { transpiles: value.transpiles as readonly SnapshotTranspileText[] }),
     staticOnly: value.staticOnly === true,
+    ...(value.packageBinding === undefined
+      ? {}
+      : { packageBinding: value.packageBinding as ScriptablePackPackageBinding }),
+  };
+}
+
+function workerBuildContext(buildId: number, payload: unknown) {
+  const context =
+    payload !== null && typeof payload === 'object'
+      ? (payload as {
+          readonly packageId?: unknown;
+          readonly values?: unknown;
+        })
+      : undefined;
+  return {
+    ...(Array.isArray(context?.packageId)
+      ? { packageId: new Uint8Array(context.packageId as number[]) }
+      : {}),
+    ...(context?.values === undefined ? {} : { values: context.values }),
+    readByGuid(guid: Uint8Array): Promise<unknown> {
+      const readId = nextReadId++;
+      port.postMessage({ kind: 'asset-read', buildId, readId, guid });
+      return new Promise((resolve) => reads.set(readId, resolve));
+    },
   };
 }
 
@@ -598,22 +656,7 @@ async function handleMessage(message: unknown): Promise<void> {
     return;
   }
   try {
-    const context =
-      value.context !== null && typeof value.context === 'object'
-        ? (value.context as { readonly packageId?: unknown; readonly values?: unknown })
-        : undefined;
-    const buildContext = {
-      ...(Array.isArray(context?.packageId)
-        ? { packageId: new Uint8Array(context.packageId as number[]) }
-        : {}),
-      ...(context?.values !== undefined ? { values: context.values } : {}),
-      readByGuid(guid: Uint8Array): Promise<unknown> {
-        const readId = nextReadId++;
-        port.postMessage({ kind: 'asset-read', buildId: value.buildId, readId, guid });
-        return new Promise((resolve) => reads.set(readId, resolve));
-      },
-    };
-    const result = await definition.build(buildContext);
+    const result = await definition.build(workerBuildContext(value.buildId, value.context));
     if (
       result !== null &&
       typeof result === 'object' &&

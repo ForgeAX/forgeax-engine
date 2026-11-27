@@ -1,4 +1,4 @@
-import { meshAttributeWindow } from '@forgeax/engine-geometry';
+import { meshAttributeWindow, skinWeightDenominator } from '@forgeax/engine-geometry';
 import type { MeshAsset } from '@forgeax/engine-types';
 
 /** Admit the three typed influence windows without retaining mesh bytes. */
@@ -12,7 +12,6 @@ function skinGeometryWindows(mesh: MeshAsset) {
     !weight ||
     !(position.data instanceof Float32Array) ||
     !(index.data instanceof Uint16Array) ||
-    !(weight.data instanceof Float32Array) ||
     !Number.isInteger(position.count) ||
     position.count <= 0 ||
     index.count !== position.count ||
@@ -35,6 +34,7 @@ export function skinGeometryEnvelopes(mesh: MeshAsset): Float32Array | undefined
   const positions = position.data,
     indices = index.data,
     weights = weight.data;
+  const weightUnit = skinWeightDenominator(weights);
   const bounds = new Map<number, number[]>();
   let minimumSum = Infinity,
     maximumSum = 0,
@@ -47,7 +47,8 @@ export function skinGeometryEnvelopes(mesh: MeshAsset): Float32Array | undefined
     let sum = 0;
     for (let lane = 0; lane < 4; lane++) {
       const joint = indices[index.offset + vertex * index.stride + lane] as number;
-      const influence = weights[weight.offset + vertex * weight.stride + lane] as number;
+      const rawWeight = weights[weight.offset + vertex * weight.stride + lane] as number;
+      const influence = Math.fround(rawWeight / weightUnit);
       // Individual subnormal weights may all flush to zero even when their
       // positive sum is normal, so homogeneous w has no portable lower bound.
       if (!Number.isFinite(influence) || influence < 0 || (influence > 0 && influence < 2 ** -126))

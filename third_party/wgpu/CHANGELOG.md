@@ -42,6 +42,7 @@ Bottom level categories:
 
 ## Unreleased
 
+- Keep HLSL shader-model 6 position registers aligned across vertex and fragment stages that read primitive indices, while preserving FXC signature ordering.
 - GLSL keeps non-comparison depth sampling/loading on plain samplers while preserving independent shadow-comparison globals.
 - GLES render bundles retain the current pass stencil reference across pipeline binds and reset it at the next pass.
 
@@ -83,6 +84,7 @@ Bottom level categories:
 
 #### naga
 
+- Reset HLSL ray-query tracking on reinitialization, including after a completed or invalid traversal.
 - Validate dynamically uniform acceleration-structure array indices without panicking, and reject unsupported non-uniform indices with a structured error.
 
 #### Validation

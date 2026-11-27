@@ -2,6 +2,7 @@ import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   MESH_BIN_HEADER_BYTES,
   MESH_BIN_MORPH_CHANNELS,
+  MESH_BIN_VERSION,
   type MeshBinContractError,
   type MeshBinHeader,
   writeMeshBinHeader,
@@ -15,11 +16,22 @@ import {
 } from '@forgeax/engine-types';
 import { admitsMeshCardLayout, validateMeshCardLayout } from './mesh-card-artifact';
 import { validateMeshCollisionAttachment } from './mesh-collision';
-import { copyMeshAttribute, interleavedMeshFiniteFailure } from './mesh-storage';
+import { isStandaloneStaticMesh } from './mesh-draw-description';
+import {
+  copyMeshAttributeStorage,
+  interleavedMesh,
+  interleavedMeshFiniteFailure,
+  invalidMeshAttributeDeclaration,
+  staticMeshStreamsFiniteFailure,
+} from './mesh-storage';
 import {
   deriveVertexLayoutProjection,
   elementView,
+  interleaveStaticMeshVertexStreams,
+  prepareStaticMeshVertexStreams,
+  projectStaticMeshVertexStreams,
   type VertexLayoutProjection,
+  vertexAttributeArrayType,
 } from './vertex-attribute-layout.js';
 
 const nativeLittleEndian = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
@@ -208,7 +220,18 @@ function validateMeshInterleaving(
     if (value === undefined) throw new TypeError(`invalid ${attribute.key} storage`);
     // Monomorphic integer loops: one array kind per loop keeps this linear pass
     // on the fast path for large runtime meshes (it runs on every mesh create).
-    if (attribute.format === 'uint16x4') {
+    if (attribute.format === 'unorm8x4') {
+      if (!(value instanceof Uint8Array)) throw new TypeError('invalid skinWeight storage');
+      const target = new Uint8Array(vertices.buffer, vertices.byteOffset, vertices.byteLength);
+      for (let row = 0; row < value.length / 4; row++)
+        for (let lane = 0; lane < 4; lane++)
+          if (
+            value[row * 4 + lane] !== target[row * projection.arrayStride + attribute.offset + lane]
+          )
+            throw new TypeError('inconsistent skinWeight interleaving');
+      continue;
+    }
+    if (attribute.format === 'uint16x4' || attribute.format === 'unorm16x4') {
       if (!(value instanceof Uint16Array)) throw new TypeError(`invalid ${attribute.key} storage`);
       const stride = projection.arrayStride / 2;
       if (!sameShortChannel(shorts, value, attribute.offset / 2, stride, attribute.byteLength / 2))
@@ -320,35 +343,19 @@ function sameShortChannel(
 }
 
 /** Runtime declarations carry layout only; validate their packed float lanes once. */
-function validateInterleavedStorage(
+function validatePackedStorage(
   vertices: Float32Array,
   attributes: VertexAttributeMap,
   projection: VertexLayoutProjection,
+  staticStreams: boolean,
 ): void {
-  for (const attribute of projection.attributes) {
-    const value = attributes[attribute.key];
-    const short = attribute.format === 'uint16x4';
-    if (
-      value === undefined ||
-      !(
-        value instanceof Float32Array ||
-        value instanceof Uint16Array ||
-        value instanceof Uint32Array
-      ) ||
-      value.length !== 0 ||
-      value.buffer.byteLength !== 0 ||
-      (short
-        ? !(value instanceof Uint16Array)
-        : attribute.format === 'uint32'
-          ? !(value instanceof Uint32Array)
-          : !(value instanceof Float32Array))
-    )
-      throw new TypeError(
-        `interleaved ${attribute.key} requires an empty canonical layout declaration`,
-      );
-  }
+  const invalid = invalidMeshAttributeDeclaration(attributes, projection);
+  if (invalid !== undefined)
+    throw new TypeError(`packed ${invalid} requires an empty canonical layout declaration`);
   // Integer skin lanes can contain float NaN bit patterns.
-  const nonfinite = interleavedMeshFiniteFailure(vertices, projection);
+  const nonfinite = staticStreams
+    ? staticMeshStreamsFiniteFailure(vertices, projection)
+    : interleavedMeshFiniteFailure(vertices, projection);
   if (nonfinite !== undefined) throw new TypeError(`non-finite ${nonfinite}`);
 }
 
@@ -361,19 +368,9 @@ function validateAuthoredCardinality(
 ): Result<void, MeshBinEncodeError> {
   for (const attribute of projection.attributes) {
     const value = elementView(attributes[attribute.key], attribute.format);
-    const components = attribute.byteLength / (attribute.format === 'uint16x4' ? 2 : 4);
-    if (
-      value === undefined ||
-      (!(value instanceof Float32Array) &&
-        !(value instanceof Uint16Array) &&
-        !(value instanceof Uint32Array)) ||
-      (attribute.format === 'uint16x4'
-        ? !(value instanceof Uint16Array)
-        : attribute.format === 'uint32'
-          ? !(value instanceof Uint32Array)
-          : !(value instanceof Float32Array)) ||
-      value.length !== vertexCount * components
-    )
+    const ArrayType = vertexAttributeArrayType(attribute.format);
+    const components = attribute.byteLength / ArrayType.BYTES_PER_ELEMENT;
+    if (!(value instanceof ArrayType) || value.length !== vertexCount * components)
       return err(
         failure(
           sourceKey,
@@ -385,17 +382,37 @@ function validateAuthoredCardinality(
   return ok(undefined);
 }
 
-function isInterleavedStorage(storage: MeshAsset['attributeStorage']): boolean {
-  if (storage !== undefined && storage !== 'interleaved')
-    throw new TypeError('unsupported mesh attribute storage');
-  return storage === 'interleaved';
-}
-
 function hasConflictingDirectionChannels(attributes: VertexAttributeMap): boolean {
   return (
     attributes.tangentFrame !== undefined &&
     (attributes.normal !== undefined || attributes.tangent !== undefined)
   );
+}
+
+function validateVertexStorage(
+  payload: MeshPayloadIn,
+  vertices: Float32Array,
+  attributes: VertexAttributeMap,
+  projection: VertexLayoutProjection,
+  vertexCount: number,
+  sourceKey: string,
+): Result<void, MeshBinEncodeError> {
+  const storage = payload.attributeStorage;
+  if (storage !== undefined && storage !== 'interleaved' && storage !== 'static-streams')
+    throw new TypeError('unsupported mesh attribute storage');
+  if (
+    storage === 'static-streams' &&
+    (payload.kind !== 'mesh' || !isStandaloneStaticMesh(payload as MeshAsset))
+  )
+    throw new TypeError('static streams require standalone rigid triangle geometry');
+  if (storage !== undefined) {
+    validatePackedStorage(vertices, attributes, projection, storage === 'static-streams');
+  } else {
+    const cardinality = validateAuthoredCardinality(attributes, projection, vertexCount, sourceKey);
+    if (!cardinality.ok) return cardinality;
+    validateMeshInterleaving(vertices, attributes, projection);
+  }
+  return ok(undefined);
 }
 
 /** Canonical mesh validation shared by file encoding and runtime preparation. */
@@ -453,19 +470,15 @@ export function prepareMeshData(
         ),
       );
     }
-    const interleaved = isInterleavedStorage(payload.attributeStorage);
-    if (interleaved) {
-      validateInterleavedStorage(vertices, attributes, projection);
-    } else {
-      const cardinality = validateAuthoredCardinality(
-        attributes,
-        projection,
-        vertexCount,
-        sourceKey,
-      );
-      if (!cardinality.ok) return cardinality;
-      validateMeshInterleaving(vertices, attributes, projection);
-    }
+    const storage = validateVertexStorage(
+      payload,
+      vertices,
+      attributes,
+      projection,
+      vertexCount,
+      sourceKey,
+    );
+    if (!storage.ok) return storage;
     const vertexBytes = vertexCount * projection.arrayStride;
     const indexCount = indices?.length ?? 0;
     const indexWidth = indices === undefined || indexCount === 0 ? 0 : indices.BYTES_PER_ELEMENT;
@@ -555,18 +568,19 @@ function writeMeshVertexBody(
     for (const attribute of projection.attributes) {
       const value =
         payload.attributeStorage === 'interleaved'
-          ? copyMeshAttribute(payload as MeshAsset, attribute.key)
+          ? copyMeshAttributeStorage(payload as MeshAsset, attribute.key)
           : elementView(attributes[attribute.key], attribute.format);
       if (value === undefined) throw new TypeError(`invalid ${attribute.key} storage`);
-      const short = attribute.format === 'uint16x4';
-      const width = short ? 2 : 4;
+      const ArrayType = vertexAttributeArrayType(attribute.format);
+      const width = ArrayType.BYTES_PER_ELEMENT;
       const components = attribute.byteLength / width;
       for (let vertex = 0; vertex < vertexCount; vertex++) {
         for (let component = 0; component < components; component++) {
           const offset = vertex * projection.arrayStride + attribute.offset + component * width;
           const scalar = value[vertex * components + component] as number;
           if (attribute.format === 'uint32') view.setUint32(offset, scalar, true);
-          else if (short) view.setUint16(offset, scalar, true);
+          else if (width === 1) view.setUint8(offset, scalar);
+          else if (width === 2) view.setUint16(offset, scalar, true);
           else view.setFloat32(offset, scalar, true);
         }
       }
@@ -574,11 +588,53 @@ function writeMeshVertexBody(
   }
 }
 
-/** Encode canonical v5 bytes; published v4 assets remain readable. */
+function writePhysicalMeshVertices(
+  payload: MeshPayloadIn,
+  prepared: PreparedMeshData,
+  target: Uint8Array,
+  split: boolean,
+): void {
+  const alreadySplit = payload.attributeStorage === 'static-streams';
+  if (!split) {
+    if (alreadySplit && nativeLittleEndian) {
+      const rows = new Float32Array(target.buffer, target.byteOffset, target.byteLength / 4);
+      interleaveStaticMeshVertexStreams(
+        payload.vertices as Float32Array,
+        prepared.projection,
+        rows,
+      );
+      return;
+    }
+    const canonical = alreadySplit ? interleavedMesh(payload as MeshAsset) : payload;
+    writeMeshVertexBody(canonical, prepared, target);
+    return;
+  }
+  const source = payload.vertices as Float32Array;
+  if (alreadySplit) {
+    target.set(new Uint8Array(source.buffer, source.byteOffset, source.byteLength));
+    return;
+  }
+  const plan = prepareStaticMeshVertexStreams(source, prepared.projection);
+  if (plan === undefined) throw new TypeError('invalid static stream layout');
+  plan.pack(undefined, new Uint32Array(target.buffer, target.byteOffset, source.length));
+}
+
+function physicalMeshVersion(
+  attributes: VertexAttributeMap,
+  hasStreams: boolean,
+): MeshBinHeader['version'] {
+  if (hasStreams) return 7;
+  if (attributes.skinWeight instanceof Uint8Array || attributes.skinWeight instanceof Uint16Array)
+    return MESH_BIN_VERSION;
+  return attributes.tangentFrame === undefined ? 5 : 6;
+}
+
+/** Encode file-backed mesh bytes with explicit physical stream versioning. */
 export function packMeshBin(
   payload: MeshPayloadIn,
   sourceKey: string,
   refs: readonly string[] = [],
+  storage: 'interleaved' | 'static-streams' = 'interleaved',
 ): Result<Uint8Array, MeshBinEncodeError> {
   if (payload.distanceField !== undefined)
     return err(
@@ -604,13 +660,21 @@ export function packMeshBin(
       morphBytes,
       morphTargetMasks,
     } = prepared.value;
+    const wantsStreams =
+      nativeLittleEndian &&
+      storage === 'static-streams' &&
+      payload.kind === 'mesh' &&
+      isStandaloneStaticMesh(payload as MeshAsset);
+    const streamsPlan = wantsStreams
+      ? projectStaticMeshVertexStreams(projection, vertexCount)
+      : undefined;
     const metadata = refsMeta(payload, refs, morphTargetMasks);
     const meta = new TextEncoder().encode(JSON.stringify(metadata));
     const header: MeshBinHeader = {
-      version: attributes.tangentFrame === undefined ? 5 : 6,
+      version: physicalMeshVersion(attributes, streamsPlan !== undefined),
       projectionVersion: projection.schemaVersion,
       mask: projection.mask,
-      digest: projection.digest,
+      digest: streamsPlan?.layout.digest ?? projection.digest,
       stride: projection.arrayStride,
       vertexCount,
       vertexBytes,
@@ -626,8 +690,8 @@ export function packMeshBin(
     }
     const out = new Uint8Array(total);
     writeMeshBinHeader(header, out);
-    const interleaved = out.subarray(MESH_BIN_HEADER_BYTES, MESH_BIN_HEADER_BYTES + vertexBytes);
-    writeMeshVertexBody(payload, prepared.value, interleaved);
+    const vertexBody = out.subarray(MESH_BIN_HEADER_BYTES, MESH_BIN_HEADER_BYTES + vertexBytes);
+    writePhysicalMeshVertices(payload, prepared.value, vertexBody, streamsPlan !== undefined);
     let offset = MESH_BIN_HEADER_BYTES + vertexBytes;
     const target = new DataView(out.buffer);
     for (const values of streams) {

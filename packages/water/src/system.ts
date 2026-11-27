@@ -1,6 +1,7 @@
 import type { PhysicsWorld } from '@forgeax/engine-physics';
 import {
   canonicalJson,
+  encodeBase64,
   err,
   isCurrentOutputPostProcessAbi,
   isMaterialDeformationProgramAbi,
@@ -47,6 +48,11 @@ import {
   type WaterZoneTerrainProviderInput,
 } from './contracts.js';
 import { WaterFluidSimulationSystem } from './fluid-simulation.js';
+import {
+  transformPoint,
+  waterMeshBodyTransformSupported,
+  waterMeshZoneTransformSupported,
+} from './mesh-transforms.js';
 import { WaterOceanPatch } from './ocean-patch.js';
 import { beginWaterOperation, endWaterOperation } from './operation-observation.js';
 import {
@@ -69,8 +75,9 @@ import {
   type WaterViewState,
 } from './view-state.js';
 import {
-  buildWaterMeshView,
   type WaterMeshBodyInput,
+  type WaterMeshBuildInput,
+  WaterMeshViewBuilder,
   type WaterMeshViewInput,
   type WaterMeshViewReceipt,
 } from './water-mesh.js';
@@ -327,68 +334,6 @@ function reloadChanges(
   return changed;
 }
 const IDENTITY_MATRIX = Object.freeze([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-export function waterInfoZoneTransformSupported(matrix: readonly number[]): boolean {
-  const epsilon = 1e-5;
-  return (
-    Array.isArray(matrix) &&
-    matrix.length === 16 &&
-    Array.from(matrix).every(Number.isFinite) &&
-    Math.abs(requireWaterValue(matrix[1])) <= epsilon &&
-    Math.abs(requireWaterValue(matrix[2])) <= epsilon &&
-    Math.abs(requireWaterValue(matrix[4])) <= epsilon &&
-    Math.abs(requireWaterValue(matrix[6])) <= epsilon &&
-    Math.abs(requireWaterValue(matrix[8])) <= epsilon &&
-    Math.abs(requireWaterValue(matrix[9])) <= epsilon
-  );
-}
-function waterMeshZoneTransformSupported(matrix: readonly number[]): boolean {
-  if (!waterInfoZoneTransformSupported(matrix)) return false;
-  const scaleX = Math.hypot(
-    requireWaterValue(matrix[0]),
-    requireWaterValue(matrix[1]),
-    requireWaterValue(matrix[2]),
-  );
-  const scaleZ = Math.hypot(
-    requireWaterValue(matrix[8]),
-    requireWaterValue(matrix[9]),
-    requireWaterValue(matrix[10]),
-  );
-  return (
-    scaleX > 1e-6 &&
-    scaleZ > 1e-6 &&
-    Math.abs(scaleX - scaleZ) <= Math.max(1, scaleX, scaleZ) * 1e-5
-  );
-}
-function waterMeshBodyTransformSupported(matrix: readonly number[]): boolean {
-  const verticalScale = matrix[5] ?? 0;
-  const epsilon = Math.max(1, verticalScale) * 1e-5;
-  return (
-    matrix.length === 16 &&
-    matrix.every(Number.isFinite) &&
-    verticalScale > 1e-6 &&
-    Math.abs(requireWaterValue(matrix[1])) <= epsilon &&
-    Math.abs(requireWaterValue(matrix[9])) <= epsilon
-  );
-}
-function transformPoint(
-  matrix: readonly number[],
-  point: readonly [number, number, number],
-): [number, number, number] {
-  return [
-    requireWaterValue(matrix[0]) * point[0] +
-      requireWaterValue(matrix[4]) * point[1] +
-      requireWaterValue(matrix[8]) * point[2] +
-      requireWaterValue(matrix[12]),
-    requireWaterValue(matrix[1]) * point[0] +
-      requireWaterValue(matrix[5]) * point[1] +
-      requireWaterValue(matrix[9]) * point[2] +
-      requireWaterValue(matrix[13]),
-    requireWaterValue(matrix[2]) * point[0] +
-      requireWaterValue(matrix[6]) * point[1] +
-      requireWaterValue(matrix[10]) * point[2] +
-      requireWaterValue(matrix[14]),
-  ];
-}
 function copyFrozenSnapshot<T>(value: T, seen = new WeakMap<object, unknown>()): T {
   if (value === null || typeof value !== 'object') return value;
   const object = value as object;
@@ -602,7 +547,14 @@ export class WaterSystem {
   readonly #zoneMeshViews = new Map<string, WaterZoneMeshPublication>();
   readonly #zoneMeshCandidates = new Map<string, WaterZoneMeshPublication>();
   readonly #zoneViewWindows = new Map<string, WaterZoneViewWindow>();
-  readonly #zoneMeshBuildInputs = new WeakMap<WaterZoneMeshPublication, string>();
+  readonly #zoneMeshBuildInputs = new WeakMap<
+    WaterZoneMeshPublication,
+    {
+      signature: string;
+      geometrySignature: string;
+      builder: WaterMeshViewBuilder;
+    }
+  >();
   readonly #meshViewEpochs = new Map<string, number>();
   readonly #meshCandidateEpochs = new WeakMap<WaterZoneMeshPublication, number>();
   readonly #acceptedMeshOwners = new Map<string, AcceptedMeshOwner>();
@@ -1861,12 +1813,12 @@ export class WaterSystem {
             : undefined;
         committed = this.#zoneMeshViews.get(key);
         if (buildInputs !== undefined) {
-          if (committed && this.#zoneMeshBuildInputs.get(committed) === buildInputs) {
+          if (committed && this.#zoneMeshBuildInputs.get(committed)?.signature === buildInputs) {
             this.#zoneMeshCandidates.delete(key);
             return ok(committed);
           }
           const candidate = this.#zoneMeshCandidates.get(key);
-          if (candidate && this.#zoneMeshBuildInputs.get(candidate) === buildInputs)
+          if (candidate && this.#zoneMeshBuildInputs.get(candidate)?.signature === buildInputs)
             return ok(candidate);
         }
       } finally {
@@ -2168,19 +2120,25 @@ export class WaterSystem {
     const farDomain = prepareFarDomain();
     if (!farDomain.ok) return farDomain;
     const { tileSizeM, window, far, followsViewWindow, farInnerBounds } = farDomain.value;
-    const built = buildWaterMeshView(
-      {
-        zoneGuid,
-        zoneGeneration,
-        originXZ: window?.meshOriginXZ ?? originXZ,
-        extentM: window?.meshExtentXZ ?? [extentX, extentZ],
-        tileSizeM,
-        tessellationFactor: zone.tessellationFactor,
-        lodScale: zone.lodScale,
-        ...(zone.gpuMesh === undefined ? {} : { nearMesh: 'gpu' as const }),
-        ...(far ? { far } : {}),
-        bodies,
-      },
+    const geometryInput = {
+      zoneGuid,
+      zoneGeneration,
+      originXZ: window?.meshOriginXZ ?? originXZ,
+      extentM: window?.meshExtentXZ ?? [extentX, extentZ],
+      tileSizeM,
+      tessellationFactor: zone.tessellationFactor,
+      lodScale: zone.lodScale,
+      ...(zone.gpuMesh === undefined ? {} : { nearMesh: 'gpu' as const }),
+      ...(far ? { far } : {}),
+      bodies,
+    };
+    const { geometrySignature, builder } = this.#prepareZoneMeshBuilder(
+      key,
+      committed,
+      geometryInput,
+    );
+    const buildState = { signature: buildInputs ?? '', geometrySignature, builder };
+    const built = builder.build(
       followsViewWindow ? { ...view, waterInfoBoundsXZ: farInnerBounds } : view,
     );
     if (!built.ok)
@@ -2228,11 +2186,13 @@ export class WaterSystem {
           waterMeshOutputGenerations,
           viewId: view.viewId,
           layout: built.value.layout,
-          instances: built.value.instances,
+          bodyOrder: bodies.map((body) => [body.guid, body.generation, body.materialKey]),
+          instances: encodeBase64(built.value.instanceBytes),
+          coverage: encodeBase64(built.value.coverageBytes),
         });
         if (committed?.digest === digest) {
           this.#zoneMeshCandidates.delete(key);
-          if (buildInputs !== undefined) this.#zoneMeshBuildInputs.set(committed, buildInputs);
+          if (buildInputs !== undefined) this.#zoneMeshBuildInputs.set(committed, buildState);
           return { publication: committed, digest };
         }
       } finally {
@@ -2256,10 +2216,27 @@ export class WaterSystem {
       current: true,
       receipt: built.value,
     });
-    this.#zoneMeshBuildInputs.set(publication, buildInputs ?? digest);
+    this.#zoneMeshBuildInputs.set(publication, buildState);
     this.#meshCandidateEpochs.set(publication, this.#meshViewEpochs.get(view.viewId) ?? 0);
     this.#zoneMeshCandidates.set(key, publication);
     return ok(publication);
+  }
+  #prepareZoneMeshBuilder(
+    key: string,
+    committed: WaterZoneMeshPublication | undefined,
+    input: WaterMeshBuildInput,
+  ) {
+    const geometrySignature = canonicalJson(input);
+    const previous = this.#zoneMeshCandidates.get(key) ?? committed;
+    const previousBuild =
+      previous === undefined ? undefined : this.#zoneMeshBuildInputs.get(previous);
+    return {
+      geometrySignature,
+      builder:
+        previousBuild?.geometrySignature === geometrySignature
+          ? previousBuild.builder
+          : new WaterMeshViewBuilder(input),
+    };
   }
   zoneMeshView(
     zoneGuid: string,

@@ -221,8 +221,8 @@ const { Transform } = await import('@forgeax/engine-scene');
 // same `1` literal -- see apps/hello/sprite/src/main.ts header).
 const CAMERA_PROJECTION_ORTHOGRAPHIC = 1;
 
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-const ENGINE_MANIFEST = await buildEngineShaderManifest();
+const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const ENGINE_MANIFEST = await buildEngineShaderTemplateManifest();
 const ENGINE_MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(ENGINE_MANIFEST_URL));
 

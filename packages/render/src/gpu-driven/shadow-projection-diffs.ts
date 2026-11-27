@@ -1,3 +1,4 @@
+import { BatchExecutionTable } from './batch-execution-table';
 import type { GpuDrivenBatch, GpuDrivenBatchBinding, SubmissionPlan } from './batch-topology';
 import type { BatchExecutions } from './material-artifacts';
 import type { FilteredProductionPlan } from './production-raster-prepare';
@@ -90,8 +91,16 @@ export class ShadowProjectionDiffs {
     let changed = this.executions.get(previous);
     if (changed === undefined) {
       const bindings = new Set<GpuDrivenBatchBinding>();
-      for (const [binding, execution] of previous)
-        if (this.batchExecutions.get(binding)?.shadow !== execution.shadow) bindings.add(binding);
+      const table = this.batchExecutions;
+      const compared =
+        table instanceof BatchExecutionTable &&
+        table.visitChanges(previous, (binding, before, after) => {
+          if (before.shadow !== after.shadow) bindings.add(binding);
+        });
+      if (!compared)
+        previous.forEach((execution, binding) => {
+          if (table.get(binding)?.shadow !== execution.shadow) bindings.add(binding);
+        });
       changed = bindings;
       this.executions.set(previous, changed);
     }

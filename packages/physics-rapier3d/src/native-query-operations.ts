@@ -730,6 +730,42 @@ export function runAdmitFixedForce(
   return ok(body);
 }
 
+export interface CompletedSensorStep {
+  readonly step: number;
+  readonly throughGeneration: number;
+}
+
+const EMPTY_OVERLAPS: readonly PhysicsSensorOverlap[] = Object.freeze([]);
+
+function emptySensorRoster(
+  rootEntity: number,
+  rootGeneration: number,
+  completedStep: number,
+  exited = EMPTY_OVERLAPS,
+): PhysicsSensorOverlaps {
+  return Object.freeze({
+    rootEntity,
+    rootGeneration,
+    completedStep,
+    current: EMPTY_OVERLAPS,
+    entered: EMPTY_OVERLAPS,
+    exited,
+    stale: EMPTY_OVERLAPS,
+  });
+}
+
+function publishSensorExits(
+  entityMap: Map<number, import('./physics-entity-records.js').PhysicsEntityRecord>,
+  rosters: Map<number, PhysicsSensorOverlaps>,
+  step: number,
+): void {
+  for (const [entity, prior] of rosters) {
+    if (prior.current.length === 0 || entityMap.get(entity)?.generation !== prior.rootGeneration)
+      rosters.delete(entity);
+    else rosters.set(entity, emptySensorRoster(entity, prior.rootGeneration, step, prior.current));
+  }
+}
+
 export function runPublishSensorOverlaps(
   readRaw: () => RapierWorld,
   sensorIdentity: (collider: RapierWorld) => PhysicsSensorOverlap | undefined,
@@ -738,27 +774,41 @@ export function runPublishSensorOverlaps(
   bodyForEntity: (entity: number) => RapierRigidBody | undefined,
   bodyColliders: (body: RapierRigidBody) => RapierWorld[],
   completedSensorRosters: Map<number, import('@forgeax/engine-physics').PhysicsSensorOverlaps>,
-  readFixedStep: () => number,
+  step: number,
 ): void {
-  const live = new Set<number>();
-  readRaw().forEachCollider((collider: RapierWorld) => {
-    if (sensorIdentity(collider)) live.add(collider.handle);
+  const raw = readRaw();
+  let hasSensors = false;
+  raw.forEachCollider((collider: RapierWorld) => {
+    hasSensors ||= collider.isSensor();
   });
-  for (const handle of sensorColliderIdentities.keys())
-    if (!live.has(handle)) sensorColliderIdentities.delete(handle);
+  // Only identities already observed by a consumer need refreshing. A new
+  // identity is captured when its actual overlap or primitive is requested.
+  for (const handle of sensorColliderIdentities.keys()) {
+    const collider = raw.getCollider(handle);
+    if (collider == null || sensorIdentity(collider) === undefined)
+      sensorColliderIdentities.delete(handle);
+  }
+  if (!hasSensors) {
+    publishSensorExits(entityMap, completedSensorRosters, step);
+    return;
+  }
   for (const [entity, record] of entityMap) {
     const found = new Map<string, PhysicsSensorOverlap>();
     const body = bodyForEntity(entity);
     if (!body) continue;
     for (const root of bodyColliders(body))
-      readRaw().intersectionPairsWith(root, (other: RapierWorld) => {
-        if (!(root.isSensor() || other.isSensor()) || !readRaw().intersectionPair(root, other))
-          return;
+      raw.intersectionPairsWith(root, (other: RapierWorld) => {
+        if (!(root.isSensor() || other.isSensor()) || !raw.intersectionPair(root, other)) return;
         const identity = sensorIdentity(other);
         if (identity && identity.entity !== entity) found.set(identity.colliderId, identity);
       });
     const previous = completedSensorRosters.get(entity);
-    const prior = previous?.rootGeneration === record.generation ? previous.current : [];
+    const prior =
+      previous?.rootGeneration === record.generation ? previous.current : EMPTY_OVERLAPS;
+    if (prior.length === 0 && found.size === 0) {
+      completedSensorRosters.delete(entity);
+      continue;
+    }
     const oldIds = new Set(prior.map((value) => value.colliderId));
     const current = Object.freeze([
       ...prior.filter((value) => found.has(value.colliderId)),
@@ -769,7 +819,7 @@ export function runPublishSensorOverlaps(
       Object.freeze({
         rootEntity: entity,
         rootGeneration: record.generation,
-        completedStep: readFixedStep(),
+        completedStep: step,
         current,
         entered: Object.freeze(current.filter((value) => !oldIds.has(value.colliderId))),
         exited: Object.freeze(prior.filter((value) => !found.has(value.colliderId))),
@@ -798,6 +848,7 @@ export function runGetSensorOverlaps(
   entityMap: Map<number, import('./physics-entity-records.js').PhysicsEntityRecord>,
   completedSensorRosters: Map<number, import('@forgeax/engine-physics').PhysicsSensorOverlaps>,
   sensorColliderIdentities: Map<number, import('@forgeax/engine-physics').PhysicsSensorOverlap>,
+  completed: CompletedSensorStep | undefined,
   rootEntity: number,
   filterMask = 0xffffffff,
 ): Result<PhysicsSensorOverlaps, PhysicsFixedError> {
@@ -816,12 +867,15 @@ export function runGetSensorOverlaps(
       'mask must be a packed unsigned 32-bit collision group',
     );
   const roster = completedSensorRosters.get(rootEntity);
-  if (!roster || roster.rootGeneration !== record.generation)
+  if (!roster || roster.rootGeneration !== record.generation) {
+    if (completed !== undefined && record.generation <= completed.throughGeneration)
+      return ok(emptySensorRoster(rootEntity, record.generation, completed.step));
     return fixedFailure(
       rootEntity,
       'fixed-operation-unavailable',
       'root has no completed sensor step yet',
     );
+  }
   const accepts = (value: PhysicsSensorOverlap) =>
     ((filterMask >>> 16) & (value.collisionGroups & 0xffff)) !== 0 &&
     ((value.collisionGroups >>> 16) & (filterMask & 0xffff)) !== 0;

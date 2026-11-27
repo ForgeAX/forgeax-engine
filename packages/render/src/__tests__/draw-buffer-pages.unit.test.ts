@@ -85,6 +85,11 @@ describe('bounded draw buffer pages', () => {
     };
     expect(meshSsboBuffer(paged, 255)).toBe(first);
     expect(meshSsboBuffer(paged, 256)).toBe(second);
+    const address = meshSsboBufferBinding(paged, 255);
+    expect(meshSsboBufferBinding(paged, 266, address)).toBe(address);
+    expect(address).toEqual({ buffer: second, byteOffset: 10 });
+    expect(() => meshSsboBufferBinding(paged, 512, address)).toThrow('exceeds allocated pages');
+    expect(address).toEqual({ buffer: second, byteOffset: 10 });
     expect(() => meshSsboBuffer(paged, 512)).toThrow('exceeds allocated pages');
   });
   it.each([

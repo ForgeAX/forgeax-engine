@@ -16,7 +16,7 @@ temporary backend workspace per installation; --new-instance allocates its own.
 An explicit --root takes precedence. Open the returned URL and keep this terminal
 running. Ctrl+C closes the presentation; the Engine backend keeps its own lifetime.
 The URL means the Shell is listening; Backend/project readiness appears in the page.
-Published npm outputs are built already. No global SDK or manual Backend start is needed.
+SDK outputs are built already; its tool runtime is initialized on first use.
 This file emits JSON directly; --json is not a supported flag. --help starts no services.
 `;
 
@@ -45,18 +45,19 @@ export function defaultBackendRoot(engine, view, temporary = tmpdir()) {
 
 /** The View file selects its own installation, never the caller's cwd. */
 export async function resolveStartup(options = {}) {
-  const view = await realpath(options.viewRoot ?? viewRoot);
-  const require = createRequire(join(view, 'package.json'));
-  let enginePackage;
-  // Embedded npm View is inside its containing Engine package.
-  const container = resolve(view, '../..');
-  const manifest = await readFile(join(container, 'package.json'), 'utf8').then(
+  let view = await realpath(options.viewRoot ?? viewRoot);
+  const sdk = resolve(view, '../..');
+  const sdkManifest = await readFile(join(sdk, 'sdk-manifest.json'), 'utf8').then(
     (text) => JSON.parse(text),
-    () => undefined,
+    (cause) => { if (cause.code !== 'ENOENT') throw cause; },
   );
-  if (manifest?.name === '@forgeax/engine') enginePackage = container;
-  else enginePackage = dirname(require.resolve('@forgeax/engine/package.json'));
-  enginePackage = await realpath(enginePackage);
+  if (sdkManifest && view === join(sdk, 'tools/view')) {
+    const { ensureSdkRuntime } = await import(pathToFileURL(join(sdk, 'bin/forgeax.mjs')).href);
+    const runtime = await ensureSdkRuntime();
+    view = await realpath(join(runtime, 'node_modules/@forgeax/view'));
+  }
+  const require = createRequire(join(view, 'package.json'));
+  const enginePackage = await realpath(dirname(require.resolve('@forgeax/engine/package.json')));
   let engine = enginePackage;
   if (basename(dirname(enginePackage)) === 'packages') {
     const checkout = resolve(enginePackage, '../..');
@@ -75,7 +76,7 @@ export async function resolveStartup(options = {}) {
       if (cause.code !== 'ENOENT') throw cause;
       throw Object.assign(
         new Error(
-          `Missing View output ${join(view, file)}. Install a complete matching @forgeax/engine distribution. Source contributors must prepare their checkout explicitly.`,
+          `Missing View output ${join(view, file)}. Install a complete matching SDK distribution. Source contributors must prepare their checkout explicitly.`,
           { cause },
         ),
         { code: 'view-installation-incomplete' },
@@ -95,6 +96,10 @@ export async function resolveStartup(options = {}) {
 export async function startView(options = {}) {
   const installation = await resolveStartup(options);
   const { root, hostPack, viewRoot: view } = installation;
+  if (view !== await realpath(viewRoot)) {
+    const installed = await import(pathToFileURL(join(view, 'start.mjs')).href);
+    return installed.startView({ ...options, root, viewRoot: view });
+  }
   const { ensureDevKitView } = await import('@forgeax/engine/devkit');
   const { serveView } = await import(pathToFileURL(join(view, 'dist/modules/service.mjs')).href);
   const service = await serveView({
@@ -116,7 +121,7 @@ export async function startView(options = {}) {
   };
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+if (process.argv[1] && pathToFileURL(await realpath(process.argv[1])).href === import.meta.url) {
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.help) process.stdout.write(help);

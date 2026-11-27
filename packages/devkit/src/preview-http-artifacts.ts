@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import {
@@ -8,7 +7,7 @@ import {
   varyEncoding,
 } from '@forgeax/engine-vite-plugin-pack/http-artifact';
 import type { Plugin } from 'vite';
-import type { DistManifest } from './dist.js';
+import { type DistManifest, matchesArtifactBytes } from './dist.js';
 
 /** Prepare only verified BIN representations; the dist files remain the authority. */
 export async function preparePreviewHttpArtifacts(
@@ -22,10 +21,7 @@ export async function preparePreviewHttpArtifacts(
     if (!artifact.path.endsWith('.bin')) continue;
     const path = resolve(root, artifact.path);
     const bytes = await readFile(path);
-    if (
-      bytes.byteLength !== artifact.bytes ||
-      createHash('sha256').update(bytes).digest('hex') !== artifact.sha256
-    ) {
+    if (!matchesArtifactBytes(bytes, artifact)) {
       throw new Error(`preview artifact changed after dist verification: ${artifact.path}`);
     }
     const body = { bytes, mimeType: artifact.mediaType };

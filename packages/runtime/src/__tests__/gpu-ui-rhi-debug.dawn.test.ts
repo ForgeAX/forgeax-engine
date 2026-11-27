@@ -10,7 +10,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
@@ -101,7 +101,7 @@ it('captures actual Blitz GPU UI draws and replays dynamic and retained composit
           },
         },
       },
-      { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()) },
+      { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()) },
     ),
   );
   value(await host.initialization);

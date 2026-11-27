@@ -10,7 +10,7 @@ import {
   platformError,
   releasePlatformResources,
 } from '@forgeax/engine-platform';
-import { AUDIO_ERROR_HINTS, AudioError } from '@forgeax/engine-types';
+import { AUDIO_ERROR_HINTS, AudioError, err, ok, type Result } from '@forgeax/engine-types';
 
 /** The context is admitted against the Web Audio owner's consumed native surface. */
 export interface WechatAudioSource {
@@ -28,6 +28,44 @@ export interface WechatAudioOptions {
   readonly onError: (error: PlatformError) => void;
 }
 
+function validateNativeAudioContext(native: AudioContext): void {
+  for (const name of [
+    'decodeAudioData',
+    'createGain',
+    'createBufferSource',
+    'createPanner',
+    'createAnalyser',
+    'createBuffer',
+    'createBiquadFilter',
+    'resume',
+    'suspend',
+    'close',
+  ] as const)
+    if (typeof native[name] !== 'function')
+      throw new TypeError(`native WebAudioContext.${name} is unavailable`);
+  if (
+    !['running', 'suspended'].includes(native.state) ||
+    !Number.isFinite(native.currentTime) ||
+    native.currentTime < 0 ||
+    !Number.isFinite(native.sampleRate) ||
+    !(native.sampleRate > 0)
+  )
+    throw new TypeError('native WebAudioContext is not live');
+  for (const name of [
+    'positionX',
+    'positionY',
+    'positionZ',
+    'forwardX',
+    'forwardY',
+    'forwardZ',
+    'upX',
+    'upY',
+    'upZ',
+  ] as const)
+    if (typeof native.listener?.[name]?.value !== 'number')
+      throw new TypeError(`native AudioListener.${name} needs AudioParam support`);
+}
+
 /** Lazy native Context and scoped lifecycle; all decoding, nodes and buses retain WebAudio ownership. */
 export function createWechatAudioBackend(
   source: WechatAudioSource,
@@ -40,8 +78,14 @@ export function createWechatAudioBackend(
   let wanted: 'running' | 'suspended' = 'running';
   let changing = false;
   const releases: (() => void)[] = [];
+  const notify = (operation: string, cause: unknown) => {
+    try {
+      options.onError(platformError('platform-operation-failed', { operation, cause }).error);
+    } catch {
+      // Diagnostics do not interrupt native audio lifecycle or rollback.
+    }
+  };
   const report = (operation: string, cause: unknown) => {
-    const failure = platformError('platform-operation-failed', { operation, cause }).error;
     if (!disposed)
       engine.reportError(
         new AudioError({
@@ -51,7 +95,7 @@ export function createWechatAudioBackend(
           detail: { code: 'context-suspended' },
         }),
       );
-    options.onError(failure);
+    notify(operation, cause);
   };
   const close = (native: AudioContext) => {
     try {
@@ -104,9 +148,7 @@ export function createWechatAudioBackend(
     update();
   };
 
-  const acquire = (): AudioContext => {
-    if (disposed) throw new Error('native audio backend is disposed');
-    if (context) return context;
+  const acquire = (): Result<AudioContext, AudioError> => {
     let native: AudioContext | undefined;
     try {
       for (const name of ['createWebAudioContext', 'onTouchStart', 'offTouchStart'] as const)
@@ -126,41 +168,7 @@ export function createWechatAudioBackend(
       if (!candidate || typeof candidate !== 'object')
         throw new TypeError('wx.createWebAudioContext returned no Context');
       native = candidate as AudioContext;
-      for (const name of [
-        'decodeAudioData',
-        'createGain',
-        'createBufferSource',
-        'createPanner',
-        'createAnalyser',
-        'createBuffer',
-        'createBiquadFilter',
-        'resume',
-        'suspend',
-        'close',
-      ] as const)
-        if (typeof native[name] !== 'function')
-          throw new TypeError(`native WebAudioContext.${name} is unavailable`);
-      if (
-        !['running', 'suspended'].includes(native.state) ||
-        !Number.isFinite(native.currentTime) ||
-        native.currentTime < 0 ||
-        !Number.isFinite(native.sampleRate) ||
-        !(native.sampleRate > 0)
-      )
-        throw new TypeError('native WebAudioContext is not live');
-      for (const name of [
-        'positionX',
-        'positionY',
-        'positionZ',
-        'forwardX',
-        'forwardY',
-        'forwardZ',
-        'upX',
-        'upY',
-        'upZ',
-      ] as const)
-        if (typeof native.listener?.[name]?.value !== 'number')
-          throw new TypeError(`native AudioListener.${name} needs AudioParam support`);
+      validateNativeAudioContext(native);
       context = native;
       const lease = platform
         .subscribe((event) => {
@@ -178,61 +186,45 @@ export function createWechatAudioBackend(
       }
       // A suspended native context waits for a real gesture. Hidden startup stays silent.
       if (!platform.visible()) update();
-      return native;
+      return ok(native);
     } catch (cause) {
       context = undefined;
-      let cleanupFailure: unknown;
       try {
         releasePlatformResources(releases.splice(0).reverse());
       } catch (cleanup) {
-        cleanupFailure = cleanup;
+        notify('native audio startup cleanup', cleanup);
       }
       if (native && typeof native.close === 'function') close(native);
-      const failure = new AudioError({
-        code: 'context-creation-failed',
-        expected: 'a native Context satisfying the Web Audio backend contract',
-        hint: AUDIO_ERROR_HINTS['context-creation-failed'],
-        detail: {
+      notify('wx.createWebAudioContext', cause);
+      return err(
+        new AudioError({
           code: 'context-creation-failed',
-          reason: cause instanceof Error ? cause.message : String(cause),
-        },
-      });
-      engine.reportError(failure);
-      try {
-        if (cleanupFailure !== undefined)
-          options.onError(
-            platformError('platform-operation-failed', {
-              operation: 'native audio startup cleanup',
-              cause: cleanupFailure,
-            }).error,
-          );
-        options.onError(
-          platformError('platform-operation-failed', {
-            operation: 'wx.createWebAudioContext',
-            cause,
-          }).error,
-        );
-      } catch {
-        // An observer cannot replace the original native startup failure.
-      }
-      throw failure;
+          expected: 'a native Context satisfying the Web Audio backend contract',
+          hint: AUDIO_ERROR_HINTS['context-creation-failed'],
+          detail: {
+            code: 'context-creation-failed',
+            reason: cause instanceof Error ? cause.message : String(cause),
+          },
+        }),
+      );
     }
   };
   const engine = new WebAudioEngine({ context: acquire });
   const backend = createWebAudioBackend(engine);
-  const destroy = backend.destroy;
-  backend.destroy = () => {
-    if (disposed) return;
-    disposed = true;
-    const native = context;
-    context = undefined;
-    releasePlatformResources([
-      destroy,
-      ...releases.splice(0).reverse(),
-      () => {
-        if (native) close(native);
-      },
-    ]);
+  return {
+    ...backend,
+    destroy() {
+      if (disposed) return;
+      disposed = true;
+      const native = context;
+      context = undefined;
+      releasePlatformResources([
+        () => backend.destroy(),
+        ...releases.splice(0).reverse(),
+        () => {
+          if (native) close(native);
+        },
+      ]);
+    },
   };
-  return backend;
 }

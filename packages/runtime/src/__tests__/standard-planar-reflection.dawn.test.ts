@@ -201,7 +201,7 @@ it('mirrors the PlanarReflection capture on an opted-in Standard floor', {
     };
     type Planar = 'none' | 'game' | 'owned-mips';
     let current: Planar = 'none';
-    const frameStats = async (planar: Planar, material: typeof mirror, direct: boolean) => {
+    const frameStats = async (planar: Planar, material: typeof mirror) => {
       if (planar !== current && world.hasComponent(camera, PlanarReflection))
         world.removeComponent(camera, PlanarReflection).unwrap();
       if (planar !== current && planar !== 'none')
@@ -218,41 +218,45 @@ it('mirrors the PlanarReflection capture on an opted-in Standard floor', {
       world.set(floor, MeshRenderer, { materials: [material] } as never).unwrap();
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      for (let i = 0; i < 4; i++)
-        await drawReadyFrame(renderer, {
-          source: lease,
-          ...(direct ? { geometryLane: 'direct' as const } : {}),
-        });
-      return readFrame();
-    };
-    const frame = async (planar: boolean, material: typeof mirror, direct: boolean) =>
-      (await frameStats(planar ? 'game' : 'none', material, direct)).count;
-    const profile = renderer.inspect().profile;
-    for (const renderPath of ['forward', 'deferred'] as const) {
-      renderValue(renderer.setProfile({ ...profile, renderPath, ssao: false }));
-      for (const direct of [true, false]) {
-        const label = `${renderPath}/${direct ? 'direct' : 'gpu-driven'}`;
-        const box = await frame(false, mirror, direct);
-        const mirrored = await frame(true, mirror, direct);
-        const roughFloor = await frame(true, rough, direct);
-        expect(box, `${label} the box is visible`).toBeGreaterThan(40);
-        // The mirror image below the box at least doubles the red coverage.
-        expect(mirrored, `${label} the floor mirrors the box`).toBeGreaterThan(box * 1.6);
-        expect(roughFloor, `${label} a rough floor keeps the environment`).toBeLessThan(box * 1.2);
-        const faded = await frameStats('game', rough, direct);
-        const smooth = await frameStats('owned-mips', mirror, direct);
-        const blurred = await frameStats('owned-mips', rough, direct);
-        expect(smooth.count, `${label} the owned mirror reflects the box`).toBeGreaterThan(
-          box * 1.6,
-        );
-        expect(blurred.mean, `${label} a mipped rough floor keeps the mirror`).toBeGreaterThan(
-          faded.mean + 1,
-        );
-        expect(blurred.variance, `${label} the rough mip is blurred`).toBeLessThan(
-          smooth.variance * 0.75,
+      try {
+        for (let i = 0; i < 4; i++) await drawReadyFrame(renderer, { source: lease });
+      } catch (cause) {
+        throw new Error(
+          `Planar frame (${planar}, deferred GPU-driven): ${JSON.stringify({
+            cause,
+            errors,
+            nativeErrors,
+          })}`,
+          { cause },
         );
       }
-    }
+      return readFrame();
+    };
+    const frame = async (planar: boolean, material: typeof mirror) =>
+      (await frameStats(planar ? 'game' : 'none', material)).count;
+    const profile = renderer.inspect().profile;
+    // This scene owns the Standard receiver on GPU-driven deferred geometry.
+    // The separate water capture owns direct geometry and the reflection clip plane.
+    renderValue(
+      renderer.setProfile({
+        ...profile,
+        renderPath: 'deferred',
+        ambientOcclusion: { enabled: false },
+      }),
+    );
+    const box = await frame(false, mirror);
+    const mirrored = await frame(true, mirror);
+    const roughFloor = await frame(true, rough);
+    expect(box, `the box is visible`).toBeGreaterThan(40);
+    // The mirror image below the box at least doubles the red coverage.
+    expect(mirrored, `the floor mirrors the box`).toBeGreaterThan(box * 1.6);
+    expect(roughFloor, `a rough floor keeps the environment`).toBeLessThan(box * 1.2);
+    const faded = await frameStats('game', rough);
+    const smooth = await frameStats('owned-mips', mirror);
+    const blurred = await frameStats('owned-mips', rough);
+    expect(smooth.count, `the owned mirror reflects the box`).toBeGreaterThan(box * 1.6);
+    expect(blurred.mean, `a mipped rough floor keeps the mirror`).toBeGreaterThan(faded.mean + 1);
+    expect(blurred.variance, `the rough mip is blurred`).toBeLessThan(smooth.variance * 0.75);
     expect(errors).toEqual([]);
     expect(nativeErrors).toEqual([]);
   } finally {

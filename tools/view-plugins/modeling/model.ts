@@ -300,7 +300,7 @@ export function highlightOverlays(report: SynthesisReport | undefined) {
 /** Engine host service the panel calls `model.*` through (DevKit workspace owner). */
 export const ENGINE_WORKSPACE_CALL_SERVICE = 'engine.workspace.call';
 
-export type Request = (service: string, payload: unknown) => Promise<unknown>;
+export type Request = (service: string, payload: unknown, signal?: AbortSignal) => Promise<unknown>;
 
 /**
  * Capture budget of each Pack rebuild the window asks for. Later stages of a large
@@ -311,14 +311,15 @@ export const CAPTURE_TIMEOUT_MS = 300_000;
 
 /** `model.*` through the caller's admitted workspace session (project-scoped). */
 export function modelingOperations(request: Request) {
-  const call = <T>(operation: string, args: Record<string, unknown>) =>
+  const call = <T>(operation: string, args: Record<string, unknown>, signal?: AbortSignal) =>
     request(ENGINE_WORKSPACE_CALL_SERVICE, {
       operation,
       args: { timeoutMs: CAPTURE_TIMEOUT_MS, ...args },
-    }) as Promise<T>;
+    }, signal) as Promise<T>;
   return {
-    inspect: (source: string, values: Record<string, unknown>) => call<{ sessions: InspectSession[] }>('model.inspect', { source, values }),
-    render: (args: Record<string, unknown>) =>
+    inspect: (source: string, values: Record<string, unknown>, signal?: AbortSignal) =>
+      call<{ sessions: InspectSession[] }>('model.inspect', { source, values }, signal),
+    render: (args: Record<string, unknown>, signal?: AbortSignal) =>
       call<{ views: RenderedView[]; mesh: { faces: number } }>('model.render', {
         views: ['iso'],
         projection: 'orthographic',
@@ -326,7 +327,7 @@ export function modelingOperations(request: Request) {
         width: 384,
         height: 384,
         ...args,
-      }),
+      }, signal),
     synthesize: (args: Record<string, unknown>) => call<SynthesisReport>('model.synthesize', args),
     select: (args: Record<string, unknown>) =>
       call<{ selected: { count: number; highlight?: SynthesisReport['highlight'] } }>('model.select', { highlight: true, ...args }),

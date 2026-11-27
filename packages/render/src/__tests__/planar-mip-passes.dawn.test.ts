@@ -8,7 +8,9 @@ for (const format of ['rgba8unorm', 'rgba8unorm-srgb', 'rgba16float'] as const)
     [8, 8],
     [17, 5],
   ])(`writes exact ${format} planar mips without scratch/copies (%i x %i)`, async (width, height) => {
-    const { device, native } = await nativeDeviceFixture();
+    const { device, native } = await nativeDeviceFixture({
+      requiredFeatures: ['depth32float-stencil8'],
+    });
     native.pushErrorScope('validation');
     try {
       await verifyPlanarMipChain(

@@ -48,6 +48,27 @@ describe('planar reflection camera', () => {
     expect(reflected?.position[0]).toBeCloseTo(4);
   });
 
+  it('widens only the capture projection and keeps the biased clip plane', () => {
+    const source = camera();
+    const clipped = buildPlanarReflectionView({ ...source, plane, clipBias: 0.02 });
+    const widened = buildPlanarReflectionView({
+      ...source,
+      plane,
+      clipBias: 0.02,
+      extraFovDegrees: 10,
+    });
+    if (clipped === undefined || widened === undefined) throw new Error('Reflection view missing');
+    expect(widened.projection[5]).toBeCloseTo(1 / Math.tan((40 * Math.PI) / 180), 5);
+    expect(widened.projection[5]).toBeLessThan(clipped.projection[5] ?? 0);
+    expect(
+      mat4.transformVec3(vec3.create(), widened.viewProjection, [0, 0.01, 0])[2],
+    ).toBeGreaterThan(1);
+    expect(mat4.transformVec3(vec3.create(), widened.viewProjection, [0, 0.03, 0])[2]).toBeLessThan(
+      1,
+    );
+    expect(source.projection).toEqual(camera().projection);
+  });
+
   it('skips an otherwise valid camera looking away from the plane', () => {
     const world = mat4.invert(
       mat4.create(),

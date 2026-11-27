@@ -27,7 +27,10 @@ import {
 } from '@forgeax/engine-vfx';
 import { expect, it, vi } from 'vitest';
 import { materialRecordFixture } from '../../../assets-runtime/src/__tests__/fixtures/material-publication';
+import { prepareRuntimeMaterialTemplate } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
+import { materialContribution } from '../../../render/src/assets/asset-decoders';
+import { renderMaterialContext } from '../../../render/src/extract/material-context';
 import { isOwnedRenderFeatureProgramData } from '../../../render/src/features/prepared-gpu-work';
 import { Materials } from '../../../render/src/materials';
 import type { RenderPublication } from '../../../render/src/publication/contract';
@@ -39,6 +42,7 @@ import {
   renderPublicationTransfers,
 } from '../../../render/src/publication/record';
 import type { RenderResourceScope } from '../../../render/src/publication/resource-scope';
+import { prepareShaderProgramCompiler } from '../../../shader-compiler/src/program';
 import { cookedEffectFixture } from '../../../vfx/src/__tests__/cooked-effect-fixture';
 import {
   effectFixtureReference,
@@ -210,13 +214,13 @@ it('captures stock material GUIDs once per World extraction and refreshes every 
     const first = extract();
     expect(references).toBe(1);
     expect(
-      first.source?.materials.get(effectFixtureReference(world, guid, 'material'))?.asset.values,
+      first.source?.materials.get(effectFixtureReference(world, guid, 'material'))?.asset?.values,
     ).toEqual(material.values);
     assets.update(materialHandle, { values: { baseColor: [1, 0.5, 0, 1] } }).unwrap();
     const second = extract();
     expect(references).toBe(2);
     expect(
-      second.source?.materials.get(effectFixtureReference(world, guid, 'material'))?.asset.values
+      second.source?.materials.get(effectFixtureReference(world, guid, 'material'))?.asset?.values
         ?.baseColor,
     ).toEqual([1, 0.5, 0, 1]);
     const replacement = { ...material, values: { baseColor: [0, 0, 1, 1] } };
@@ -224,7 +228,7 @@ it('captures stock material GUIDs once per World extraction and refreshes every 
     const third = extract();
     expect(references).toBe(3);
     expect(
-      third.source?.materials.get(effectFixtureReference(world, guid, 'material'))?.asset.values,
+      third.source?.materials.get(effectFixtureReference(world, guid, 'material'))?.asset?.values,
     ).toEqual(replacement.values);
   } finally {
     (await host.detachWorld({ world })).unwrap();
@@ -485,7 +489,7 @@ it.each([
           source: {
             ...required(frame.source),
             materials: new Map(required(frame.source).materials).set(materialGuid, {
-              ...row,
+              asset: required(row.asset),
               projection,
             }),
           },
@@ -1425,23 +1429,51 @@ it('keeps raw ACK free of newly introduced effect-program reads, including mixed
   }
 });
 
-async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'catalog') {
+async function meshPublicationFixture(
+  kind: 'catalog' | 'custom' | 'player' | 'template' = 'catalog',
+) {
   const materialGuid = '019e9c00-0000-7000-8000-000000000091';
   const meshGuid = '019e9c00-0000-7000-8000-000000000092';
+  const programCompiler =
+    kind === 'template' ? (await prepareShaderProgramCompiler()).unwrap() : undefined;
   const assets = new AssetRegistry({
-    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+    shaderRegistry: new ShaderRegistry({
+      manifestUrl: undefined,
+      ...(programCompiler === undefined ? {} : { programCompiler }),
+    }),
+  });
+  const receivingAssets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({
+      manifestUrl: undefined,
+      ...(programCompiler === undefined ? {} : { programCompiler }),
+    }),
   });
   assets.installDecoder(particleEffectContribution.kind, particleEffectContribution.decoder);
   const world = new World({ assets });
 
   const mesh = createBoxGeometry(1, 1, 1).unwrap();
-  publishRuntimeAssets(assets, [
-    { guid: materialGuid, asset: Materials.unlit([1, 1, 1, 1]) },
-    { guid: meshGuid, asset: mesh },
-  ]);
+  const material = Materials.unlit([1, 1, 1, 1]);
+  const meshSource = { guid: meshGuid, asset: mesh };
+  if (kind === 'template') {
+    assets.installDecoder(materialContribution.kind, materialContribution.decoder);
+    const install = await prepareRuntimeMaterialTemplate(materialGuid, {
+      ...material,
+      passes: [
+        ...(material.passes ?? []),
+        {
+          name: 'particle-mesh',
+          program: { module: 'forgeax::vfx-render.particles.mesh-unlit' },
+        },
+      ],
+    });
+    install(assets);
+  } else {
+    publishRuntimeAssets(assets, [{ guid: materialGuid, asset: material }, meshSource]);
+  }
   const materialHandle = (await assets.load(materialGuid, 'material')).unwrap();
+  const playerMesh = kind === 'player' || kind === 'template';
   let sourceMeshHandle: import('@forgeax/engine-types').AssetHandle<'mesh'> | undefined;
-  if (kind !== 'player') {
+  if (!playerMesh) {
     sourceMeshHandle = (await assets.load(meshGuid, 'mesh')).unwrap();
   }
   const custom = createBoxGeometry(2, 1, 1).unwrap();
@@ -1456,7 +1488,7 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
           {
             kind: 'mesh',
             material: materialGuid,
-            mesh: kind === 'player' ? { source: 'player' } : meshGuid,
+            mesh: playerMesh ? { source: 'player' } : meshGuid,
           },
         ],
         reflection: {
@@ -1488,7 +1520,7 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
           timeScale: 0,
         },
       },
-      ...(kind === 'player' ? [{ component: MeshFilter, data: { assetHandle: handle } }] : []),
+      ...(playerMesh ? [{ component: MeshFilter, data: { assetHandle: handle } }] : []),
     )
     .unwrap();
   const host = createVfxRuntimeHost({ camera: { read: () => camera } });
@@ -1505,7 +1537,17 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
         })
       : host.feature;
   const identity = { source: 'mesh-publication', epoch: 1 };
-  const publisher = createRenderPublisher(world, assets, identity, undefined, [source]);
+  const caps = { backendKind: 'webgpu', storageBuffer: true } as never;
+  const limits = { maxSampledTexturesPerShaderStage: 128 } as never;
+  const publisher = createRenderPublisher(
+    world,
+    assets,
+    identity,
+    caps,
+    [source],
+    undefined,
+    limits,
+  );
   const receiver = new RenderPublicationReceiver(identity);
   const consumer = gpuParticleRenderFeature({ camera: { read: () => camera } });
   const data = (packet: RenderPublication) =>
@@ -1521,7 +1563,7 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
       ],
     });
     candidate.accept();
-    const accepted = receiver.accept(packet).unwrap();
+    const accepted = receiver.accept(packet, receivingAssets).unwrap();
     const view = accepted.packet;
     const planned = consumer
       .plan(
@@ -1533,7 +1575,11 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
           ...(materialBindings
             ? { materialShaderBindingContract: () => ({ bindings: 'render-material' as const }) }
             : {}),
-          caps: {} as never,
+          ...(accepted.resources.resolveMaterialTemplate === undefined
+            ? {}
+            : { resolveMaterialTemplate: accepted.resources.resolveMaterialTemplate }),
+          caps,
+          ...renderMaterialContext(caps, limits),
           frame: { frameNumber: packet.revision },
           generation: 0,
         }),
@@ -1573,6 +1619,7 @@ async function meshPublicationFixture(kind: 'catalog' | 'custom' | 'player' = 'c
     close: async () => {
       publisher.dispose();
       receiver.dispose();
+      receivingAssets.dispose();
       (await host.detachWorld({ world })).unwrap();
     },
   };
@@ -1586,6 +1633,37 @@ function materialColor(planned: Parameters<typeof planResources>[0]) {
     throw new Error('Expected the actual particle projection runtime buffer');
   return [...new Float32Array(runtime.data.buffer, runtime.data.byteOffset, 80).slice(32, 36)];
 }
+
+it('plans a source-template particle pass from the receiver asset after Worker cloning', async () => {
+  const f = await meshPublicationFixture('template');
+  try {
+    const first = f.publish();
+    const version = runtimeAssets(f.assets).version(f.materialHandle).unwrap();
+    const material = first.data.source?.materials.get(f.materialHandle);
+    expect(material).toEqual({ reference: { handle: f.materialHandle, revision: version } });
+    expect(first.packet.assetVersions?.some(({ handle }) => handle === f.materialHandle)).not.toBe(
+      true,
+    );
+    const programs = planResources(first.planned).filter(
+      (resource) => resource.kind === 'graphics-program',
+    );
+    expect(programs).toHaveLength(1);
+    expect(programs[0]?.program.shader).toMatch(/^sha256:/);
+
+    const color = [0.25, 0.5, 0.75, 1] as const;
+    f.assets.update(f.materialHandle, { values: { baseColor: color } }).unwrap();
+    f.world.update(1 / 60).unwrap();
+    const next = f.publish();
+    expect(materialColor(next.planned)).toEqual(color);
+    expect(next.resources.resolveMaterialTemplate?.(f.materialHandle, version)).toBeUndefined();
+    expect(
+      planResources(next.planned).find((resource) => resource.kind === 'graphics-program')?.program
+        .shader,
+    ).toBe(programs[0]?.program.shader);
+  } finally {
+    await f.close();
+  }
+});
 
 it('omits duplicated cooked records while keeping mutable authored VFX material values current', async () => {
   const f = await meshPublicationFixture();

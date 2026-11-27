@@ -257,3 +257,31 @@ it.each([
     f.dispose();
   }
 });
+
+it('updates both physical pages at a shared terrain edge while a submitted view keeps its bounds', () => {
+  const f = fixture(true, 67, 2, 2);
+  try {
+    const before = f.draw().renderables.at(0)?.terrainSection?.source;
+    assert(before);
+    f.scene.commitTemporalFrame().unwrap();
+    f.assets
+      .writeRange(f.root, {
+        origin: { x: 64, z: 0 },
+        size: { columns: 1, rows: 1 },
+        heights: new Float32Array([12]),
+      })
+      .unwrap();
+    const after = f.draw().renderables.at(0)?.terrainSection?.source;
+    assert(after);
+    for (let index = 0; index < before.sectionCount; index++) {
+      const previous = terrainDrawSection(before, index);
+      const current = terrainDrawSection(after, index);
+      if (index === 63 || index === 64) {
+        expect(current.localAabb[4]).toBeGreaterThanOrEqual(12);
+        expect(previous.localAabb[4]).toBe(0);
+      } else expect(current).toBe(previous);
+    }
+  } finally {
+    f.dispose();
+  }
+});

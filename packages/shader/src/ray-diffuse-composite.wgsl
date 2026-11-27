@@ -1,6 +1,7 @@
 #define_import_path forgeax_ray::diffuse_composite
+#import forgeax_ray::screen_reconstruction::{spReconstructionConfidence}
 #import forgeax_view::common::{View, FullscreenOutput, fullscreen_triangle}
-#import forgeax_pbr::gbuffer::{decodeStandardGBufferNormal, standardGBufferValid, decodeStandardReflectance, decodeStandardGBufferReflectance}
+#import forgeax_pbr::gbuffer::{decodeStandardGBufferNormal, standardGBufferValid, decodeStandardReflectance, decodeStandardGBufferReflectance, decodeCompactBaseColor, usesDefaultGBuffer, compactGBufferSubsurface}
 #import forgeax_pbr::ibl_shared::{standardDiffuseWeight}
 #import forgeax_pbr::ibl_sampling::{environmentMultiScattering}
 
@@ -20,34 +21,66 @@
   return fullscreen_triangle(index);
 }
 
+struct IndirectMaterial {
+  albedo : vec4f,
+  response : vec4f,
+  subsurface : bool,
+}
+
+struct RayDiffuseOutput {
+  @location(0) radiance : vec4f,
+  @location(1) subsurface : vec4f,
+}
+
+fn routeIndirectLight(specular : vec3f, diffuse : vec3f, subsurface : bool) -> RayDiffuseOutput {
+  return RayDiffuseOutput(vec4f(specular + select(diffuse, vec3f(0), subsurface), 0),
+    vec4f(select(vec3f(0), diffuse, subsurface), 0));
+}
+
+fn loadIndirectMaterial(pixel : vec2i, packedNormal : vec2u) -> IndirectMaterial {
+  let c = textureLoad(albedoMetallic, pixel, 0).r;
+  let b = textureLoad(dielectricSpecularSource, pixel, 0).r;
+  if (usesDefaultGBuffer()) {
+    let material = unpack4x8unorm(b);
+    let color = unpack4x8unorm(c);
+    let baseColor = decodeCompactBaseColor(color.rgb);
+    return IndirectMaterial(vec4f(baseColor, material.r),
+      vec4f(mix(vec3f(material.g * 0.08), baseColor, material.r), color.a), compactGBufferSubsurface(b));
+  }
+  let albedo = decodeStandardReflectance(c);
+  let decoded = decodeStandardGBufferReflectance(albedo, b, packedNormal);
+  return IndirectMaterial(albedo, decoded.response, false);
+}
+
 // Add only the diffuse indirect contribution. Alpha zero preserves scene
 // coverage under additive blending. Invalid transport remains inspectable in
 // accumulation; it cannot be promoted to a valid sky sample by this consumer.
-fn shadeDiffuse(in: FullscreenOutput, d: vec3f) -> vec4f {
+fn shadeDiffuse(in: FullscreenOutput, d: vec3f) -> RayDiffuseOutput {
   let extent = textureDimensions(depth);
   let pixel = vec2i(in.position.xy);
   if (any(textureDimensions(normal) != extent) ||
       any(textureDimensions(albedoMetallic) != extent) ||
-      any(textureDimensions(dielectricSpecularSource) != extent)) { return vec4f(0); }
+      any(textureDimensions(dielectricSpecularSource) != extent)) { return RayDiffuseOutput(vec4f(0), vec4f(0)); }
   let packedNormal = textureLoad(normal, pixel, 0).rg;
-  if (!standardGBufferValid(packedNormal)) { return vec4f(0); }
+  if (!standardGBufferValid(packedNormal)) { return RayDiffuseOutput(vec4f(0), vec4f(0)); }
   let z = textureLoad(depth, pixel, 0);
-  if (!(z > 0.0 && z <= 1.0)) { return vec4f(0); }
-  if (!all(d >= vec3f(0)) || !all(d < vec3f(1e30))) { return vec4f(0); }
+  if (!(z > 0.0 && z <= 1.0)) { return RayDiffuseOutput(vec4f(0), vec4f(0)); }
+  if (!all(d >= vec3f(0)) || !all(d < vec3f(1e30))) { return RayDiffuseOutput(vec4f(0), vec4f(0)); }
   let uv = in.position.xy / vec2f(extent);
   let p = view.inverseViewProj * vec4f(uv * vec2f(2,-2) + vec2f(-1,1), z, 1);
   let position = p.xyz / p.w;
-  if (!all(abs(position) < vec3f(1e30))) { return vec4f(0); }
+  if (!all(abs(position) < vec3f(1e30))) { return RayDiffuseOutput(vec4f(0), vec4f(0)); }
   let outgoing = view.cameraPos - position;
-  if (!(dot(outgoing, outgoing) > 0.0)) { return vec4f(0); }
+  if (!(dot(outgoing, outgoing) > 0.0)) { return RayDiffuseOutput(vec4f(0), vec4f(0)); }
   let n = decodeStandardGBufferNormal(packedNormal);
-  let albedo = decodeStandardReflectance(textureLoad(albedoMetallic, pixel, 0).r);
-  let response = decodeStandardGBufferReflectance(albedo, textureLoad(dielectricSpecularSource, pixel, 0).r, packedNormal).response;
+  let material = loadIndirectMaterial(pixel, packedNormal);
+  let albedo = material.albedo;
+  let response = material.response;
   let weight = standardDiffuseWeight(max(dot(n.xyz, normalize(outgoing)), 0.0),
     response.rgb, n.w, albedo.a);
   // Material AO belongs only to this indirect term. The raster scene target
   // is never sampled or multiplied; emission and direct lighting survive.
-  return vec4f(weight * d * albedo.rgb * response.a, 0);
+  return routeIndirectLight(vec3f(0), weight * d * albedo.rgb * response.a, material.subsurface);
 }
 
 fn rawIrradiance(in: FullscreenOutput) -> vec4f {
@@ -64,41 +97,79 @@ fn reconstructedIrradiance(in: FullscreenOutput) -> vec4f {
   if (arrayLength(&accumulation) != extent.x * extent.y) { return vec4f(0); }
   let pixel = vec2u(in.position.xy);
   let value = bitcast<vec4f>(accumulation[pixel.y * extent.x + pixel.x]);
+  // Only the explicit finite reconstruction tag is a confidence estimate.
+  // Legacy missing/negative statuses are not confidence and remain rejected.
+  if(spReconstructionConfidence(value)>0.0){return vec4f(value.xyz,1.0);}
   if (value.w != 1.0) { return vec4f(0); }
   return value;
 }
 
-fn shadeIrradiance(in: FullscreenOutput, d: vec4f) -> vec4f {
-  if (d.w != 1.0) { return vec4f(0); }
+fn shadeIrradiance(in: FullscreenOutput, d: vec4f) -> RayDiffuseOutput {
+  if (d.w != 1.0) { return RayDiffuseOutput(vec4f(0), vec4f(0)); }
   return shadeDiffuse(in, d.xyz);
 }
 
-fn shadeReflectionIrradiance(in: FullscreenOutput, d: vec4f) -> vec4f {
-  if (d.w != 1.0 || !all(d.xyz >= vec3f(0)) || !all(d.xyz < vec3f(1e30))) { return vec4f(0); }
+fn shadeReflectionIrradiance(in: FullscreenOutput, d: vec4f) -> RayDiffuseOutput {
+  if (d.w != 1.0 || !all(d.xyz >= vec3f(0)) || !all(d.xyz < vec3f(1e30))) { return RayDiffuseOutput(vec4f(0), vec4f(0)); }
   let pixel = vec2i(in.position.xy);
   let packedNormal = textureLoad(normal, pixel, 0).rg;
-  if (!standardGBufferValid(packedNormal)) { return vec4f(0); }
+  if (!standardGBufferValid(packedNormal)) { return RayDiffuseOutput(vec4f(0), vec4f(0)); }
   let z = textureLoad(depth, pixel, 0);
-  if (!(z > 0.0 && z <= 1.0)) { return vec4f(0); }
-  let albedo = decodeStandardReflectance(textureLoad(albedoMetallic, pixel, 0).r);
-  let material = decodeStandardGBufferReflectance(albedo, textureLoad(dielectricSpecularSource, pixel, 0).r, packedNormal).response;
+  if (!(z > 0.0 && z <= 1.0)) { return RayDiffuseOutput(vec4f(0), vec4f(0)); }
+  let indirect = loadIndirectMaterial(pixel, packedNormal);
+  let albedo = indirect.albedo;
+  let material = indirect.response;
   let response = textureLoad(reflectionResponse, pixel, 0);
   // Inter-microfacet bounces follow cosine-weighted GI, independently of the
   // directional reflection signal. SSR can replace the latter without losing this.
   let multi = environmentMultiScattering(response.rgb, response.a, material.rgb);
   let diffuse = max(vec3f(0), vec3f(material.a) - response.rgb - multi) * (1.0 - albedo.a);
-  return vec4f(d.xyz * (diffuse * albedo.rgb + multi), 0);
+  return routeIndirectLight(d.xyz * multi, d.xyz * diffuse * albedo.rgb, indirect.subsurface);
 }
 
-@fragment fn fs_ray_diffuse(in: FullscreenOutput) -> @location(0) vec4f {
+@fragment fn fs_ray_diffuse(in: FullscreenOutput) -> RayDiffuseOutput {
   return shadeIrradiance(in, rawIrradiance(in));
 }
-@fragment fn fs_ray_diffuse_reconstructed(in: FullscreenOutput) -> @location(0) vec4f {
+@fragment fn fs_ray_diffuse_reconstructed(in: FullscreenOutput) -> RayDiffuseOutput {
   return shadeIrradiance(in, reconstructedIrradiance(in));
 }
-@fragment fn fs_ray_diffuse_reflections(in: FullscreenOutput) -> @location(0) vec4f {
+@fragment fn fs_ray_diffuse_reflections(in: FullscreenOutput) -> RayDiffuseOutput {
   return shadeReflectionIrradiance(in, rawIrradiance(in));
 }
-@fragment fn fs_ray_diffuse_reconstructed_reflections(in: FullscreenOutput) -> @location(0) vec4f {
+@fragment fn fs_ray_diffuse_reconstructed_reflections(in: FullscreenOutput) -> RayDiffuseOutput {
   return shadeReflectionIrradiance(in, reconstructedIrradiance(in));
+}
+
+// Deferred lighting produced these values using the selected Sky SH / local
+// probe, the material response, and the same material + screen occlusion.
+@group(0) @binding(7) var<storage, read> diffuseGiBaseline: array<u32>;
+
+fn replaceDiffuse(in: FullscreenOutput, d: vec4f) -> RayDiffuseOutput {
+  if (d.w != 1.0 || !all(d.xyz >= vec3f(0.0)) || !all(d.xyz < vec3f(1e30))) {
+    return RayDiffuseOutput(vec4f(0), vec4f(0));
+  }
+  let pixel = vec2u(in.position.xy);
+  if (!standardGBufferValid(textureLoad(normal, vec2i(pixel), 0).rg) ||
+      !(textureLoad(depth, vec2i(pixel), 0) > 0.0)) {
+    return RayDiffuseOutput(vec4f(0), vec4f(0));
+  }
+  let index = (pixel.y * textureDimensions(depth).x + pixel.x) * 3u;
+  let packedR = diffuseGiBaseline[index];
+  let r = unpack2x16float(packedR & 0x7fffffffu);
+  let g = unpack2x16float(diffuseGiBaseline[index + 1u]);
+  let b = unpack2x16float(diffuseGiBaseline[index + 2u]);
+  return routeIndirectLight(vec3f(0), d.xyz * vec3f(r.y, g.y, b.y) - vec3f(r.x, g.x, b.x), (packedR >> 31u) != 0u);
+}
+
+@fragment fn fs_ray_diffuse_replace(in: FullscreenOutput) -> @location(0) vec4f {
+  return replaceDiffuse(in, rawIrradiance(in)).radiance;
+}
+@fragment fn fs_ray_diffuse_reconstructed_replace(in: FullscreenOutput) -> @location(0) vec4f {
+  return replaceDiffuse(in, reconstructedIrradiance(in)).radiance;
+}
+@fragment fn fs_ray_diffuse_replace_subsurface(in: FullscreenOutput) -> RayDiffuseOutput {
+  return replaceDiffuse(in, rawIrradiance(in));
+}
+@fragment fn fs_ray_diffuse_reconstructed_replace_subsurface(in: FullscreenOutput) -> RayDiffuseOutput {
+  return replaceDiffuse(in, reconstructedIrradiance(in));
 }

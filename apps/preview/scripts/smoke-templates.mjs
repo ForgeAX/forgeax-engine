@@ -43,7 +43,7 @@ const PORT = Number.parseInt(process.env.FORGEAX_TEMPLATE_SMOKE_PORT ?? '5201', 
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 const CATALOG_URL = createStandaloneRuntimeAssetBinding('preview').catalogUrl;
 const DEFAULT_SERVER_STARTUP_TIMEOUT_MS = 90_000;
-const MAX_SERVER_STARTUP_TIMEOUT_MS = 180_000;
+const MAX_SERVER_STARTUP_TIMEOUT_MS = 240_000;
 const configuredServerStartupTimeoutMs = Number.parseInt(
   process.env.FORGEAX_TEMPLATE_SMOKE_SERVER_STARTUP_TIMEOUT_MS ?? '',
   10,
@@ -1509,7 +1509,7 @@ async function smokeGame3d(evidence) {
 
 async function smokeEmptyStartupReadiness(evidence) {
   const catalog = decodeCatalogWire(await (await fetch(`${ORIGIN}${CATALOG_URL}`)).json()).unwrap();
-  const scene = catalog.find((entry) => entry.guid === '019fb7ce-1000-7000-8000-000000000001');
+  const scene = catalog.find((entry) => entry.guid === 'ee7f6b3d-74ee-54e9-a62a-97d3fc58f125');
   if (scene?.kind !== 'scene' || typeof scene.packageUrl !== 'string') {
     throw new Error('empty startup disposal requires the ordinary scene Catalog entry');
   }

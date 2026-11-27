@@ -1,5 +1,6 @@
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { expect, it, vi } from 'vitest';
 import type { _InternalRenderPipelineContext } from '../render-context';
 
@@ -53,7 +54,7 @@ it('does not pin the preparing frame or graph through a prepared candidate that 
       template: { snapshot: { material: 1, materials: [1] }, dispatch: [] },
     },
     mesh: { submeshes: [{ materialSlot: 0 }] },
-    asset: {},
+    asset: createBoxGeometry(1, 1, 1).unwrap(),
     isCurrent: () => true,
   } as never;
   const pending = owner.prepare(input);
@@ -101,7 +102,7 @@ it('excludes explicit utility programs from candidate raster matching without ac
       template: { snapshot: { material: 1, materials: [1] }, dispatch: [] },
     },
     mesh: { submeshes: [{ materialSlot: 0 }] },
-    asset: {},
+    asset: createBoxGeometry(1, 1, 1).unwrap(),
     isCurrent: () => true,
   } as never;
   const pending = owner.prepare(input);
@@ -132,7 +133,7 @@ it('does not treat a utility-only graph as a candidate material raster authority
       template: { snapshot: { material: 1, materials: [1] }, dispatch: [] },
     },
     mesh: { submeshes: [{ materialSlot: 0 }] },
-    asset: {},
+    asset: createBoxGeometry(1, 1, 1).unwrap(),
     isCurrent: () => true,
   } as never;
   const pending = owner.prepare(input);

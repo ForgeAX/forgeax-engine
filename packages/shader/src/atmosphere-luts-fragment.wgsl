@@ -1,5 +1,5 @@
 #define_import_path forgeax_atmosphere::luts_fragment
-#import forgeax_view::common::{View, FullscreenOutput, fullscreen_triangle}
+#import forgeax_view::common::{View, FullscreenOutput, fullscreen_triangle, view_atmosphere_fast_ap, view_atmosphere_fast_ap_samples}
 #import forgeax_atmosphere::table_kernels::{atmosphere_transmittance_texel, atmosphere_multiple_scattering_texel, atmosphere_sky_view_texel, atmosphere_aerial_texel, atmosphere_distant_sky_sample}
 
 @group(0) @binding(0) var<uniform> parameters: View;
@@ -44,8 +44,12 @@ fn atmosphere_packed_medium_fragment(input:FullscreenOutput)->@location(0) vec4<
 }
 @fragment
 fn atmosphere_packed_aerial_fragment(input:FullscreenOutput)->@location(0) vec4<u32> {
-  let point=vec2<u32>(input.uv*vec2<f32>(1024.0,32.0));
+  let fast=view_atmosphere_fast_ap(parameters);
+  let depth=select(32u,16u,fast);
+  let point=vec2<u32>(input.uv*vec2<f32>(1024.0,f32(depth)));
   let id=vec3<u32>(point.x%32u,point.x/32u,point.y);
-  let ray=atmosphere_aerial_texel(parameters,id,vec3<u32>(32u),transmittance,multiple,filtering);
-  return vec4<u32>(pack2x16float(ray.luminance.rg),pack2x16float(vec2<f32>(ray.luminance.b,ray.transmittance.r)),pack2x16float(ray.transmittance.gb),0u);
+  let samples=select(64u,view_atmosphere_fast_ap_samples(parameters,id.z),fast);
+  let ray=atmosphere_aerial_texel(parameters,id,vec3<u32>(32u,32u,depth),transmittance,multiple,filtering,samples);
+  let extinction=select(ray.transmittance,vec3<f32>(dot(ray.transmittance,vec3<f32>(1.0/3.0))),fast);
+  return vec4<u32>(pack2x16float(ray.luminance.rg),pack2x16float(vec2<f32>(ray.luminance.b,extinction.r)),pack2x16float(extinction.gb),0u);
 }

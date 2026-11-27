@@ -130,7 +130,7 @@ try {
   assert.deepEqual(result.report.errors, []);
   assert.equal(result.report.profile.renderPath, 'deferred');
   assert.equal(result.report.profile.ibl, false);
-  assert.equal(result.report.profile.ssao, false);
+  assert.equal(result.report.profile.ambientOcclusion, false);
   if (process.argv.includes('--controls')) {
     for (const [name, options] of [
       ['light-off', { sun: false }],

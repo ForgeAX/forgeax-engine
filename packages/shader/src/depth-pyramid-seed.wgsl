@@ -20,10 +20,22 @@ fn isFinite(value : f32) -> bool {
   return value == value && abs(value) < 3.402823e+38;
 }
 
+fn seedFootprintStart(coordinate: vec2u, sourceSize: vec2u, outputSize: vec2u) -> vec2u {
+  let padded = any(outputSize > max(sourceSize / 2u, vec2u(1u)));
+  if (padded) { return min(coordinate * 2u, sourceSize - 1u); }
+  return depthPyramidFootprintStart(coordinate, sourceSize, outputSize);
+}
+
+fn seedFootprintEnd(coordinate: vec2u, sourceSize: vec2u, outputSize: vec2u) -> vec2u {
+  let padded = any(outputSize > max(sourceSize / 2u, vec2u(1u)));
+  if (padded) { return min((coordinate + 1u) * 2u, sourceSize); }
+  return depthPyramidFootprintEnd(coordinate, sourceSize, outputSize);
+}
+
 fn evaluate_seed(coordinate : vec2<u32>, outputSize : vec2<u32>) -> f32 {
   let sourceSize = textureDimensions(sourceDepth, 0);
-  let first = depthPyramidFootprintStart(coordinate, sourceSize, outputSize);
-  let end = depthPyramidFootprintEnd(coordinate, sourceSize, outputSize);
+  let first = seedFootprintStart(coordinate, sourceSize, outputSize);
+  let end = seedFootprintEnd(coordinate, sourceSize, outputSize);
   var nearestDepth = 0.0;
   for (var y = first.y; y < end.y; y++) {
     for (var x = first.x; x < end.x; x++) {
@@ -45,12 +57,8 @@ fn evaluate_seed(coordinate : vec2<u32>, outputSize : vec2<u32>) -> f32 {
 // EMPTY so nothing behind that hole is culled.
 fn evaluate_seed_furthest(coordinate : vec2<u32>, outputSize : vec2<u32>) -> f32 {
   let sourceSize = textureDimensions(sourceDepth, 0);
-  let first = coordinate * sourceSize / outputSize;
-  let end = min(
-    ((coordinate + vec2<u32>(1u)) * sourceSize + outputSize - vec2<u32>(1u)) /
-      outputSize,
-    sourceSize,
-  );
+  let first = seedFootprintStart(coordinate, sourceSize, outputSize);
+  let end = seedFootprintEnd(coordinate, sourceSize, outputSize);
   var farthestDepth = 1.0;
   for (var y = first.y; y < end.y; y++) {
     for (var x = first.x; x < end.x; x++) {
@@ -68,23 +76,26 @@ fn evaluate_seed_furthest(coordinate : vec2<u32>, outputSize : vec2<u32>) -> f32
 // every covered pixel is, so the furthest bound spans the samples too.
 @group(0) @binding(3) var sourceDepthMultisampled : texture_depth_multisampled_2d;
 
-fn evaluate_seed_furthest_multisampled(coordinate : vec2<u32>, outputSize : vec2<u32>) -> f32 {
+fn evaluate_seed_furthest_multisampled(coordinate : vec2<u32>, outputSize : vec2<u32>, resolve : bool) -> f32 {
   let sourceSize = textureDimensions(sourceDepthMultisampled);
-  let first = coordinate * sourceSize / outputSize;
-  let end = min(
-    ((coordinate + vec2<u32>(1u)) * sourceSize + outputSize - vec2<u32>(1u)) /
-      outputSize,
-    sourceSize,
-  );
+  let first = seedFootprintStart(coordinate, sourceSize, outputSize);
+  let end = seedFootprintEnd(coordinate, sourceSize, outputSize);
   let samples = textureNumSamples(sourceDepthMultisampled);
   var farthestDepth = 1.0;
   for (var y = first.y; y < end.y; y++) {
     for (var x = first.x; x < end.x; x++) {
+      var nearestDepth = 0.0;
       for (var s = 0u; s < samples; s++) {
         let sample = textureLoad(sourceDepthMultisampled, vec2<i32>(vec2<u32>(x, y)), i32(s));
         let valid = isFinite(sample) && sample > 0.0 && sample <= 1.0;
-        farthestDepth = min(farthestDepth, select(0.0, sample, valid));
+        let depth = select(0.0, sample, valid);
+        if (resolve) {
+          nearestDepth = max(nearestDepth, depth);
+        } else {
+          farthestDepth = min(farthestDepth, depth);
+        }
       }
+      if (resolve) { farthestDepth = min(farthestDepth, nearestDepth); }
     }
   }
   let depth = linearizeViewDepth(farthestDepth, view.temporalProjection);
@@ -103,6 +114,18 @@ fn evaluate_seed_furthest_multisampled(coordinate : vec2<u32>, outputSize : vec2
 }
 @fragment fn depth_pyramid_seed_furthest_fragment(@builtin(position) position : vec4<f32>) -> @location(0) f32 {
   return evaluate_seed_furthest(vec2<u32>(position.xy), max(textureDimensions(sourceDepth, 0) / vec2<u32>(2u), vec2<u32>(1u)));
+}
+fn paddedSeedSize() -> vec2u {
+  let sourceSize = vec2f(textureDimensions(sourceDepth, 0));
+  return vec2u(exp2(ceil(log2(max(sourceSize * 0.5, vec2f(1.0))))));
+}
+
+@fragment fn depth_pyramid_seed_padded_fragment(@builtin(position) position: vec4f) -> @location(0) f32 {
+  return evaluate_seed(vec2u(position.xy), paddedSeedSize());
+}
+
+@fragment fn depth_pyramid_seed_furthest_padded_fragment(@builtin(position) position: vec4f) -> @location(0) f32 {
+  return evaluate_seed_furthest(vec2u(position.xy), paddedSeedSize());
 }
 #else
 @compute @workgroup_size(8, 8, 1)
@@ -123,7 +146,14 @@ fn depth_pyramid_seed_furthest(@builtin(global_invocation_id) globalId : vec3<u3
 fn depth_pyramid_seed_furthest_multisampled(@builtin(global_invocation_id) globalId : vec3<u32>) {
   let size = textureDimensions(pyramidOutput);
   if (any(globalId.xy >= size)) { return; }
-  let depth = evaluate_seed_furthest_multisampled(globalId.xy, size);
+  let depth = evaluate_seed_furthest_multisampled(globalId.xy, size, false);
+  textureStore(pyramidOutput, vec2<i32>(globalId.xy), vec4<f32>(depth, 0.0, 0.0, 1.0));
+}
+@compute @workgroup_size(8, 8, 1)
+fn depth_pyramid_seed_furthest_resolve_msaa(@builtin(global_invocation_id) globalId : vec3<u32>) {
+  let size = textureDimensions(pyramidOutput);
+  if (any(globalId.xy >= size)) { return; }
+  let depth = evaluate_seed_furthest_multisampled(globalId.xy, size, true);
   textureStore(pyramidOutput, vec2<i32>(globalId.xy), vec4<f32>(depth, 0.0, 0.0, 1.0));
 }
 #endif

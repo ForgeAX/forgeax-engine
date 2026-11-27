@@ -8,6 +8,7 @@ import {
   worldPoisonedError,
 } from '../errors';
 import { isRelationshipTarget } from '../relationship-index';
+import { type Archetype, archetypeHasComponent } from '../storage/archetype';
 import type { ArrayRangesChange } from '../storage/array-range-log';
 import type { EcsError, World } from '../world';
 import { worldInternal } from '../world-internal';
@@ -38,6 +39,51 @@ export interface RenderReadLease {
   readChanges(version: RenderReadVersion): RenderChangeBatch;
   captureVersion(): RenderReadVersion;
   dispose(): void;
+}
+
+/** Read live component occupancy, including disabled entities. Matching layouts are
+ * stable; their row counts change in place on spawn, migration and despawn. */
+export function createComponentPresenceReader(world: World, component: Component): () => boolean {
+  const layouts = world[worldInternal].graph.archetypes;
+  const id = componentId(component);
+  const matching: Archetype[] = [];
+  let examined = 0;
+  let occupied: Archetype | undefined;
+  return () => {
+    if (occupied !== undefined && occupied.size > 0) return true;
+    while (examined < layouts.length) {
+      const layout = layouts[examined++] as Archetype;
+      if (archetypeHasComponent(layout, id)) matching.push(layout);
+    }
+    for (let i = 0; i < matching.length; i++) {
+      const layout = matching[i] as Archetype;
+      if (layout.size > 0) {
+        occupied = layout;
+        return true;
+      }
+    }
+    return false;
+  };
+}
+
+/** Compile immutable component-presence facts once per layout. Each read resolves the live generation. */
+export function createArchetypeReader<T extends object>(
+  world: World,
+  describe: (has: (component: Component) => boolean) => T,
+) {
+  const owner = world[worldInternal];
+  const layouts: T[] = [];
+  return (entity: EntityHandle): T | undefined => {
+    const archetype = owner.getEntityArchetype(entity);
+    if (archetype === undefined) return undefined;
+    const existing = layouts[archetype.id];
+    if (existing !== undefined) return existing;
+    const layout = describe((component) =>
+      archetypeHasComponent(archetype, componentId(component)),
+    );
+    layouts[archetype.id] = layout;
+    return layout;
+  };
 }
 
 /**
@@ -196,6 +242,8 @@ export function routeWorldError(
 
 export {
   createStateProjection,
+  observeStateChanges,
+  type StateChangeObservation,
   type StateProjection,
   type StateProjectionBatch,
   StateProjectionExpiredError,

@@ -1,10 +1,13 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
+import { directPackFixture } from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { assertBuildRoots } from '../build-inputs.js';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
+import { createServer, requestServer as request } from './middleware-fixture.js';
 
 const LIFECYCLE_EVENT_TIMEOUT_MS = 30_000;
 
@@ -28,10 +31,7 @@ vi.mock('../dev/revision-observer.js', async (importOriginal) => {
       if (!watcherControl.enabled) return handle;
       const readyFailure = watcherControl.readyFailure;
       watcherControl.readyFailure = undefined;
-      let releaseStop!: () => void;
-      const stopReleased = new Promise<void>((resolve) => {
-        releaseStop = resolve;
-      });
+      const { promise: stopReleased, resolve: releaseStop } = testGate();
       if (watcherControl.autoRelease > 0) {
         watcherControl.autoRelease -= 1;
         releaseStop();
@@ -60,70 +60,6 @@ vi.mock('../dev/revision-observer.js', async (importOriginal) => {
   };
 });
 
-interface RecordedResponse {
-  statusCode: number;
-  headers: Record<string, string>;
-  body: string | Uint8Array | undefined;
-}
-
-interface MiddlewareServer {
-  middlewares: { use(handler: Middleware): void };
-  ws: { send(payload: { type: string } & Record<string, unknown>): void; calls: unknown[] };
-}
-
-type Middleware = (
-  req: { url?: string; method?: string },
-  res: RecordedResponse & {
-    setHeader(name: string, value: string): void;
-    end(body?: string | Uint8Array): void;
-  },
-  next: () => void,
-) => void | Promise<void>;
-
-function createServer(): MiddlewareServer & { handler?: Middleware } {
-  const server: MiddlewareServer & { handler?: Middleware } = {
-    middlewares: {
-      use(handler) {
-        server.handler = handler;
-      },
-    },
-    ws: {
-      calls: [],
-      send(payload) {
-        server.ws.calls.push(payload);
-      },
-    },
-  };
-  return server;
-}
-
-async function request(server: MiddlewareServer & { handler?: Middleware }, url: string) {
-  const response: RecordedResponse = { statusCode: 200, headers: {}, body: undefined };
-  const handler = server.handler;
-  if (handler === undefined) throw new Error('plugin middleware was not registered');
-  await handler(
-    { url, method: 'GET' },
-    {
-      headers: response.headers,
-      body: response.body,
-      get statusCode() {
-        return response.statusCode;
-      },
-      set statusCode(value: number) {
-        response.statusCode = value;
-      },
-      setHeader(name, value) {
-        response.headers[name] = value;
-      },
-      end(body) {
-        response.body = body;
-      },
-    },
-    () => {},
-  );
-  return response;
-}
-
 async function waitFor(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + LIFECYCLE_EVENT_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -145,6 +81,18 @@ describe('Pack plugin lifecycle characterization', () => {
     watcherControl.readyFailure = undefined;
     watcherControl.watchers.length = 0;
   });
+
+  async function watcherFixture(scope: string, autoRelease: number) {
+    watcherControl.enabled = true;
+    watcherControl.autoRelease = autoRelease;
+    const root = await mkdtemp(join(tmpdir(), `forgeax-pack-${scope}-`));
+    temporaryRoots.push(root);
+    const assets = join(root, 'assets');
+    await mkdir(assets);
+    const server = createServer();
+    const plugin = pluginPack({ roots: [assets] });
+    return { root, assets, server, plugin, binding: createStandaloneRuntimeAssetBinding(scope) };
+  }
 
   it.each([
     'result',
@@ -218,6 +166,52 @@ describe('Pack plugin lifecycle characterization', () => {
     }
   });
 
+  it('keeps the accepted authored publication when a route commit fails and retries its generation', async () => {
+    watcherControl.enabled = true;
+    watcherControl.autoRelease = 1;
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-commit-failure-'));
+    temporaryRoots.push(root);
+    const assets = join(root, 'assets');
+    const generated = join(root, '.forgeax', 'generated');
+    await mkdir(assets);
+    const sourcePath = join(assets, 'scene.pack.ts');
+    const source = (mark: string) => `export default {
+      schemaVersion: '2.0.0',
+      packageId: new Uint8Array([1, 144, 0, 0, 0, 0, 112, 0, 128, 0, 0, 0, 0, 0, 9, 147]),
+      build: () => ({ ok: true, value: { ${JSON.stringify(mark)}: { kind: 'scene', entities: {} } } }),
+    };`;
+    await writeFile(sourcePath, source('scene/first'));
+    const server = createServer();
+    const plugin = pluginPack({
+      roots: [assets],
+      runtimeBinding: createStandaloneRuntimeAssetBinding('pack-route-commit'),
+      ddc: { buildCacheRoot: join(root, 'build-cache'), projectDdcRoot: join(root, 'ddc') },
+    });
+    plugin.configResolved({ command: 'serve', root, base: '/' });
+    try {
+      plugin.configureServer(server);
+      await plugin.ready();
+      const first = plugin.catalogSnapshot()[0];
+      expect(first?.publication?.generation).toBe(1);
+      await rm(generated, { recursive: true });
+      await writeFile(generated, 'block the generated bindings directory');
+      await writeFile(sourcePath, source('scene/second'));
+      watcherControl.watchers[0]?.emit(sourcePath);
+      await waitFor(() => plugin.runtimeBinding()?.status === 'degraded');
+      expect(plugin.catalogSnapshot()[0]?.publication).toEqual(first?.publication);
+      expect(plugin.catalogSnapshot()[0]?.packageUrl).toBe(first?.packageUrl);
+
+      await rm(generated);
+      watcherControl.watchers[0]?.emit(sourcePath);
+      await waitFor(() => plugin.runtimeBinding()?.status === 'ready');
+      expect(plugin.catalogSnapshot()).toMatchObject([
+        { sourceKey: 'scene/second', publication: { generation: 2 } },
+      ]);
+    } finally {
+      await plugin.closeBundle();
+    }
+  });
+
   it('keeps serve startup, watcher, routes, and build emission observable', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-lifecycle-'));
     temporaryRoots.push(root);
@@ -256,36 +250,25 @@ describe('Pack plugin lifecycle characterization', () => {
     );
     await plugin.closeBundle();
 
-    const buildPlugin = pluginPack({ roots: [] });
-    await expect(
-      buildPlugin.generateBundle.call({
-        emitFile() {
-          throw new Error('build must fail before emitting a Pack index');
-        },
-        getFileName(referenceId) {
-          return referenceId;
-        },
-      }),
-    ).rejects.toMatchObject({
-      code: 'config-failed',
-      detail: { stage: 'config', subject: 'pack-roots' },
-    });
-
     const missingRoot = join(root, 'missing-assets');
-    const missingRootBuildPlugin = pluginPack({ roots: [missingRoot] });
-    await expect(
-      missingRootBuildPlugin.generateBundle.call({
-        emitFile() {
-          throw new Error('build must fail before emitting a Pack index');
-        },
-        getFileName(referenceId) {
-          return referenceId;
-        },
-      }),
-    ).rejects.toMatchObject({
-      code: 'config-failed',
-      detail: { stage: 'config', subject: missingRoot },
-    });
+    const sink = {
+      emitFile() {
+        throw new Error('build must fail before emitting a Pack index');
+      },
+      getFileName(referenceId: string) {
+        return referenceId;
+      },
+    };
+    for (const [roots, subject] of [
+      [[], 'pack-roots'],
+      [[missingRoot], missingRoot],
+    ] as const) {
+      const buildPlugin = pluginPack({ roots });
+      await expect(buildPlugin.generateBundle.call(sink)).rejects.toMatchObject({
+        code: 'config-failed',
+        detail: { stage: 'config', subject },
+      });
+    }
   });
 
   it('keeps a host-managed catalog fixed until the host replaces its session', async () => {
@@ -294,16 +277,14 @@ describe('Pack plugin lifecycle characterization', () => {
     await writeFile(join(root, 'package.json'), '{"name":"frozen-pack"}');
     const source = join(root, 'plugin.pack.json');
     const pack = (speed: number) =>
-      JSON.stringify({
-        schemaVersion: '3.0.0',
-        packageId: '01900000-0000-7000-8000-000000000141',
-        assets: {
+      JSON.stringify(
+        directPackFixture('01900000-0000-7000-8000-000000000141', {
           root: {
             kind: 'plugin',
             payload: { module: { specifier: './plugin.ts' }, config: { speed } },
           },
-        },
-      });
+        }),
+      );
     await writeFile(source, pack(1));
     await writeFile(join(root, 'plugin.ts'), 'export default { apply() {} };');
     const server = createServer();
@@ -327,14 +308,6 @@ describe('Pack plugin lifecycle characterization', () => {
     } finally {
       await plugin.closeBundle();
     }
-  });
-
-  it('keeps the characterization fixture free of producer readiness policy', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-lifecycle-source-'));
-    temporaryRoots.push(root);
-    const source = join(root, 'asset.pack.json');
-    await writeFile(source, JSON.stringify({ schemaVersion: '2.0.0', assets: [] }));
-    expect(await readFile(source, 'utf8')).toContain('schemaVersion');
   });
 
   it('accepts an explicit file root for sidecar-scoped projects', async () => {
@@ -371,23 +344,15 @@ describe('Pack plugin lifecycle characterization', () => {
   });
 
   it('fences failed-rebind and restored watchers without losing a close handle', async () => {
-    watcherControl.enabled = true;
-    watcherControl.autoRelease = 2;
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-rebind-fence-'));
-    temporaryRoots.push(root);
-    const assets = join(root, 'assets');
+    const { root, assets, server, plugin, binding } = await watcherFixture('rebind-close-fence', 2);
     const brokenAssets = join(root, 'broken-assets');
-    await mkdir(assets);
     await mkdir(brokenAssets);
     await writeFile(
       join(assets, 'stable.pack.json'),
-      JSON.stringify({ schemaVersion: '2.0.0', kind: 'internal-text-package', assets: [] }),
+      JSON.stringify(directPackFixture('019e3800-0000-7000-8000-73742e747331', {})),
     );
     await writeFile(join(brokenAssets, 'broken.pack.json'), '{broken');
-    const server = createServer();
-    const plugin = pluginPack({ roots: [assets] });
     plugin.configureServer(server);
-    const binding = createStandaloneRuntimeAssetBinding('rebind-close-fence');
     await plugin.rebind(binding, [assets]);
     expect(watcherControl.watchers).toHaveLength(2);
 
@@ -426,34 +391,18 @@ describe('Pack plugin lifecycle characterization', () => {
   });
 
   it('rolls back a rejected watcher-ready rebind before exposing the old scope', async () => {
-    watcherControl.enabled = true;
-    watcherControl.autoRelease = 8;
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-ready-rejection-'));
-    temporaryRoots.push(root);
-    const assets = join(root, 'assets');
+    const { root, assets, server, plugin, binding } = await watcherFixture('ready-rejection', 8);
     const replacementAssets = join(root, 'replacement-assets');
-    await mkdir(assets);
     await mkdir(replacementAssets);
     await writeFile(
       join(assets, 'stable.pack.json'),
-      JSON.stringify({
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [
-          {
-            guid: '019e3969-1d48-7c3b-ac24-6d68f457065f',
-            kind: 'fixture',
-            payload: { marker: 'stable' },
-            refs: [],
-            artifacts: {},
-          },
-        ],
-      }),
+      JSON.stringify(
+        directPackFixture('019e3969-1d48-7c3b-ac24-6d68f457065f', {
+          output: { kind: 'fixture', payload: { marker: 'stable' }, refs: [] },
+        }),
+      ),
     );
-    const server = createServer();
-    const plugin = pluginPack({ roots: [assets] });
     plugin.configureServer(server);
-    const binding = createStandaloneRuntimeAssetBinding('ready-rejection');
     await plugin.rebind(binding, [assets]);
 
     watcherControl.readyFailure = new Error('ready barrier failed');
@@ -490,16 +439,8 @@ describe('Pack plugin lifecycle characterization', () => {
   });
 
   it('fails closed instead of returning an unbound scope after an initial ready rejection', async () => {
-    watcherControl.enabled = true;
-    watcherControl.autoRelease = 4;
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-initial-ready-rejection-'));
-    temporaryRoots.push(root);
-    const assets = join(root, 'assets');
-    await mkdir(assets);
-    const server = createServer();
-    const plugin = pluginPack({ roots: [assets] });
+    const { assets, server, plugin, binding } = await watcherFixture('initial-ready-rejection', 4);
     plugin.configureServer(server);
-    const binding = createStandaloneRuntimeAssetBinding('initial-ready-rejection');
     watcherControl.readyFailure = new Error('initial ready barrier failed');
 
     await expect(plugin.rebind(binding, [assets])).rejects.toMatchObject({
@@ -514,35 +455,19 @@ describe('Pack plugin lifecycle characterization', () => {
   });
 
   it('closes the restored generation when rollback startup also fails', async () => {
-    watcherControl.enabled = true;
-    watcherControl.autoRelease = 8;
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-restore-failure-'));
-    temporaryRoots.push(root);
-    const assets = join(root, 'assets');
+    const { root, assets, server, plugin, binding } = await watcherFixture('restore-failure', 8);
     const replacementAssets = join(root, 'replacement-assets');
-    await mkdir(assets);
     await mkdir(replacementAssets);
     const stablePack = join(assets, 'stable.pack.json');
     await writeFile(
       stablePack,
-      JSON.stringify({
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [
-          {
-            guid: '019e3969-1d48-7c3b-ac24-6d68f457065f',
-            kind: 'fixture',
-            payload: { marker: 'stable' },
-            refs: [],
-            artifacts: {},
-          },
-        ],
-      }),
+      JSON.stringify(
+        directPackFixture('019e3969-1d48-7c3b-ac24-6d68f457065f', {
+          output: { kind: 'fixture', payload: { marker: 'stable' }, refs: [] },
+        }),
+      ),
     );
-    const server = createServer();
-    const plugin = pluginPack({ roots: [assets] });
     plugin.configureServer(server);
-    const binding = createStandaloneRuntimeAssetBinding('restore-failure');
     await plugin.rebind(binding, [assets]);
 
     await writeFile(stablePack, '{broken');

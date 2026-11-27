@@ -1,6 +1,7 @@
 import {
   createEngineConfigurationControl,
   createEngineConfigurationStore,
+  createRecordGameSaves,
   type EngineConfigurationDefinition,
   EngineConfigurationError,
   type EngineConfigurationHost,
@@ -9,10 +10,14 @@ import {
   resolveEngineStartup,
 } from '@forgeax/engine-app';
 import { PHYSICS_STARTUP_OPTIONS } from '@forgeax/engine-physics';
+import { createWechatFileStore, createWechatRecordStore } from '@forgeax/engine-platform-wechat';
 import { err, ok } from '@forgeax/engine-types';
 
 /** VM harnesses clone parameters across their synthetic realm boundary, as Workers do. */
 export const configurationHostScope = {
+  createRecordGameSaves,
+  createWechatFileStore,
+  createWechatRecordStore,
   createEngineConfigurationControl,
   createEngineConfigurationStore,
   EngineConfigurationError,

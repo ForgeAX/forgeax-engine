@@ -1,8 +1,7 @@
-import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it, vi } from 'vitest';
 import { RenderGraphBuilder } from '../builder.js';
-import type { GraphTextureView } from '../types.js';
+import type { GraphTextureView, RenderGraphFrame } from '../types.js';
 
 function fixtureDepthAttachment(depth: GraphTextureView, i: number, boundary: string | undefined) {
   if (i === 1 && boundary === 'depth-read-only')
@@ -26,7 +25,7 @@ async function fixture(
     | 'depth-read-only',
 ) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  const graph = new RenderGraphBuilder<{ encoder: RhiCommandEncoder }>();
+  const graph = new RenderGraphBuilder<RenderGraphFrame>();
   const texture = graph
     .createTexture('color', {
       size: { width: 4, height: 4 },
@@ -160,6 +159,30 @@ describe('native raster batching', () => {
       await f.dispose();
     }
   });
+  it('acknowledges only encoded logical stages, including inside a merged native pass', async () => {
+    const f = await fixture();
+    try {
+      for (const observe of [false, true]) {
+        const pending = new Set(['initialize', 'sky', 'opaque', 'transparent', 'absent']);
+        f.compiled
+          .execute(
+            { encoder: f.encoder },
+            observe
+              ? (pass, encode) => {
+                  if (pass.name !== 'opaque') encode();
+                }
+              : undefined,
+            undefined,
+            pending,
+          )
+          .unwrap();
+        expect([...pending]).toEqual(observe ? ['opaque', 'absent'] : ['absent']);
+      }
+    } finally {
+      await f.dispose();
+    }
+  });
+
   it('materializes only explicitly requested native observation boundaries', async () => {
     const f = await fixture();
     const runner = Object.assign((_pass: unknown, encode: () => void) => encode(), {
@@ -181,7 +204,11 @@ describe('native raster batching', () => {
     try {
       for (const split of [false, true, false]) {
         f.begin.mockClear();
-        f.compiled.execute({ encoder: f.encoder }, split ? runner : undefined).unwrap();
+        const nativePassNames: string[] = [];
+        f.compiled
+          .execute({ encoder: f.encoder, nativePassNames }, split ? runner : undefined)
+          .unwrap();
+        expect(nativePassNames.slice(-3)).toEqual(['sky', 'opaque', 'transparent']);
         expect(f.begin.mock.calls.map(([descriptor]) => descriptor.label)).toEqual(
           split ? ['sky', 'opaque', 'transparent'] : ['sky + opaque + transparent'],
         );
@@ -246,7 +273,7 @@ describe('native raster batching', () => {
   });
   it('keeps a sampled alias of the next resolve allocation outside the native usage scope', async () => {
     const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-    const graph = new RenderGraphBuilder<{ encoder: RhiCommandEncoder }>();
+    const graph = new RenderGraphBuilder<RenderGraphFrame>();
     const color = graph
       .view(
         graph

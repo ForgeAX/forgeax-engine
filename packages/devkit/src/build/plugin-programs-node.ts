@@ -1,10 +1,10 @@
-import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { isBuiltin } from 'node:module';
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { type PackProgramImport, preparePackProgram } from '@forgeax/engine-pack/runtime';
+import type { PackProgramImport } from '@forgeax/engine-pack/runtime';
+import { sha256 } from '@forgeax/engine-types';
 import { resolve as resolveImport } from 'import-meta-resolve';
 import { build, type InlineConfig } from 'vite';
 import { projectToolProjection } from '../tools/project-tools.js';
@@ -18,6 +18,7 @@ import {
   type PluginSourceInventory,
   pluginAssetClosure,
 } from './plugin-assets.js';
+import { packProgramImportIdentities, sealPluginProgramGraph } from './plugin-program-artifacts.js';
 import {
   assertPluginProgramGraphInputs,
   exportModule,
@@ -26,6 +27,13 @@ import {
 } from './plugin-programs.js';
 
 /** Build and resident Node realms share one compiler, portable graph and native module identity. */
+export async function openNodePluginStage(root: string, realm: 'build' | 'host') {
+  const directory = resolve(root, '.forgeax', realm);
+  await mkdir(directory, { recursive: true });
+  const path = await mkdtemp(resolve(directory, 'session-'));
+  return { path, dispose: () => rm(path, { recursive: true, force: true }) };
+}
+
 export async function compileNodePluginPrograms(
   facts: ProjectFacts,
   target: 'build' | 'host',
@@ -165,11 +173,13 @@ export async function compileNodePluginPrograms(
     : undefined;
   const chunks = output && !Array.isArray(output) && 'output' in output ? output.output : [];
   const modules: Record<string, string> = {};
+  const entryFiles = new Map<string, string>();
   for (const chunk of chunks) {
     if (chunk.type !== 'chunk')
       throw new TypeError(
         `plugin program resource requires a portable producer: ${chunk.fileName}`,
       );
+    if (chunk.facadeModuleId !== null) entryFiles.set(chunk.facadeModuleId, chunk.fileName);
     modules[chunk.fileName] = rewriteModuleSpecifiers(
       chunk.code,
       chunk.fileName,
@@ -179,23 +189,16 @@ export async function compileNodePluginPrograms(
   const imports = Object.fromEntries(
     [...bindings.values()].map(({ key, binding }) => [key, binding]),
   );
-  const graph = {
-    modules,
-    imports: Object.fromEntries(
-      Object.entries(imports).map(([key, binding]) => [key, binding.identity]),
-    ),
-  };
-  const artifacts = entries.map(([key, value]) => {
-    const facade = `\0${exportModule(value.module, value.export)}`;
-    const chunk = chunks.find((chunk) => chunk.type === 'chunk' && chunk.facadeModuleId === facade);
-    if (!chunk) throw new TypeError(`missing compiled plugin export ${key}`);
-    const artifact = preparePackProgram({
-      ...graph,
-      entry: chunk.fileName,
-      export: 'default',
-    }).unwrap();
-    return [key, { entry: artifact.entry, export: artifact.export, digest: artifact.digest }];
+  const selections = entries.map(([key, value]) => {
+    const entry = entryFiles.get(`\0${exportModule(value.module, value.export)}`);
+    if (entry === undefined) throw new TypeError(`missing compiled plugin export ${key}`);
+    return [key, entry] as const;
   });
+  const { graph, programs: artifacts } = sealPluginProgramGraph(
+    modules,
+    packProgramImportIdentities(imports),
+    selections,
+  );
   await trace('host-compile-fence', () => assertPluginSourceInputs(inventory, facts.root));
   const entry = resolve(temporary, 'compiled/entry.mjs');
   await mkdir(resolve(temporary, 'compiled'), { recursive: true });
@@ -239,15 +242,13 @@ export function createPrograms(sessionId, contextId, sessionGeneration) {
   return {
     entry,
     watchFiles,
-    producerIdentity: `sha256:${createHash('sha256')
-      .update(
-        JSON.stringify([
-          target,
-          facts.roots[target],
-          artifacts,
-          records.map(({ definition }) => [definition.guid, definition.asset]),
-        ]),
-      )
-      .digest('hex')}`,
+    producerIdentity: `sha256:${sha256(
+      JSON.stringify([
+        target,
+        facts.roots[target],
+        artifacts,
+        records.map(({ definition }) => [definition.guid, definition.asset]),
+      ]),
+    )}`,
   };
 }

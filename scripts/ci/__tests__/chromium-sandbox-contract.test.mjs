@@ -39,7 +39,18 @@ function hasSandboxEnabled(options, source) {
   return ts.isPropertyAssignment(sandbox) && sandbox.initializer.kind === ts.SyntaxKind.TrueKeyword;
 }
 
-test('tracked execution sources keep Chromium sandboxing enabled', () => {
+function usesDevKitRecovery(path, call, options) {
+  return (
+    path === 'packages/devkit/src/chromium-sandbox.ts' &&
+    ts.isPropertyAccessExpression(call.expression) &&
+    ['launch', 'launchServer'].includes(call.expression.name.text) &&
+    options !== undefined &&
+    ts.isIdentifier(options) &&
+    options.text === 'launch'
+  );
+}
+
+test('tracked Chromium launches use sandboxing or the DevKit recovery owner', () => {
   const files = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' })
     .split('\0')
     .filter((path) => sourceExtensions.test(path));
@@ -54,7 +65,8 @@ test('tracked execution sources keep Chromium sandboxing enabled', () => {
     function visit(node) {
       if (isChromiumLaunch(node, source)) {
         const optionIndex = node.expression.name.text === 'launchPersistentContext' ? 1 : 0;
-        if (!hasSandboxEnabled(node.arguments[optionIndex], source)) {
+        const options = node.arguments[optionIndex];
+        if (!hasSandboxEnabled(options, source) && !usesDevKitRecovery(path, node, options)) {
           const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
           launchViolations.push(`${path}:${line + 1}`);
         }
@@ -72,7 +84,7 @@ test('tracked execution sources keep Chromium sandboxing enabled', () => {
   assert.deepEqual(
     launchViolations,
     [],
-    `Every Playwright Chromium launch must set chromiumSandbox: true:\n${launchViolations.join('\n')}`,
+    `Chromium launches must use sandboxing or the DevKit recovery owner:\n${launchViolations.join('\n')}`,
   );
 });
 

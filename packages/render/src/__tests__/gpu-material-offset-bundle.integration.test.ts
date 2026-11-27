@@ -1,8 +1,8 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
-import type { BindGroup } from '@forgeax/engine-rhi';
+import type { BindGroup, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { type RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
-import { assert, expect, it } from 'vitest';
+import { assert, expect, it, vi } from 'vitest';
 import { createMaterialShaderProgram } from '../../../shader/src/material/program';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import {
@@ -11,10 +11,10 @@ import {
 } from '../gpu-driven/material-artifacts';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import { GpuScene } from '../gpu-scene';
+import { GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import { MaterialResource } from '../material-resource';
 import { buildMaterialSlotPlan } from '../record/fold-buckets';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
-import { RenderBundleCache } from '../record/render-bundle-cache';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { MaterialDispatch } from '../scene/material-dispatch';
 import { RenderScene } from '../scene/render-scene';
@@ -27,18 +27,47 @@ import {
 } from './gpu-driven-production-fixture';
 
 it.each([
-  false,
-  true,
-])('records reordered material slots with uniformRequired=%s', async (required) => {
+  { required: false, dynamicOffsetCount: 0 },
+  { required: false, dynamicOffsetCount: 1 },
+  { required: true, dynamicOffsetCount: 1 },
+] as const)('records reordered material slots with uniformRequired=$required and dynamicOffsets=$dynamicOffsetCount', async ({
+  required,
+  dynamicOffsetCount,
+}) => {
   const device = (
     await (await rhi.requestAdapter()).unwrap().requestDevice()
   ).unwrap() as RhiNullDevice;
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
   const layout = device.createBindGroupLayout({ entries: [] }).unwrap();
-  const group = () => device.createBindGroup({ layout, entries: [] }).unwrap();
-  const viewGroup = group();
+  const viewGroup = device.createBindGroup({ layout, entries: [] }).unwrap();
+  const materialBuffer = device
+    .createBuffer({ size: 32 * 256, usage: GPU_BUFFER_USAGE_UNIFORM })
+    .unwrap();
+  const materialLayout = device
+    .createBindGroupLayout({
+      entries:
+        dynamicOffsetCount === 0
+          ? []
+          : [{ binding: 0, visibility: 3, buffer: { type: 'uniform', hasDynamicOffset: true } }],
+    })
+    .unwrap();
+  const group = () =>
+    device
+      .createBindGroup({
+        layout: materialLayout,
+        entries:
+          dynamicOffsetCount === 0
+            ? []
+            : [
+                {
+                  binding: 0,
+                  resource: { kind: 'buffer', value: { buffer: materialBuffer, size: 16 } },
+                },
+              ],
+      })
+      .unwrap();
   let materialGroup = group();
-  const inputs = standardPbrInputs(device, shader, layout);
+  const inputs = standardPbrInputs(device, shader, layout, materialLayout);
   if (inputs.materialArtifact === undefined) throw new Error('expected artifact');
   const artifact = {
     ...inputs.materialArtifact,
@@ -67,7 +96,7 @@ it.each([
   const dispatch = new MaterialDispatch();
   for (const slot of projection.slotsSnapshot()) dispatch.bind(slot.slot, slot.snapshot);
   const selected = collectGpuDrivenMaterialArtifacts({
-    batches: topology.query(topology.sourcePlan(), undefined).batches,
+    batches: topology.query(topology.sourcePlan(), undefined).active.batches,
     programs: new GpuDrivenMaterialProgramProjection().project(
       dispatch.query(projection.slotsSnapshot()),
       dispatch.materials(),
@@ -76,7 +105,7 @@ it.each([
     clustered: false,
     reflectionFallback: false,
     probeBlend: false,
-    shadowViews: false,
+    demand: 'forward',
   });
   const prepared = production
     .prepare({
@@ -85,13 +114,13 @@ it.each([
       ...selected,
       scene: {
         scene: scene.scene,
-        plan: topology.query(topology.sourcePlan(), undefined),
+        plan: topology.query(topology.sourcePlan(), undefined).active,
         slots: projection.slotsSnapshot(),
         slotAt: projection.slotAt,
       },
       camera: makeZeroCameraFallbackSnapshot(),
       meshByBinding: new Map(
-        topology.query(topology.sourcePlan(), undefined).batches.map((batch) => {
+        topology.query(topology.sourcePlan(), undefined).active.batches.map((batch) => {
           assert(batch.binding);
           return [batch.binding, sharedMesh] as const;
         }),
@@ -101,14 +130,14 @@ it.each([
     .unwrap();
   if (!prepared) throw new Error('expected production');
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
-  const gpu = prepared.project(graph, 'rgba8unorm', 1).unwrap();
+  const gpu = prepared.project(graph, 'rgba8unorm', 1, undefined, undefined, false, true).unwrap();
   const texture = graph
     .createTexture('material-order', { format: 'rgba8unorm', size: { width: 1, height: 1 } })
     .unwrap();
   const view = graph.view(texture).unwrap();
-  const cache = new RenderBundleCache({ colorFormats: ['rgba8unorm'] });
-  const counters = { hits: 0, misses: 0 };
-  let frame = 0;
+  const builds = vi.spyOn(device, 'createRenderBundleEncoder');
+  let executions = 0;
+  let frame = -1;
   graph
     .addRasterPass('material-order', {
       accesses: [...gpu.accesses, { resource: view, usage: 'color-attachment' }],
@@ -120,49 +149,62 @@ it.each([
         const indices = new Map(
           slots.slots.map((material, index) => [material, new Map([['', index]])]),
         );
+        const group = materialGroup;
         const frameResources = {
           ...prepared.standardPbrFrameResources,
-
-          prepareMaterialBinding: (
-            (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
-            (slot: number) => {
-              const group = groups[slot];
-              return group === undefined ? undefined : { group, byteOffset: slot * 256 };
-            }
-          )(Array.from({ length: slots.slots.length }, () => materialGroup)),
+          prepareMaterialBinding: (slot: number) =>
+            slots.slots[slot] === undefined
+              ? undefined
+              : { group, byteOffset: slot * 256, dynamicOffsetCount },
           materialSlotIndicesByBinding: indices,
         };
-        cache.encode(
-          device,
-          pass,
-          (target) => {
-            let material: { group: BindGroup; offset: number } | undefined;
-            let draws = 0;
-            const observed = new Proxy(target, {
-              get(object, key, receiver) {
-                if (key === 'setBindGroup')
-                  return (index: number, group: BindGroup, offsets?: readonly number[]) => {
-                    if (index === 1) material = { group, offset: offsets?.[0] ?? 0 };
-                    target.setBindGroup(index, group, offsets);
-                  };
-                if (key === 'drawIndexedIndirect')
-                  return (...args: Parameters<typeof target.drawIndexedIndirect>) => {
-                    const row = rows[draws++];
-                    if (row === undefined) throw new Error('unexpected draw');
-                    expect(material).toEqual({
-                      group: materialGroup,
-                      offset: required ? (indices.get(row.material)?.get('') ?? -1) * 256 : 0,
-                    });
-                    target.drawIndexedIndirect(...args);
-                  };
-                const value = Reflect.get(object, key, receiver);
-                return typeof value === 'function' ? value.bind(object) : value;
-              },
-            });
-            gpu.encode(viewGroup, observed, resources, frameResources);
-            expect(draws).toBe(rows.length);
-          },
-          counters,
+        const encode = (target: RhiRenderPassEncoder) => {
+          let material: { group: BindGroup; offsets: number[] } | undefined;
+          let draws = 0;
+          const observed = new Proxy(target, {
+            get(object, key, receiver) {
+              if (key === 'setBindGroup')
+                return (...args: Parameters<typeof target.setBindGroup>) => {
+                  const [index, group, values, start = 0, length] = args;
+                  if (index === 1)
+                    material = {
+                      group,
+                      offsets: Array.from(values ?? []).slice(
+                        start,
+                        length === undefined ? undefined : start + length,
+                      ),
+                    };
+                  target.setBindGroup(...args);
+                };
+              if (key === 'drawIndexedIndirect')
+                return (...args: Parameters<typeof target.drawIndexedIndirect>) => {
+                  const row = rows[draws++];
+                  assert(row, 'Expected an original material row');
+                  expect(material).toEqual({
+                    group,
+                    offsets:
+                      dynamicOffsetCount === 0
+                        ? []
+                        : [required ? (indices.get(row.material)?.get('') ?? -1) * 256 : 0],
+                  });
+                  target.drawIndexedIndirect(...args);
+                };
+              const value = Reflect.get(object, key, receiver);
+              return typeof value === 'function' ? value.bind(object) : value;
+            },
+          });
+          gpu.encode(viewGroup, observed, resources, frameResources);
+          expect(draws).toBe(rows.length);
+        };
+        encode(pass);
+        const execute = vi.spyOn(pass, 'executeBundles');
+        gpu.encode(viewGroup, pass, resources, {
+          ...frameResources,
+          bundleDescriptor: { colorFormats: ['rgba8unorm'] },
+        });
+        executions += execute.mock.calls.reduce(
+          (sum, [bundles]) => sum + Array.from(bundles).length,
+          0,
         );
       },
     })
@@ -177,17 +219,23 @@ it.each([
     device.queue.submit([encoder.finish().unwrap()]).unwrap();
   };
   try {
-    for (frame = 0; frame < 6; frame++) render();
-    expect(counters).toEqual(required ? { hits: 32, misses: 160 } : { hits: 128, misses: 64 });
-    if (!required) {
-      // A changed texture/probe binding is still a physical command dependency.
-      materialGroup = group();
-      render();
-      expect(counters).toEqual({ hits: 128, misses: 96 });
-    }
+    render();
+    const initial = builds.mock.calls.length;
+    expect(initial).toBeGreaterThan(0);
+    for (frame = 0; frame < 3; frame++) render();
+    expect(builds.mock.calls.length).toBe(initial);
+    for (; frame < 6; frame++) render();
+    if (required) expect(builds.mock.calls.length).toBeGreaterThan(initial);
+    else expect(builds.mock.calls.length).toBe(initial);
+    expect(executions).toBeGreaterThanOrEqual(7);
+    const beforeReplacement = builds.mock.calls.length;
+    materialGroup = group();
+    render();
+    expect(builds.mock.calls.length).toBeGreaterThan(beforeReplacement);
   } finally {
     compiled.retire();
     production.dispose();
     scene.scene.dispose();
+    device.destroyBuffer(materialBuffer).unwrap();
   }
 });

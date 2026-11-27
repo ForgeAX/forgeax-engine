@@ -12,7 +12,7 @@ import { INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine-input';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import {
   adjustBias, BIAS_DEFAULTS, cycleFilter, describe, moveLight, setBiases, spawnBiasesScene, toggleLight,
-  ZERO_BIASES,
+  SHADOW_BIAS_PROFILE, ZERO_BIASES,
 } from './scene.mjs';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
@@ -36,7 +36,7 @@ const MOVE_KEYS = [
 ] as const;
 
 async function bootstrap(target: HTMLCanvasElement, status: HTMLPreElement): Promise<void> {
-  const appResult = await createApp(target, {}, forgeaxBundlerAdapter());
+  const appResult = await createApp(target, { standardProfile: SHADOW_BIAS_PROFILE }, forgeaxBundlerAdapter());
   if (!appResult.ok) {
     console.error('[bevy-shadow-biases] createApp failed:', appResult.error);
     return;

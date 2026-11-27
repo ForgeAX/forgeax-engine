@@ -7,6 +7,7 @@ import {
   type RendererExpectedOperationError,
   RendererOperationError,
 } from '../errors/render';
+import { unavailableGeometry } from '../geometry-observation';
 import type { LodOcclusionReceiptObservation } from '../inspection-types';
 import { MAX_RECEIPT_OBSERVATION_BYTES } from '../observation-budget';
 import { unavailableDrawObservation } from '../record/draw-observation';
@@ -542,4 +543,51 @@ export async function observeRendererReceipt(
       ...(observations === undefined ? {} : { observations }),
     }),
   );
+}
+
+export function createRendererReceiptObservers(
+  context: RendererReceiptObservationContext,
+  currentOwner: () => LodObservationCapture['views'][number]['owner'],
+) {
+  return {
+    async observeGeometry(receipt: FrameReceipt) {
+      const state = context.latestLodObservation();
+      const view = state?.capture?.views.find((view) => view.owner === currentOwner());
+      const valid = () =>
+        state !== undefined &&
+        view !== undefined &&
+        state.receipt === receipt &&
+        context.latestReceipt() === receipt &&
+        context.staleObservationReceipt(receipt) === undefined &&
+        lodObservationCaptureFailure(
+          state.capture,
+          context.lodObservationValidity(state, receipt),
+        ) === undefined;
+      if (!valid() || view === undefined)
+        return unavailableGeometry(
+          'receipt-or-source-unavailable',
+          receipt.frameId,
+          receipt.deviceGeneration,
+        );
+      const completed = await receipt.completed;
+      if (!completed.ok || !valid())
+        return unavailableGeometry(
+          'superseded-or-incomplete',
+          receipt.frameId,
+          receipt.deviceGeneration,
+        );
+      const observed = await view.owner.gpuDriven.observeGeometry(receipt);
+      if (!valid())
+        return unavailableGeometry('superseded', receipt.frameId, receipt.deviceGeneration);
+      return {
+        ...observed,
+        viewKey: view.viewKey,
+        ...(receipt.graphGeneration === undefined
+          ? {}
+          : { graphGeneration: receipt.graphGeneration }),
+      };
+    },
+    observe: (receipt: FrameReceipt, request: FrameObservationRequest) =>
+      observeRendererReceipt(receipt, request, context),
+  };
 }

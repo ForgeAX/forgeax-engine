@@ -136,7 +136,10 @@ async function main() {
 
   while (pending.size > 0 || running.size > 0) {
     let progressed = false;
-    for (const name of [...pending]) {
+    for (const name of pending) {
+      // Fingerprinting walks the package inputs. Admit a slot before hashing
+      // so queued packages are never rescanned as other tasks complete.
+      if (running.size >= concurrency) break;
       const deps = dependencies.get(name) ?? new Set();
       if (![...deps].every((dependency) => completed.has(dependency))) continue;
       const pkg = byName.get(name);
@@ -155,10 +158,6 @@ async function main() {
           outputBytes: receipt.outputInventory.totalBytes,
         });
         console.error(`[build-packages] cache hit ${name}`);
-        continue;
-      }
-      if (running.size >= concurrency) {
-        pending.add(name);
         continue;
       }
       const promise = runPackage(pkg).then((run) => ({ pkg, plan, run }));

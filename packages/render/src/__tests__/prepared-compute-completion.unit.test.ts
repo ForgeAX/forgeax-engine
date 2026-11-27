@@ -40,14 +40,22 @@ async function fixture() {
 it('waits for actual completion across aborted candidates and reuses the exact ready pipeline', async () => {
   const f = await fixture();
   try {
-    const initial = f.session().prepareProgram('actual', descriptor, true);
+    const reflected = {
+      ...descriptor,
+      entryPointReads: [{ name: 'main', stage: 'compute' as const, bindings: [] }],
+      bindings: [
+        { entries: [{ binding: 3, visibility: 4, buffer: { type: 'storage' as const } }] },
+      ],
+    };
+    const layouts = vi.spyOn(f.device, 'createBindGroupLayout');
+    const initial = f.session().prepareProgram('actual', reflected, true);
     expect(initial.ok).toBe(false);
     if (initial.ok) throw Error('early ready');
     expect(initial.error).toMatchObject({ detail: { recovery: 'next-frame' } });
     expect(f.asyncCreate).toHaveBeenCalledTimes(1);
     expect(f.sync).not.toHaveBeenCalled();
     f.session().abortFrame().unwrap();
-    expect(f.session().prepareProgram('actual', descriptor, true).ok).toBe(false);
+    expect(f.session().prepareProgram('actual', reflected, true).ok).toBe(false);
     expect(f.asyncCreate).toHaveBeenCalledTimes(1);
     const pipeline = f.native(),
       finish = f.completions[0];
@@ -55,7 +63,7 @@ it('waits for actual completion across aborted candidates and reuses the exact r
     finish(ok(pipeline));
     await Promise.resolve();
     const session = f.session(),
-      program = session.prepareProgram('actual', descriptor, true).unwrap(),
+      program = session.prepareProgram('actual', reflected, true).unwrap(),
       bindings = session.prepareBindings('bindings', { program, entries: [] }).unwrap();
     const pass = session
       .resolveComputePass('compute-completion', {
@@ -65,8 +73,9 @@ it('waits for actual completion across aborted candidates and reuses the exact r
       })
       .unwrap();
     expect(pass.dispatches[0]?.pipeline).toBe(pipeline);
-    session.prepareProgram('another-player', descriptor, true).unwrap();
+    session.prepareProgram('another-player', reflected, true).unwrap();
     session.commitFrame();
+    expect(layouts.mock.calls.map(([layout]) => layout.entries)).toEqual([[]]);
     expect(f.asyncCreate).toHaveBeenCalledTimes(1);
     expect(f.sync).toHaveBeenCalledTimes(1);
   } finally {
@@ -118,7 +127,37 @@ it('preserves the ordinary synchronous path without an explicit preparation requ
   }
 });
 
-it('holds presentation pending for declared compute preparation until backend completion', async () => {
+it('retries a full compilation queue when a program from an aborted plan settles', async () => {
+  const f = await fixture();
+  try {
+    const session = f.session();
+    for (let index = 0; index < 64; index++) {
+      const recipe = { ...descriptor, wgsl: `${descriptor.wgsl}\n// recipe ${index}` };
+      expect(session.prepareProgram(`old-${index}`, recipe, true).ok).toBe(false);
+    }
+    expect(f.asyncCreate).toHaveBeenCalledTimes(64);
+    const current = f.session();
+    const waiting = current.prepareProgram('current', descriptor, true);
+    expect(waiting).toMatchObject({
+      ok: false,
+      error: { detail: { recovery: 'next-frame', reason: 'rhi-not-available:pipeline-pending' } },
+    });
+    expect(f.asyncCreate).toHaveBeenCalledTimes(64);
+
+    f.completions[0]?.(ok(f.native()));
+    await Promise.resolve();
+    expect(f.session().prepareProgram('current', descriptor, true).ok).toBe(false);
+    expect(f.asyncCreate).toHaveBeenCalledTimes(65);
+
+    f.completions[64]?.(ok(f.native()));
+    await Promise.resolve();
+    expect(f.session().prepareProgram('current', descriptor, true).ok).toBe(true);
+  } finally {
+    f.owner.dispose().unwrap();
+  }
+});
+
+it('starts independent compute programs together and waits for every backend completion', async () => {
   const f = await fixture();
   const feature: RenderFeature<undefined> = {
     identity: 'host-compute-prepare',
@@ -134,6 +173,12 @@ it('holds presentation pending for declared compute preparation until backend co
                 name: 'actual',
                 preparePipelines: true,
                 program: descriptor,
+              },
+              {
+                kind: 'compute-program',
+                name: 'other',
+                preparePipelines: true,
+                program: { ...descriptor, wgsl: `${descriptor.wgsl}\n// independent recipe` },
               },
             ],
             passes: [],
@@ -165,11 +210,17 @@ it('holds presentation pending for declared compute preparation until backend co
       reason: 'rhi-not-available:pipeline-pending',
     });
     expect(pending.frame.errors).toEqual([]);
-    expect(f.asyncCreate).toHaveBeenCalledTimes(1);
+    expect(f.asyncCreate).toHaveBeenCalledTimes(2);
     expect(f.sync).not.toHaveBeenCalled();
     abortFeatureFrame(host);
-    const finish = f.completions[0];
-    if (finish === undefined) throw Error('missing actual backend completion');
+    const [finish, finishOther] = f.completions;
+    if (finish === undefined || finishOther === undefined)
+      throw Error('missing backend completion');
+    finishOther(ok(f.native()));
+    await Promise.resolve();
+    expect(frame().frame.preparationPending).toBe(true);
+    expect(f.asyncCreate).toHaveBeenCalledTimes(2);
+    abortFeatureFrame(host);
     finish(ok(f.native()));
     await Promise.resolve();
     const ready = frame();

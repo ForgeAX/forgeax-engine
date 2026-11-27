@@ -372,6 +372,11 @@ it.skipIf(!browserReady)(
       expect(shadowAttachment.ok).toBe(true);
       if (!shadowAttachment.ok) throw shadowAttachment.error;
       for (let frame = 0; frame < 6; frame += 1) {
+        // Inspect physical face commands on a moving light. Return it to the comparison pose.
+        if (frame >= 4) {
+          world.set(pointLight, Transform, { pos: [frame === 4 ? 1.9 : 1.8, 2.6, 2.2] }).unwrap();
+          propagateTransforms(world).unwrap();
+        }
         world.update(1 / 60).unwrap();
         await drawReadyFrame(renderer, { source: shadowAttachment.value });
       }

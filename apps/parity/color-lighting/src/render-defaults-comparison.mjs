@@ -1,10 +1,10 @@
+import { prepareShaderProgramCompiler } from '@forgeax/engine/shader-compiler/program';
 import { halfFloat } from '@forgeax/engine/math';
-import { readShaderManifestPublication } from '@forgeax/engine/shader';
-import { DataTexture, HalfFloatType, LinearFilter, LinearSRGBColorSpace, NoToneMapping, RGBAFormat, RenderTarget, UnsignedByteType } from 'three';
-import { NodeMaterial, QuadMesh, WebGPURenderer } from 'three/webgpu';
-import { texture } from 'three/tsl';
-import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
-import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import { BLOOM_PREFILTER_WGSL, POST_SCENE_COLOR_HALF_WGSL, ShaderRegistry } from '@forgeax/engine/shader';
+import { DataTexture, HalfFloatType, LinearFilter, LinearSRGBColorSpace, NodeMaterial, NoToneMapping, QuadMesh, REVISION, RGBAFormat, RenderTarget, UnsignedByteType, WebGPURenderer } from 'three-render-defaults/webgpu';
+import { texture } from 'three-render-defaults/tsl';
+import { fxaa } from 'three-render-defaults/addons/tsl/display/FXAANode.js';
+import { bloom } from 'three-render-defaults/addons/tsl/display/BloomNode.js';
 
 const width = 256, height = 128;
 function pixels(kind) {
@@ -39,7 +39,7 @@ function difference(a, b) {
   }
   return { max, mean: total / (a.length * 0.75), aboveOneByte: aboveByte };
 }
-// r184 truncates each separable Gaussian without normalizing it.
+// Three r187 pairs adjacent Gaussian taps for bilinear sampling and keeps their unnormalized weights.
 function threeBloomUniformGain() {
   let throughput = 1, gain = 0;
   for (const [level, radius] of [6, 10, 14, 18, 22].entries()) {
@@ -88,38 +88,54 @@ async function forgeCapture(manifest, data, effect, parameters = { threshold: 0,
   device.queue.writeTexture({ texture: input }, data, { bytesPerRow: width * 4 * data.BYTES_PER_ELEMENT }, [width, height]);
   const sampler = device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
   const encoder = device.createCommandEncoder();
-  const pass = async (marker, textures, values, output) => {
-    const entry = manifest.entries.find((e) => e.wgsl.includes(marker));
-    if (!entry) throw new Error(`Production shader is missing: ${marker}`);
-    const module = device.createShaderModule({ code: entry.wgsl });
+  const pass = async (marker, textures, values, output, inlineSource) => {
+    const code = inlineSource ?? manifest.entries.find((entry) => entry.role === marker)?.wgsl;
+    if (!code) throw new Error(`Production shader is missing: ${marker}`);
+    const module = device.createShaderModule({ code });
     const pipeline = await device.createRenderPipelineAsync({ layout: 'auto', vertex: { module, entryPoint: 'vs_main' }, fragment: { module, entryPoint: 'fs_main', targets: [{ format: 'rgba16float' }] } });
-    const buffer = device.createBuffer({ size: values.length * 4, usage: 0x40 | 8 }); owned.push(buffer);
-    device.queue.writeBuffer(buffer, 0, new Float32Array(values));
-    const resources = [...textures.map((t) => t.createView()), sampler, { buffer }];
-    const group = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: resources.map((resource, binding) => ({ binding, resource })) });
+    const buffer = values ? device.createBuffer({ size: values.length * 4, usage: 0x40 | 8 }) : undefined;
+    if (buffer) { owned.push(buffer); device.queue.writeBuffer(buffer, 0, new Float32Array(values)); }
+    const groupIndex = inlineSource ? 1 : 0;
+    const entries = textures.map((texture, binding) => ({ binding, resource: texture.createView() }));
+    if (!inlineSource) entries.push({ binding: entries.length, resource: sampler });
+    if (buffer) entries.push({ binding: inlineSource ? 2 : entries.length, resource: { buffer } });
+    const group = device.createBindGroup({ layout: pipeline.getBindGroupLayout(groupIndex), entries });
     const render = encoder.beginRenderPass({ colorAttachments: [{ view: output.createView(), loadOp: 'clear', storeOp: 'store' }] });
-    render.setPipeline(pipeline); render.setBindGroup(0, group); render.draw(3); render.end();
+    render.setPipeline(pipeline); render.setBindGroup(groupIndex, group); render.draw(3); render.end();
   };
   try {
     let result;
     if (effect === 'fxaa') {
       result = makeTexture(width, height);
-      await pass('struct FxaaParams', [input], [0, 0, 0, 0], result);
+      await pass('fxaa', [input], [0, 0, 0, 0], result);
     } else {
       const levels = [];
       let w = width, h = height, previous = input;
       for (let level = 0; level < 5; level++) {
-        w = Math.max(1, Math.ceil(w / 2)); h = Math.max(1, Math.ceil(h / 2));
-        const current = makeTexture(w, h);
-        await pass('struct BloomHorizontalParams', [previous], [parameters.threshold, parameters.smoothWidth, w, h, level, 0, 0, 0], current);
-        const vertical = makeTexture(w, h);
-        await pass('struct BloomVerticalParams', [current], [level, 0, 0, 0], vertical);
-        levels.push(vertical); previous = vertical;
+        w = Math.ceil(w / 2); h = Math.ceil(h / 2);
+        let seed = makeTexture(w, h);
+        await pass('post-scene-color-half', [previous], undefined, seed, POST_SCENE_COLOR_HALF_WGSL);
+        if (level === 0 && parameters.threshold >= 0) {
+          const filtered = makeTexture(w, h);
+          await pass('bloom-prefilter', [seed], [parameters.threshold, parameters.smoothWidth, 0, 0], filtered, BLOOM_PREFILTER_WGSL);
+          seed = filtered;
+        }
+        levels.push({ w, h, seed });
+        previous = seed;
       }
-      // The production composite upsamples the bloom component. A zero scene
-      // isolates its additive contribution without changing that shader.
+      let accumulated;
+      for (let level = 4; level >= 0; level--) {
+        const { w, h, seed } = levels[level];
+        const horizontal = makeTexture(w, h);
+        await pass('bloomHorizontal', [seed], [level, 0, 0, 0], horizontal);
+        const next = makeTexture(w, h);
+        const factor = 1 - level * 0.2;
+        const weight = (factor * (1 - parameters.radius) + (1.2 - factor) * parameters.radius) / 3;
+        await pass('bloomVertical', [horizontal, accumulated ?? horizontal], [level, weight, Number(accumulated !== undefined), 0], next);
+        accumulated = next;
+      }
       const zero = makeTexture(width, height); result = makeTexture(width, height);
-      await pass('struct BloomCompositeParams', [zero, ...levels], [1, parameters.radius, 0, 0], result);
+      await pass('bloomComposite', [zero, accumulated], [1, 0, 0, 0], result);
     }
     const readback = device.createBuffer({ size: width * height * 8, usage: 1 | 8 }); owned.push(readback);
     encoder.copyTextureToBuffer({ texture: result }, { buffer: readback, bytesPerRow: width * 8 }, [width, height]);
@@ -130,25 +146,94 @@ async function forgeCapture(manifest, data, effect, parameters = { threshold: 0,
   } finally { for (const resource of owned) resource.destroy(); device.destroy(); }
 }
 
+// Independent integer-tap reference for the progressive Gaussian path.
+function referenceBloom(data, parameters = { threshold: 0, smoothWidth: 0.01, radius: 0 }) {
+  const quantize = (value) => halfFloat.f16ToF32(halfFloat.f32ToF16(value));
+  const image = (w, h, value) => {
+    const rgb = new Float32Array(w * h * 3);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++)
+      for (let c = 0; c < 3; c++) rgb[(y * w + x) * 3 + c] = quantize(value(x, y, c));
+    return { w, h, rgb };
+  };
+  const texel = ({ w, h, rgb }, x, y, c) => rgb[(Math.max(0, Math.min(h - 1, y)) * w + Math.max(0, Math.min(w - 1, x))) * 3 + c];
+  const sample = (source, u, v, c) => {
+    const x = u * source.w - 0.5, y = v * source.h - 0.5;
+    const i = Math.floor(x), j = Math.floor(y);
+    const dx = x - i, dy = y - j;
+    return (1 - dy) * ((1 - dx) * texel(source, i, j, c) + dx * texel(source, i + 1, j, c)) +
+      dy * ((1 - dx) * texel(source, i, j + 1, c) + dx * texel(source, i + 1, j + 1, c));
+  };
+  const unpack = data instanceof Uint16Array ? (v) => halfFloat.f16ToF32(v) : (v) => v / 255;
+  let source = image(width, height, (x, y, c) => unpack(data[(y * width + x) * 4 + c]));
+  const seeds = [];
+  for (let level = 0; level < 5; level++) {
+    const down = image(Math.ceil(source.w / 2), Math.ceil(source.h / 2), (x, y, c) => 0.25 *
+      (texel(source, x * 2, y * 2, c) + texel(source, x * 2 + 1, y * 2, c) +
+        texel(source, x * 2, y * 2 + 1, c) + texel(source, x * 2 + 1, y * 2 + 1, c)));
+    source = level === 0 && parameters.threshold >= 0
+      ? image(down.w, down.h, (x, y, c) => {
+          const luminance = [0.2126, 0.7152, 0.0722].reduce((sum, weight, channel) => sum + weight * texel(down, x, y, channel), 0);
+          const t = parameters.smoothWidth === 0 ? Number(luminance > parameters.threshold) :
+            Math.max(0, Math.min(1, (luminance - parameters.threshold) / parameters.smoothWidth));
+          return texel(down, x, y, c) * t * t * (3 - 2 * t);
+        })
+      : down;
+    seeds.push(source);
+  }
+  let accumulated;
+  for (let level = 4; level >= 0; level--) {
+    const seed = seeds[level], count = 6 + 4 * level, sigma = count / 3;
+    const offsets = Array.from({ length: count * 2 - 1 }, (_, i) => i - count + 1);
+    const coefficients = offsets.map((i) => Math.exp(-0.5 * (i / sigma) ** 2));
+    const total = coefficients.reduce((a, b) => a + b, 0);
+    const filter = (from, x, y, c, dx, dy) => offsets.reduce((sum, offset, i) =>
+      sum + coefficients[i] * texel(from, x + dx * offset, y + dy * offset, c), 0) / total;
+    const horizontal = image(seed.w, seed.h, (x, y, c) => filter(seed, x, y, c, 1, 0));
+    const factor = 1 - 0.2 * level;
+    const weight = (factor * (1 - parameters.radius) + (1.2 - factor) * parameters.radius) / 3;
+    const coarse = accumulated;
+    accumulated = image(seed.w, seed.h, (x, y, c) => filter(horizontal, x, y, c, 0, 1) * weight +
+      (coarse ? sample(coarse, (x + 0.5) / seed.w, (y + 0.5) / seed.h, c) : 0));
+  }
+  return Array.from({ length: width * height * 4 }, (_, i) => i % 4 === 3 ? 1 : quantize(
+    sample(accumulated, ((i >> 2) % width + 0.5) / width, (Math.floor((i >> 2) / width) + 0.5) / height, i % 4),
+  ));
+}
+
+function verifyFxaa(actual, inputData, parity) {
+  const input = Array.from(inputData, (value) => value / 255);
+  const changedFromInput = difference(actual, input).mean;
+  const metrics = { ...parity, changedFromInput };
+  if (metrics.max > 0.01 || metrics.mean > 0.0001 || metrics.changedFromInput < 0.001) {
+    throw new Error(`FXAA comparison failed: ${JSON.stringify(metrics)}`);
+  }
+  return metrics;
+}
+
 async function run() {
-  const manifest = await readShaderManifestPublication(await (await fetch('/shaders/manifest.json')).json());
-  const report = { engineRevision: __FORGEAX_PRODUCT_HEAD__, reference: 'Three r184 / d3b629c0c2097cec664ad16369bb6eae3b10e335', inputSize: [width, height], bloomImpulseRadiance: 8 };
+  if (REVISION !== '187') throw new Error(`Expected Three r187, loaded r${REVISION}`);
+  const referenceRevision = `r${REVISION}`;
+  const shaderRegistry = new ShaderRegistry({
+    manifestUrl: '/shaders/manifest.json',
+    prepareProgramCompiler: prepareShaderProgramCompiler,
+  });
+  (await shaderRegistry.loadManifest()).unwrap();
+  const manifest = { entries: [...shaderRegistry.entries()] };
+  const report = { engineRevision: __FORGEAX_PRODUCT_HEAD__, reference: `Three ${referenceRevision}`, referenceRevision, inputSize: [width, height], bloomImpulseRadiance: 8 };
   for (const effect of ['fxaa', 'bloom']) {
     const data = effect === 'bloom' ? Uint16Array.from(pixels(effect), (value, i) => halfFloat.f32ToF16(i % 4 === 3 ? 1 : value * 8 / 255)) : pixels(effect), reference = await threeCapture(data, effect), actual = await forgeCapture(manifest, data, effect);
     if (![...actual, ...reference].every(Number.isFinite)) throw new Error(`${effect}: non-finite pixels`);
     present(effect, 'ForgeAX', actual, effect === 'bloom' ? 0.75 : 1);
-    present(effect, 'Three r184 WebGPU', reference, effect === 'bloom' ? 0.75 : 1);
+    present(effect, `Three ${referenceRevision} WebGPU`, reference, effect === 'bloom' ? 0.75 : 1);
     report[effect] = difference(actual, reference);
     if (effect === 'bloom') {
-      if (report.bloom.max > 0.01 || report.bloom.mean > 0.0005) throw new Error(`Bloom comparison failed: ${JSON.stringify(report.bloom)}`);
+      report.bloom.progressiveReference = difference(actual, referenceBloom(data));
+      const check = report.bloom.progressiveReference;
+      if (check.max > 0.01 || check.mean > 0.0005) throw new Error(`Progressive Bloom comparison failed: ${JSON.stringify(check)}`);
       report.bloom.meanSignal = { forgeax: mean(actual), three: mean(reference) };
       if (mean(actual) < 0.001 || mean(reference) < 0.001) throw new Error('Bloom impulse disappeared');
     }
-    if (effect === 'fxaa') {
-      const input = Array.from(data, (x) => x / 255);
-      report.fxaa.changedFromInput = difference(actual, input).mean;
-      if (report.fxaa.max > 0.01 || report.fxaa.mean > 0.0001 || report.fxaa.changedFromInput < 0.001) throw new Error(`FXAA comparison failed: ${JSON.stringify(report.fxaa)}`);
-    }
+    if (effect === 'fxaa') report.fxaa = verifyFxaa(actual, data, report.fxaa);
   }
   const ramp = new Uint8Array(width * height * 4);
   for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) ramp.set([x, x, x, 255], (y * width + x) * 4);
@@ -158,8 +243,9 @@ async function run() {
     const reference = await threeCapture(ramp, 'bloom', parameters);
     const actual = await forgeCapture(manifest, ramp, 'bloom', parameters);
     const delta = difference(actual, reference);
-    report.bloom.parameterCases.push({ parameters, ...delta });
-    if (delta.max > 0.01 || delta.mean > 0.001) throw new Error(`Bloom parameter comparison failed: ${JSON.stringify({ parameters, delta })}`);
+    const progressive = difference(actual, referenceBloom(ramp, parameters));
+    report.bloom.parameterCases.push({ parameters, three: delta, progressive });
+    if (progressive.max > 0.01 || progressive.mean > 0.001) throw new Error(`Bloom parameter comparison failed: ${JSON.stringify({ parameters, delta })}`);
   }
   const constant = pixels('constant');
   report.bloom.uniformGain = {
@@ -167,7 +253,7 @@ async function run() {
     three: mean(await threeCapture(constant, 'bloom')) / (64 / 255),
   };
   report.bloom.expectedThreeUniformGain = threeBloomUniformGain();
-  if (Math.abs(report.bloom.uniformGain.forgeax - report.bloom.expectedThreeUniformGain) > 0.01 || Math.abs(report.bloom.uniformGain.three - report.bloom.expectedThreeUniformGain) > 0.01) throw new Error(`Bloom gain reference changed: ${JSON.stringify(report.bloom.uniformGain)}`);
+  if (Math.abs(report.bloom.uniformGain.forgeax - 1) > 0.01 || Math.abs(report.bloom.uniformGain.three - report.bloom.expectedThreeUniformGain) > 0.01) throw new Error(`Bloom gain reference changed: ${JSON.stringify(report.bloom.uniformGain)}`);
   document.getElementById('status').textContent = JSON.stringify(report, null, 2);
   globalThis.__renderDefaultsComparison = report;
 }

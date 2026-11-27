@@ -90,7 +90,7 @@ describe('material shader lookup ordering', () => {
       thrown = error;
     }
     expect(thrown).toBe(failure);
-    expect(calls).toEqual([`find:${rigid}`]);
+    expect(calls).toEqual([`manifest:${rigid}`, `find:${rigid}`]);
   });
 
   it('does not allocate an iterable lookup-name array on a warm direct lookup', () => {

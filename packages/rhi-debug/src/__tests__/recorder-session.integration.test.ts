@@ -328,3 +328,91 @@ it('captures only the complete frame after the snapshot boundary', async () => {
   expect(result.tape.events.filter((event) => event.kind === 'submit')).toHaveLength(1);
   (await attachment.dispose()).unwrap();
 });
+
+it('captures independent render pass and bundle addresses when view and material share a scratch window', async () => {
+  const attachment = attachRecorder({ rhi, createShaderModule }).unwrap();
+  try {
+    const device = (
+      await (await attachment.backend.rhi.requestAdapter()).unwrap().requestDevice()
+    ).unwrap();
+    const capture = attachment.captureFrame();
+    (await attachment.frameBoundary()).unwrap();
+    const uniform = device.createBuffer({ size: 1024, usage: 64 | 8 }).unwrap();
+    const group = (count: number) => {
+      const layout = device
+        .createBindGroupLayout({
+          entries: Array.from({ length: count }, (_, binding) => ({
+            binding,
+            visibility: 3,
+            buffer: { type: 'uniform' as const, hasDynamicOffset: true },
+          })),
+        })
+        .unwrap();
+      return device
+        .createBindGroup({
+          layout,
+          entries: Array.from({ length: count }, (_, binding) => ({
+            binding,
+            resource: { kind: 'buffer' as const, value: { buffer: uniform, size: 16 } },
+          })),
+        })
+        .unwrap();
+    };
+    const view = group(2),
+      material = group(1),
+      plain = group(0);
+    const words = new Uint32Array(2);
+    const write = (
+      commands: import('@forgeax/engine-rhi').RhiRenderCommands,
+      first: number,
+      next: number,
+    ) => {
+      words.set([first, 0]);
+      commands.setBindGroup(0, view, words, 0, 2);
+      words[0] = next;
+      commands.setBindGroup(1, material, words, 0, 1);
+      commands.setBindGroup(1, material, [0]);
+      commands.setBindGroup(1, plain);
+      words.fill(768);
+    };
+    const bundle = device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] }).unwrap();
+    write(bundle, 512, 256);
+    const saved = bundle.finish().unwrap();
+    const encoder = device.createCommandEncoder().unwrap();
+    const target = device
+      .createTexture({ size: { width: 1, height: 1 }, format: 'rgba8unorm', usage: 16 })
+      .unwrap();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [
+        {
+          view: device.createTextureView(target, {}).unwrap(),
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: [0, 0, 0, 1],
+        },
+      ],
+    });
+    write(pass, 256, 512);
+    pass.executeBundles([saved]);
+    pass.end();
+    device.queue.submit([encoder.finish().unwrap()]).unwrap();
+    (await attachment.frameBoundary()).unwrap();
+    const tape = decodeTape((await capture).unwrap().bytes).unwrap();
+    expect(
+      tape.events
+        .filter((event) => event.kind === 'setBindGroup')
+        .map((event) => [event.index, event.dynamicOffsets]),
+    ).toEqual([
+      [0, [256, 0]],
+      [1, [512]],
+      [1, [0]],
+      [1, undefined],
+      [0, [512, 0]],
+      [1, [256]],
+      [1, [0]],
+      [1, undefined],
+    ]);
+  } finally {
+    await attachment.dispose();
+  }
+});

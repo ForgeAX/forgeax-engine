@@ -307,6 +307,25 @@ describe('player distribution', () => {
     }
   });
 
+  it('removes a failed payload after outstanding artifact writes have settled', async () => {
+    const source = await fixture('./', false);
+    const payload = resolve(source.root, 'payload');
+    try {
+      await rm(resolve(source.root, 'assets/mesh.bin'));
+      await expect(
+        prepareDist(source.root, source.manifest, {
+          distribution: 'payload',
+          payloadRoot: payload,
+          compressDocuments: false,
+        }),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(access(payload)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(access(resolve(source.root, 'index.html'))).resolves.toBeUndefined();
+    } finally {
+      await rm(source.root, { recursive: true, force: true });
+    }
+  });
+
   it('stores player JSON documents as zstd frames by default', async () => {
     const source = await fixture('./', false);
     const library = 'assets/pipeline-library-a1b2.json';

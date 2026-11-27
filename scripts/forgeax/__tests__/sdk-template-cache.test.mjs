@@ -1,101 +1,90 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { checkEngineAuthoringPackageSize } from '../engine-authoring-package.mjs';
 import {
   buildCacheEntries,
   seedTemplateBuildCache,
-  TEMPLATE_BUILD_CACHE,
+  stageSdkBuildCache,
 } from '../sdk-template-cache.mjs';
 
+test('the complete Engine npm archive fits the inclusive decimal 64 MB budget', () => {
+  assert.doesNotThrow(() => checkEngineAuthoringPackageSize(64_000_000));
+  assert.throws(
+    () => checkEngineAuthoringPackageSize(64_000_001),
+    /engine-authoring-package-budget-exceeded: 64000001 > 64000000/,
+  );
+});
+
 async function write(path, body = 'x') {
-  await mkdir(join(path, '..'), { recursive: true });
+  await mkdir(dirname(path), { recursive: true });
   await writeFile(path, body);
 }
 
-/** What `forgeax project build` leaves in a project: products plus outputs that must not ship. */
-async function fakeBuild(template) {
-  const cache = join(template, TEMPLATE_BUILD_CACHE);
-  await write(join(cache, 'scriptable-pack-products/entries/k1/payload.json'), '{"p":1}');
-  await write(join(cache, 'scriptable-pack-products/staging/k2-tmp/payload.json'));
-  await write(join(cache, 'scriptable-pack-product-kinds/entries/d1/payload.json'), '{"d":1}');
-  // URL projections depend on the consumer's publication policy, not cooking.
-  await write(join(cache, 'scriptable-pack-transports/entries/t1/payload.json'), '{"t":1}');
-  await write(
-    join(cache, 'native-cook', 'a'.repeat(64), 'bb', 'b'.repeat(64)),
-    new Uint8Array([1, 2, 3]),
-  );
-  await mkdir(join(cache, 'z-empty-store'), { recursive: true });
-  await write(join(template, '.forgeax/ddc/v2/entries/a/payload.json'));
-  await write(join(template, '.forgeax/generated/main.ts'));
-  await write(join(template, 'dist/index.html'));
-}
-
-test('a seeded SDK template ships only its published Pack products', async () => {
-  const template = await mkdtemp(join(tmpdir(), 'sdk-template-cache-'));
-  try {
+test('templates share one seed, retaining only published Pack products and discovery rows', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-template-cache-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const cache = join(root, 'working-cache');
+  const sdk = join(root, 'sdk/build-cache');
+  const seed = 'scriptable-pack-products/entries/shared/payload.json';
+  for (const id of ['empty', 'game-3d']) {
+    const template = join(root, id);
     await write(join(template, 'package.json'), '{}');
     await write(join(template, 'node_modules/.keep'));
-    const entries = await seedTemplateBuildCache(template, () => fakeBuild(template));
-    assert.deepEqual(entries, ['scriptable-pack-product-kinds/d1', 'scriptable-pack-products/k1']);
-    assert.deepEqual(await buildCacheEntries(template), entries);
-    assert.deepEqual((await readdir(join(template, TEMPLATE_BUILD_CACHE))).sort(), [
-      'scriptable-pack-product-kinds',
-      'scriptable-pack-products',
-    ]);
-    assert.deepEqual((await readdir(template)).sort(), [
-      '.forgeax',
-      'node_modules',
-      'package.json',
-    ]);
-    assert.deepEqual(await readdir(join(template, '.forgeax')), ['ddc']);
-    assert.deepEqual(await readdir(join(template, '.forgeax/ddc')), ['build-cache']);
-    assert.deepEqual(
-      await readdir(join(template, TEMPLATE_BUILD_CACHE, 'scriptable-pack-products')),
-      ['entries'],
-    );
-    assert.equal(
-      await readFile(
-        join(template, TEMPLATE_BUILD_CACHE, 'scriptable-pack-products/entries/k1/payload.json'),
-        'utf8',
-      ),
-      '{"p":1}',
-    );
-  } finally {
-    await rm(template, { recursive: true, force: true });
+    await seedTemplateBuildCache(template, async () => {
+      if (id === 'empty') await write(join(cache, seed), '{"p":1}');
+      assert.equal(await readFile(join(cache, seed), 'utf8'), '{"p":1}');
+      await write(join(cache, `scriptable-pack-products/entries/${id}/payload.json`));
+      await write(join(cache, 'scriptable-pack-products/staging/pending/payload.json'));
+      await write(join(cache, 'scriptable-pack-product-kinds/entries/discovery/payload.json'));
+      await write(join(cache, 'scriptable-pack-transports/entries/transport/payload.json'));
+      await write(join(cache, 'native-cook/input'));
+      await write(join(template, '.forgeax/ddc/v2/entries/project/payload.json'));
+      await write(join(template, 'dist/index.html'));
+    });
+    assert.deepEqual((await readdir(template)).sort(), ['node_modules', 'package.json']);
   }
+  const entries = await stageSdkBuildCache(cache, sdk);
+  assert.deepEqual(entries, [
+    'scriptable-pack-product-kinds/discovery',
+    'scriptable-pack-products/empty',
+    'scriptable-pack-products/game-3d',
+    'scriptable-pack-products/shared',
+  ]);
+  assert.deepEqual(await buildCacheEntries(sdk), entries);
+  assert.deepEqual((await readdir(sdk)).sort(), [
+    'scriptable-pack-product-kinds',
+    'scriptable-pack-products',
+  ]);
+  assert.deepEqual(await readdir(join(sdk, 'scriptable-pack-products')), ['entries']);
+  assert.equal(await readFile(join(sdk, seed), 'utf8'), '{"p":1}');
 });
 
-test('a template build that publishes no Pack product fails the SDK build', async () => {
-  const template = await mkdtemp(join(tmpdir(), 'sdk-template-cache-'));
-  try {
-    await assert.rejects(
-      seedTemplateBuildCache(template, () => write(join(template, 'dist/index.html'))),
-      /sdk-template-build-cache-empty/,
-    );
-  } finally {
-    await rm(template, { recursive: true, force: true });
-  }
+test('an SDK with no published Pack products fails staging', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-template-cache-empty-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  assert.deepEqual(await buildCacheEntries(root), []);
+  await assert.rejects(stageSdkBuildCache(root, join(root, 'sdk')), /sdk-build-cache-empty/);
 });
 
-test('a project without a build cache lists no entries', async () => {
-  const project = await mkdtemp(join(tmpdir(), 'sdk-template-cache-'));
-  try {
-    assert.deepEqual(await buildCacheEntries(project), []);
-  } finally {
-    await rm(project, { recursive: true, force: true });
-  }
-});
-
-test('cooking receipts exclude consumer-specific transport projections', async () => {
-  const project = await mkdtemp(join(tmpdir(), 'sdk-template-transport-'));
-  try {
-    const cache = join(project, TEMPLATE_BUILD_CACHE);
-    await write(join(cache, 'scriptable-pack-products/entries/product/payload.json'));
-    await write(join(cache, 'scriptable-pack-transports/entries/new-base/payload.json'));
-    assert.deepEqual(await buildCacheEntries(project), ['scriptable-pack-products/product']);
-  } finally {
-    await rm(project, { recursive: true, force: true });
-  }
+test('the Engine seed excludes one Pack by receipt GUID from both stores', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'engine-template-cache-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const cache = join(root, 'working-cache');
+  const staged = join(root, 'engine-cache');
+  const stores = ['scriptable-pack-product-kinds', 'scriptable-pack-products'];
+  for (const store of stores)
+    for (const guid of ['convoy', 'shared'])
+      await write(
+        join(cache, store, 'entries', guid, 'entry.json'),
+        JSON.stringify({
+          receipt: { guid },
+        }),
+      );
+  const expected = stores.map((store) => `${store}/shared`);
+  assert.deepEqual(await stageSdkBuildCache(cache, staged, new Set(['convoy'])), expected);
+  assert.deepEqual(await buildCacheEntries(staged), expected);
+  assert.equal((await buildCacheEntries(cache)).length, 4);
 });

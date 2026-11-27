@@ -8,6 +8,8 @@ description: >-
 
 # forgeax-engine-wechat
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 Use Tencent's installed `wechatide-skill` for the exact official CLI contract.
 This skill supplies Engine integration, reusable tools and field-tested diagnosis.
 Start with the relevant row; the historical observations in Sources are scoped

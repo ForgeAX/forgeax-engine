@@ -1,7 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { Materials, materialContribution } from '@forgeax/engine-render';
-import { materialGuidText, materialValuesToLinearRuntime, resolveMaterialAsset } from '@forgeax/engine-types';
+import { materialGuidText, materialValuesToLinearRuntime, resolveMaterialAsset, selectMaterialStaticContract } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { physicalMaterialChild, physicalMaterialRoots } from '../material-contract';
 
@@ -20,6 +20,8 @@ describe('physical material children', () => {
     });
     const child = physicalMaterialChild(authored, root.module);
     const resolved = resolveMaterialAsset('child', { child, [root.guid]: root.material }).unwrap().asset;
+    const published = selectMaterialStaticContract(root.material, true);
+    expect(resolveMaterialAsset('child', { child, [root.guid]: published }).ok).toBe(true);
     expect(materialGuidText(child.parent!)).toBe(root.guid);
     expect(child.passes).toBeUndefined();
     expect(child.parameters).toBeUndefined();

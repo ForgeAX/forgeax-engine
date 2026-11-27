@@ -9,10 +9,23 @@ import { type ProjectedRows, RowProjection } from '../scene/row-projection';
 import { SceneSlotFrame } from '../scene/scene-slots';
 import { StableRangeAllocator } from '../stable-range-allocator';
 
+type SurfaceSource = ProjectedRows & {
+  readonly isCurrent?: () => boolean;
+  readonly isSourceCurrent?: () => boolean;
+};
+
+/** Captured values of the existing accepted scene revision, never a new clock. */
+export interface VisibleSurfaceSource {
+  readonly identity: object;
+  readonly revision: number;
+  current(): boolean;
+}
+
 /** One submitted raster address resolves through that frame's scene projection. */
 export const VISIBLE_SURFACE_RECORD_WORDS = 16;
 
 export interface VisibleSurfaceProjection {
+  readonly source?: VisibleSurfaceSource;
   /**
    * 64-byte rows; zero is reserved for uncovered pixels, addresses start at one.
    * The live owner array: valid for the frame that requested it. A consumer that
@@ -21,9 +34,25 @@ export interface VisibleSurfaceProjection {
   readonly records: Uint32Array;
   /** Entity base + drawItemIndex * instanceCount + instanceOrdinal. */
   readonly slotBases: ReadonlyMap<number, number>;
+  /** Borrowed allocation span of the same live owner; detached records omit it. */
+  readonly slotRowCount?: (slot: number) => number | undefined;
   readonly entityBases: ReadonlyMap<number, number>;
   /** Changes exactly when some row address (base or row count) changes. */
   readonly layout: number;
+}
+
+function frameProjection(
+  projection: VisibleSurfaceProjection,
+  rows: SurfaceSource,
+): VisibleSurfaceProjection {
+  // The next prepare may reuse records; held wrappers retain their original witness.
+  if (rows.revision === undefined) return projection;
+  const source: VisibleSurfaceSource = Object.freeze({
+    identity: rows.identity,
+    revision: rows.revision,
+    current: () => rows.isCurrent?.() !== false && rows.isSourceCurrent?.() !== false,
+  });
+  return { ...projection, source };
 }
 
 export interface VisibleSurfaceIdentity {
@@ -40,6 +69,10 @@ export interface VisibleSurfaceIdentity {
   /** Element offset in the actual source draw, not a mesh-global primitive ID. */
   readonly firstElement: number;
   readonly baseVertex: number;
+}
+
+export interface VisibleSurfaceRange extends VisibleSurfaceIdentity {
+  readonly elementCount: number;
 }
 
 function invalid(expected: string, hint: string): Result<never, RhiError> {
@@ -262,7 +295,7 @@ export class VisibleSurfaceRows {
     this.#projection = undefined;
   }
 
-  update(rows: ProjectedRows, maxRecords: number): Result<VisibleSurfaceProjection, RhiError> {
+  update(rows: SurfaceSource, maxRecords: number): Result<VisibleSurfaceProjection, RhiError> {
     if (!Number.isSafeInteger(maxRecords) || maxRecords < 0 || maxRecords > 0xffff_fffe) {
       return invalid(
         'a bounded u32 visible-surface row budget',
@@ -350,10 +383,11 @@ export class VisibleSurfaceRows {
           this.#allocator.allocatedEnd() * VISIBLE_SURFACE_RECORD_WORDS,
         ),
         slotBases: this.#slotBases,
+        slotRowCount: (slot) => (this.#slotBases.has(slot) ? this.#counts[slot] : undefined),
         entityBases: this.#entityBases,
         layout: this.#layout,
       };
-    return ok(this.#projection);
+    return ok(frameProjection(this.#projection, rows));
   }
 
   #reserve(changed: readonly number[]): void {
@@ -461,20 +495,22 @@ export class VisibleSurfaceRows {
 export function projectVisibleSurfaces(
   slots: FrameList<RenderSceneSlot>,
   maxRecords: number,
-  rows: Omit<ProjectedRows, 'slots' | 'identity'> = {
+  rows: Omit<SurfaceSource, 'slots' | 'identity'> & { readonly identity?: object } = {
     materials: new MaterialFrame(undefined),
     meshes: new MeshFrame(),
   },
 ): Result<VisibleSurfaceProjection, RhiError> {
-  return new VisibleSurfaceRows().update({ ...rows, identity: {}, slots }, maxRecords);
+  return new VisibleSurfaceRows().update(
+    { ...rows, identity: rows.identity ?? {}, slots },
+    maxRecords,
+  );
 }
 
 /** Debug/reference decode of the same row the GPU consumes; no triangle search. */
-export function resolveVisibleSurface(
+export function resolveVisibleSurfaceRange(
   projection: Pick<VisibleSurfaceProjection, 'records'>,
   row: number,
-  primitive: number,
-): Result<VisibleSurfaceIdentity | undefined, RhiError> {
+): Result<VisibleSurfaceRange | undefined, RhiError> {
   if (row === 0) return ok(undefined);
   const offset = (row - 1) * VISIBLE_SURFACE_RECORD_WORDS;
   const words = projection.records;
@@ -484,17 +520,12 @@ export function resolveVisibleSurface(
     offset + VISIBLE_SURFACE_RECORD_WORDS > words.length ||
     // RenderScene generations start at zero. A hole has no source elements;
     // generation zero must never be used as a missing-record sentinel.
-    words[offset + 10] === 0
+    words[offset + 10] === 0 ||
+    (words[offset + 10] ?? 0) % 3 !== 0
   ) {
     return invalid(
       'a covered raster row from the same submitted frame',
       'use the projection retained with this capture/receipt, not the latest live scene',
-    );
-  }
-  if (!Number.isInteger(primitive) || primitive < 0 || primitive >= (words[offset + 10] ?? 0) / 3) {
-    return invalid(
-      'a draw-local primitive inside the captured source range',
-      'inspect the selected raster draw and its matching frame projection',
     );
   }
   return ok({
@@ -506,8 +537,26 @@ export function resolveVisibleSurface(
     drawItemIndex: words[offset + 6] ?? 0,
     materialHandle: words[offset + 7] ?? 0,
     assetHandle: words[offset + 8] ?? 0,
-    firstElement: (words[offset + 9] ?? 0) + primitive * 3,
+    firstElement: words[offset + 9] ?? 0,
+    elementCount: words[offset + 10] ?? 0,
     baseVertex: (words[offset + 11] ?? 0) | 0,
     indexed: words[offset + 12] === 1,
   });
+}
+
+/** Debug/reference decode of the same row the GPU consumes; no triangle search. */
+export function resolveVisibleSurface(
+  projection: Pick<VisibleSurfaceProjection, 'records'>,
+  row: number,
+  primitive: number,
+): Result<VisibleSurfaceIdentity | undefined, RhiError> {
+  const range = resolveVisibleSurfaceRange(projection, row);
+  if (!range.ok || range.value === undefined) return range;
+  if (!Number.isInteger(primitive) || primitive < 0 || primitive >= range.value.elementCount / 3)
+    return invalid(
+      'a draw-local primitive inside the captured source range',
+      'inspect the selected raster draw and its matching frame projection',
+    );
+  const { elementCount: _count, ...identity } = range.value;
+  return ok({ ...identity, firstElement: identity.firstElement + primitive * 3 });
 }

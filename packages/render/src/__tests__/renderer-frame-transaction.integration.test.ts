@@ -1302,6 +1302,7 @@ describe('renderer successful-submit transaction', () => {
     const device = (await new RhiNullAdapter().requestDevice()).unwrap();
     const scope = DeviceScope.create(91, 'renderer');
     const frameState = {
+      materialBgAssemblyCache: new MaterialBgAssemblyCache(),
       temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
       temporalGpuState: undefined,
       activeTemporalGpuState: undefined,
@@ -1368,6 +1369,7 @@ describe('renderer successful-submit transaction', () => {
       sampleTimeSeconds: 1,
     });
     const frameState = {
+      materialBgAssemblyCache: new MaterialBgAssemblyCache(),
       temporalFrameTransaction: createTemporalFrameTransaction({ deviceEpoch: 0 }),
       temporalGpuState: undefined,
       activeTemporalGpuState: undefined,
@@ -1516,6 +1518,7 @@ describe('renderer successful-submit transaction', () => {
 
 import { executeAutoExposureFrameTransaction } from '../assembly/renderer-frame-transaction';
 import { createAutoExposureState } from '../pipeline/standard-output/auto-exposure/state';
+import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
 import {
   createTemporalFrameTransaction,
   type TemporalCommitOutcome,

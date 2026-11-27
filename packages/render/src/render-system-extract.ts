@@ -10,6 +10,7 @@ import {
 } from './material-source';
 import type { FrameList } from './scene/frame-list';
 import type { AcceptedMaterial, DispatchList } from './scene/material-dispatch';
+import { MaterialSourceEntries } from './scene/material-source-entries';
 import { spriteUvRegion } from './sprite-region';
 import {
   requireWaterMaterialConsumers,
@@ -18,19 +19,29 @@ import {
 
 export type { DispatchList } from './scene/material-dispatch';
 
-import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import {
-  type MaterialCookRasterContext,
-  materialProgramContextForPass,
-} from '@forgeax/engine-pack/material-cook';
-import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
-import { freezeJson } from '@forgeax/engine-types';
+  runtimeAssetRegistry,
+  runtimeAssets,
+  runtimeMaterialDeclaration,
+} from '@forgeax/engine-assets-runtime/internal';
+import type { MaterialCookRasterContext } from '@forgeax/engine-pack/material-cook';
+import type { AssetHandle, MeshAsset, SampledTextureAsset } from '@forgeax/engine-types';
 import { planarCaptureDemanded, planarRoutedPasses } from './capture/planar-material';
 import { buildPlanarReflectionView } from './capture/planar-view';
+import {
+  captureMaterialRasterPrograms,
+  type MaterialProgramSelection,
+  type MaterialRasterPrograms,
+  materialSceneIndexProgramsForProjection,
+  materialSurfaceModel,
+  materialSurfaceProgramsForProjection,
+  skinnedPositionProof,
+} from './material-program-selection';
 import {
   captureMaterialSnapshot,
   MaterialResource,
   materialResource,
+  prepareMaterialProgramSnapshot,
   runtimeMaterialShaderIdForMaterial,
 } from './material-resource';
 import type { LightTextureSource } from './prepare/extended-lighting/spot-modifiers';
@@ -126,11 +137,8 @@ export { textureDigest } from './texture-digest';
 
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import {
-  assertMaterialStaticSelection,
-  findMaterialPassProgram,
   materialParametersToParamSchema as projectMaterialParametersToParamSchema,
   runtimeMaterialShaderId,
-  selectMaterialPassProgram,
 } from '@forgeax/engine-assets-runtime';
 import {
   type Component,
@@ -153,11 +161,11 @@ import {
   DEFAULT_STANDARD_PBR_PARAM_SCHEMA,
   DEFAULT_STANDARD_SURFACE_MODULE,
   type MaterialShaderArtifact,
-  rayMaterialNeedsCoverage,
   STANDARD_PIPELINE_PARAM_SCHEMA,
   standardProjectionMask,
   standardSampleReuseMask,
-  standardTextureMask,
+  standardTextureDefaultMask,
+  standardTextureValueMask,
   TONEMAP_PARAMS_LAYOUT,
 } from '@forgeax/engine-shader';
 import type {
@@ -175,12 +183,13 @@ import type {
   TextureAsset,
 } from '@forgeax/engine-types';
 import {
+  compileMaterialColorProjection,
   derive,
-  materialProgramUsesSkin,
-  materialValuesToLinearRuntime,
+  freezeJson,
+  isDeepFrozenJson,
   toShared,
 } from '@forgeax/engine-types';
-import { buildCubeCameraFaceViews } from './capture/cube-views';
+import { packedPointShadowMatrices } from './capture/cube-views';
 import {
   CubeCamera,
   cubeCameraUpdateIntentFromF32,
@@ -238,7 +247,7 @@ import type {
   PhysicalViewExtent,
   ResolvedViewCamera,
 } from './render-contract';
-import { getActiveCamera, selectActiveCameraIndex } from './systems/active-camera';
+import { getActiveCamera } from './systems/active-camera';
 import { selectPasses } from './systems/pass-selector';
 import type { RenderTarget } from './targets/contracts';
 import type { MaterialTextureSource } from './textures/canvas-texture';
@@ -282,6 +291,7 @@ export interface DirectionalLightSnapshot {
   readonly direction: Vec3;
   readonly color: Vec3;
   readonly intensity: number;
+  readonly perPixelAtmosphereTransmittance?: boolean;
   /** Screen-space contact shadow ray length in meters; 0 disables it. */
   readonly contactShadowLength: number;
   /** Apparent light-disc diameter in degrees; 0 is a point light. */
@@ -338,6 +348,7 @@ export interface PointLightSnapshot extends IesProfileSnapshot {
    * shadow-parameter buffer; DirectLightSlot carries only the layer identity.
    */
   readonly shadowFar?: number;
+  readonly shadowIntensity?: number;
   /** Vogel footprint diameter; 1 selects hardware PCF, 3 defaults to radius 1. */
   readonly pcfKernelSize?: number;
 }
@@ -364,6 +375,7 @@ export interface PointLightSnapshot extends IesProfileSnapshot {
  * downstream DirectLightSlot packing carries no invalid layer identity.
  */
 export interface PointShadowSnapshot {
+  readonly staticShadowCache?: true;
   readonly shadowCasterChannels?: number;
   readonly shadowAutoUpdate?: boolean;
   readonly shadowRevision?: number;
@@ -381,7 +393,6 @@ export interface PointShadowSnapshot {
   readonly shadowFilter?: number;
   readonly shadowBiasMode?: number;
   readonly shadowIntensity?: number;
-  readonly shadowBlurSamples?: number;
   /**
    * Atlas layer assigned by extract in spawn order while capacity remains.
    * Sentinel -1 is used for a request that cannot be admitted and is
@@ -415,6 +426,7 @@ export interface PointShadowSnapshot {
  */
 export interface SpotLightSnapshot extends IesProfileSnapshot {
   readonly shadowMapAspect?: number;
+  readonly staticShadowCache?: true;
   readonly shadowCasterChannels?: number;
   readonly shadowAutoUpdate?: boolean;
   readonly shadowRevision?: number;
@@ -452,13 +464,13 @@ export interface SpotLightSnapshot extends IesProfileSnapshot {
   // ── shadow fields (feat-20260625-spot-light-shadow-mapping M1) ──
   readonly castShadow: boolean;
   readonly lightViewProj: Float32Array | undefined;
+  readonly authoredShadowMatrix?: true;
   readonly mapSize: number;
   readonly nearPlane: number;
   readonly farPlane: number;
   readonly shadowAtlasTile: number;
   /** Fraction of sampled shadow visibility to retain; 1 = fully opaque shadow. */
   readonly shadowIntensity?: number;
-  readonly shadowBlurSamples?: number;
   readonly depthBias?: number;
   readonly normalBias?: number;
   readonly pcfKernelSize?: number;
@@ -711,8 +723,8 @@ export interface ExtractedVolumetricFog {
   readonly additional?: readonly ExtractedVolumetricFog[];
   readonly status: 'off' | 'available' | 'degraded';
   readonly fog?: ValidatedVolumetricFog;
-  readonly densityHandle?: AssetHandle<'texture'>;
-  readonly densityAsset?: TextureAsset;
+  readonly densityHandle?: AssetHandle<'texture' | 'gpu-texture'>;
+  readonly densityAsset?: SampledTextureAsset;
   readonly guid?: string;
   readonly generation?: number;
   readonly digest?: string;
@@ -733,6 +745,8 @@ export interface ExtractedVolumetricFog {
 
 export interface RenderableSnapshot {
   readonly renderLayers?: number;
+  /** Omitted for the usual bounds-tested draw. */
+  readonly frustumCulled?: false;
   /** Generation-bound WaterBody identity used by per-view water material bindings. */
   readonly waterOwner?: Readonly<{
     readonly guid: string;
@@ -813,8 +827,6 @@ export interface RenderableSnapshot {
     readonly index: number;
     readonly lod: number;
     readonly neighbors: readonly number[];
-    /** Complete per-view projection inputs promoted only with this view's accepted frame. */
-    readonly projectionFacts?: import('./terrain/source.js').TerrainProjectionFacts;
     /** Exact producer facts needed to reuse only an accepted cold material projection. */
     readonly materialReuse?: {
       readonly world: RenderResourceScope;
@@ -823,11 +835,15 @@ export interface RenderableSnapshot {
       readonly projectedSnapshot: MaterialSnapshot;
       readonly layerFrame: object | undefined;
       readonly acceptedMaterial: AcceptedMaterial;
+      /** Physical rows owned by this accepted section, independent of its view LOD. */
+      readonly dispatch: readonly DispatchEntry[];
     };
   };
 
   /** Authored hierarchical visibility; retained hidden rows remain addressable. */
   readonly authorVisible?: boolean;
+  /** Internal source-session partition. Residency never overrides authored visibility. */
+  readonly residencyGroup?: import('./gpu-driven/batch-residency').RenderResidencyGroup;
   readonly assetHandle?: number;
   readonly transform: TransformSnapshot;
   /** Producer-authored lower-detail references projected from MeshAsset. */
@@ -1228,6 +1244,7 @@ export interface MaterialSceneIndexProgramKey {
 }
 
 export interface MaterialSnapshotCacheEntry {
+  readonly declarationLayout?: MaterialDeclarationSlot;
   readonly snapshot: MaterialSnapshot;
   readonly programSelections?: readonly MaterialProgramSelection[];
   readonly assetRevision: number;
@@ -1240,7 +1257,7 @@ export type MaterialSnapshotCache = Map<number, MaterialSnapshotCacheEntry>;
 export interface MaterialSnapshotContext {
   readonly geometry: MaterialCookRasterContext['geometry'];
   readonly vertexColor: boolean;
-  readonly cache: MaterialSnapshotCache;
+  readonly cache: MaterialSourceEntries;
 }
 
 export type MaterialSnapshotContexts = Map<string, MaterialSnapshotContext>;
@@ -1253,7 +1270,7 @@ export function materialSnapshotContext(
   const key = `${geometry}:${vertexColor}`;
   let context = contexts.get(key);
   if (context === undefined) {
-    context = { geometry, vertexColor, cache: new Map() };
+    context = { geometry, vertexColor, cache: new MaterialSourceEntries() };
     contexts.set(key, context);
   }
   return context.cache;
@@ -1420,7 +1437,7 @@ export interface GpuOwnedFrame {
  * `hidden` diff or `residual` diff, and, when `frusta` differ, for slots
  * outside `residual`, whose rows are tested on demand.
  */
-export interface CameraAdmission {
+export interface ResidualCameraAdmission {
   /** Residual slots the camera rejects. */
   readonly hidden: import('./scene/frame-set').FrameSet;
   /** Slots the residual cull tests. */
@@ -1428,6 +1445,18 @@ export interface CameraAdmission {
   /** Equal identities carry equal camera frusta. */
   readonly frusta: object;
 }
+
+/** A CPU camera has already tested every ordinary Scene slot against the current views. */
+export type CameraAdmission =
+  | ResidualCameraAdmission
+  | {
+      readonly sceneOwner: object;
+      readonly residency:
+        | import('./gpu-driven/batch-residency').RenderResidencySelection
+        | undefined;
+      readonly hidden: import('./scene/frame-set').FrameSet;
+      readonly residual?: undefined;
+    };
 
 export interface WaterMeshSourceState {
   readonly system: object | undefined;
@@ -1728,270 +1757,6 @@ export function collectAuthoredMaterialSamplerFields(
 
 export { runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
 
-/**
- * A skinned row certifies its position when the program it actually draws
- * with does: a stock axis program (the default ShadowCaster) selects its
- * `SKINNING_DISABLED=false` variants for Skin geometry, so every one of them
- * must carry the proof; the static primary receipt says nothing about them.
- */
-export function skinnedPositionProof(
-  receipt: MaterialProgramAbi | undefined,
-  key: string,
-  shaders: Pick<AssetRegistry['shaderRegistry'], 'materialShaderManifestEntry'>,
-): boolean {
-  if (receipt !== undefined && materialProgramUsesSkin(receipt))
-    return receipt.positionBounds === 'standard-input';
-  const skinned = shaders
-    .materialShaderManifestEntry(key)
-    ?.variants.filter((variant) => variant.defines.SKINNING_DISABLED === false);
-  return (
-    skinned !== undefined &&
-    skinned.length > 0 &&
-    skinned.every(
-      (variant) =>
-        variant.receipt?.positionBounds === 'standard-input' &&
-        materialProgramUsesSkin(variant.receipt),
-    )
-  );
-}
-
-/**
- * Select the runtime identity for one resolved material. A cooked publication
- * owns the composed material artifact identity; the authored pass module is
- * the built-in fallback used before that publication is ready.
- */
-export function materialProgramKeysForMaterial(
-  material: MaterialAsset,
-  assets: AssetRegistry,
-  context: MaterialCookRasterContext | undefined,
-  vertexColorAvailable = false,
-): Readonly<Record<string, string>> | undefined {
-  return materialProgramKeysForAddress(material, assets, context, 'direct', vertexColorAvailable);
-}
-
-/** Raster remains usable without a ray program; a ray consumer must refuse that absence. */
-export function materialSurfaceProgramsForMaterial(
-  material: MaterialAsset,
-  assets: AssetRegistry,
-  context: MaterialCookRasterContext | undefined,
-  effective: Parameters<typeof rayMaterialNeedsCoverage>[0],
-): MaterialSnapshot['materialSurfacePrograms'] {
-  if (
-    context === undefined ||
-    context.backend === 'webgl2' ||
-    context.capability === 'uniform-fallback' ||
-    context.geometry !== 'mesh' ||
-    context.instrumentation !== 'none'
-  )
-    return undefined;
-  const projection = materialProjectionForSelection(material, assets);
-  const pass = material.passes?.find((entry) => entry.name.toLowerCase() === 'forward');
-  if (projection === undefined || pass === undefined) return undefined;
-  const programs: NonNullable<MaterialSnapshot['materialSurfacePrograms']> = {};
-  for (const surfaceContext of ['ray-hit', 'card-capture'] as const) {
-    try {
-      const selected = findMaterialPassProgram(projection, pass.name, {
-        backend: context.backend,
-        capability: 'storage-buffer',
-        pipeline: 'ray',
-        geometry: 'mesh',
-        pass: surfaceContext,
-        profile: 'forgeax-material-ray-v1',
-        toolchain: context.toolchain,
-        instrumentation: 'none',
-      });
-      if (selected === undefined) continue;
-      Object.assign(programs, {
-        [surfaceContext]:
-          surfaceContext === 'ray-hit'
-            ? {
-                programKey: selected.specializationKey,
-                evaluateCoverage: rayMaterialNeedsCoverage(effective),
-              }
-            : { programKey: selected.specializationKey },
-      });
-    } catch (error) {
-      if (
-        isMissingMaterialProgram(error) &&
-        (error as { detail?: { matches?: number } }).detail?.matches === 0
-      )
-        continue;
-      throw error;
-    }
-  }
-  return Object.keys(programs).length === 0 ? undefined : programs;
-}
-
-/**
- * Return the exact direct/scene-index programs selected for one renderer
- * context.  The selection result is kept next to the key projection so
- * consumers that validate a mesh contract can inspect the producer ABI
- * without rebuilding pass/context matching from payload order.
- */
-export interface MaterialProgramSelection {
-  readonly pass: string;
-  readonly context: MaterialCookRasterContext;
-  readonly specializationKey: string;
-  readonly abi?: MaterialProgramAbi;
-}
-
-function materialProjectionForSelection(material: MaterialAsset, assets: AssetRegistry) {
-  const projection = assets.getMaterialProjectionForPayload(material);
-  assertMaterialStaticSelection(material.staticSwitches, projection);
-  return projection;
-}
-
-export function materialProgramSelectionsForMaterial(
-  material: MaterialAsset,
-  assets: AssetRegistry,
-  context: MaterialCookRasterContext | undefined,
-  address: 'direct' | 'scene-index' = 'direct',
-  vertexColorAvailable = false,
-): readonly MaterialProgramSelection[] | undefined {
-  const projection = materialProjectionForSelection(material, assets);
-  if (projection === undefined) return undefined;
-  if (context === undefined)
-    throw new Error('Published material selection requires renderer-owned compiler context');
-  return (material.passes ?? []).map((pass) => {
-    const mode = String(
-      (pass.renderState?.tags as Record<string, unknown> | undefined)?.LightMode ?? pass.name,
-    );
-    const selectedContext = materialProgramContextForPass(context, mode);
-    const selected = selectMaterialPassProgram(
-      projection,
-      pass.name,
-      selectedContext,
-      address,
-      vertexColorAvailable,
-    );
-    return {
-      pass: pass.name,
-      context: selectedContext,
-      specializationKey: selected.specializationKey,
-      ...(selected.abi === undefined ? {} : { abi: selected.abi }),
-    };
-  });
-}
-
-/** Freeze lineage from the accepted payload and its already selected programs. */
-export function materialPublicationForMaterial(
-  material: MaterialAsset,
-  assets: AssetRegistry,
-  selected: readonly MaterialProgramSelection[] | undefined,
-  vertexColorAvailable = false,
-): MaterialSnapshot['materialPublication'] {
-  const projection = materialProjectionForSelection(material, assets);
-  if (projection === undefined || selected === undefined) return undefined;
-  return Object.freeze({
-    identity: Object.freeze({
-      materialGuid: projection.materialGuid,
-      publicationGeneration: projection.publicationGeneration,
-      specializationKey: projection.specializationKey,
-      artifactHash: projection.artifactHash,
-    }),
-    programs: Object.freeze(
-      selected.map((program) =>
-        Object.freeze({
-          pass: program.pass,
-          context: Object.freeze({ ...program.context }),
-          address: 'direct' as const,
-          specializationKey: program.specializationKey,
-          artifactHash: selectMaterialPassProgram(
-            projection,
-            program.pass,
-            program.context,
-            'direct',
-            vertexColorAvailable,
-          ).artifactHash,
-        }),
-      ),
-    ),
-  });
-}
-
-/** Resolve the producer's scene-index program key for each cooked Pass. */
-export function materialSceneIndexProgramKeysForMaterial(
-  material: MaterialAsset,
-  assets: AssetRegistry,
-  context: MaterialCookRasterContext | undefined,
-  vertexColorAvailable = false,
-): Readonly<Record<string, MaterialSceneIndexProgramKey>> | undefined {
-  const projection = materialProjectionForSelection(material, assets);
-  if (projection === undefined) return undefined;
-  if (context === undefined)
-    throw new Error('Published material selection requires renderer-owned compiler context');
-  const entries: Record<string, MaterialSceneIndexProgramKey> = {};
-  for (const pass of material.passes ?? []) {
-    const mode = String(
-      (pass.renderState?.tags as Record<string, unknown> | undefined)?.LightMode ?? pass.name,
-    );
-    const selectedContext = materialProgramContextForPass(context, mode);
-    try {
-      const selected = findMaterialPassProgram(
-        projection,
-        pass.name,
-        selectedContext,
-        'scene-index',
-        vertexColorAvailable,
-      );
-      if (selected === undefined) continue;
-      entries[pass.name] = {
-        specializationKey: selected.specializationKey,
-        pass: selectedContext.pass,
-      };
-    } catch (error) {
-      if (!isMissingMaterialProgram(error)) throw error;
-    }
-  }
-  return Object.keys(entries).length === 0 ? undefined : entries;
-}
-
-function isMissingMaterialProgram(error: unknown): boolean {
-  return (
-    error !== null &&
-    typeof error === 'object' &&
-    (error as { readonly code?: unknown }).code === 'material-specialization-not-cooked'
-  );
-}
-
-function materialProgramKeysForAddress(
-  material: MaterialAsset,
-  assets: AssetRegistry,
-  context: MaterialCookRasterContext | undefined,
-  address: 'direct' | 'scene-index',
-  vertexColorAvailable = false,
-): Readonly<Record<string, string>> | undefined {
-  const selections = materialProgramSelectionsForMaterial(
-    material,
-    assets,
-    context,
-    address,
-    vertexColorAvailable,
-  );
-  return selections === undefined
-    ? undefined
-    : Object.fromEntries(
-        selections.map(({ pass, specializationKey }) => [pass, specializationKey]),
-      );
-}
-
-/** The authored Surface/root defines semantics; cooked program hashes do not. */
-export function materialSurfaceModel(
-  passes: readonly MaterialPass[],
-  declared: MaterialSurfaceModel | undefined,
-): MaterialSurfaceModel | undefined {
-  if (declared !== undefined) return declared;
-  const authored = runtimeMaterialShaderIdForMaterial(passes, undefined);
-  return isCanonicalStandardPbrMaterialShader(authored) &&
-    !passes.some(
-      (pass) =>
-        (pass.renderState?.tags as Readonly<Record<string, unknown>> | undefined)?.SurfaceKind ===
-        'full-custom',
-    )
-    ? 'standard'
-    : undefined;
-}
-
 export function pipelineRenderState(
   renderState:
     | (MaterialRenderState & {
@@ -2057,20 +1822,6 @@ export function resolveRuntimeAssetReference<K extends string>(
   return asset.ok && asset.value.kind === kind ? (handle as AssetHandle<K>) : undefined;
 }
 
-/** Select the bound VideoAsset; frame ownership stays with VideoSourceProvider. */
-export function resolveVideoFieldHandle(
-  value: unknown,
-  world: RenderResourceScope,
-  _assetsRef: AssetRegistry,
-): AssetHandle<'video'> | undefined {
-  const texture = materialTextureValue(value);
-  const reference = texture?.texture ?? value;
-  if (typeof reference === 'number')
-    return resolveRuntimeAssetReference(world, reference as AssetHandle<'video'>, 'video');
-  const guid = assetReferenceText(reference);
-  return guid === undefined ? undefined : resolveRuntimeAssetReference(world, guid, 'video');
-}
-
 export function materialTextureValue(value: unknown): MaterialTextureValue | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
   const textureValue = value as Partial<MaterialTextureValue>;
@@ -2114,6 +1865,7 @@ const DEFAULT_MATERIAL_ROUGHNESS = Number(
 /** Value projection shared by primary and secondary material extraction. */
 export function materialValueSnapshot(
   values: Readonly<Record<string, unknown>>,
+  paramSnapshot = captureMaterialParameters(values),
 ): Pick<
   MaterialSnapshot,
   | 'baseColor'
@@ -2128,13 +1880,6 @@ export function materialValueSnapshot(
   const baseColor = values.baseColor as readonly number[] | undefined;
   const specularColor = values.specularColor as readonly number[] | undefined;
   const emissive = values.emissive as readonly number[] | undefined;
-  const paramSnapshot: Record<string, number | number[] | string> = {};
-  for (const [key, value] of Object.entries(values)) {
-    if (typeof value === 'number' || typeof value === 'string') paramSnapshot[key] = value;
-    else if (Array.isArray(value) && value.every((entry) => typeof entry === 'number')) {
-      paramSnapshot[key] = value;
-    }
-  }
   return {
     baseColor: vec3.create(baseColor?.[0] ?? 1, baseColor?.[1] ?? 1, baseColor?.[2] ?? 1),
     metallic: typeof values.metallic === 'number' ? values.metallic : 0,
@@ -2154,6 +1899,23 @@ export function materialValueSnapshot(
     }),
     paramSnapshot,
   };
+}
+
+type NumericMaterialParameters = Record<string, number | number[] | string>;
+
+function writeMaterialParameter(out: NumericMaterialParameters, key: string, value: unknown) {
+  if (typeof value === 'number' || typeof value === 'string') out[key] = value;
+  else if (Array.isArray(value) && value.every((entry) => typeof entry === 'number'))
+    out[key] = value;
+}
+
+function captureMaterialParameters(
+  values: Readonly<Record<string, unknown>>,
+): NumericMaterialParameters {
+  const out: NumericMaterialParameters = {};
+  for (const name in values)
+    if (Object.hasOwn(values, name)) writeMaterialParameter(out, name, values[name]);
+  return out;
 }
 
 export function materialTextureRef(value: unknown): unknown {
@@ -2184,12 +1946,7 @@ export function collectMaterialTextureCoordinates(
 export function materialTextureSourceFields(
   schema: readonly ParamSchemaEntry[] | undefined,
 ): ReadonlySet<string> | undefined {
-  if (schema === undefined) return undefined;
-  const fields = new Set<string>();
-  for (const entry of schema) {
-    if (entry.type.startsWith('texture')) fields.add(entry.name);
-  }
-  return fields;
+  return schema === undefined ? undefined : derive(schema).textureFieldNames;
 }
 
 export interface MaterialTextureSourceStats {
@@ -2205,97 +1962,119 @@ export function collectMaterialTextureSources(
 ): Map<string, MaterialTextureSource> {
   const out = new Map<string, MaterialTextureSource>();
   for (const [field, value] of Object.entries(values)) {
-    if (textureFields !== undefined && !textureFields.has(field)) continue;
-    if (stats !== undefined) stats.sourceFieldsVisited += 1;
-    const source = materialTextureValue(value)?.source;
-    if (!isRenderTextureSourceToken(source)) continue;
-    if (stats !== undefined) {
-      stats.producerRoutes[source.source] = (stats.producerRoutes[source.source] ?? 0) + 1;
-    }
-    out.set(field, source as MaterialTextureSource);
+    const source = selectedTextureSource(field, materialTextureValue(value), textureFields, stats);
+    if (source !== undefined) out.set(field, source);
   }
   return out;
 }
 
-export function collectMaterialTextureSamplers(
+function selectedTextureSource(
+  field: string,
+  texture: MaterialTextureValue | undefined,
+  fields: ReadonlySet<string> | undefined,
+  stats: MaterialTextureSourceStats | undefined,
+): MaterialTextureSource | undefined {
+  if (fields !== undefined && !fields.has(field)) return undefined;
+  if (stats !== undefined) stats.sourceFieldsVisited++;
+  const source = texture?.source;
+  if (!isRenderTextureSourceToken(source)) return undefined;
+  if (stats !== undefined)
+    stats.producerRoutes[source.source] = (stats.producerRoutes[source.source] ?? 0) + 1;
+  return source as MaterialTextureSource;
+}
+
+function materialAssetHandle(world: RenderResourceScope, reference: unknown): number | undefined {
+  if (typeof reference === 'number') return reference;
+  const guid = assetReferenceText(reference);
+  return guid === undefined ? undefined : world.handleForGuid(guid);
+}
+
+/** Asset values own sampler, source and coordinate order. The shader owns physical slot order. */
+function captureMaterialBindings(
   values: Readonly<Record<string, unknown>>,
-  resolveSampler: (value: unknown) => AssetHandle<'sampler'> | undefined,
-): Map<string, AssetHandle<'sampler'>> {
-  const out = new Map<string, AssetHandle<'sampler'>>();
-  for (const [field, value] of Object.entries(values)) {
-    const sampler = resolveSampler(materialTextureValue(value)?.sampler);
-    if (sampler !== undefined) out.set(field, sampler);
+  { sourceFields, fields }: MaterialDeclarationLayout,
+  world: RenderResourceScope,
+  stats: MaterialTextureSourceStats | undefined,
+) {
+  const paramSnapshot: NumericMaterialParameters = {};
+  let samplerHandles: Map<string, AssetHandle<'sampler'>> | undefined;
+  let textureCoordinates: Map<string, MaterialTextureCoordinates> | undefined;
+  let textureSources: Map<string, MaterialTextureSource> | undefined;
+  const sampler = (field: string, value: unknown) => {
+    const handle = materialAssetHandle(world, materialTextureRef(value));
+    if (handle === undefined) return;
+    const asset = world.resolveAsset(handle);
+    if (asset.ok && asset.value.kind === 'sampler') {
+      samplerHandles ??= new Map();
+      samplerHandles.set(field, handle as AssetHandle<'sampler'>);
+    }
+  };
+  for (const field in values) {
+    if (!Object.hasOwn(values, field)) continue;
+    const value = values[field];
+    writeMaterialParameter(paramSnapshot, field, value);
+    const texture = materialTextureValue(value);
+    if (texture?.coordinates !== undefined && field.endsWith('Texture')) {
+      textureCoordinates ??= new Map();
+      textureCoordinates.set(field, texture.coordinates);
+    }
+    if (texture?.sampler !== undefined) sampler(field, texture.sampler);
+    const source = selectedTextureSource(field, texture, sourceFields, stats);
+    if (source !== undefined) {
+      textureSources ??= new Map();
+      textureSources.set(field, source);
+    }
   }
-  const legacySampler = resolveSampler(values.sampler);
-  if (legacySampler !== undefined && !out.has('baseColorTexture')) {
-    out.set('baseColorTexture', legacySampler);
+
+  const slots = captureMaterialSlots(values, fields, world);
+  if (Object.hasOwn(values, 'sampler') && values.sampler !== undefined) {
+    slots.authoredSamplerFields ??= new Set();
+    slots.authoredSamplerFields.add('baseColorTexture');
+    if (!samplerHandles?.has('baseColorTexture')) sampler('baseColorTexture', values.sampler);
   }
-  return out;
+  return { ...slots, paramSnapshot, textureSources, samplerHandles, textureCoordinates };
 }
 
-/**
- * feat-20260621-learn-render-5-5-parallax M2 / w7 (D-3): collect the
- * user-region texture handles for a material by iterating the shader's
- * `derive(paramSchema).textureFieldNames` SSOT (via
- * `AssetRegistry.materialShaderTextureFieldNames`). Each declared texture
- * field whose paramValue resolves to a handle lands in the returned map keyed
- * by field name; this is the single path through which an arbitrary number of user-region
- * textures (8 Standard or 9+ custom, e.g. parallax `heightTexture`) flow.
- *
- * When the shader is not registered the built-in Standard field set is used
- * so standard materials still resolve. Emissive and occlusion are ordinary
- * schema-driven user-region textures in that set.
- *
- * feat-20260623-world-space-video-asset M4 / w14 (D-5): a field whose paramValue
- * catalogues to a VideoAsset is routed into `videoOut` (a VideoAsset-branded
- * handle) instead of the TextureAsset map, so the record stage pulls its view
- * from the transient DynamicTextureStore (D-3) rather than the static
- * ensureResident cache (AC-08). The video GUID still has to be in this
- * `textureFieldNames` traversal set or it is never inspected (R-7) — that
- * membership is asserted in w13.
- */
-export function collectUserRegionTextureHandles(
-  pv: Readonly<Record<string, unknown>>,
-  shaderId: string | undefined,
-  paramSchema: readonly ParamSchemaEntry[] | undefined,
-  assetsRef: AssetRegistry,
+/** Resolve each populated physical texture slot exactly once, in shader declaration order. */
+function captureMaterialSlots(
+  values: Readonly<Record<string, unknown>>,
+  fields: ReadonlySet<string> | undefined,
   world: RenderResourceScope,
-  resolveTex: (
-    value: unknown,
-    brand: 'texture' | 'gpu-texture',
-  ) => AssetHandle<'texture' | 'gpu-texture'> | undefined,
-  videoOut: Map<string, AssetHandle<'video'>>,
-): Map<string, AssetHandle<'texture' | 'gpu-texture'>> {
-  const fields =
-    materialTextureFields(
-      shaderId,
-      paramSchema !== undefined
-        ? derive(paramSchema).textureFieldNames
-        : shaderId !== undefined
-          ? assetsRef.materialShaderTextureFieldNames(shaderId)
-          : undefined,
-    ) ?? BUILTIN_MATERIAL_TEXTURE_FIELDS;
-  const out = new Map<string, AssetHandle<'texture' | 'gpu-texture'>>();
-  for (const field of fields) {
-    // D-5: a video-kind paramValue is routed to the transient path (videoOut),
-    // NOT minted as a TextureAsset (which would crash the record-stage
-    // ensureResident, AC-08). A static field falls through to resolveTex.
-    const videoHandle = resolveVideoFieldHandle(pv[field], world, assetsRef);
-    if (videoHandle !== undefined) {
-      videoOut.set(field, videoHandle);
-      continue;
+) {
+  let authoredTextureFields: Set<string> | undefined;
+  let authoredSamplerFields: Set<string> | undefined;
+  let textureHandles: Map<string, AssetHandle<'texture' | 'gpu-texture'>> | undefined;
+  let videoTextureFields: Map<string, AssetHandle<'video'>> | undefined;
+  for (const field of fields ?? BUILTIN_MATERIAL_TEXTURE_FIELD_SET) {
+    const value = values[field];
+    const texture = materialTextureValue(value);
+    if (fields !== undefined && Object.hasOwn(values, field)) {
+      authoredTextureFields ??= new Set();
+      authoredTextureFields.add(field);
+      if (texture?.sampler !== undefined) {
+        authoredSamplerFields ??= new Set();
+        authoredSamplerFields.add(field);
+      }
     }
-    const value = materialTextureRef(pv[field]);
-    const handle = resolveTex(value, 'texture') ?? resolveTex(value, 'gpu-texture');
-    if (handle !== undefined) out.set(field, handle);
+    const handle = materialAssetHandle(world, texture?.texture ?? value);
+    if (handle === undefined) continue;
+    const asset = world.resolveAsset(handle);
+    if (!asset.ok) continue;
+    if (asset.value.kind === 'video') {
+      videoTextureFields ??= new Map();
+      videoTextureFields.set(field, handle as AssetHandle<'video'>);
+    } else if (asset.value.kind === 'texture' || asset.value.kind === 'gpu-texture') {
+      textureHandles ??= new Map();
+      textureHandles.set(field, handle as AssetHandle<'texture' | 'gpu-texture'>);
+    }
   }
-  return out;
+  return { authoredTextureFields, authoredSamplerFields, textureHandles, videoTextureFields };
 }
 
 interface StandardSampleInputs {
-  readonly textureHandles: ReadonlyMap<string, number>;
-  readonly samplerHandles: ReadonlyMap<string, number>;
-  readonly textureCoordinates: ReadonlyMap<string, MaterialTextureCoordinates>;
+  readonly textureHandles: ReadonlyMap<string, number> | undefined;
+  readonly samplerHandles: ReadonlyMap<string, number> | undefined;
+  readonly textureCoordinates: ReadonlyMap<string, MaterialTextureCoordinates> | undefined;
 }
 
 function sameSampleCoordinates(
@@ -2319,6 +2098,7 @@ export function materialStandardTextureMask(
   shaderId: string | undefined,
   values: Readonly<Record<string, unknown>>,
   sampling?: StandardSampleInputs,
+  defaultPresence?: number,
 ): number | undefined {
   // The stock depth writer consumes the same Standard texture override even
   // when it is the material's only pass (for example a camera-layer caster).
@@ -2327,17 +2107,9 @@ export function materialStandardTextureMask(
     shaderId !== 'forgeax::default-shadow-caster'
   )
     return undefined;
-  const presence = standardTextureMask(
-    // Canonical materials may provide values without redeclaring the root
-    // schema. Pruning must agree with the texture binder in that route too.
-    DEFAULT_STANDARD_PBR_PARAM_SCHEMA.filter(
-      (entry) =>
-        entry.type === 'texture2d' &&
-        (values[entry.name] !== undefined ||
-          parameters?.some(
-            (parameter) => parameter.name === entry.name && parameter.default !== undefined,
-          )),
-    ),
+  const presence = standardTextureValueMask(
+    values,
+    defaultPresence ?? standardTextureDefaultMask(parameters ?? []),
   );
   const projection = standardProjectionMask(
     (name) => values[name] ?? parameters?.find((parameter) => parameter.name === name)?.default,
@@ -2347,12 +2119,13 @@ export function materialStandardTextureMask(
     presence +
     projection +
     standardSampleReuseMask(presence, (source, target) => {
-      const texture = sampling.textureHandles.get(source);
-      if (texture === undefined || texture !== sampling.textureHandles.get(target)) return false;
-      if (sampling.samplerHandles.get(source) !== sampling.samplerHandles.get(target)) return false;
+      const texture = sampling.textureHandles?.get(source);
+      if (texture === undefined || texture !== sampling.textureHandles?.get(target)) return false;
+      if (sampling.samplerHandles?.get(source) !== sampling.samplerHandles?.get(target))
+        return false;
       return sameSampleCoordinates(
-        sampling.textureCoordinates.get(source),
-        sampling.textureCoordinates.get(target),
+        sampling.textureCoordinates?.get(source),
+        sampling.textureCoordinates?.get(target),
       );
     })
   );
@@ -2401,6 +2174,22 @@ export function materialParamSchemaForMaterial(
   passes: readonly MaterialPass[],
   assets?: AssetRegistry,
 ): readonly ParamSchemaEntry[] {
+  return projectMaterialParamSchema(
+    parameters,
+    selectedShaderId,
+    passes,
+    selectedShaderId === undefined
+      ? undefined
+      : assets?.shaderRegistry.materialParamSchemaProjection(selectedShaderId)?.schema,
+  );
+}
+
+function projectMaterialParamSchema(
+  parameters: readonly MaterialParameter[],
+  selectedShaderId: string | undefined,
+  passes: readonly MaterialPass[],
+  registeredSchema: readonly ParamSchemaEntry[] | undefined,
+): readonly ParamSchemaEntry[] {
   const firstPass =
     passes.find(
       (pass) =>
@@ -2420,8 +2209,8 @@ export function materialParamSchemaForMaterial(
     (schemaShaderId === undefined &&
       selectedShaderId === runtimeMaterialShaderIdForMaterial(passes, undefined))
       ? undefined
-      : assets?.shaderRegistry.materialArtifact(selectedShaderId);
-  return materialParametersToParamSchema(parameters, schemaShaderId, registered?.paramSchema);
+      : registeredSchema;
+  return materialParametersToParamSchema(parameters, schemaShaderId, registered);
 }
 
 /**
@@ -2436,10 +2225,9 @@ export function materialColorParameterSchema(
   assets: AssetRegistry,
 ): readonly MaterialColorParameterSchema[] {
   if (shaderId === undefined) return parameters;
-  const shader = assets.shaderRegistry.materialArtifact(shaderId);
-  // Source Workers prepare values before a GPU owner installs built-in programs.
-  // Color semantics use the same canonical fallback as their parameter ABI.
-  const schema = materialParametersToParamSchema([], shaderId, shader?.paramSchema);
+  const declaration = assets.shaderRegistry.materialParamSchemaProjection(shaderId)?.schema;
+  const schema = materialParametersToParamSchema([], shaderId, declaration);
+  if (parameters.length === 0 && schema.length > 0) return schema;
   if (schema.length === 0) return parameters;
 
   const byName = new Map<string, MaterialColorParameterSchema>(
@@ -2490,6 +2278,7 @@ export function storeMaterialSnapshot(
   snapshot: MaterialSnapshot,
   world: RenderResourceScope,
   programSelections?: readonly MaterialProgramSelection[],
+  declarationLayout?: MaterialDeclarationSlot,
 ): MaterialSnapshotCacheEntry {
   const previous = cache.get(handleRaw);
   try {
@@ -2499,9 +2288,7 @@ export function storeMaterialSnapshot(
       (waterMaterialNeedsSourceSnapshot(snapshot) || previous?.snapshot.sourceAssets !== undefined
         ? captureMaterialSource(world, handleRaw)
         : undefined);
-    const accepted = captureMaterialSnapshot(
-      source === undefined ? snapshot : { ...snapshot, sourceAssets: source },
-    );
+    const accepted = captureMaterialSnapshot(snapshot, source);
     // A retained owner must keep its complete previous material closure on candidate failure.
     const resource =
       source === undefined && previous !== undefined
@@ -2512,6 +2299,7 @@ export function storeMaterialSnapshot(
     const planarRouted = planarRoutingBySnapshot.get(snapshot);
     const entry: MaterialSnapshotCacheEntry = {
       snapshot: accepted,
+      ...(declarationLayout === undefined ? {} : { declarationLayout }),
       ...(programSelections === undefined ? {} : { programSelections }),
       assetRevision: renderAssetRevision(world, handleRaw) ?? 0,
       ...(planarRouted === undefined ? {} : { planarRouted }),
@@ -2528,9 +2316,100 @@ export function storeMaterialSnapshot(
   }
 }
 
-// Program facts are memoized per snapshot only when these fields are deep-frozen JSON.
-function fixedJson<T>(value: T): T {
-  return value !== null && typeof value === 'object' ? freezeJson(value) : value;
+interface MaterialDeclarationLayout {
+  readonly declaration: object | undefined;
+  readonly shader: string | undefined;
+  readonly publication: ReturnType<
+    AssetRegistry['shaderRegistry']['materialParamSchemaProjection']
+  >;
+  readonly routed: boolean | undefined;
+  readonly passes: readonly MaterialPass[];
+  readonly authoredShader: string | undefined;
+  readonly renderState: MaterialSnapshot['renderState'];
+  readonly surfaceModel: MaterialSnapshot['surfaceModel'];
+  readonly deferredPass: boolean;
+  readonly transparent: boolean;
+  readonly schema: readonly ParamSchemaEntry[];
+  readonly colors: ReturnType<typeof compileMaterialColorProjection>;
+  readonly defaultPresence: number;
+  readonly sourceFields: ReadonlySet<string> | undefined;
+  readonly fields: ReadonlySet<string> | undefined;
+}
+
+/** Each material context owns one layout for its admitted passes and fields. Values and resource handles are read on every edit. */
+export interface MaterialDeclarationSlot {
+  current?: MaterialDeclarationLayout;
+}
+
+function resolveDeclarationLayout(
+  material: MaterialAsset,
+  assets: AssetRegistry,
+  keys: Readonly<Record<string, string>> | undefined,
+  world: World | undefined,
+  slot: MaterialDeclarationSlot | undefined,
+): MaterialDeclarationLayout {
+  const declaration = runtimeMaterialDeclaration(assets, material);
+  const previous = slot?.current;
+  const parameters = material.parameters ?? [];
+  // A value edit keeps the admitted pass declaration. A planar receiver observes the
+  // current World demand even when every edit in this frame was numeric.
+  const route =
+    previous !== undefined &&
+    declaration !== undefined &&
+    previous.declaration === declaration &&
+    (previous.routed === undefined || previous.routed === planarCaptureDemanded(world))
+      ? previous
+      : planarRoutedPasses(material.passes ?? [], parameters, world);
+  const shader = runtimeMaterialShaderIdForMaterial(route.passes, keys);
+  const publication =
+    shader === undefined ? undefined : assets.shaderRegistry.materialParamSchemaProjection(shader);
+  if (
+    previous !== undefined &&
+    route === previous &&
+    previous.shader === shader &&
+    previous.publication === publication
+  )
+    return previous;
+  // Each admitted layout owns the detached passes referenced by its fixed snapshots.
+  const passes =
+    declaration !== undefined && slot !== undefined && !isDeepFrozenJson(route.passes)
+      ? freezeJson(structuredClone(route.passes))
+      : route.passes;
+  const schema = projectMaterialParamSchema(parameters, shader, passes, publication?.schema);
+  const colors =
+    shader === undefined ? [] : materialParametersToParamSchema([], shader, publication?.schema);
+  const sourceFields = materialTextureSourceFields(schema.length > 0 ? schema : undefined);
+  const layout = {
+    declaration,
+    shader,
+    publication,
+    routed: route.routed,
+    passes,
+    authoredShader: runtimeMaterialShaderIdForMaterial(passes, undefined),
+    renderState: pipelineRenderState(passes[0]?.renderState, passes[0]?.outputs),
+    surfaceModel: materialSurfaceModel(passes, material.surface?.model),
+    deferredPass: passes.some(
+      (pass) =>
+        String(
+          (pass.renderState?.tags as Record<string, unknown> | undefined)?.LightMode ?? pass.name,
+        ) === 'Deferred',
+    ),
+    transparent: passes[0]?.renderState?.blend !== undefined,
+    schema,
+    defaultPresence: standardTextureDefaultMask(parameters),
+    colors: compileMaterialColorProjection(
+      colors.length === 0 ? parameters : colors,
+      material.colorSpace,
+      colors.length === 0 ? undefined : parameters,
+    ),
+    sourceFields,
+    fields: materialTextureFields(
+      shader,
+      sourceFields ?? publication?.derivedInterface.textureFieldNames,
+    ),
+  };
+  if (slot !== undefined) slot.current = layout;
+  return layout;
 }
 
 /** Shared preparation for first use, submesh bindings and asset-only adoption. */
@@ -2540,22 +2419,26 @@ export function prepareMaterialSnapshot({
   assets: assetsRef,
   shaderRegistry = assetsRef.shaderRegistry,
   material: programOwner,
-  programSelections,
+  programs,
   materialContext,
   textureSourceStats: materialTextureSourceStats,
   vertexColorAvailable = false,
   geometry = materialContext?.geometry ?? 'mesh',
+  previousProgramSnapshot,
+  declarationLayout,
 }: {
   readonly handle: number;
   readonly world: RenderResourceScope;
   readonly assets: AssetRegistry;
   readonly shaderRegistry?: AssetRegistry['shaderRegistry'];
   readonly material: MaterialAsset;
-  readonly programSelections: readonly MaterialProgramSelection[] | undefined;
+  readonly programs?: MaterialRasterPrograms;
   readonly materialContext?: MaterialCookRasterContext | undefined;
   readonly textureSourceStats?: MaterialTextureSourceStats | undefined;
   readonly vertexColorAvailable?: boolean;
   readonly geometry?: MaterialCookRasterContext['geometry'];
+  readonly previousProgramSnapshot?: MaterialSnapshot | undefined;
+  readonly declarationLayout?: MaterialDeclarationSlot | undefined;
 }): MaterialSnapshot {
   const resolved = {
     passes: programOwner.passes ?? [],
@@ -2564,65 +2447,44 @@ export function prepareMaterialSnapshot({
     colorSpace: programOwner.colorSpace,
     surface: programOwner.surface,
   };
-  // A planar receiver shades forward only while its world publishes a capture;
-  // otherwise its Deferred pass admits it to the G-buffer (and so to SSR).
-  const planarRouting = planarRoutedPasses(resolved.passes, resolved.parameters, world.world);
-  const allPasses = planarRouting.passes;
-  const materialProgramKeys =
-    programSelections === undefined
-      ? undefined
-      : Object.fromEntries(
-          programSelections.map(({ pass, specializationKey }) => [pass, specializationKey]),
-        );
-  const materialSceneIndexProgramKeys = materialSceneIndexProgramKeysForMaterial(
+  const raster =
+    programs ??
+    captureMaterialRasterPrograms(programOwner, assetsRef, materialContext, vertexColorAvailable);
+  const materialProgramKeys = raster.keys;
+  const materialSceneIndexProgramKeys = materialSceneIndexProgramsForProjection(
     programOwner,
-    assetsRef,
+    raster.projection,
     materialContext,
     vertexColorAvailable,
   );
-  const materialSurfacePrograms = materialSurfaceProgramsForMaterial(
+  const materialSurfacePrograms = materialSurfaceProgramsForProjection(
     programOwner,
-    assetsRef,
+    raster.projection,
     materialContext,
     resolved,
   );
-  const firstPassShader = runtimeMaterialShaderIdForMaterial(allPasses, materialProgramKeys);
-  const pv = materialValuesToLinearRuntime(
-    resolved.values,
-    materialColorParameterSchema(resolved.parameters ?? [], firstPassShader, assetsRef),
-    resolved.colorSpace,
-  ) as Readonly<Record<string, unknown>>;
-  const valueSnapshot = materialValueSnapshot(pv);
-  const paramSnap = valueSnapshot.paramSnapshot;
-
-  const materialParamSchema = materialParamSchemaForMaterial(
-    resolved.parameters ?? [],
-    firstPassShader,
-    allPasses,
+  const layout = resolveDeclarationLayout(
+    programOwner,
     assetsRef,
+    materialProgramKeys,
+    world.world,
+    declarationLayout,
   );
-  const resolveTexLike = <B extends string>(
-    value: unknown,
-    brand: B,
-  ): AssetHandle<B> | undefined => {
-    if (typeof value === 'number') {
-      const asset = world.resolveAsset(value);
-      return asset.ok && asset.value.kind === brand ? (value as AssetHandle<B>) : undefined;
-    }
-    const guid = assetReferenceText(value);
-    return guid === undefined ? undefined : resolveRuntimeAssetReference(world, guid, brand);
-  };
-  const authoredTextureFields = collectAuthoredMaterialTextureFields(
-    resolved.values,
-    firstPassShader,
-    materialParamSchema.length > 0 ? materialParamSchema : undefined,
-    assetsRef,
-  );
-  const authoredSamplerFields = collectAuthoredMaterialSamplerFields(
-    resolved.values,
+  const { shader: firstPassShader, authoredShader, passes: allPasses, surfaceModel } = layout;
+  const materialParamSchema = layout.schema;
+  const pv = layout.colors(resolved.values) as Readonly<Record<string, unknown>>;
+  const bindings = captureMaterialBindings(pv, layout, world, materialTextureSourceStats);
+  const {
+    paramSnapshot: paramSnap,
     authoredTextureFields,
-  );
-  const authoredShader = runtimeMaterialShaderIdForMaterial(allPasses, undefined);
+    authoredSamplerFields,
+    textureHandles,
+    samplerHandles,
+    videoTextureFields,
+    textureCoordinates,
+    textureSources,
+  } = bindings;
+  const valueSnapshot = materialValueSnapshot(pv, paramSnap);
   const captureSpriteMaterialParameters = () => {
     if (authoredShader === 'forgeax::sprite' || authoredShader === 'forgeax::sprite-lit') {
       const region = paramSnap.region;
@@ -2634,24 +2496,11 @@ export function prepareMaterialSnapshot({
     }
   };
   captureSpriteMaterialParameters();
-  const videoTextureFields = new Map<string, AssetHandle<'video'>>();
-  const textureHandles = collectUserRegionTextureHandles(
-    pv,
-    firstPassShader,
-    materialParamSchema.length > 0 ? materialParamSchema : undefined,
-    assetsRef,
-    world,
-    resolveTexLike,
-    videoTextureFields,
-  );
-  const samplerHandles = collectMaterialTextureSamplers(pv, (value) =>
-    resolveTexLike(materialTextureRef(value), 'sampler'),
-  );
   const recordSpriteRepeatSamplerDiagnostic = () => {
     if (authoredShader === 'forgeax::sprite' || authoredShader === 'forgeax::sprite-lit') {
       const slices = paramSnap.slicesAndMode;
       if (Array.isArray(slices) && (slices[3] ?? 0) < 0) {
-        const handle = samplerHandles.get('baseColorTexture');
+        const handle = samplerHandles?.get('baseColorTexture');
         const sampler = handle === undefined ? undefined : world.resolveAsset(handle);
         if (
           sampler?.ok &&
@@ -2663,20 +2512,13 @@ export function prepareMaterialSnapshot({
     }
   };
   recordSpriteRepeatSamplerDiagnostic();
-  const textureSources = collectMaterialTextureSources(
-    pv,
-    materialTextureSourceFields(materialParamSchema.length > 0 ? materialParamSchema : undefined),
-    materialTextureSourceStats,
-  );
-  const emissiveTextureHandle = textureHandles.get('emissiveTexture');
-  const occlusionTextureHandle = textureHandles.get('occlusionTexture');
-  const textureCoordinates = collectMaterialTextureCoordinates(pv);
+  const emissiveTextureHandle = textureHandles?.get('emissiveTexture');
+  const occlusionTextureHandle = textureHandles?.get('occlusionTexture');
   // Named user-region fields are derived from the map (sprite + legacy reads).
-  const baseColorTextureHandle = textureHandles.get('baseColorTexture');
-  const metallicRoughnessTextureHandle = textureHandles.get('metallicRoughnessTexture');
-  const normalTextureHandle = textureHandles.get('normalTexture');
+  const baseColorTextureHandle = textureHandles?.get('baseColorTexture');
+  const metallicRoughnessTextureHandle = textureHandles?.get('metallicRoughnessTexture');
+  const normalTextureHandle = textureHandles?.get('normalTexture');
 
-  const surfaceModel = materialSurfaceModel(allPasses, resolved.surface?.model);
   const programInputs: Record<string, MaterialProgramInputs> = {};
   let positionBounds: MaterialProgramAbi['positionBounds'] =
     allPasses.length === 0 ? undefined : 'standard-input';
@@ -2684,16 +2526,22 @@ export function prepareMaterialSnapshot({
     for (const pass of allPasses) {
       const key =
         materialProgramKeys?.[pass.name] ?? runtimeMaterialShaderId(pass.program.module, pass.name);
-      const shader = key === undefined ? undefined : shaderRegistry.findMaterialArtifact(key);
+      const declaration =
+        key === undefined ? undefined : shaderRegistry.materialArtifactDeclaration(key);
+      const shader =
+        declaration?.kind === 'source'
+          ? { program: declaration, receipt: declaration.receipt }
+          : key === undefined
+            ? undefined
+            : shaderRegistry.materialArtifact(key);
       if (
-        shader?.ok !== true ||
         key === undefined ||
         (geometry === 'skinned'
-          ? !skinnedPositionProof(shader.value.receipt, key, assetsRef.shaderRegistry)
-          : shader.value.receipt?.positionBounds !== 'standard-input')
+          ? !skinnedPositionProof(shader?.receipt, key, shaderRegistry)
+          : shader?.receipt?.positionBounds !== 'standard-input')
       )
         positionBounds = undefined;
-      const inputs = shader?.ok ? materialProgramInputs(shader.value) : undefined;
+      const inputs = shader === undefined ? undefined : materialProgramInputs(shader);
       if (inputs !== undefined) programInputs[pass.name] = inputs;
     }
   };
@@ -2703,45 +2551,37 @@ export function prepareMaterialSnapshot({
       ? {}
       : { staticSwitches: Object.freeze({ ...programOwner.staticSwitches }) }),
     ...(positionBounds === undefined ? {} : { positionBounds }),
-    materialContext: fixedJson({ geometry, vertexColor: vertexColorAvailable }),
-    passes: fixedJson(structuredClone(allPasses)),
+    materialContext: Object.freeze({ geometry, vertexColor: vertexColorAvailable }),
+    passes: allPasses,
     ...valueSnapshot,
     ...(surfaceModel === undefined ? {} : { surfaceModel }),
     ...(resolved.surface?.deformation === undefined
       ? {}
       : { waterDeformation: resolved.surface.deformation }),
-    deferredPass: allPasses.some(
-      (pass) =>
-        String(
-          (pass.renderState?.tags as Record<string, unknown> | undefined)?.LightMode ?? pass.name,
-        ) === 'Deferred',
-    ),
+    deferredPass: layout.deferredPass,
     materialShaderId: firstPassShader,
-    materialProgramKeys: fixedJson(materialProgramKeys),
+    materialProgramKeys,
     materialProgramInputs: Object.freeze(programInputs),
-    materialPublication: materialPublicationForMaterial(
-      programOwner,
-      assetsRef,
-      programSelections,
-      vertexColorAvailable,
-    ),
+    materialPublication: raster.publication,
     materialSceneIndexProgramKeys,
     materialSurfacePrograms,
     materialHandle: handleRaw,
-    renderState: pipelineRenderState(allPasses[0]?.renderState, allPasses[0]?.outputs),
+    renderState: layout.renderState,
     ...(materialParamSchema.length > 0 && { materialParamSchema }),
-    standardTextureMask: materialStandardTextureMask(resolved.parameters, firstPassShader, pv, {
-      textureHandles,
-      samplerHandles,
-      textureCoordinates,
-    }),
-    ...(textureCoordinates.size > 0 && { textureCoordinates }),
+    standardTextureMask: materialStandardTextureMask(
+      resolved.parameters,
+      firstPassShader,
+      pv,
+      bindings,
+      layout.defaultPresence,
+    ),
+    ...(textureCoordinates !== undefined && { textureCoordinates }),
     ...(authoredTextureFields === undefined ? {} : { authoredTextureFields }),
     ...(authoredSamplerFields === undefined ? {} : { authoredSamplerFields }),
-    ...(textureHandles.size > 0 && { textureHandles }),
-    ...(textureSources.size > 0 && { textureSources }),
-    ...(videoTextureFields.size > 0 && { videoTextureFields }),
-    ...(samplerHandles.size > 0 && { samplerHandles }),
+    ...(textureHandles !== undefined && { textureHandles }),
+    ...(textureSources !== undefined && { textureSources }),
+    ...(videoTextureFields !== undefined && { videoTextureFields }),
+    ...(samplerHandles !== undefined && { samplerHandles }),
     ...(baseColorTextureHandle !== undefined && { baseColorTexture: baseColorTextureHandle }),
     ...(metallicRoughnessTextureHandle !== undefined && {
       metallicRoughnessTexture: metallicRoughnessTextureHandle,
@@ -2749,17 +2589,11 @@ export function prepareMaterialSnapshot({
     ...(normalTextureHandle !== undefined && { normalTexture: normalTextureHandle }),
     ...(emissiveTextureHandle !== undefined && { emissiveTexture: emissiveTextureHandle }),
     ...(occlusionTextureHandle !== undefined && { occlusionTexture: occlusionTextureHandle }),
-    // feat-city-glb Bug 5 (per-submesh transparency): derive `transparent`
-    // from the first pass's `renderState.blend` presence, identical to the
-    // entity-level snapshot builder (extractFrame archetype loop). Without
-    // this, per-submesh materials (materials[i>=1], e.g. a glTF BLEND decal
-    // submesh on a multi-material mesh) never carry the transparent flag, so
-    // the record stage's LDR split + blend routing treats them as opaque and
-    // their alpha=0 texels composite as black.
-    transparent: allPasses[0]?.renderState?.blend !== undefined,
+    transparent: layout.transparent,
   };
-  recordPlanarRouting(snapshot, planarRouting.routed);
-  return snapshot;
+  const prepared = prepareMaterialProgramSnapshot(snapshot, previousProgramSnapshot);
+  recordPlanarRouting(prepared, layout.routed);
+  return prepared;
 }
 
 /** Resolve one accepted material through the renderer's context-local cache. */
@@ -2794,30 +2628,40 @@ export function resolveMaterialSnapshot(
   if (!res.ok) return defaultMaterialSnapshot(handleRaw);
   const asset = res.value;
   if (asset.kind !== 'material') return defaultMaterialSnapshot(handleRaw);
-  const programSelections = materialProgramSelectionsForMaterial(
+  const programs = captureMaterialRasterPrograms(
     asset,
     assetsRef,
     materialContext,
-    'direct',
     vertexColorAvailable,
   );
+  const cache = persistentMaterialSnapshotCache ?? materialSnapshotCache;
+  const declarationLayout =
+    cache === undefined ? undefined : (cache.get(handleRaw)?.declarationLayout ?? {});
   const snapshot = prepareMaterialSnapshot({
+    declarationLayout,
     handle: handleRaw,
     world,
     assets: assetsRef,
     shaderRegistry,
     material: asset,
-    programSelections,
+    programs,
     materialContext,
     textureSourceStats: materialTextureSourceStats,
     vertexColorAvailable,
     geometry,
+    previousProgramSnapshot: persistentMaterialSnapshotCache?.get(handleRaw)?.snapshot,
   });
-  const cache = persistentMaterialSnapshotCache ?? materialSnapshotCache;
   const cacheEntry =
     cache === undefined
       ? undefined
-      : storeMaterialSnapshot(cache, handleRaw, snapshot, world, programSelections);
+      : storeMaterialSnapshot(
+          cache,
+          handleRaw,
+          snapshot,
+          world,
+          programs.selections,
+          declarationLayout,
+        );
   if (cacheEntry !== undefined) {
     materialSnapshotCache?.set(handleRaw, cacheEntry);
   }
@@ -2902,10 +2746,13 @@ export function pssmSplit(
  * @param far  far plane distance  (PointLightShadow.farPlane)
  */
 export function buildPointShadowMatrices(lightPos: Vec3, near: number, far: number): Mat4[] {
-  return buildCubeCameraFaceViews({ position: lightPos, near, far }).map(({ viewProjection }) => {
-    for (const offset of [0, 4, 8, 12]) viewProjection[offset] = -(viewProjection[offset] ?? 0);
-    return viewProjection;
-  });
+  const packed = packedPointShadowMatrices(lightPos, near, far);
+  const faces: Mat4[] = [];
+  for (let offset = 0; offset < packed.length; offset += 16) {
+    // brand-cast-ok: each caller-owned matrix spans exactly sixteen float elements.
+    faces.push(packed.slice(offset, offset + 16) as Mat4);
+  }
+  return faces;
 }
 /** The camera facts a directional cascade fit reads. */
 export const CSM_CAMERA_KEYS = [
@@ -2938,7 +2785,6 @@ export interface DirectionalCsmConfig {
   readonly shadowBiasMode?: number;
   readonly shadowRadius?: number;
   readonly shadowIntensity?: number;
-  readonly shadowBlurSamples?: number;
   /** Authored CPU cascade cadence; absent means disabled. */
   readonly staggerCascades?: boolean;
   /** `true` adds the GPU-driven static cascade layer; absent means one layer per cascade. */
@@ -3009,6 +2855,29 @@ function createCsmScratch() {
 }
 let freeCsmScratch: ReturnType<typeof createCsmScratch> | undefined;
 
+/** All cascade slices share the camera basis captured for this fit. */
+function prepareCsmCameraBasis(
+  camera: CsmCameraData,
+  scratch: ReturnType<typeof createCsmScratch>['slice'],
+): void {
+  // A singular camera transform reads as identity, matching mat4.invert.
+  // Every scratch below is fully overwritten before it is read.
+  const world = mat4.invert(scratch.world, mat4.invert(scratch.inverse, camera.world));
+  vec3.normalize(
+    scratch.forward,
+    vec3.set(scratch.axis, -(world[8] as number), -(world[9] as number), -(world[10] as number)),
+  );
+  vec3.set(scratch.origin, world[12] as number, world[13] as number, world[14] as number);
+  vec3.normalize(
+    scratch.right,
+    vec3.set(scratch.axis, world[0] as number, world[1] as number, world[2] as number),
+  );
+  vec3.normalize(
+    scratch.up,
+    vec3.set(scratch.axis, world[4] as number, world[5] as number, world[6] as number),
+  );
+}
+
 /** Fill private invocation storage; only numeric facts leave this helper. */
 function computeSliceSphere(
   camera: CsmCameraData,
@@ -3017,19 +2886,7 @@ function computeSliceSphere(
   scratch: ReturnType<typeof createCsmScratch>['slice'],
   sphere: { center: Vec3; radius: number },
 ): { readonly center: Vec3; readonly radius: number } {
-  // A singular camera transform reads as identity, matching mat4.invert.
-  // Every scratch below is fully overwritten before it is read.
-  const world = mat4.invert(scratch.world, mat4.invert(scratch.inverse, camera.world));
-  const forward = vec3.normalize(
-    scratch.forward,
-    vec3.set(scratch.axis, -(world[8] as number), -(world[9] as number), -(world[10] as number)),
-  );
-  const origin = vec3.set(
-    scratch.origin,
-    world[12] as number,
-    world[13] as number,
-    world[14] as number,
-  );
+  const { forward, origin, right, up } = scratch;
   let depth: number;
   let radius: number;
   let offsetX = 0;
@@ -3057,14 +2914,6 @@ function computeSliceSphere(
     offsetY = shearY * depth;
     radius = Math.sqrt((far - depth) ** 2 + far * far * slope) + Math.hypot(shearX, shearY) * far;
   }
-  const right = vec3.normalize(
-    scratch.right,
-    vec3.set(scratch.axis, world[0] as number, world[1] as number, world[2] as number),
-  );
-  const up = vec3.normalize(
-    scratch.up,
-    vec3.set(scratch.axis, world[4] as number, world[5] as number, world[6] as number),
-  );
   vec3.set(
     sphere.center,
     (origin[0] as number) +
@@ -3157,7 +3006,9 @@ export function computeDirectionalCsm(
   }
 }
 
-function csmShadowQuality(config: DirectionalCsmConfig): DirectionalShadowQuality | undefined {
+export function csmShadowQuality(
+  config: DirectionalCsmConfig,
+): DirectionalShadowQuality | undefined {
   return directionalShadowQualityFromF32(
     config.shadowFilter ?? (DirectionalLight.fields.shadowFilter.default as number),
     config.shadowAngularRadius ?? (DirectionalLight.fields.shadowAngularRadius.default as number),
@@ -3214,6 +3065,7 @@ function computeDirectionalCsmWithScratch(
   if (cameraData === undefined) return null;
   const resultLightViewProjs: Float32Array[] = [];
   const cascadeFits: DirectionalShadowCascadeFit[] = [];
+  prepareCsmCameraBasis(cameraData, scratch.slice);
   const fullRadius = computeSliceSphere(
     cameraData,
     sNear,
@@ -3360,6 +3212,8 @@ export interface PreparedExtractContext {
   readonly instanceCollections: InstanceProjectionStore | undefined;
   /** Retains this World's environment entries until one of their inputs changes. */
   readonly environmentGate?: EnvironmentFrameGate;
+  readonly environmentLightingOnly?: boolean;
+  readonly cameraSource?: EnvironmentCameraReader;
 }
 
 /** The change-driven environment owner of a source's extraction. */
@@ -3513,6 +3367,7 @@ export function projectAuxiliaryCamerasForView(
       projection: computeProjectionMatrix(display, mat4.create()),
       plane: [...planar.normal, planar.distance],
       clipBias: planar.clipBias,
+      extraFovDegrees: planar.captureExtraFovDegrees,
     });
     if (reflected === undefined) return [];
     return [
@@ -3533,12 +3388,15 @@ export function projectAuxiliaryCamerasForView(
         world: reflected.world,
         position: reflected.position,
         captureProjection: reflected.projection,
+        cullMask: ((display.cullMask ?? 0xffffffff) & planar.captureCullMask) >>> 0,
         planarReflection: planar,
         clearColor: [0, 0, 0, 0] as const,
       },
     ];
   });
 }
+
+const NO_ROLE_CAMERAS: readonly CameraSnapshot[] = Object.freeze([]);
 
 export function selectCameraRoles(
   world: World,
@@ -3547,53 +3405,58 @@ export function selectCameraRoles(
   cameraReader?: EnvironmentCameraReader,
 ): CameraRoleSelection {
   const snapshots = collectCameraSnapshots(world, cameraReader);
-  const cameras = snapshots.filter((camera) => camera.planarReflection === undefined);
-  const planar = snapshots.filter((camera) => camera.planarReflection !== undefined);
-  const views = cameras.filter((camera) => camera.view !== undefined);
-  const displayEntities = cameras
-    .filter((camera) => camera.target === undefined && camera.view === undefined)
-    .map((camera) => camera.entityKey ?? 0);
-  const hasExplicitSelection = requestedEntityKey !== undefined;
-  const activeCameraIndex = selectActiveCameraIndex(
-    displayEntities,
-    hasExplicitSelection ? requestedEntityKey : getActiveCamera(world)?.entity,
-  );
-  // An explicit FrameCamera selection is authoritative. If it does not name a
-  // display camera, retain the existing no-camera error path instead of
-  // silently selecting the first camera. ActiveCamera keeps its established
-  // first-hit fallback when no explicit frame selection is supplied.
-  const displayEntityKey = hasExplicitSelection
-    ? displayEntities[activeCameraIndex]
-    : (displayEntities[activeCameraIndex] ?? displayEntities[0]);
-  const display =
-    view !== undefined
-      ? view.camera === undefined
-        ? []
-        : [view.camera]
-      : views.length > 0
-        ? views
-        : displayEntityKey === undefined
-          ? []
-          : cameras.filter((camera) => camera.entityKey === displayEntityKey);
-  const candidates: CameraTargetCandidate[] = cameras
-    .filter((camera) => camera.view === undefined)
-    .map((camera) => ({
-      entityKey: camera.entityKey ?? 0,
-      ...(camera.target === undefined ? {} : { target: camera.target }),
-      ...(camera.targetLayer === undefined ? {} : { targetLayer: camera.targetLayer }),
-      requestVersion: 0,
-      update: 'continuous',
-    }));
-  const selected = selectCameraTargetViews(candidates, {
-    ...(displayEntityKey === undefined ? {} : { displayEntityKey }),
-    budget: 1,
-  });
-  const auxiliary = selected.auxiliary.flatMap((candidate) =>
-    cameras.filter((camera) => camera.entityKey === candidate.entityKey),
-  );
-  // Retain every camera's authored reflection across publication. Each RenderSystem
-  // projects only its own view before recording; source extraction never picks a winner.
-  return { display, auxiliary: [...auxiliary, ...planar] };
+  const requested = requestedEntityKey ?? getActiveCamera(world)?.entity;
+  let firstDisplay: number | undefined;
+  let selectedDisplay: number | undefined;
+  let views: CameraSnapshot[] | undefined;
+  let reflections: CameraSnapshot[] | undefined;
+  let targets: CameraTargetCandidate[] | undefined;
+  for (const camera of snapshots) {
+    if (camera.planarReflection !== undefined) {
+      reflections ??= [];
+      reflections.push(camera);
+    } else if (camera.view !== undefined) {
+      views ??= [];
+      views.push(camera);
+    } else if (camera.target !== undefined) {
+      targets ??= [];
+      targets.push({
+        entityKey: camera.entityKey ?? 0,
+        target: camera.target,
+        ...(camera.targetLayer === undefined ? {} : { targetLayer: camera.targetLayer }),
+        requestVersion: 0,
+        update: 'continuous',
+      });
+    } else {
+      const key = camera.entityKey ?? 0;
+      firstDisplay ??= key;
+      if (key === requested) selectedDisplay = key;
+    }
+  }
+  // An explicitly requested missing entity must remain unresolved. ActiveCamera may fall back.
+  const displayKey =
+    selectedDisplay ?? (requestedEntityKey === undefined ? firstDisplay : undefined);
+  let display: readonly CameraSnapshot[] = views ?? NO_ROLE_CAMERAS;
+  if (view !== undefined) display = view.camera === undefined ? NO_ROLE_CAMERAS : [view.camera];
+  else if (views === undefined && displayKey !== undefined)
+    display = snapshots.filter(
+      (camera) => camera.planarReflection === undefined && camera.entityKey === displayKey,
+    );
+  let auxiliary: readonly CameraSnapshot[] = reflections ?? NO_ROLE_CAMERAS;
+  if (targets !== undefined) {
+    const selected = selectCameraTargetViews(targets, {
+      ...(displayKey === undefined ? {} : { displayEntityKey: displayKey }),
+      budget: 1,
+    });
+    const writers: CameraSnapshot[] = [];
+    for (const candidate of selected.auxiliary)
+      for (const camera of snapshots)
+        if (camera.planarReflection === undefined && camera.entityKey === candidate.entityKey)
+          writers.push(camera);
+    if (reflections !== undefined) for (const camera of reflections) writers.push(camera);
+    auxiliary = writers;
+  }
+  return { display, auxiliary };
 }
 
 export function extractCameraSnapshots(world: World): CameraSnapshot[] {
@@ -3642,6 +3505,8 @@ export function prepareExtractContext(
     ) => MaterialShaderArtifact | undefined;
     readonly instanceCollections?: InstanceProjectionStore;
     readonly environmentGate?: EnvironmentFrameGate;
+    readonly environmentLightingOnly?: boolean;
+    readonly cameraSource?: EnvironmentCameraReader;
   } = {},
 ): PreparedExtractContext {
   const renderables = options.renderables ?? 'full';
@@ -3670,6 +3535,8 @@ export function prepareExtractContext(
     getMaterialShaderArtifact: options.getMaterialShaderArtifact,
     instanceCollections: options.instanceCollections,
     ...(options.environmentGate === undefined ? {} : { environmentGate: options.environmentGate }),
+    ...(options.environmentLightingOnly ? { environmentLightingOnly: true } : {}),
+    ...(options.cameraSource === undefined ? {} : { cameraSource: options.cameraSource }),
   };
 }
 
@@ -3771,15 +3638,23 @@ function resolveVolumeDensity(
   world: World,
   assets: AssetRegistry | null | undefined,
   worldInternal: WorldInternalView,
-  sourceDensity: unknown,
+  entity: EntityHandle,
 ): {
-  readonly handle: AssetHandle<'texture'>;
-  readonly asset: TextureAsset;
+  readonly handle: AssetHandle<'texture' | 'gpu-texture'>;
+  readonly asset: SampledTextureAsset;
   readonly density: VolumeDensityBinding;
+  readonly digest: string;
 } | null {
-  const densityHandle = Math.round(Number(sourceDensity)) as AssetHandle<'texture'>;
-  const resolved = runtimeAssets(world.assets).resolveAsset<TextureAsset>(densityHandle);
-  if (!resolved.ok || resolved.value.kind !== 'texture') {
+  const sourceDensity =
+    Number(world[worldRead].getFieldValue(entity, VolumetricFog, 'generatedDensity')) ||
+    Number(world[worldRead].getFieldValue(entity, VolumetricFog, 'density'));
+  const densityHandle = Math.round(sourceDensity) as AssetHandle<'texture' | 'gpu-texture'>;
+  const records = runtimeAssets(world.assets);
+  const resolved = records.resolveAsset<SampledTextureAsset>(densityHandle);
+  if (
+    !resolved.ok ||
+    (resolved.value.kind !== 'texture' && resolved.value.kind !== 'gpu-texture')
+  ) {
     worldInternal._routeError(
       resolved.ok
         ? new RhiError({
@@ -3795,12 +3670,14 @@ function resolveVolumeDensity(
   }
   const densityAsset = resolved.value;
   const guid = assets?.guidOf(densityHandle) ?? `handle:${Number(densityHandle)}`;
+  const revision = densityAsset.kind === 'gpu-texture' ? records.version(densityHandle) : undefined;
+  const generation = revision?.ok ? revision.value : 1;
   const shape = densityAsset.shape;
   const density: VolumeDensityBinding =
     shape.viewDimension === '3d'
       ? {
           guid,
-          generation: 1,
+          generation,
           shape: {
             viewDimension: '3d',
             extent: {
@@ -3814,7 +3691,7 @@ function resolveVolumeDensity(
         }
       : {
           guid,
-          generation: 1,
+          generation,
           shape: {
             viewDimension: shape.viewDimension,
             extent:
@@ -3829,7 +3706,11 @@ function resolveVolumeDensity(
           format: densityAsset.format,
           colorSpace: densityAsset.colorSpace,
         };
-  return { handle: densityHandle, asset: densityAsset, density };
+  const digest =
+    densityAsset.kind === 'texture'
+      ? textureDigest(densityAsset)
+      : ['generated', guid, generation].join(':');
+  return { handle: densityHandle, asset: densityAsset, density, digest };
 }
 
 export function extractVolumeSnapshot(
@@ -3867,11 +3748,6 @@ export function extractVolumeSnapshot(
     ) as number;
     const sourceSpotLight =
       sourceSpotLightRaw === ENTITY_NULL_RAW ? null : (sourceSpotLightRaw as EntityHandle);
-    const sourceDensity = world[worldRead].getFieldValue(
-      row.entity,
-      VolumetricFog,
-      'density',
-    ) as ShapeOf<SchemaOf<typeof VolumetricFog>>['density'];
     const sourceAnisotropy = world[worldRead].getFieldValue(
       row.entity,
       VolumetricFog,
@@ -3901,7 +3777,7 @@ export function extractVolumeSnapshot(
     const uniform = sourceSampling === VolumetricFogSamplingValue.uniform;
     const densitySource = uniform
       ? undefined
-      : resolveVolumeDensity(world, assets, worldInternal, sourceDensity);
+      : resolveVolumeDensity(world, assets, worldInternal, row.entity);
     if (densitySource === null) return { status: 'degraded', worldTimeSeconds };
     const authoring: VolumetricFogAuthoring = {
       light: sourceLight,
@@ -3947,7 +3823,7 @@ export function extractVolumeSnapshot(
             densityHandle: densitySource.handle,
             densityAsset: densitySource.asset,
             guid: densitySource.density.guid,
-            digest: textureDigest(densitySource.asset),
+            digest: densitySource.digest,
           }),
       generation: 1,
       ...(selectedLight === undefined

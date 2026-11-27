@@ -681,8 +681,10 @@ try {
     sourceSha: currentSourceSha(),
     invocationId,
   });
-  server = await preview();
-  await waitOn({ resources: [`http://127.0.0.1:${port}`], timeout: 30_000 });
+  const externalPreview = process.env.FORGEAX_COLOR_LIGHTING_PREVIEW_URL;
+  const previewUrl = externalPreview ?? `http://127.0.0.1:${port}`;
+  if (externalPreview === undefined) server = await preview();
+  await waitOn({ resources: [previewUrl], timeout: 30_000 });
   browser = await chromium.launch({
     headless: browserHeadless,
     channel: 'chrome-beta',
@@ -698,7 +700,7 @@ try {
     chromiumSandbox: true,
   });
   const page = await browser.newPage({ viewport: { width: 128, height: 128 } });
-  await page.goto(`http://127.0.0.1:${port}`, { waitUntil: 'networkidle' });
+  await page.goto(previewUrl, { waitUntil: 'networkidle' });
   await page.waitForFunction(() => typeof window.__colorLightingParity === 'function', null, {
     timeout: 30_000,
   });

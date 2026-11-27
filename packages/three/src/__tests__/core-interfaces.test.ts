@@ -114,3 +114,34 @@ it('retains CPU input values, serialization and uniform-group update versions', 
   expect(group.version).toBe(version + 1);
   expect(group.toJSON()).toMatchObject({ name: 'frame', shared: true, version: version + 1 });
 });
+
+it('constructs scoped pose accessors while preserving Three math object behavior', () => {
+  const stop = THREE.enableThreeSourceTracking();
+  let node: THREE.Group, sibling: THREE.Group;
+  try {
+    node = new THREE.Group();
+    sibling = new THREE.Group();
+    expect(Object.getOwnPropertyDescriptor(new THREE.Vector3(), 'x')?.value).toBe(0);
+    expect(Object.getOwnPropertyDescriptor(new THREE.Quaternion(), '_w')?.value).toBe(1);
+  } finally {
+    stop();
+  }
+  const position = node.position;
+  const axis = Object.getOwnPropertyDescriptor(position, 'x');
+  expect(typeof axis?.get).toBe('function');
+  expect(Object.getOwnPropertyDescriptor(sibling.position, 'x')?.get).toBe(axis?.get);
+  expect(Object.keys(position)).toEqual(Object.keys(new THREE.Vector3()));
+  expect(Object.keys(node.quaternion)).toEqual(Object.keys(new THREE.Group().quaternion));
+  expect(Object.getOwnPropertyDescriptor(new THREE.Group().position, 'x')?.value).toBe(0);
+  expect(position.constructor).toBe(THREE.Vector3);
+  expect(position.clone()).toBeInstanceOf(THREE.Vector3);
+  position.set(2, 3, 4);
+  expect(structuredClone(position)).toEqual({ x: 2, y: 3, z: 4 });
+  const child = Object.create(position);
+  child.x = 9;
+  expect(position.x).toBe(2);
+  Object.freeze(sibling.scale);
+  expect(() => {
+    sibling.scale.x = 2;
+  }).toThrow(TypeError);
+});

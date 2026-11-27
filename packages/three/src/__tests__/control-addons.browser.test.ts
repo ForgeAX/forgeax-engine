@@ -99,7 +99,31 @@ function navigation(mode: string, camera: THREE.PerspectiveCamera, canvas: HTMLC
     },
   };
 }
-for (const mode of ['map', 'trackball', 'arcball', 'fly', 'first-person', 'pointer-lock'])
+// These controllers feed the same camera projection to the Renderer. The
+// wheel and keyboard representatives retain independent GPU and replay proofs.
+it.each([
+  'trackball',
+  'arcball',
+  'first-person',
+  'pointer-lock',
+])('updates the source camera from %s controls', { timeout: 120000 }, (mode) => {
+  const canvas = canvasHost();
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+  camera.position.set(0, 0, 3);
+  const input = navigation(mode, camera, canvas);
+  try {
+    expect(input.control).toBeInstanceOf(THREE.Controls);
+    const position = camera.position.clone();
+    input.act();
+    expect(camera.position.distanceTo(position)).toBeGreaterThan(0.01);
+    expect(camera.quaternion.toArray().every(Number.isFinite)).toBe(true);
+  } finally {
+    input.control.dispose();
+    canvas.remove();
+  }
+});
+
+for (const mode of ['map', 'fly'])
   it(`renders source camera motion from ${mode} controls`, { timeout: 120000 }, async () => {
     const canvas = canvasHost(),
       s = testScene(),

@@ -23,6 +23,31 @@ describe('MeshBuilder -> MeshAsset decoder', () => {
     if (decoded.ok) expect(decoded.value.aabb).toEqual(built.value.aabb);
   });
 
+  it('admits rebased triangles and reserved sections through the asset decoder', async () => {
+    const mesh = createMeshBuilder({
+      materialSlots: [{ slotName: 'a' }, { slotName: 'b' }],
+      sections: [
+        {
+          materialSlot: 0,
+          attributes: { position: Float32Array.of(0, 0, 0, 1, 0, 0, 0, 1, 0) },
+          indices: [0, 1, 2],
+        },
+        { materialSlot: 1 },
+        {
+          materialSlot: 0,
+          attributes: { position: Float32Array.of(2, 0, 0, 3, 0, 0, 2, 1, 0) },
+          indices: [0, 1, 2],
+        },
+      ],
+    })
+      .build()
+      .unwrap();
+    const admitted = (await decode(mesh)).unwrap();
+    expect(admitted.indices).toEqual(Uint16Array.of(0, 1, 2, 3, 4, 5));
+    expect(admitted.submeshes).toEqual(mesh.submeshes);
+    expect(admitted.materialSlots).toEqual(mesh.materialSlots);
+  });
+
   it('preserves multiple submesh topology and material slots at the consumer boundary', async () => {
     const built = createMeshBuilder({
       attributes: {

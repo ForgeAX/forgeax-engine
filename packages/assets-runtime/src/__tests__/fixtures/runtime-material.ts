@@ -1,10 +1,52 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import { validateMaterialTemplatePublication } from '@forgeax/engine-pack/material-cook';
 import { type MaterialAsset, ok } from '@forgeax/engine-types';
 import { runtimeAssetReference } from '../../internal';
 import { runtimeAssets } from '../../internal/runtime-assets';
 import type { MaterialReady } from '../../material/loader';
-import { publishRuntimeAssets } from './runtime-publication';
+import { prepareRuntimeAssetPublication, publishRuntimeAssets } from './runtime-publication';
+
+/** Use the same source artifact and verified Catalog route as a Scriptable Pack. */
+export async function prepareRuntimeMaterialTemplate(guid: string, source: MaterialAsset) {
+  return prepareRuntimeMaterialTemplates([{ guid, source }]);
+}
+
+export async function prepareRuntimeMaterialTemplates(
+  inputs: readonly { guid: string; source: MaterialAsset }[],
+) {
+  const { createMaterialPackCooker } = await import(
+    '../../../../shader-compiler/src/material/pack-cooker'
+  );
+  const cooker = createMaterialPackCooker();
+  const blobs: Record<string, Uint8Array> = {};
+  const entries = await Promise.all(
+    inputs.map(async ({ guid, source }) => {
+      const draft = await cooker.cook({ guid, source, publication: 'templates' });
+      const { template: input } = draft.payload as { template: unknown };
+      const template = validateMaterialTemplatePublication(input).unwrap();
+      const { path, digest } = template.sourceArtifact;
+      const artifact = draft.artifacts[path];
+      if (artifact === undefined) throw new Error('Material source template artifact unavailable');
+      blobs[path] = artifact.bytes;
+      return {
+        guid,
+        asset: draft.payload as MaterialAsset,
+        refs: draft.refs,
+        artifacts: {
+          [path]: {
+            path,
+            mediaType: artifact.mediaType,
+            contentEncoding: 'identity' as const,
+            byteLength: artifact.bytes.byteLength,
+            integrity: { algorithm: 'sha256' as const, digest },
+          },
+        },
+      };
+    }),
+  );
+  return prepareRuntimeAssetPublication(entries, blobs);
+}
 
 /** Admit the same cooked record through the ordinary source, decoder and runtime owner. */
 export async function loadMaterialFixture(

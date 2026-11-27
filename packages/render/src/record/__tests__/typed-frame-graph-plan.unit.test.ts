@@ -283,6 +283,7 @@ describe('typed frame graph feature plan authority', () => {
     ],
   ])('returns a structured failure for %s readback', (_name, bytes, sentinel, expectedCode) => {
     const result = validateGraphTargetCaptureReadback({
+      format: 'rgba16float',
       bytes,
       expectedByteLength: 4,
       ...(sentinel === undefined ? {} : { sentinel }),

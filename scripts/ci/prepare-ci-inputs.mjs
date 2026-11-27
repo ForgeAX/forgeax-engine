@@ -105,6 +105,7 @@ export async function main(
     '--shared-artifact-id',
     '--input-fingerprint',
     '--mode',
+    '--retained-core',
   ]);
   for (let i = 0; i < argv.length; i += 2) {
     if (!allowed.has(argv[i]) || argv[i + 1] === undefined)
@@ -113,6 +114,9 @@ export async function main(
   }
   const mode = options.mode ?? 'auto';
   if (!['auto', 'restore', 'build'].includes(mode)) throw new Error(`invalid mode: ${mode}`);
+  const carriesCore = options['retained-core'] === 'true';
+  if (carriesCore && mode !== 'build')
+    throw new Error('retained core is only valid during source recovery');
   const contract = JSON.parse(readFileSync(join(root, 'scripts/ci/build-artifact-contract.json')));
   const consumer = options.consumer;
   const classes = contract.consumers[consumer]?.requiredArtifactClasses;
@@ -142,6 +146,7 @@ export async function main(
   };
   const shared = 'shared-app-inputs';
   let coreRestored = false;
+  let coreRetained = false;
   let sharedRestored = false;
   let sharedRetained = false;
   const publishOutputs = (families) => {
@@ -181,13 +186,23 @@ export async function main(
     rmSync(join(root, shared), { recursive: true, force: true });
     cpSync(join(stage, shared), join(root, shared), { recursive: true });
   };
+  const verifyCore = (inputRoot) =>
+    invoke([
+      'scripts/ci/verify-build-artifact-input.mjs',
+      '--consumer',
+      consumer,
+      '--root',
+      inputRoot,
+      '--transfer-artifact',
+      'core-build',
+    ]);
   try {
     if (existsSync(join(root, '.gitmodules'))) {
       // Persistent Runners may retain existing source at an older gitlink.
       // Synchronize both public owners before comparing artifact provenance.
       await invoke(['scripts/ci/prepare-source-checkout.mjs']);
     }
-    return await prepareInputs({
+    const receipt = await prepareInputs({
       restoreOnly: mode === 'restore',
       restore: async () => {
         if (mode === 'build') return false;
@@ -229,6 +244,8 @@ export async function main(
                 // Leave time for a fresh route inside the shared wall deadline.
                 '--idle-timeout-ms',
                 '25000',
+                '--range-minimum-bytes',
+                String(32 * 1024 * 1024),
               ],
               { timeoutMs, env },
             );
@@ -287,20 +304,11 @@ export async function main(
           }
         }
         if (coreRestored) {
-          // A shared transfer failure does not invalidate the independently
-          // SHA/digest-admitted core archive. Verify its own declared classes
-          // before retaining native bytes for the normal source rebuild.
+          // Preserve the exact-source Core transfer when only shared inputs fail.
           try {
-            await invoke([
-              'scripts/ci/verify-build-artifact-input.mjs',
-              '--consumer',
-              consumer,
-              '--root',
-              stage,
-              '--transfer-artifact',
-              'core-build',
-            ]);
+            await verifyCore(stage);
             publishOutputs(['packages']);
+            coreRetained = !needsApps;
           } catch (error) {
             if (error.cancelled) throw error;
             console.warn(`[ci-inputs] core recovery unavailable: ${error.message}`);
@@ -381,9 +389,12 @@ export async function main(
           // only this consumer's app roots, not every demo in the repository.
           return;
         } else {
-          for (const owner of ['wgpu-wasm', 'fbx', 'codec', 'ui-blitz'])
-            await invoke([`packages/${owner}/scripts/ensure-wasm.mjs`]);
-          await invoke(['scripts/build.mjs', '--packages-only']);
+          if (carriesCore) await verifyCore(root);
+          if (!coreRetained && !carriesCore) {
+            for (const owner of ['wgpu-wasm', 'fbx', 'codec', 'ui-blitz'])
+              await invoke([`packages/${owner}/scripts/ensure-wasm.mjs`]);
+            await invoke(['scripts/build.mjs', '--packages-only']);
+          }
           if (!needsShared) return;
           if (!sharedRetained)
             await invoke([
@@ -407,6 +418,7 @@ export async function main(
         ]);
       },
     });
+    return mode === 'restore' ? { ...receipt, retainedCore: coreRetained } : receipt;
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
@@ -416,7 +428,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   main()
     .then((receipt) => {
       if (process.env.GITHUB_OUTPUT)
-        appendFileSync(process.env.GITHUB_OUTPUT, `needs-build=${receipt.source === 'pending'}\n`);
+        appendFileSync(
+          process.env.GITHUB_OUTPUT,
+          `needs-build=${receipt.source === 'pending'}\nretained-core=${receipt.retainedCore === true}\n`,
+        );
     })
     .catch((error) => {
       console.error(error);

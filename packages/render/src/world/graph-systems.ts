@@ -187,6 +187,7 @@ function settleViewGraph(
     internals.errorRegistry.fire(recordFailureError(cause));
     return { frame, kind: 'failed', cause };
   } finally {
+    frameState.materialBgAssemblyCache.finishRecording();
     frameState.frameNumber += 1;
   }
 }

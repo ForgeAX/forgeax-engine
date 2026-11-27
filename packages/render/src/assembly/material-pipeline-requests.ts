@@ -1,14 +1,21 @@
 import type { VertexLayoutProjection } from '@forgeax/engine-geometry';
-import type { RenderPipeline } from '@forgeax/engine-rhi';
-import type { PipelineGroup2Contract } from '@forgeax/engine-shader';
+import type { BindGroupLayout, RenderPipeline } from '@forgeax/engine-rhi';
 import {
+  findMaterialShaderEntry,
+  type MaterialShaderArtifact,
   type MaterialShaderEntry,
   type MaterialShaderManifestEntry,
   type MaterialShaderManifestVariant,
   materialShaderPreparedSourceRows,
   materialShaderSourceEquals,
+  type PipelineGroup2Contract,
   type RegisteredMaterialShaderEntry,
   type ShaderCatalog,
+  type ShaderRegistry,
+  STANDARD_ORM_REUSE_BIT,
+  STANDARD_ORM_REUSE_OVERRIDE,
+  STANDARD_SURFACE_DISCARDS_OVERRIDE,
+  STANDARD_TEXTURE_MASK_OVERRIDE,
 } from '@forgeax/engine-shader';
 import type {
   MaterialRenderState,
@@ -17,22 +24,58 @@ import type {
   ShaderEntryPointReads,
   VertexAttributeMap,
 } from '@forgeax/engine-types';
+import {
+  CLUSTER_LIGHT_VIEW_SLOT,
+  CLUSTER_PARAMS_VIEW_SLOT,
+  hasStandardViewReads,
+  POINTS_LINES_VIEW_SLOT,
+  projectViewLayout,
+  viewEntryReads,
+} from '../environment/bindings';
 import type { RenderFeatureShaderModuleMode } from '../features/types';
+import { projectRasterWindowLayout } from '../gpu-driven/raster-window-layout';
 import { materialProgramInputs, requireStandardGBufferReceipt } from '../material-program-inputs';
 import {
   applySurfaceDiscardAxis,
+  COLORLESS_COVERAGE_FRAGMENT_ENTRY,
   materialProgramRasterConstants,
+  projectStandardCoverageConstants,
+  variantSetForSurfaceDiscards,
 } from '../material-stage-constants';
-import { isCanonicalStandardPbrMaterialShader, SKIN_MATERIAL_SHADER_ID } from '../pbr-pipeline';
+import {
+  buildOpaqueStandardPipelineLayout,
+  canProjectOpaqueStandardMaterial,
+  createHdrpBindGroupLayoutDescriptor,
+  gpuDrivenPrimitiveLayoutEntries,
+  isCanonicalStandardPbrMaterialShader,
+  isStandardGBufferEntry,
+  SHADOW_CASTER_SHADER_ID,
+  SKIN_MATERIAL_SHADER_ID,
+  skinMeshArrayLayoutDescriptor,
+} from '../pbr-pipeline';
+import { isForwardShadowColorEntry } from '../pipeline/forward-shadow-admission';
+import { pipelineVertexEntry } from '../pipeline-builder';
 import { cacheKeyOf, type PipelineSpec } from '../pipeline-spec';
-import type { MaterialShaderPipelineEntry } from '../record/render-context';
+import { POINTS_LINES_MATERIAL_SHADER_ID } from '../points-lines/record';
+import type {
+  MaterialShaderPipelineEntry,
+  PipelinePreparationCompletion,
+} from '../record/render-context';
 import { materialProgramSource } from '../record/standard-opaque-entry';
+import {
+  primitiveReflectionReads,
+  projectPrimitiveReflectionLayout,
+} from '../reflection/primitive-bindings';
+import type { RasterPassRequestInspection } from '../render-contract';
+import { shaderBindingVisibility } from '../shader-binding-visibility';
 import type { createMaterialLayoutCache } from './material/layout-cache';
+import { preparedPipelineViews } from './material/layout-cache';
 import {
   findStandardPbrEntry,
   isSharedLayoutMaterialShader,
   materialPipelineArtifactRequest,
   materialPipelineKeyVertexEntry,
+  resolveMaterialPipelineBindGroups,
   resolveMaterialPipelineShaderId,
 } from './material/pipeline-helpers';
 import {
@@ -64,6 +107,158 @@ import {
   resolveWebGPUVertexBufferLayouts,
 } from './webgpu-vertex-layouts';
 
+export interface MaterialLayoutProjections {
+  readonly opaqueStandard?: boolean;
+  readonly material: ReadonlySet<number> | undefined;
+  readonly view: ReturnType<typeof viewEntryReads>;
+  readonly probeBlend?: boolean;
+  readonly primitiveReflection?: number;
+  readonly rasterWindow?: ReadonlyMap<number, number> | undefined;
+}
+
+// ShaderRegistry publishes deep-frozen reflection arrays. Keep derived reads
+// with that publication, shared across its attachment and vertex-layout PSOs.
+const reflectedMaterialLayouts = new WeakMap<
+  readonly ShaderEntryPointReads[],
+  Map<string, MaterialLayoutProjections>
+>();
+
+/** A missing stage declaration cannot establish that a draw is independent of group 1. */
+export function shadowStagesIgnoreMaterial(
+  entries: readonly ShaderEntryPointReads[] | undefined,
+  vertex: string,
+  fragment: string | null,
+): boolean {
+  const vs = findMaterialShaderEntry(entries, vertex, 'vertex');
+  if (vs === undefined || vs.bindings.some((read) => read.group === 1)) return false;
+  if (fragment === null) return true;
+  const fs = findMaterialShaderEntry(entries, fragment, 'fragment');
+  return fs !== undefined && !fs.bindings.some((read) => read.group === 1);
+}
+
+export function materialLayoutProjections(
+  entryPoints: readonly ShaderEntryPointReads[] | undefined,
+  vertex: string | undefined,
+  fragment: string | null | undefined,
+  projectSurface: boolean,
+): MaterialLayoutProjections {
+  if (entryPoints === undefined) return unreflectedMaterialLayout;
+  let layouts = reflectedMaterialLayouts.get(entryPoints);
+  if (layouts === undefined) {
+    layouts = new Map();
+    reflectedMaterialLayouts.set(entryPoints, layouts);
+  }
+  // Entry points are WGSL identifiers. Distinguish omitted and vertex-only fragments.
+  const key = `${vertex ?? 'vs_main'}:${fragment === null ? '-' : (fragment ?? '')}:${projectSurface ? 1 : 0}`;
+  const existing = layouts.get(key);
+  if (existing !== undefined) return existing;
+  const projected = reflectMaterialLayout(entryPoints, vertex, fragment, projectSurface);
+  layouts.set(key, projected);
+  return projected;
+}
+
+const unreflectedMaterialLayout: MaterialLayoutProjections = {
+  material: undefined,
+  view: undefined,
+};
+
+function selectMaterialEntryBindings(
+  entries: readonly ShaderEntryPointReads[] | undefined,
+  vertex: string | undefined,
+  fragment: string | null | undefined,
+): ReadonlySet<number> | undefined {
+  const vs = findMaterialShaderEntry(entries, vertex ?? 'vs_main', 'vertex');
+  const fs = findMaterialShaderEntry(entries, fragment, 'fragment');
+  if (vs === undefined || (fragment !== null && fs === undefined)) return undefined;
+  const reads = new Set<number>();
+  for (const binding of vs.bindings) if (binding.group === 1) reads.add(binding.binding);
+  for (const binding of fs?.bindings ?? []) if (binding.group === 1) reads.add(binding.binding);
+  return reads;
+}
+
+function reflectMaterialLayout(
+  entryPoints: readonly ShaderEntryPointReads[],
+  vertex: string | undefined,
+  fragment: string | null | undefined,
+  projectSurface: boolean,
+): MaterialLayoutProjections {
+  const material = projectSurface
+    ? selectMaterialEntryBindings(entryPoints, vertex, fragment)
+    : undefined;
+  return {
+    opaqueStandard:
+      (fragment === null && material !== undefined) ||
+      canProjectOpaqueStandardMaterial(entryPoints, vertex, fragment),
+    material,
+    view: viewEntryReads(entryPoints, vertex, fragment),
+    rasterWindow:
+      fragment != null &&
+      (fragment === 'fs_main' ||
+        isStockForwardSurfaceEntry(fragment) ||
+        isStandardGBufferEntry(fragment)) &&
+      vertex?.startsWith('vs_scene_index')
+        ? shaderBindingVisibility(entryPoints, 3, { vertex, fragment })
+        : undefined,
+    primitiveReflection: primitiveReflectionReads(entryPoints, fragment),
+    probeBlend:
+      entryPoints.some(
+        (entry) =>
+          entry.stage === 'fragment' &&
+          entry.name === fragment &&
+          entry.bindings.some(({ group, binding }) => group === 3 && binding === 1),
+      ) === true,
+  };
+}
+
+function isStockForwardSurfaceEntry(fragment: string | null | undefined): boolean {
+  return (
+    fragment === 'fs_opaque' ||
+    fragment === 'fs_forward_screen' ||
+    isForwardShadowColorEntry(fragment)
+  );
+}
+
+const pointsLinesViewReads = new Map([
+  [0, 3],
+  [POINTS_LINES_VIEW_SLOT, 1],
+]);
+
+function hasProjectedViewResources(view: MaterialLayoutProjections['view']): boolean {
+  return (
+    view?.has(POINTS_LINES_VIEW_SLOT) === true ||
+    view?.has(CLUSTER_LIGHT_VIEW_SLOT) === true ||
+    view?.has(CLUSTER_PARAMS_VIEW_SLOT) === true ||
+    hasStandardViewReads(view)
+  );
+}
+
+function projectsProbeBlend(
+  projections: MaterialLayoutProjections | undefined,
+  variantSet: string | undefined,
+): boolean {
+  return (
+    projections?.probeBlend === true || variantSet?.includes('PROBE_BLEND_AVAILABLE=true') === true
+  );
+}
+
+function selectedPrimitiveReflection(
+  device: import('@forgeax/engine-rhi').RhiDevice,
+  layoutKind: LayoutKind,
+  contract: PipelineGroup2Contract,
+  base: import('@forgeax/engine-rhi').BindGroupLayout,
+  reads: number,
+) {
+  if (reads === 0) return undefined;
+  const { storageBuffer } = device.caps;
+  const entries = layoutKind.startsWith('gpu-driven-')
+    ? gpuDrivenPrimitiveLayoutEntries(layoutKind.endsWith('skin'))
+    : (contract === 'skin' || contract === 'skin-cluster'
+        ? skinMeshArrayLayoutDescriptor({ storageBuffer })
+        : createHdrpBindGroupLayoutDescriptor(storageBuffer)
+      ).entries;
+  return projectPrimitiveReflectionLayout(device, base, entries, reads);
+}
+
 export function runBuildPipelineContext(
   getShader: () => import('@forgeax/engine-shader').ShaderRegistry,
   currentPipelineState: () => import('../record/render-context').PipelineState | null,
@@ -75,9 +270,11 @@ export function runBuildPipelineContext(
     materialBgl: import('@forgeax/engine-rhi').BindGroupLayout | undefined,
     shaderIdentity: string,
     entryPoints?: readonly import('@forgeax/engine-types').ShaderEntryPointReads[] | undefined,
+    reads?: MaterialLayoutProjections['view'],
   ) => {
     readonly pipelineLayout: import('@forgeax/engine-rhi').PipelineLayout;
     readonly group2Layout: import('@forgeax/engine-rhi').BindGroupLayout;
+    readonly view: import('@forgeax/engine-rhi').BindGroupLayout;
   } | null,
   currentMaterialShaderUvSetCounts: () => Map<string, number>,
   currentBuildDevice: () => import('@forgeax/engine-rhi').RhiDevice,
@@ -123,6 +320,11 @@ export function runBuildPipelineContext(
   entryPoints?: readonly ShaderEntryPointReads[],
   waterSystemInputs = false,
   preparedStorageBindings = false,
+  projectOpaqueLayout = false,
+  projections?: MaterialLayoutProjections,
+  selectPositionOnly?: (
+    vertexBuffers: readonly GPUVertexBufferLayout[],
+  ) => MaterialLayoutProjections | undefined,
 ) {
   const selectMaterialContractLayout = () => {
     const contractLayoutKind: LayoutKind =
@@ -177,6 +379,7 @@ export function runBuildPipelineContext(
         bindingContract === 'post-process' ||
         bindingContract === 'render-material-with-scene-depth' ||
         bindingContract === 'render-material-and-scene-depth' ||
+        bindingContract === 'render-lit-material-and-scene-depth' ||
         bindingContract === 'render-standard-material-and-scene-depth') &&
       materialShaderId !== undefined &&
       (bindingContract === 'post-process' || isPreparedMaterialVertexLayout(vertexLayout))
@@ -184,6 +387,7 @@ export function runBuildPipelineContext(
             materialShaderId,
             group2Contract === 'cluster',
             waterInfoFormat,
+            projections?.view,
           )
         : null;
     return {
@@ -217,6 +421,7 @@ export function runBuildPipelineContext(
           perShaderLayout?.materialBgl,
           programIdentity ?? materialShaderId ?? '',
           entryPoints,
+          projections?.view,
         )
       : null;
   if (waterSystemInputs && bindingContract !== 'post-process' && waterWavesLayout === null)
@@ -246,8 +451,103 @@ export function runBuildPipelineContext(
                     : selectPipelineLayoutForVariant(currentState, variantSet, layoutKind));
     return pipelineLayout;
   };
-  const pipelineLayout = selectMaterialPipelineLayout();
-  if (pipelineLayout === null) return null;
+  const fullPipelineLayout = selectMaterialPipelineLayout();
+  if (fullPipelineLayout === null) return null;
+  const explicitResourceLayout = () =>
+    waterWavesLayout !== null ||
+    group0Layout !== null ||
+    group0ResourceLayout !== null ||
+    viewOnlyLayout !== null ||
+    viewAndSceneDepthLayout !== null ||
+    preparedMaterialLayout !== null ||
+    storageLayout !== null;
+  const stockStandard = isCanonicalStandardPbrMaterialShader(materialShaderId);
+  const makeSelectedLayout = (
+    view: BindGroupLayout,
+    bindGroups: NonNullable<ReturnType<typeof resolveMaterialPipelineBindGroups>>,
+    material: BindGroupLayout,
+  ) => {
+    if (!projectOpaqueLayout || !stockStandard) {
+      return {
+        layout: viewOnlyProjection(
+          currentBuildDevice(),
+          fullPipelineLayout,
+          view,
+          material,
+          bindGroups,
+        ),
+        index: 0,
+        material,
+      };
+    }
+    return buildOpaqueStandardPipelineLayout(
+      currentBuildDevice(),
+      fullPipelineLayout,
+      view,
+      material,
+      bindGroups.meshLayout,
+      bindGroups.instancesLayout,
+      projections?.material,
+    );
+  };
+  const shouldProjectMaterial = (
+    viewReads: MaterialLayoutProjections['view'],
+    windowReads: MaterialLayoutProjections['rasterWindow'],
+    primitiveReads: number,
+  ) => {
+    const projectedReads =
+      primitiveReads !== 0 || windowReads !== undefined || hasProjectedViewResources(viewReads);
+    return (
+      (projectOpaqueLayout || viewReads !== undefined || windowReads !== undefined) &&
+      (projectedReads || stockStandard) &&
+      !explicitResourceLayout() &&
+      (perShaderLayout === null || projectedReads)
+    );
+  };
+  const projectMaterial = () => {
+    const primitiveReads = projections?.primitiveReflection ?? 0;
+    const viewReads =
+      projections?.view ??
+      (materialShaderId === POINTS_LINES_MATERIAL_SHADER_ID ? pointsLinesViewReads : undefined);
+    const windowReads = projections?.rasterWindow;
+    if (currentState === null || !shouldProjectMaterial(viewReads, windowReads, primitiveReads))
+      return undefined;
+    const probe = projectsProbeBlend(projections, variantSet);
+    const bindGroups = resolveMaterialPipelineBindGroups(layoutKind, currentState, probe);
+    if (bindGroups === null) return undefined;
+    const view =
+      viewReads === undefined
+        ? currentState.viewBindGroupLayout
+        : projectViewLayout(currentBuildDevice(), currentState.viewBindGroupLayout, viewReads);
+    const primitive = selectedPrimitiveReflection(
+      currentBuildDevice(),
+      layoutKind,
+      group2Contract,
+      bindGroups.meshLayout,
+      primitiveReads,
+    );
+    const meshLayout = primitive?.layout ?? bindGroups.meshLayout;
+    const window = projectRasterWindowLayout(
+      currentBuildDevice(),
+      bindGroups.instancesLayout,
+      windowReads,
+    );
+    const instancesLayout = window?.layout ?? bindGroups.instancesLayout;
+    const material = perShaderLayout?.materialBgl ?? currentState.materialBindGroupLayout;
+    if (
+      !(projectOpaqueLayout && stockStandard) &&
+      view === currentState.viewBindGroupLayout &&
+      primitive === undefined &&
+      window === undefined
+    )
+      return undefined;
+    const selected = makeSelectedLayout(
+      view,
+      { ...bindGroups, meshLayout, instancesLayout },
+      material,
+    );
+    return selected === undefined ? undefined : { ...selected, view, primitive, window };
+  };
   const resolvePipelineUvSetCount = () => {
     const currentMaterialUvSetCounts = currentMaterialShaderUvSetCounts();
     const resolvedUvSetCount =
@@ -267,6 +567,12 @@ export function runBuildPipelineContext(
     meshAttributes,
     particleInputLanes,
   });
+  const positionOnly = selectPositionOnly?.(vertexBuffers);
+  if (positionOnly !== undefined) {
+    projections = positionOnly;
+    projectOpaqueLayout = positionOnly.opaqueStandard === true;
+  }
+  const opaquePipelineLayout = projectMaterial();
   const createMaterialPipelineContext = () => {
     return {
       device: currentBuildDevice(),
@@ -276,7 +582,51 @@ export function runBuildPipelineContext(
           isCanonicalStandardPbrMaterialShader(materialShaderId))
           ? getShaderModuleAdapter('immediate')
           : getShaderModuleAdapter(),
-      pipelineLayout,
+      pipelineLayout: opaquePipelineLayout?.layout ?? fullPipelineLayout,
+      standardMaterialLayoutIndex: opaquePipelineLayout?.index ?? 0,
+      reflectedPositionOnly: positionOnly !== undefined,
+      rasterMaterialLayout:
+        currentState !== null &&
+        materialShaderId !== undefined &&
+        materialShaderEntry?.ok &&
+        (bindingContract === 'render-material' ||
+          bindingContract === 'render-lit-material-and-scene-depth' ||
+          bindingContract === 'render-material-and-scene-depth' ||
+          bindingContract === 'render-material-with-scene-depth') &&
+        !explicitResourceLayout() &&
+        !waterSystemInputs &&
+        materialShaderEntry.value.receipt?.systemInputs?.water === undefined &&
+        materialShaderEntry.value.receipt?.surface?.model !== 'single-layer-medium' &&
+        materialShaderEntry.value.receipt?.surface?.model !== 'single-layer-water' &&
+        materialShaderId !== 'forgeax::single-layer-medium' &&
+        materialShaderId !== 'forgeax::single-layer-water'
+          ? {
+              shader: materialShaderId,
+              schema: materialShaderEntry.value.paramSchema,
+              layout:
+                opaquePipelineLayout?.material ??
+                perShaderLayout?.materialBgl ??
+                currentState.materialBindGroupLayout,
+              index: opaquePipelineLayout?.index ?? 0,
+              perShaderLayout: perShaderLayout?.materialBgl,
+              lit: bindingContract === 'render-lit-material-and-scene-depth',
+            }
+          : undefined,
+      shadowPassMaterialLayout:
+        materialShaderId === SHADOW_CASTER_SHADER_ID &&
+        (layoutKind === 'pbr' || layoutKind === 'pbr-skin') &&
+        currentState !== null &&
+        perShaderLayout === null &&
+        !explicitResourceLayout() &&
+        (opaquePipelineLayout?.index ?? 0) === 0
+          ? currentState.materialBindGroupLayout
+          : undefined,
+      primitiveReflectionLayout: opaquePipelineLayout?.primitive,
+      rasterWindowLayout: opaquePipelineLayout?.window,
+      standardViewLayout:
+        opaquePipelineLayout?.view ??
+        waterWavesLayout?.view ??
+        preparedPipelineViews.get(fullPipelineLayout),
       ...(waterWavesLayout === null ? {} : { waterGroup2Layout: waterWavesLayout.group2Layout }),
       vertexBuffers,
       ...(layoutKind === 'pbr-skin' ||
@@ -287,6 +637,140 @@ export function runBuildPipelineContext(
     };
   };
   return createMaterialPipelineContext();
+}
+
+const viewOnlyProjections = new WeakMap<
+  import('@forgeax/engine-rhi').PipelineLayout,
+  WeakMap<
+    import('@forgeax/engine-rhi').BindGroupLayout,
+    WeakMap<BindGroupLayout, WeakMap<BindGroupLayout, import('@forgeax/engine-rhi').PipelineLayout>>
+  >
+>();
+
+function viewOnlyProjection(
+  device: Pick<import('@forgeax/engine-rhi').RhiDevice, 'createPipelineLayout'>,
+  full: import('@forgeax/engine-rhi').PipelineLayout,
+  view: import('@forgeax/engine-rhi').BindGroupLayout,
+  material: import('@forgeax/engine-rhi').BindGroupLayout,
+  groups: NonNullable<ReturnType<typeof resolveMaterialPipelineBindGroups>>,
+) {
+  let layouts = viewOnlyProjections.get(full);
+  if (layouts === undefined) {
+    layouts = new WeakMap();
+    viewOnlyProjections.set(full, layouts);
+  }
+  let byPrimitive = layouts.get(view);
+  if (byPrimitive === undefined) {
+    byPrimitive = new WeakMap();
+    layouts.set(view, byPrimitive);
+  }
+  let byInstances = byPrimitive.get(groups.meshLayout);
+  if (byInstances === undefined) {
+    byInstances = new WeakMap();
+    byPrimitive.set(groups.meshLayout, byInstances);
+  }
+  const cached = byInstances.get(groups.instancesLayout);
+  if (cached !== undefined) return cached;
+  const layout = device
+    .createPipelineLayout({
+      label: 'standard-projected-view-pipeline-layout',
+      bindGroupLayouts: [view, material, groups.meshLayout, groups.instancesLayout],
+    })
+    .unwrap();
+  byInstances.set(groups.instancesLayout, layout);
+  return layout;
+}
+
+function selectedMaterialPipelineVariant(
+  shaderId: string,
+  shader: import('@forgeax/engine-shader').ShaderRegistry,
+  variantSet: string | undefined,
+  hasVertexLayout: boolean,
+  requestedVariant: Parameters<typeof runBuildMaterialShaderPipeline>[5],
+): string | undefined {
+  const manifest = shader.materialShaderManifestEntry(shaderId);
+  return resolveMaterialPipelineVariantSet(
+    requestedVariant(variantSet, shaderId, manifest),
+    manifest,
+    shaderId,
+    hasVertexLayout,
+  );
+}
+
+function resolveMaterialPipelineStages(
+  standardCoverage: boolean,
+  stockStandard: boolean,
+  shadowCaster: boolean,
+  materialShaderEntry: ReturnType<ShaderCatalog['findMaterialArtifact']>,
+  constants: Readonly<Record<string, number>> | undefined,
+  vertexEntry: string | undefined,
+  vertexEntryPoint: string | undefined,
+  fragmentEntry: string | null | undefined,
+) {
+  const program = materialProgramSource(materialShaderEntry);
+  // A custom ShadowCaster can share a Standard material's texture snapshot
+  // without declaring its specialization ABI. Normalize before the PSO key
+  // so undeclared Engine values neither invalidate nor duplicate that PSO.
+  constants = materialProgramRasterConstants(constants, program);
+  // Programs that predate fs_opaque keep their default forward entry.
+  // `null` (vertex-only depth) needs no declared entry.
+  if (standardCoverage) {
+    vertexEntry = 'vs_coverage';
+    vertexEntryPoint = 'vs_coverage';
+    fragmentEntry = 'fs_coverage';
+  }
+  // Stock Standard binds the screen receiver through a specialized surface
+  // program selected later. Its unprojected artifact need not declare the entry.
+  if (!stockStandard || !isForwardShadowColorEntry(fragmentEntry)) {
+    fragmentEntry = declaredOrVertexOnlyFragmentEntry(fragmentEntry, materialShaderEntry);
+  }
+  if (standardCoverage) constants = projectStandardCoverageConstants(constants, 'coverage');
+  else if (
+    shadowCaster ||
+    (stockStandard &&
+      (fragmentEntry === null || fragmentEntry === COLORLESS_COVERAGE_FRAGMENT_ENTRY))
+  )
+    constants = projectStandardCoverageConstants(
+      constants,
+      fragmentEntry === null ? 'vertex' : 'projected-coverage',
+    );
+  return { constants, vertexEntry, vertexEntryPoint, fragmentEntry };
+}
+
+function selectStockSurfaceResources(
+  shader: ShaderRegistry,
+  identifier: string,
+  variant: string | undefined,
+  pass: PassKind,
+  fragment: string | null | undefined,
+  constants: Readonly<Record<string, number>> | undefined,
+  onPending: ((completion: PipelinePreparationCompletion) => void) | undefined,
+) {
+  const forward = pass === 'forward' && isStockForwardSurfaceEntry(fragment);
+  const deferred =
+    pass === 'deferred' && (fragment === undefined || isStandardGBufferEntry(fragment));
+  if (
+    !isCanonicalStandardPbrMaterialShader(identifier) ||
+    (!forward && !deferred) ||
+    variant === undefined ||
+    variant.includes('TRANSMISSION_AVAILABLE=true') ||
+    variant.includes('WATER_WAVES_AVAILABLE=true')
+  )
+    return undefined;
+  const mask = constants?.[STANDARD_TEXTURE_MASK_OVERRIDE];
+  const screenShadow = fragment === 'fs_forward_sun_shadow' ? true : undefined;
+  if (mask === undefined && screenShadow === undefined) return undefined;
+  return shader
+    .selectStandardSurfaceProgram(
+      identifier,
+      variant,
+      mask === undefined
+        ? undefined
+        : mask + (constants?.[STANDARD_ORM_REUSE_OVERRIDE] === 1 ? STANDARD_ORM_REUSE_BIT : 0),
+      screenShadow,
+      onPending,
+    )
+    .unwrap();
 }
 
 export function runBuildMaterialShaderPipeline(
@@ -320,6 +804,8 @@ export function runBuildMaterialShaderPipeline(
     import('./material/prepared-pipeline-owner').PreparedRenderPipelineOwner
   >,
   materialPipelineBuildable: (cacheKey: string) => boolean,
+  prepareMaterialProgram: (id: string) => boolean,
+  onPending: ((completion: PipelinePreparationCompletion) => void) | undefined,
   selectMaterialPipelineSource: (
     pipelineShaderId: string,
     effectiveVariantSet: string | undefined,
@@ -328,6 +814,7 @@ export function runBuildMaterialShaderPipeline(
     renderState: import('@forgeax/engine-types').MaterialRenderState | undefined,
     depthFormatOverride: GPUTextureFormat | null | undefined,
     vertexLayout: string | undefined,
+    surfaceProgram?: Pick<RegisteredMaterialShaderEntry, 'program' | 'receipt'>,
   ) => import('./webgpu-renderer-contract').MaterialPipelineSource | null,
   buildAndCachePipeline: (
     cacheKey: string,
@@ -360,10 +847,14 @@ export function runBuildMaterialShaderPipeline(
     pipelinePreparation?: boolean,
     waterInfoFormat?: 'rgba16float' | 'rgba32float' | undefined,
     preparedStorageBindings?: boolean,
+    projectSurfaceResources?: boolean,
   ) => import('@forgeax/engine-rhi').RenderPipeline | null,
   getOrBuildPreparedStoragePipelineLayout: ReturnType<
     typeof createMaterialLayoutCache
   >['getOrBuildPreparedStoragePipelineLayout'],
+  inspectRequest:
+    | ((request: RasterPassRequestInspection, pipeline: RenderPipeline | null) => void)
+    | undefined,
   materialShaderId: string,
   isHdr: boolean,
   renderState?: MaterialRenderState,
@@ -390,11 +881,14 @@ export function runBuildMaterialShaderPipeline(
   preparedStorageBindings = false,
   pipelinePreparation = false,
 ): RenderPipeline | null {
+  const requestedVariant = variantSet;
   // The raster class requests LOD-fade / view-clipping discards as a mask;
   // they are a compile-time source axis, so resolve them before any key.
   ({ variantSet, constants } = applySurfaceDiscardAxis(variantSet, constants));
-  const coverageOnly =
-    passKind === 'temporal' && variantSet?.split('+').includes('COVERAGE_ONLY=true') === true;
+  const requestedCoverage = variantSet?.includes('COVERAGE_ONLY=true') === true;
+  const stockStandard = isCanonicalStandardPbrMaterialShader(materialShaderId);
+  const standardCoverage = requestedCoverage && stockStandard;
+  const coverageOnly = requestedCoverage && (passKind === 'temporal' || standardCoverage);
   // WebGL2 is a downlevel backend even when the record stage asks for the
   // native-capability variant string. Resolve the variant axes at this
   // shared PSO seam so the shader source, BGL layout, and cache key agree on
@@ -411,29 +905,42 @@ export function runBuildMaterialShaderPipeline(
     internals.device.caps.backendKind,
     assets.getMaterialArtifact(materialShaderIdForPass),
   );
-  const materialShaderEntry = getShader().findMaterialArtifact(pipelineShaderId);
-  const program = materialProgramSource(materialShaderEntry);
-  // A custom ShadowCaster can share a Standard material's texture snapshot
-  // without declaring its specialization ABI. Normalize before the PSO key
-  // so undeclared Engine values neither invalidate nor duplicate that PSO.
-  constants = materialProgramRasterConstants(constants, program);
-  // Programs that predate fs_opaque keep their default forward entry.
-  // `null` (vertex-only depth) needs no declared entry.
-  fragmentEntry = declaredOrVertexOnlyFragmentEntry(fragmentEntry, materialShaderEntry);
-  const resolvedUvSetCount =
-    shaderUvSetCount ?? rememberMaterialUvSetCount(pipelineShaderId, materialShaderEntry);
-  const manifestEntry = getShader().materialShaderManifestEntry(pipelineShaderId);
-  // The record stage composes capability axes; plain custom shaders retain
-  // only manifest-declared axes so '' cannot select an HDRP mesh layout.
-  // A single-source manifest entry must stay on its canonical module key;
-  // otherwise a synthesized capability axis races the prewarmed module.
-  const effectiveVariantSet = resolveMaterialPipelineVariantSet(
-    requestedMaterialVariantSet(variantSet, pipelineShaderId, manifestEntry),
-    manifestEntry,
+  const shader = getShader();
+  // Select the same source, layout and cache key before starting any source work.
+  const selectedVariantSet = selectedMaterialPipelineVariant(
     pipelineShaderId,
+    shader,
+    variantSet,
     vertexLayoutProjection !== undefined,
+    requestedMaterialVariantSet,
   );
+  // The opaque GBuffer only sees inactive transmission. A numeric zero may
+  // still have reserved the stock Forward transmission variant upstream.
+  const effectiveVariantSet =
+    passKind === 'deferred' &&
+    stockStandard &&
+    selectedVariantSet?.includes('WATER_WAVES_AVAILABLE=true') !== true
+      ? selectedVariantSet?.replace('TRANSMISSION_AVAILABLE=true', 'TRANSMISSION_AVAILABLE=false')
+      : selectedVariantSet;
+  const selectedArtifactId = shader.materialVariantArtifactIdentifier(
+    pipelineShaderId,
+    effectiveVariantSet,
+  );
+  if (!prepareMaterialProgram(selectedArtifactId)) return null;
+  const materialShaderEntry = shader.findMaterialArtifact(selectedArtifactId);
+  ({ constants, vertexEntry, vertexEntryPoint, fragmentEntry } = resolveMaterialPipelineStages(
+    standardCoverage,
+    stockStandard,
+    pipelineShaderId === SHADOW_CASTER_SHADER_ID,
+    materialShaderEntry,
+    constants,
+    vertexEntry,
+    vertexEntryPoint,
+    fragmentEntry,
+  ));
   const createMaterialPipelineSpec = () => {
+    const resolvedUvSetCount =
+      shaderUvSetCount ?? rememberMaterialUvSetCount(pipelineShaderId, materialShaderEntry);
     const colorFormat: GPUTextureFormat | null =
       colorFormatOverride === null
         ? null
@@ -493,61 +1000,97 @@ export function runBuildMaterialShaderPipeline(
   const prepare = selectMaterialPipelinePreparation();
   if (cached !== undefined && !prepare) return cached;
   if (!materialPipelineBuildable(cacheKey)) return null;
-  const source = selectMaterialPipelineSource(
-    pipelineShaderId,
-    effectiveVariantSet,
-    isHdr,
-    passKind,
-    renderState,
-    depthFormatOverride,
-    vertexLayout,
-  );
-  if (source === null) return null;
-  if (passKind === 'deferred') requireStandardGBufferReceipt(source.entry.receipt);
-  // Fallback sources compile a different program, so caller-selected
-  // entry points and particle lanes belong only to the registered shader.
-  const ownEntries = source.ownEntries;
-  return buildAndCachePipeline(
-    cacheKey,
-    source.entry,
-    source.label,
-    source.moduleLabel,
-    isHdr,
-    spec.attachments,
-    renderState,
-    topology,
-    indexFormat,
-    // M4.5 / w37 (D-10): every path threads variantSet so HDRP-variant PSOs
-    // build against `hdrpPbrPipelineLayout` (7-slot group(2) BGL) and URP
-    // builds against `pbrPipelineLayout` (1-slot group(2) BGL).
-    effectiveVariantSet,
-    // feat-20260609 / T-002: passKind selects createRenderPipeline
-    // attachment shape (forward color+DS vs shadow-caster depth32float
-    // no-color). Orthogonal to variantSet (which selects the BGL chain).
-    passKind,
-    // The layout shader id lets buildPipelineContext resolve the BGL chain
-    // (for example LayoutKind='pbr-skin') that matches the compiled module.
-    source.layoutShaderId,
-    // feat-20260611-fox-skinning-vertex-attribute-chain M4 / w16 (D-4):
-    // forward meshAttributes so the pbr-skin path's vertex buffer layout
-    // is derived via the SSOT (deriveVertexBufferLayout). For URP/HDRP
-    // callers (and for a caller passing undefined) the synthetic 6-key
-    // sentinel inside buildPipelineContext keeps the layout deterministic.
-    meshAttributes,
-    vertexLayout,
-    vertexLayoutProjection,
-    shaderModuleMode,
-    layoutKindOverride,
-    vertexEntryPoint,
-    ownEntries ? vertexEntry : undefined,
-    ownEntries ? fragmentEntry : undefined,
-    ownEntries ? particleInputLanes : undefined,
-    coverageOnly,
-    constants,
-    prepare,
-    waterInfoFormat,
-    preparedStorageBindings,
-  );
+  const buildSelectedPipeline = () => {
+    // The request key already includes the texture availability mask and packed ORM flag.
+    // Resolve the projected program only when building its PSO for the first time.
+    const surfaceProgram = selectStockSurfaceResources(
+      shader,
+      pipelineShaderId,
+      effectiveVariantSet,
+      passKind,
+      fragmentEntry,
+      constants,
+      onPending,
+    );
+    if (surfaceProgram === 'pending') return null;
+    const selectedConstants = materialProgramRasterConstants(constants, surfaceProgram?.program);
+    const source = selectMaterialPipelineSource(
+      pipelineShaderId,
+      effectiveVariantSet,
+      isHdr,
+      passKind,
+      renderState,
+      depthFormatOverride,
+      vertexLayout,
+      surfaceProgram,
+    );
+    if (source !== null && passKind === 'deferred')
+      requireStandardGBufferReceipt(source.entry.receipt, fragmentEntry === 'fs_gbuffer_compact');
+    // Fallback sources compile a different program, so caller-selected
+    // entry points and particle lanes belong only to the registered shader.
+    const ownEntries = source?.ownEntries === true;
+    const pipeline =
+      source === null
+        ? null
+        : buildAndCachePipeline(
+            cacheKey,
+            source.entry,
+            source.label,
+            source.moduleLabel,
+            isHdr,
+            spec.attachments,
+            renderState,
+            topology,
+            indexFormat,
+            // M4.5 / w37 (D-10): every path threads variantSet so HDRP-variant PSOs
+            // build against `hdrpPbrPipelineLayout` (7-slot group(2) BGL) and URP
+            // builds against `pbrPipelineLayout` (1-slot group(2) BGL).
+            effectiveVariantSet,
+            // feat-20260609 / T-002: passKind selects createRenderPipeline
+            // attachment shape (forward color+DS vs shadow-caster depth32float
+            // no-color). Orthogonal to variantSet (which selects the BGL chain).
+            passKind,
+            // The layout shader id lets buildPipelineContext resolve the BGL chain
+            // (for example LayoutKind='pbr-skin') that matches the compiled module.
+            source.layoutShaderId,
+            // feat-20260611-fox-skinning-vertex-attribute-chain M4 / w16 (D-4):
+            // forward meshAttributes so the pbr-skin path's vertex buffer layout
+            // is derived via the SSOT (deriveVertexBufferLayout). For URP/HDRP
+            // callers (and for a caller passing undefined) the synthetic 6-key
+            // sentinel inside buildPipelineContext keeps the layout deterministic.
+            meshAttributes,
+            vertexLayout,
+            vertexLayoutProjection,
+            shaderModuleMode,
+            layoutKindOverride,
+            vertexEntryPoint,
+            ownEntries ? vertexEntry : undefined,
+            ownEntries ? fragmentEntry : undefined,
+            ownEntries ? particleInputLanes : undefined,
+            coverageOnly,
+            selectedConstants,
+            prepare,
+            waterInfoFormat,
+            preparedStorageBindings,
+            surfaceProgram !== undefined && ownEntries,
+          );
+    inspectRequest?.(
+      {
+        material: materialShaderId,
+        requestedVariant,
+        shader: spec.shader,
+        attachments: spec.attachments,
+        layout: layoutKindOverride,
+        waterInfoFormat,
+        preparing: prepare,
+        selection: source === null ? 'unavailable' : ownEntries ? 'registered' : 'fallback',
+        pipelineLabel: source?.label,
+      },
+      pipeline,
+    );
+    return pipeline;
+  };
+  return buildSelectedPipeline();
 }
 
 export function runRememberMaterialUvSetCount(
@@ -612,8 +1155,14 @@ export function runSelectMaterialPipelineSource(
   renderState: MaterialRenderState | undefined,
   depthFormatOverride: GPUTextureFormat | null | undefined,
   vertexLayout: string | undefined,
+  surfaceProgram?: Pick<RegisteredMaterialShaderEntry, 'program' | 'receipt'>,
 ): MaterialPipelineSource | null {
-  const lookup = getShader().findMaterialArtifact(pipelineShaderId);
+  const shader = getShader();
+  const selectedArtifactId = shader.materialVariantArtifactIdentifier(
+    pipelineShaderId,
+    effectiveVariantSet,
+  );
+  const lookup = shader.findMaterialArtifact(selectedArtifactId);
   if (!lookup.ok) {
     if (requiresPreparedMaterialShader(vertexLayout)) {
       // Only a registered shader can be warming up. Preserve a permanent
@@ -628,12 +1177,20 @@ export function runSelectMaterialPipelineSource(
   // variant's composedWgsl; the pipeline layout itself is built by
   // buildPbrPipelineLayouts (M3 / w12). `''` is canonical all-true (HDRP)
   // and also enters the lookup; `undefined` keeps the boot-time entry.
-  const selectedEntry = manifestVariantShaderEntry(
-    getShader(),
-    pipelineShaderId,
-    effectiveVariantSet,
-    lookup.value,
-  );
+  const artifactEntry =
+    selectedArtifactId === pipelineShaderId
+      ? manifestVariantShaderEntry(shader, pipelineShaderId, effectiveVariantSet, lookup.value)
+      : lookup.value;
+  const selectedEntry =
+    surfaceProgram === undefined
+      ? artifactEntry
+      : {
+          ...artifactEntry,
+          source: surfaceProgram.program.source,
+          sourceReference: surfaceProgram.program.sourceReference,
+          program: surfaceProgram.program,
+          receipt: surfaceProgram.receipt ?? artifactEntry.receipt,
+        };
   const loweredEntry = prepareLowLimitMaterialShaderEntry(
     selectedEntry,
     currentBuildDevice().limits.maxSampledTexturesPerShaderStage,
@@ -656,16 +1213,19 @@ export function runSelectMaterialPipelineSource(
   // feat-20260609 M4 / R3-fixup: append `-${passKind}` to the PSO label so
   // GPU debug captures make the cache variant visible.
   const passKindLabelSegment = passKind === 'forward' ? '' : `-${passKind}`;
+  const variantModuleLabel =
+    effectiveVariantSet === undefined
+      ? `module-${pipelineShaderId}`
+      : `module-${pipelineShaderId}#${effectiveVariantSet}`;
   return {
     entry: shaderEntry,
     label: `pbr-pipeline-${pipelineShaderId}${isHdr ? '-hdr' : ''}${passKindLabelSegment}`,
-    // M4.5 / w38 (D-11): the module identity is a function of the exact
-    // variantSet string; `''` (canonical all-true) gets its own slot with
-    // a trailing `#`, distinct from the no-variant path.
+    // Depth and projected color may request different WGSL for the same variant
+    // in one frame. Each projected source must keep its own async module request.
     moduleLabel:
-      effectiveVariantSet !== undefined
-        ? `module-${pipelineShaderId}#${effectiveVariantSet}`
-        : `module-${pipelineShaderId}`,
+      surfaceProgram === undefined
+        ? variantModuleLabel
+        : `${variantModuleLabel}|surface:${program.sourceReference.identity}`,
     layoutShaderId: pipelineShaderId,
     ownEntries: true,
   };
@@ -777,7 +1337,7 @@ export function runGetMaterialShaderPipelineFor(
       | import('./material/pipeline-request-cache').PendingMaterialPipelineRequest
     >
   >,
-  pipelineRequestScratch: Parameters<typeof materialPipelineRequestFacts>[1],
+  workspace: { idle: ReturnType<typeof materialPipelineRequestFacts> | undefined },
   currentMaterialShaderUvSetCounts: () => Map<string, number>,
   currentPipelineState: () => import('../record/render-context').PipelineState | null,
   currentBuildDevice: () => import('@forgeax/engine-rhi').RhiDevice,
@@ -787,6 +1347,8 @@ export function runGetMaterialShaderPipelineFor(
   >,
   args: Parameters<typeof buildMaterialShaderPipeline>,
   lookupOnly = false,
+  requestedVariant: Parameters<typeof runBuildMaterialShaderPipeline>[5],
+  observePending = false,
 ): RenderPipeline | null {
   const registry = getShader();
   const shaderId = resolveMaterialPipelineShaderId(args[0], args[6] ?? 'forward');
@@ -796,36 +1358,143 @@ export function runGetMaterialShaderPipelineFor(
     internals.device.caps.backendKind,
     asset,
   );
-  const artifact = registry.findMaterialArtifact(artifactId);
+  let selectedArtifact = artifactId;
+  if (registry.isSourceBackedMaterialArtifact(artifactId)) {
+    // Artifact selection needs the discard axes. The PSO builder owns the stage constants.
+    const constants = args[21];
+    const variantSet =
+      constants !== undefined && Object.hasOwn(constants, STANDARD_SURFACE_DISCARDS_OVERRIDE)
+        ? variantSetForSurfaceDiscards(args[5], constants[STANDARD_SURFACE_DISCARDS_OVERRIDE] ?? 0)
+        : args[5];
+    const key = selectedMaterialPipelineVariant(
+      artifactId,
+      registry,
+      variantSet,
+      args[13] !== undefined,
+      requestedVariant,
+    );
+    selectedArtifact = registry.materialVariantArtifactIdentifier(artifactId, key);
+  }
+  const artifact = registry.findMaterialArtifact(selectedArtifact, 'optional');
   // Missing artifacts and pending pipelines remain retryable.
-  if (!artifact.ok) return lookupOnly ? null : buildMaterialShaderPipeline(...args);
+  if (!artifact?.ok) return lookupOnly ? null : buildMaterialShaderPipeline(...args);
   const owner = currentPipelineCacheState();
   let requests = pipelineRequests.get(owner);
   if (requests === undefined) {
     if (lookupOnly) return null;
-    requests = new MaterialPipelineRequestCache(512, 6);
+    requests = new MaterialPipelineRequestCache();
     pipelineRequests.set(owner, requests);
   }
-  // Lookups reuse one scratch fact list; a miss stores its own copy before
-  // building, since a build may request another pipeline.
-  const facts = materialPipelineRequestFacts(args, pipelineRequestScratch);
-  facts.push(args[24] ?? false);
-  facts.push(
-    currentMaterialShaderUvSetCounts().get(artifactId),
-    registry,
-    artifact.value,
-    registry.materialShaderManifestEntry(artifactId),
-    asset,
-    currentPipelineState(),
-    currentBuildDevice(),
-  );
-  return requestMaterialPipeline(
-    requests,
-    facts,
-    lookupOnly,
-    () => buildMaterialShaderPipeline(...args),
-    () => preparedPipelineOwners.get(owner),
-  );
+  // A borrowed descriptor or renderer hook may issue another request while the key
+  // is being read. Only the outer lookup borrows the renderer's idle workspace.
+  const borrowed = workspace.idle;
+  const scratch = borrowed ?? [];
+  workspace.idle = undefined;
+  try {
+    const facts = materialPipelineRequestFacts(args, scratch);
+    facts.push(args[24] ?? false);
+    facts.push(
+      currentMaterialShaderUvSetCounts().get(artifactId),
+      registry,
+      artifact.value,
+      registry.materialShaderManifestEntry(artifactId),
+      asset,
+      currentPipelineState(),
+      currentBuildDevice(),
+    );
+    return requestMaterialPipeline(
+      requests,
+      facts,
+      lookupOnly,
+      buildMaterialShaderPipeline,
+      args,
+      preparedPipelineOwners,
+      owner,
+      observePending,
+    );
+  } finally {
+    if (borrowed !== undefined) {
+      // Keep the small array backing, but release the last shader, layout and device references.
+      if (borrowed.length > 64) borrowed.length = 0;
+      else borrowed.fill(undefined);
+      workspace.idle = borrowed;
+    }
+  }
+}
+
+export interface MaterialPipelineSelection {
+  readonly rasterMaterialLayout?: MaterialShaderPipelineEntry['rasterMaterialLayout'];
+  readonly shadowPassMaterialLayout?: BindGroupLayout;
+  readonly contract: PipelineGroup2Contract;
+  readonly waterLayout?: BindGroupLayout;
+  readonly selected?: Pick<
+    MaterialShaderArtifact,
+    'material' | 'specializationKey' | 'program' | 'receipt'
+  >;
+}
+
+/** Record what a built pipeline was selected with; shadow layouts count only for stages that ignore the material. */
+export function materialPipelineSelection(
+  group2Contract: PipelineGroup2Contract,
+  ctx: Pick<
+    NonNullable<ReturnType<typeof runBuildPipelineContext>>,
+    'rasterMaterialLayout' | 'shadowPassMaterialLayout' | 'waterGroup2Layout' | 'vertexBuffers'
+  >,
+  passKind: PassKind,
+  stages: {
+    readonly entryPoints: readonly ShaderEntryPointReads[] | undefined;
+    readonly vertex: string | undefined;
+    readonly fragment: string | null;
+  },
+  selected: MaterialPipelineSelection['selected'],
+): MaterialPipelineSelection {
+  return {
+    contract: group2Contract,
+    ...(ctx.rasterMaterialLayout === undefined
+      ? {}
+      : { rasterMaterialLayout: ctx.rasterMaterialLayout }),
+    ...(passKind === 'shadow-caster' &&
+    ctx.shadowPassMaterialLayout !== undefined &&
+    shadowStagesIgnoreMaterial(
+      stages.entryPoints,
+      pipelineVertexEntry(stages.vertex, passKind, ctx.vertexBuffers),
+      stages.fragment,
+    )
+      ? { shadowPassMaterialLayout: ctx.shadowPassMaterialLayout }
+      : {}),
+    ...(ctx.waterGroup2Layout === undefined ? {} : { waterLayout: ctx.waterGroup2Layout }),
+    ...(selected === undefined ? {} : { selected }),
+  };
+}
+
+function createMaterialPipelineEntry(
+  pipeline: RenderPipeline,
+  group2Contract: PipelineGroup2Contract,
+  artifact: MaterialPipelineSelection['selected'],
+  selectedGroup2: MaterialPipelineSelection | undefined,
+): MaterialShaderPipelineEntry {
+  const receipt = artifact?.receipt;
+  const materialProgramKey = artifact?.specializationKey ?? artifact?.material;
+  const inputs = artifact === undefined ? undefined : materialProgramInputs(artifact);
+  return {
+    pipeline,
+    group2Contract,
+    ...(selectedGroup2?.rasterMaterialLayout === undefined
+      ? {}
+      : { rasterMaterialLayout: selectedGroup2.rasterMaterialLayout }),
+    ...(selectedGroup2?.shadowPassMaterialLayout === undefined
+      ? {}
+      : { shadowPassMaterialLayout: selectedGroup2.shadowPassMaterialLayout }),
+    ...(materialProgramKey === undefined ? {} : { materialProgramKey }),
+    ...(artifact?.program === undefined ? {} : { program: artifact.program }),
+    ...(inputs === undefined ? {} : { inputs }),
+    ...(selectedGroup2?.waterLayout === undefined
+      ? {}
+      : { waterGroup2Layout: selectedGroup2.waterLayout }),
+    ...(receipt === undefined
+      ? {}
+      : { receipt: { identity: receipt.receiptIdentity, generation: receipt.generation } }),
+  };
 }
 
 export function runGetMaterialShaderPipelineEntryFor(
@@ -890,29 +1559,9 @@ export function runGetMaterialShaderPipelineEntryFor(
   ) => import('@forgeax/engine-rhi').RenderPipeline | null,
   getMaterialShaderArtifact: (
     materialShaderId: string,
-    request?:
-      | boolean
-      | {
-          readonly vertexColorAvailable?: boolean;
-          readonly deformation?: 'skin' | 'rigid';
-          readonly variantSet?: string;
-          readonly clustered?: boolean;
-          readonly alphaMask?: boolean;
-          readonly leanInputs?: boolean;
-          readonly probeBlend?: boolean;
-          readonly reflectionFallback?: boolean;
-          readonly pass?: 'forward' | 'shadow' | 'depth';
-          readonly address?: 'direct' | 'scene-index';
-        }
-      | undefined,
+    request?: import('./material/assembly').MaterialShaderArtifactRequest | boolean,
   ) => import('@forgeax/engine-shader').MaterialShaderArtifact | undefined,
-  materialShaderPipelineGroup2Contracts: WeakMap<
-    object,
-    {
-      readonly contract: import('@forgeax/engine-shader').PipelineGroup2Contract;
-      readonly waterLayout?: import('@forgeax/engine-rhi').BindGroupLayout;
-    }
-  >,
+  materialShaderPipelineSelections: WeakMap<object, MaterialPipelineSelection>,
   pipelineEntries: WeakMap<
     object,
     import('../record/render-context').MaterialShaderPipelineEntry[]
@@ -927,39 +1576,42 @@ export function runGetMaterialShaderPipelineEntryFor(
   const passKind = args[6] ?? 'forward';
   const vertexLayoutProjection = args[13];
   const layoutKind = args[15];
-  const options = materialPipelineArtifactRequest(
-    variantSet,
-    passKind,
-    vertexLayoutProjection,
-    layoutKind,
-  );
-  const artifact = getMaterialShaderArtifact(materialShaderId, options);
-  const selectedGroup2 = materialShaderPipelineGroup2Contracts.get(pipeline as object);
+  const surfaceDiscards = args[21]?.[STANDARD_SURFACE_DISCARDS_OVERRIDE];
+  const selectedGroup2 = materialShaderPipelineSelections.get(pipeline as object);
+  const selectedProgram = selectedGroup2?.selected;
+  // Material pipelines retain the exact program and producer receipt they
+  // used at creation. Shared native handles can have another material owner.
+  const artifact =
+    selectedProgram?.material === materialShaderId
+      ? selectedProgram
+      : getMaterialShaderArtifact(
+          materialShaderId,
+          materialPipelineArtifactRequest(
+            surfaceDiscards === undefined
+              ? variantSet
+              : variantSetForSurfaceDiscards(variantSet, surfaceDiscards),
+            passKind,
+            vertexLayoutProjection,
+            layoutKind,
+          ),
+        );
   const group2Contract = selectedGroup2?.contract ?? ('mesh' as const);
   // One entry per pipeline, contract and receipt version; draws re-read it.
   const receipt = artifact?.receipt;
+  const materialProgramKey = artifact?.specializationKey ?? artifact?.material;
   let entries = pipelineEntries.get(pipeline as object);
   for (const cached of entries ?? [])
     if (
       cached.group2Contract === group2Contract &&
+      cached.rasterMaterialLayout === selectedGroup2?.rasterMaterialLayout &&
+      cached.shadowPassMaterialLayout === selectedGroup2?.shadowPassMaterialLayout &&
       cached.program === artifact?.program &&
+      cached.materialProgramKey === materialProgramKey &&
       cached.receipt?.identity === receipt?.receiptIdentity &&
       cached.receipt?.generation === receipt?.generation
     )
       return cached;
-  const inputs = artifact === undefined ? undefined : materialProgramInputs(artifact);
-  const entry: MaterialShaderPipelineEntry = {
-    pipeline,
-    group2Contract,
-    ...(artifact?.program === undefined ? {} : { program: artifact.program }),
-    ...(inputs === undefined ? {} : { inputs }),
-    ...(selectedGroup2?.waterLayout === undefined
-      ? {}
-      : { waterGroup2Layout: selectedGroup2.waterLayout }),
-    ...(receipt === undefined
-      ? {}
-      : { receipt: { identity: receipt.receiptIdentity, generation: receipt.generation } }),
-  };
+  const entry = createMaterialPipelineEntry(pipeline, group2Contract, artifact, selectedGroup2);
   if (entries === undefined) {
     entries = [];
     pipelineEntries.set(pipeline as object, entries);

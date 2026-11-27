@@ -5,6 +5,8 @@ description: ForgeAX MaterialAsset authoring and visibility route. Use when crea
 
 # forgeax-engine-material
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 Optional River `transitionContinuity` uses the accepted end-spline position and
 actual current-generation Ocean coverage adjacency. Author finite meter reach
 and blend width; the complete shared triangle is closed inside the inner reach
@@ -13,7 +15,7 @@ adjacent ordinary patches of the same River and shares its target wave row,
 without changing their material. Source flow/depth remain
 native/query-owned. WaterMesh v8 keeps a 96-byte record and adds a `WCN1` numeric
 support offset in byte 92; vertex and fragment share its original-grid policy.
-Use `material-pack-cooker/6` to recook, retaining durable `material-cook/5`.
+Use `material-pack-cooker/7` to recook. Compiled publications use `material-cook/5`.
 GPU traversal, independent Baked depth, custom deformation and independent
 advanced displacement are outside this initial continuity contract. See the
 [owning Water contract](../../packages/water/README.md#optional-terminal-surface-continuity)
@@ -129,6 +131,10 @@ accepted static-map GUID/versions and effective material switches with the
 view graph's reflected FoamRT consumer and initializer. Static BeachFoam maps,
 optional fluid RT and Baked refs are independent inputs. Disabling an R6
 producer retains the default no-simulation semantic target and static maps.
+Use `foamVelocityMPerSec` for authored foam-detail advection; keep simulation
+coverage and history coordinates anchored to their producer. For local Shallow
+fluid over terrain, configuration version `2` emits free-surface displacement
+and retains signed compression. Version `1` preserves legacy kernel semantics.
 
 Use the mounted Engine Content `EngineContent.water.materials` GUIDs or author
 ordinary root/child assets with `buildWaterMaterialFamily`; Body slots and the
@@ -729,11 +735,10 @@ Black emissive/sheen colors still disable their contribution; physical sheen
 still needs its static switch. Explicit zero intensity remains zero.
 Emissive is scene-linear and passes through exposure and the tone curve: under
 ACES, large emissive surfaces above about 1.5 clip toward white and lose hue;
-use 0.8-1.5 for panels and windows and 3-10 only for small bloom sources
-(SDK runtime-light-emissive).
+use 0.8-1.5 for panels and windows and 3-10 only for small bloom sources.
 Glow meshes (beams, light pillars) add light: emission-only Surface (`return surfaceEmissionOnly(input, color, opacity)` from `forgeax_material::surface_v1`: the template still lights an additive Surface, the helper zeroes sun Fresnel glare and sky reflection), `one / one`
 colour blend, `zero / one` alpha (`ADDITIVE_BLEND` from `@forgeax/engine-render/authoring`, UE `BLEND_Additive`; `Materials.unlit(color, { blendMode: 'additive' })` also turns off depth writes, uses the Transparent queue and premultiplies colour by opacity), peak under the bloom threshold, `renderState.fog: false` to skip scene fog (any forward draw; deferred opaque still fogs), alpha fading with
-height on an open tapered mesh (SDK beam-pillar).
+height on an open tapered mesh.
 
 A Surface defines material properties only; it gets no sun, sky or camera. For a sea use the stock `model: 'single-layer-medium'` (sun glint, Skylight environment reflection, fog; render README "Sea sun and sky").
 

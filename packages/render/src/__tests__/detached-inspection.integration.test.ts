@@ -89,6 +89,9 @@ describe('detached renderer inspection', () => {
       frame = renderer.draw(frameInput());
     }
     expect(frame.ok).toBe(true);
+    if (!frame.ok) throw frame.error;
+    if (frame.value === undefined) throw new Error('Missing frame receipt');
+    expect((await frame.value.completed).ok).toBe(true);
     const inspection = renderer.inspect();
     expect(inspection.environment.status).toBe('active');
     expect(inspection.environment.activeSignature).toBeDefined();
@@ -105,19 +108,9 @@ describe('detached renderer inspection', () => {
       view: { viewRole: 'main', cameraEntity: camera },
       count: { candidates: 0, visible: 0, occluded: 0 },
     });
-    expect(inspection.temporalTarget).toMatchObject({
-      identity: 'standard-scene-temporal',
-      producerId: 'forgeax::standard::scene-data',
-      schema: 'forgeax::scene-data::temporal-v1',
-      targetCount: 1,
-      descriptor: {
-        format: 'rgba16float',
-        width: 64,
-        height: 64,
-        sampleCount: 1,
-        bytes: 64 * 64 * 8,
-      },
-    });
+    expect(inspection.temporalTarget).toBeUndefined();
+    expect(inspection.perFramePassNames).toContain('standard-depth-velocity');
+    expect(inspection.perFramePassNames).toContain('taa-resolve');
     const serialized = JSON.parse(JSON.stringify(inspection));
     expect(serialized.temporal.viewIdentity).toBe(inspection.temporal.viewIdentity);
     expectDetached(inspection);
@@ -160,14 +153,20 @@ describe('detached renderer inspection', () => {
     expect(JSON.parse(JSON.stringify(renderer.inspect()))).toEqual(detachedBefore);
     world.set(camera, Camera, { antialias: ANTIALIAS_NONE }).unwrap();
     expect(world.update().ok).toBe(true);
-    expect(renderer.draw(frameInput()).ok).toBe(true);
-    await Promise.resolve();
-    await Promise.resolve();
+    const nativeFrame = renderer.draw(frameInput());
+    expect(nativeFrame.ok).toBe(true);
+    if (!nativeFrame.ok) throw nativeFrame.error;
+    if (nativeFrame.value === undefined) throw new Error('Missing frame receipt');
+    expect((await nativeFrame.value.completed).ok).toBe(true);
     expect(renderer.inspect().temporal.mode).toBe('none');
     for (const antialias of [ANTIALIAS_FXAA, ANTIALIAS_MSAA]) {
       world.set(camera, Camera, { antialias }).unwrap();
       expect(world.update().ok).toBe(true);
-      expect(renderer.draw(frameInput()).ok).toBe(true);
+      const changedFrame = renderer.draw(frameInput());
+      expect(changedFrame.ok).toBe(true);
+      if (!changedFrame.ok) throw changedFrame.error;
+      if (changedFrame.value === undefined) throw new Error('Missing frame receipt');
+      expect((await changedFrame.value.completed).ok).toBe(true);
       expect(renderer.inspect().temporal.mode).toBe(antialias === ANTIALIAS_FXAA ? 'fxaa' : 'msaa');
       expect(renderer.inspect().temporal.resources).toEqual({
         active: 0,

@@ -18,8 +18,11 @@
     44073088105, 44113035424, 44136739089, 44152394166
   ],
   "fileReserves": {
+    "packages/render/src/__tests__/raytracing/world-bounds-index.dawn.test.ts": 150,
+    "packages/render/src/__tests__/raytracing/world-card-bounds.dawn.test.ts": 150,
     "packages/render/src/__tests__/target-environment.dawn.test.ts": 60,
     "packages/render/src/__tests__/target-subresources.dawn.test.ts": 90,
+    "packages/runtime/src/__tests__/default-gbuffer-gi.dawn.test.ts": 240,
     "packages/three/src/__tests__/procedural-addons-render.dawn.test.ts": 270,
     "packages/three/src/__tests__/surface-expression.dawn.test.ts": 390,
     "packages/three/src/__tests__/target-surface.dawn.test.ts": 150

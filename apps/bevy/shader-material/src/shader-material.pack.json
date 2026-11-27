@@ -1,12 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "e97e725d-0f45-5317-9472-5b41f19a1684",
+  "schemaVersion": "3.0.0",
+  "packageId": "fd99e3b8-ab5d-5eac-a9c4-e4cd8aa6b54e",
+  "assets": {
+    "shader-material.wgsl": {
       "kind": "material",
-      "sourceKey": "shader-material.wgsl",
-      "execution": "cooked",
       "payload": {
         "kind": "material",
         "passes": [
@@ -38,5 +35,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

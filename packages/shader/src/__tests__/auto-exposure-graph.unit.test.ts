@@ -22,11 +22,9 @@ describe('auto exposure shader graph', () => {
     expect(AUTO_EXPOSURE_METER_WGSL).toContain('let blockStride = numWorkgroups.xy * tileSize');
     expect(AUTO_EXPOSURE_METER_WGSL).toContain('for (var blockY = blockStart.y;');
     expect(AUTO_EXPOSURE_METER_WGSL).toContain('for (var blockX = blockStart.x;');
-    expect(AUTO_EXPOSURE_METER_WGSL).toContain('fn centerWeight');
+    expect(AUTO_EXPOSURE_METER_WGSL).toContain('fn classifyExposureBlock');
     expect(AUTO_EXPOSURE_METER_WGSL).toContain('value == value');
-    expect(AUTO_EXPOSURE_METER_WGSL).toContain(
-      'atomicAdd(&localHistogram[bin], centerWeight(block, center, extent))',
-    );
+    expect(AUTO_EXPOSURE_METER_WGSL).toContain('atomicAdd(&localHistogram[value.x], value.y)');
     expect(AUTO_EXPOSURE_METER_WGSL).toContain('atomicAdd(&histogram[localIndex], localCount)');
     expect(AUTO_EXPOSURE_METER_WGSL).toContain('parameters.compensationEv');
     expect(AUTO_EXPOSURE_METER_WGSL).toContain('parameters.rangeMinEv');

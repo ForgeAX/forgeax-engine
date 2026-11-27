@@ -1,6 +1,7 @@
 import { World } from '@forgeax/engine-ecs';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { assert, expect } from 'vitest';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { loadRhiPack } from '../assembly/backend-contract';
@@ -41,7 +42,7 @@ export async function verifyRuntimeGlyph(mode: 'local' | 'worker', url: string) 
   const implementation = await createRenderer(
     { width: 64, height: 64, getContext: (kind: string) => (kind === 'webgpu' ? context : null) },
     mode === 'worker' ? { publicationSource: identity } : {},
-    { shaderManifestUrl: url },
+    { shaderManifestUrl: url, prepareShaderProgramCompiler },
     loadRhiPack(webgpu, {
       deviceLost: () =>
         new Promise((resolve) => {

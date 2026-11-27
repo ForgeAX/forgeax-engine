@@ -8,6 +8,8 @@ description: >-
 
 # forgeax-engine-app
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 For mounted HUD layout and actions, use the [UI contract](../../packages/ui/README.md).
 `mountUi` gives percentage-height content the host viewport height; keep scrolling
 on the authored element. Its `onAction` delegation reads `data-ui-action`, not an
@@ -180,7 +182,9 @@ Renderer/WebGPU; source plugins inject World/Assets and use bootstrap
 bootstrap. Native Worker and Host display callbacks serve one frame demand; the
 first callback cancels the other lease. A delayed Worker clock does not hold a
 live Host clock, and frame credit, input sampling and time remain Host-owned.
-Logic N+1 overlaps render N; admission of N+2 waits for N's GPU receipt.
+A healthy split session continues simulation with full Render slots. Level
+visibility and physics membership wait for a frame admitted for a picture.
+The next picture uses the latest World state and resets temporal history.
 Kernel workers receive eligible shared numeric spans, independently of render
 placement. Their initialization and module preflight inherit App `startupTimeoutMs`;
 the first source frame uses that same startup policy. Later source admissions retain

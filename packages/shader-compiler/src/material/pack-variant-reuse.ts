@@ -90,6 +90,15 @@ function contractKey(asset: MaterialAsset): string | undefined {
   return JSON.stringify(contract);
 }
 
+/** Decoding the private cache yields a detached graph of previously validated data. */
+function freezeDecodedVariant<T>(value: T): T {
+  if (value !== null && typeof value === 'object') {
+    for (const child of Object.values(value)) freezeDecodedVariant(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 /**
  * Pack owns fresh source bytes; GUIDs and uniform values remain per-publication data.
  * Keys include the complete source identity, so Packs with equal sources share
@@ -145,11 +154,10 @@ export function createMaterialPackVariantCompiler(compile: typeof compileShader)
     if (previous !== undefined) {
       variants.delete(key);
       variants.set(key, previous);
-      const decoded = freezeSnapshot(
+      const decoded = freezeDecodedVariant(
         deserialize(inflateSync(previous.payload, { maxOutputLength: MAX_RETAINED_BYTES })) as P,
       );
-      if (decoded === undefined) throw new Error('invalid retained material variant snapshot');
-      return ok(options.restore(decoded.value));
+      return ok(options.restore(decoded));
     }
     let settle: (() => void) | undefined;
     const done = new Promise<void>((resolve) => {

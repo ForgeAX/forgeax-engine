@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import {
   access,
@@ -12,9 +11,17 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
-import { type AssetBundleResult, catalogRows, planAssetBundles } from './delivery-bundles.js';
-import { prepareDocuments, readDeliveryDocument } from './delivery-documents.js';
-import { type DistArtifact, type DistManifest, verifyDist } from './dist.js';
+import { sha256 } from '@forgeax/engine-types';
+import { type AssetBundleResult, planAssetBundles } from './delivery-bundles.js';
+import { encodeDeliveryDocument, readDeliveryDocument } from './delivery-documents.js';
+import {
+  DIST_MANIFEST_FILE,
+  type DistArtifact,
+  type DistManifest,
+  publishDistManifest,
+  verifyDist,
+  withDistBytes,
+} from './dist.js';
 import type { DevKitDeliveryOptions } from './plugin-build.js';
 import type { CommandResult } from './types.js';
 
@@ -28,8 +35,8 @@ export async function retainPlayerDist(
     readonly manifestSha256: string;
   }>
 > {
-  const manifest = await readFile(resolve(root, 'forgeax-dist.json'));
-  const manifestSha256 = createHash('sha256').update(manifest).digest('hex');
+  const manifest = await readFile(resolve(root, DIST_MANIFEST_FILE));
+  const manifestSha256 = sha256(manifest);
   const destination = resolve(projectRoot, '.forgeax/player', manifestSha256);
   await mkdir(dirname(destination), { recursive: true });
   try {
@@ -42,7 +49,7 @@ export async function retainPlayerDist(
     if (!exists) throw cause;
     const verified = await verifyDist(destination);
     if (!verified.ok) return verified;
-    const existing = await readFile(resolve(destination, 'forgeax-dist.json'));
+    const existing = await readFile(resolve(destination, DIST_MANIFEST_FILE));
     if (!manifest.equals(existing)) throw new Error('player directory identity mismatch');
   }
   return { ok: true, value: { root: destination, manifestSha256 } };
@@ -70,11 +77,12 @@ const AUTHORING_ROW_FIELDS = [
 /** Generated pipeline libraries carry one bundler-hashed JSON file per build. */
 const PIPELINE_LIBRARY = /(^|\/)pipeline-library[^/]*\.json$/;
 
-export interface DistPreparationOptions {
-  /** Builds keep diagnostic evidence and prepare their derived directory in place. */
-  readonly distribution?: 'build' | 'player';
-  /** Keep preparation on the final player's filesystem for an atomic rename. */
-  readonly outputParent?: string;
+type DistPlacement =
+  | { readonly distribution?: 'player'; readonly outputParent?: string }
+  | { readonly distribution: 'build' }
+  | { readonly distribution: 'payload'; readonly payloadRoot: string };
+
+export type DistPreparationOptions = DistPlacement & {
   /**
    * Store the catalog, shader manifest, pipeline library and Pack documents as
    * zstd frames that the runtime decodes itself, so any static host serves them
@@ -83,6 +91,65 @@ export interface DistPreparationOptions {
   readonly compressDocuments?: boolean;
   /** Disable per-entry zstd when the host compresses the whole Bundle. */
   readonly compressEntries?: boolean;
+};
+
+/** Every catalog transport keeps Pack location and source path on its rows. */
+function catalogRows(catalog: unknown): readonly Record<string, unknown>[] {
+  let rows = catalog;
+  for (let depth = 0; depth < 2 && !Array.isArray(rows); depth++)
+    rows = rows !== null && typeof rows === 'object' ? (rows as { entries?: unknown }).entries : [];
+  return Array.isArray(rows) ? rows.filter((row) => row !== null && typeof row === 'object') : [];
+}
+
+function projectDeliveryCatalog(
+  source: string,
+  build: boolean,
+  catalogPathOf: (url: string) => string | undefined,
+  documents: Set<string>,
+) {
+  const receipts = new Set<string>();
+  let changed = false;
+  const parsed: unknown = JSON.parse(source, (key, value: unknown) => {
+    if (!build && (key === 'cookReceiptUrl' || key === 'receiptUrl') && typeof value === 'string') {
+      const path = catalogPathOf(value);
+      if (key === 'cookReceiptUrl' || path?.endsWith('.receipt.json')) {
+        if (path !== undefined) receipts.add(path);
+        changed = true;
+        return undefined;
+      }
+    }
+    return value;
+  });
+  const sources = new Map<string, string>();
+  for (const row of catalogRows(parsed)) {
+    if (!build)
+      for (const field of AUTHORING_ROW_FIELDS)
+        if (field in row) {
+          delete row[field];
+          changed = true;
+        }
+    if (typeof row.packageUrl !== 'string') continue;
+    const path = catalogPathOf(row.packageUrl);
+    if (path === undefined) continue;
+    documents.add(path);
+    if (typeof row.sourcePath === 'string') sources.set(path, row.sourcePath.replaceAll('\\', '/'));
+  }
+  return {
+    sources,
+    receipts,
+    catalogBytes: Buffer.from(changed ? JSON.stringify(parsed) : source),
+  };
+}
+
+async function createDistRoot(sourceRoot: string, options: DistPlacement): Promise<string> {
+  if (options.distribution === 'build') return sourceRoot;
+  if (options.distribution === 'payload') {
+    await mkdir(options.payloadRoot);
+    return options.payloadRoot;
+  }
+  const parent = options.outputParent ?? tmpdir();
+  await mkdir(parent, { recursive: true });
+  return mkdtemp(resolve(parent, 'forgeax-player-dist-'));
 }
 
 /** One asset transport for diagnostic builds and independently retained Players. */
@@ -97,119 +164,90 @@ export async function prepareDist(
 }> {
   const build = options.distribution === 'build';
   const base = new URL(manifest.base, 'https://forgeax.package/');
-  const catalogUrl = new URL(manifest.runtime.packIndexUrl, base);
+  const { packIndexUrl, shaderManifestUrl } = manifest.runtime;
   const paths = new Map(
     manifest.artifacts.map((artifact) => [new URL(artifact.path, base).href, artifact.path]),
   );
-  const receipts = new Set<string>();
-  let changed = false;
-  const source = await readDeliveryDocument(resolve(sourceRoot, manifest.runtime.packIndexUrl));
-  const parsed: unknown = JSON.parse(source, (key, value: unknown) => {
-    if (!build && (key === 'cookReceiptUrl' || key === 'receiptUrl') && typeof value === 'string') {
-      const path = paths.get(new URL(value, catalogUrl).href);
-      if (key === 'cookReceiptUrl' || path?.endsWith('.receipt.json')) {
-        if (path !== undefined) receipts.add(path);
-        changed = true;
-        return undefined;
-      }
-    }
-    return value;
-  });
-  for (const row of build ? [] : catalogRows(parsed))
-    for (const field of AUTHORING_ROW_FIELDS)
-      if (field in row) {
-        delete row[field];
-        changed = true;
-      }
-  const catalogBytes = Buffer.from(changed ? JSON.stringify(parsed) : source);
-  const delivery: DevKitDeliveryOptions = manifest.artifacts.some(
-    (artifact) => artifact.path === PLAYER_DELIVERY_FILE,
-  )
+  const pathOf = (url: string, from: string) => paths.get(new URL(url, new URL(from, base)).href);
+  const source = await readDeliveryDocument(resolve(sourceRoot, packIndexUrl));
+  const documents = new Set([packIndexUrl, shaderManifestUrl]);
+  const { sources, receipts, catalogBytes } = projectDeliveryCatalog(
+    source,
+    build,
+    (url) => pathOf(url, packIndexUrl),
+    documents,
+  );
+  const artifacts = new Map(manifest.artifacts.map((artifact) => [artifact.path, artifact]));
+  const delivery: DevKitDeliveryOptions = artifacts.has(PLAYER_DELIVERY_FILE)
     ? JSON.parse(await readFile(resolve(sourceRoot, PLAYER_DELIVERY_FILE), 'utf8'))
     : {};
-  const candidates = new Map(
-    manifest.artifacts
-      .filter(
-        (artifact) =>
-          build || (!receipts.has(artifact.path) && artifact.path !== PLAYER_DELIVERY_FILE),
-      )
-      .map((artifact): [string, DistArtifact] => [
-        artifact.path,
-        artifact.path === manifest.runtime.packIndexUrl
-          ? {
-              ...artifact,
-              bytes: catalogBytes.byteLength,
-              sha256: createHash('sha256').update(catalogBytes).digest('hex'),
-            }
-          : artifact,
-      ]),
-  );
-  const outputParent = options.outputParent ?? tmpdir();
-  await mkdir(outputParent, { recursive: true });
-  const root = build ? sourceRoot : await mkdtemp(resolve(outputParent, 'forgeax-player-dist-'));
+  if (!build) {
+    artifacts.delete(PLAYER_DELIVERY_FILE);
+    for (const path of receipts) artifacts.delete(path);
+  }
+  const catalog = artifacts.get(packIndexUrl);
+  if (catalog !== undefined) artifacts.set(packIndexUrl, withDistBytes(catalog, catalogBytes));
+  const root = await createDistRoot(sourceRoot, options);
   try {
     const bundled = await planAssetBundles({
       sourceRoot,
       outputRoot: root,
-      artifacts: candidates,
-      catalog: JSON.parse(catalogBytes.toString('utf8')),
-      pathOf: (url, from) => paths.get(new URL(url, new URL(from, base)).href),
-      packIndexPath: manifest.runtime.packIndexUrl,
+      artifacts,
+      sources,
+      pathOf,
       delivery,
       compressEntries: options.compressEntries ?? true,
     });
-    const written = new Map(bundled.written.map((artifact) => [artifact.path, artifact]));
-    const copied = (build ? [] : [...candidates.values()]).filter(
-      (artifact) => !bundled.removed.has(artifact.path) && !written.has(artifact.path),
-    );
-    const directories = new Set(copied.map((artifact) => dirname(resolve(root, artifact.path))));
-    await Promise.all([...directories].map((directory) => mkdir(directory, { recursive: true })));
-    for (let offset = 0; offset < copied.length; offset += 32) {
-      await Promise.all(
-        copied
-          .slice(offset, offset + 32)
-          .map((artifact) =>
-            artifact.path === manifest.runtime.packIndexUrl
-              ? writeFile(resolve(root, artifact.path), catalogBytes)
-              : copyFile(
-                  resolve(sourceRoot, artifact.path),
-                  resolve(root, artifact.path),
-                  constants.COPYFILE_FICLONE,
-                ),
-          ),
+    const rewritten = new Set<string>();
+    for (const artifact of bundled.written) {
+      if (bundled.removed.has(artifact.path)) continue;
+      rewritten.add(artifact.path);
+      artifacts.set(artifact.path, artifact);
+    }
+    for (const path of bundled.removed) {
+      artifacts.delete(path);
+      if (build) await rm(resolve(root, path));
+    }
+    const output: DistArtifact[] = [];
+    const directories = new Map<string, Promise<string | undefined>>();
+    const selected = [...artifacts.values()];
+    for (let offset = 0; offset < selected.length; offset += 32) {
+      const batch = selected.slice(offset, offset + 32);
+      const completed = await Promise.allSettled(
+        batch.map(async (artifact) => {
+          const { path } = artifact;
+          const delivered = resolve(root, path);
+          const present = build || rewritten.has(path);
+          const document = documents.has(path) || PIPELINE_LIBRARY.test(path);
+          if (present && !document) return artifact;
+          const original = present ? delivered : resolve(sourceRoot, path);
+          if (!present) {
+            const directory = dirname(delivered);
+            const ready = directories.get(directory) ?? mkdir(directory, { recursive: true });
+            directories.set(directory, ready);
+            await ready;
+          }
+          if (!document) {
+            await copyFile(original, delivered, constants.COPYFILE_FICLONE);
+            return artifact;
+          }
+          const plain =
+            path === packIndexUrl && !rewritten.has(path)
+              ? catalogBytes
+              : Buffer.from(await readDeliveryDocument(original));
+          const bytes =
+            options.compressDocuments === false ? plain : await encodeDeliveryDocument(path, plain);
+          await writeFile(delivered, bytes);
+          return withDistBytes(artifact, bytes);
+        }),
       );
+      for (const artifact of completed) {
+        if (artifact.status === 'rejected') throw artifact.reason;
+        output.push(artifact.value);
+      }
     }
-    let artifacts = [
-      ...[...candidates.values()]
-        .filter((artifact) => !bundled.removed.has(artifact.path))
-        .map((artifact) => written.get(artifact.path) ?? artifact),
-      ...[...written.values()].filter((artifact) => !candidates.has(artifact.path)),
-    ];
-    if (build) {
-      for (const path of bundled.removed) await rm(resolve(root, path));
-    }
-    {
-      const documents = new Set([
-        manifest.runtime.packIndexUrl,
-        manifest.runtime.shaderManifestUrl,
-      ]);
-      for (const row of catalogRows(parsed))
-        if (typeof row.packageUrl === 'string') {
-          const path = paths.get(new URL(row.packageUrl, catalogUrl).href);
-          if (path !== undefined) documents.add(path);
-        }
-      artifacts = await prepareDocuments(
-        root,
-        artifacts,
-        (path) => documents.has(path) || PIPELINE_LIBRARY.test(path),
-        options.compressDocuments !== false,
-      );
-    }
-    const playerManifest: DistManifest = { ...manifest, artifacts };
-    await writeFile(
-      resolve(root, 'forgeax-dist.json'),
-      `${JSON.stringify(playerManifest, null, 2)}\n`,
-    );
+    const playerManifest: DistManifest = { ...manifest, artifacts: output };
+    if (options.distribution !== 'payload') await publishDistManifest(root, playerManifest);
     return { root, manifest: playerManifest, bundles: bundled.report };
   } catch (cause) {
     if (!build) await rm(root, { recursive: true, force: true });

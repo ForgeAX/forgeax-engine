@@ -7,6 +7,7 @@ import {
 } from '@forgeax/engine-rhi';
 import {
   findVariantByKey,
+  materialShaderHasVariants,
   PARTICLE_MESH_SURFACE_PARAM_SCHEMA,
   type ShaderCatalog,
   standardPhysicalTextureFields,
@@ -21,14 +22,21 @@ import {
 } from '@forgeax/engine-types';
 import { materialUsesPlanarReflection } from '../../capture/planar-material';
 import { materialUsesDirectDfgLut } from '../../device/direct-dfg-lut';
+import {
+  clusterViewLayoutEntries,
+  projectViewLayout,
+  retainViewLayout,
+  viewEntryReads,
+} from '../../environment/bindings';
 import { MaterialSampledTextureBudgetExceededError } from '../../errors/render';
 import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../../gpu-stage';
 import {
   buildPbrViewBglEntries,
-  createHdrpBindGroupLayoutDescriptor,
   isStandardPbrMaterialShader,
+  materialUsesLitSceneInputs,
   materialUsesSurfaceSceneInputs,
   projectSurfaceMaterialBindings,
+  retainProjectedMaterialSlots,
 } from '../../pbr-pipeline';
 import { buildBindGroupLayoutDescriptor, type PipelineSpec } from '../../pipeline-spec';
 import { FirstEntryMap } from '../../record/first-entry-map';
@@ -53,6 +61,8 @@ import {
 import { MaterialPipelineRequestCache } from './pipeline-request-cache';
 
 /** Material layouts use the active or candidate generation's existing cache. */
+export const preparedPipelineViews = new WeakMap<PipelineLayout, BindGroupLayout>();
+
 export function createMaterialLayoutCache({
   currentPipelineCacheState,
   currentPipelineState,
@@ -91,7 +101,7 @@ export function createMaterialLayoutCache({
   ): StorageLayout | null => {
     const manifest = getShader().materialShaderManifestEntry(materialShaderId);
     const reflection =
-      variantSet !== undefined && manifest !== undefined && manifest.variants.length > 0
+      variantSet !== undefined && manifest !== undefined && materialShaderHasVariants(manifest)
         ? findVariantByKey(manifest, variantSet)?.reflection
         : manifest?.reflection;
     const reject = () => {
@@ -281,6 +291,7 @@ export function createMaterialLayoutCache({
     materialShaderId: string,
     clustered = false,
     waterInfoFormat?: 'rgba16float' | 'rgba32float',
+    selectedViewReads?: ReturnType<typeof viewEntryReads>,
   ): PipelineLayout | null => {
     const cacheState = currentPipelineCacheState();
     const lookup = getShader().findMaterialArtifact(materialShaderId);
@@ -291,16 +302,6 @@ export function createMaterialLayoutCache({
       requests = new MaterialPipelineRequestCache();
       preparedRequests.set(cacheState, requests);
     }
-    const facts = [
-      materialShaderId,
-      lookup.ok ? lookup.value : undefined,
-      clustered,
-      waterInfoFormat,
-      currentState,
-      currentBuildDevice(),
-    ];
-    const prepared = requests.get(facts);
-    if (prepared !== undefined) return prepared;
     const program = lookup.ok ? lookup.value.program : undefined;
     const source = program?.identity ?? '';
     const bindings = (lookup.ok ? lookup.value.receipt?.bindings : undefined) ?? 'render-material';
@@ -314,27 +315,53 @@ export function createMaterialLayoutCache({
       shaderLayouts = preparedMaterialLayoutFacts(source, bindings, waterInfoFormat);
       cacheState.preparedMaterialPipelineLayoutCache.set(materialShaderId, shaderLayouts);
     }
+    const projectedView = selectPreparedViewLayout(
+      currentBuildDevice(),
+      currentState.viewBindGroupLayout,
+      clustered && shaderLayouts.sceneInputKind === 'view',
+      selectedViewReads,
+      program?.entryPoints,
+    );
+    const facts = [
+      materialShaderId,
+      lookup.ok ? lookup.value : undefined,
+      clustered,
+      waterInfoFormat,
+      currentState,
+      currentBuildDevice(),
+      projectedView,
+    ];
+    const prepared = requests.get(facts);
+    if (prepared !== undefined) return prepared;
     const { sceneInputKind } = shaderLayouts;
     const cached = clustered ? shaderLayouts.clusterLayout : shaderLayouts.meshLayout;
-    if (cached !== undefined) {
+    if (cached !== undefined && projectedView === undefined) {
       if (lookup.ok) requests.set(facts, cached);
       return cached;
     }
     const materialBgl =
       getOrBuildPerShaderMaterialLayout(materialShaderId)?.materialBgl ??
       currentState.materialBindGroupLayout;
-    const buildPreparedPipelineLayout = () => {
-      let sceneInputLayout: BindGroupLayout = currentState.viewBindGroupLayout;
+    const buildSceneInputLayout = () => {
+      if (projectedView !== undefined) return projectedView;
+      let sceneInputLayout = currentState.viewBindGroupLayout;
       if (sceneInputKind !== 'view') {
-        const sceneInputLayoutResult = currentBuildDevice().createBindGroupLayout({
-          label: `prepared-material-${sceneInputKind}-${materialShaderId}`,
-          entries:
-            sceneInputKind === 'post-process'
-              ? MATERIAL_POST_PROCESS_SCENE_LAYOUT.entries
+        const standardDepth =
+          sceneInputKind === 'view-depth' &&
+          (bindings === 'render-lit-material-and-scene-depth' ||
+            bindings === 'render-standard-material-and-scene-depth');
+        const entries =
+          sceneInputKind === 'post-process'
+            ? MATERIAL_POST_PROCESS_SCENE_LAYOUT.entries
+            : standardDepth
+              ? [
+                  ...preparedStandardViewDepthLayoutEntries(currentState, currentBuildDevice()),
+                  ...(clustered
+                    ? clusterViewLayoutEntries(currentBuildDevice().caps.storageBuffer)
+                    : []),
+                ]
               : sceneInputKind === 'view-depth'
-                ? bindings === 'render-standard-material-and-scene-depth'
-                  ? preparedStandardViewDepthLayoutEntries(currentState, currentBuildDevice())
-                  : viewAndSceneDepthLayoutEntries()
+                ? viewAndSceneDepthLayoutEntries()
                 : [
                     {
                       binding: 0,
@@ -345,14 +372,23 @@ export function createMaterialLayoutCache({
                         multisampled: false,
                       },
                     },
-                  ],
+                  ];
+        const sceneInputLayoutResult = currentBuildDevice().createBindGroupLayout({
+          label: `prepared-material-${sceneInputKind}-${materialShaderId}`,
+          entries,
         });
         if (!sceneInputLayoutResult.ok) {
           reportError(sceneInputLayoutResult.error);
           return null;
         }
         sceneInputLayout = sceneInputLayoutResult.value;
+        if (standardDepth) retainViewLayout(sceneInputLayout, entries);
       }
+      return sceneInputLayout;
+    };
+    const buildPreparedPipelineLayout = () => {
+      const sceneInputLayout = buildSceneInputLayout();
+      if (sceneInputLayout === null) return null;
       const waterSystemInputs =
         lookup.ok && lookup.value.receipt?.systemInputs?.water === 'water-frame/3';
       const usesMaterialGroup = clustered || waterSystemInputs || shaderLayouts.usesMaterialGroup;
@@ -365,14 +401,7 @@ export function createMaterialLayoutCache({
               lookup.ok ? lookup.value.receipt?.entryPoints : undefined,
             ),
           })
-        : clustered
-          ? currentBuildDevice().createBindGroupLayout({
-              label: `prepared-material-lighting-${materialShaderId}`,
-              entries: createHdrpBindGroupLayoutDescriptor().entries.filter(
-                (entry) => entry.binding >= 3,
-              ),
-            })
-          : undefined;
+        : undefined;
       if (lightingLayout !== undefined && !lightingLayout.ok) {
         reportError(lightingLayout.error);
         return null;
@@ -389,8 +418,10 @@ export function createMaterialLayoutCache({
         reportError(result.error);
         return null;
       }
-      if (clustered) shaderLayouts.clusterLayout = result.value;
-      else shaderLayouts.meshLayout = result.value;
+      if (clustered) {
+        preparedPipelineViews.set(result.value, sceneInputLayout);
+        if (projectedView === undefined) shaderLayouts.clusterLayout = result.value;
+      } else shaderLayouts.meshLayout = result.value;
       if (lookup.ok) requests.set(facts, result.value);
       return result.value;
     };
@@ -423,8 +454,9 @@ export function createMaterialLayoutCache({
     if (sameMaterialLayoutPublication(cached, source, paramSchema)) return cached.layout;
     // Optional engine-owned resources extend the Standard layout and its texture budget.
     const inspectOptionalMaterialResources = () => {
-      const directMultiscatteringLut = materialUsesDirectDfgLut(paramSchema);
-      const planarReflection = materialUsesPlanarReflection(paramSchema);
+      const customLit = materialUsesLitSceneInputs(getShader(), materialShaderId);
+      const directMultiscatteringLut = !customLit && materialUsesDirectDfgLut(paramSchema);
+      const planarReflection = !customLit && materialUsesPlanarReflection(paramSchema);
       const fluidSimulation =
         artifact?.receipt?.systemInputs?.water === 'water-frame/3' &&
         program?.materialBindings?.includes(derive(paramSchema ?? []).userRegionBindingEnd + 19) ===
@@ -446,8 +478,10 @@ export function createMaterialLayoutCache({
       standardPhysicalTextureFields(paramSchema).length > 0;
     const isStandardMapLayout = requiresStandardMapLayout;
     if (
+      !materialUsesLitSceneInputs(getShader(), materialShaderId) &&
       !clustered &&
       !singleLayerMedium &&
+      artifact?.receipt?.surface === undefined &&
       !isStandardMapLayout &&
       !hasOptionalResources &&
       isSharedMaterialUserRegionCompatible(paramSchema)
@@ -521,6 +555,7 @@ export function createMaterialLayoutCache({
             : []),
         ],
       };
+      const entries = projectSurfaceMaterialBindings(desc.entries, getShader(), materialShaderId);
       if (hasOptionalResources) {
         const fragmentTextures = (entries: Iterable<GPUBindGroupLayoutEntry>) =>
           Array.from(entries).filter(
@@ -529,13 +564,10 @@ export function createMaterialLayoutCache({
               (entry.texture !== undefined || entry.externalTexture !== undefined),
           ).length;
         const required =
-          fragmentTextures(desc.entries) +
+          fragmentTextures(entries) +
           fragmentTextures(viewAndSceneDepthLayoutEntries()) +
           (clustered
-            ? fragmentTextures(
-                createHdrpBindGroupLayoutDescriptor(currentBuildDevice().caps.storageBuffer)
-                  .entries,
-              )
+            ? fragmentTextures(clusterViewLayoutEntries(currentBuildDevice().caps.storageBuffer))
             : 0);
         const limit = currentBuildDevice().limits.maxSampledTexturesPerShaderStage;
         if (limit !== undefined && required > limit)
@@ -551,7 +583,7 @@ export function createMaterialLayoutCache({
       }
       const bglRes = currentBuildDevice().createBindGroupLayout({
         ...desc,
-        entries: projectSurfaceMaterialBindings(desc.entries, getShader(), materialShaderId),
+        entries,
       });
       if (!bglRes.ok) {
         reportError(bglRes.error);
@@ -560,14 +592,24 @@ export function createMaterialLayoutCache({
       const bindGroups = resolveMaterialPipelineBindGroups(
         layoutKind,
         currentState,
-        clustered,
         program?.probeBlendRecordRequired ?? false,
       );
       if (bindGroups === null) return null;
+      let litView = currentState.viewBindGroupLayout;
+      if (materialUsesLitSceneInputs(getShader(), materialShaderId)) {
+        const entries = [
+          ...preparedStandardViewDepthLayoutEntries(currentState, currentBuildDevice()),
+          ...(clustered ? clusterViewLayoutEntries(currentBuildDevice().caps.storageBuffer) : []),
+        ];
+        litView = currentBuildDevice()
+          .createBindGroupLayout({ label: `lit-view-depth-${materialShaderId}`, entries })
+          .unwrap();
+        retainViewLayout(litView, entries);
+      }
       const plRes = currentBuildDevice().createPipelineLayout({
         label: `pbr-pl-${materialShaderId}`,
         bindGroupLayouts: [
-          currentState.viewBindGroupLayout,
+          litView,
           bglRes.value,
           bindGroups.meshLayout,
           bindGroups.instancesLayout,
@@ -577,6 +619,8 @@ export function createMaterialLayoutCache({
         reportError(plRes.error);
         return null;
       }
+      if (entries.length !== desc.entries.length)
+        retainProjectedMaterialSlots(bglRes.value, entries);
       const built = { materialBgl: bglRes.value, pipelineLayout: plRes.value };
       retainMaterialLayout(cacheState, materialShaderId, layoutKind, clustered, {
         source,
@@ -619,6 +663,35 @@ export function createMaterialLayoutCache({
       undefined
     );
   };
+  const lookupMaterialBindGroupLayout = (
+    materialShaderId: string,
+    explicitParamSchema?: readonly ParamSchemaEntry[],
+  ): BindGroupLayout | undefined => {
+    if (isSharedLayoutMaterialShader(materialShaderId)) return undefined;
+    const lookup = getShader().findMaterialArtifact(materialShaderId);
+    const artifact = lookup.ok ? lookup.value : undefined;
+    const state = currentPipelineCacheState();
+    switch (artifact?.receipt?.bindings) {
+      case 'group-0':
+        return state.group0MaterialLayout?.materialBgl;
+      case 'group-0-resource':
+        return state.group0ResourceLayouts.get(materialShaderId)?.materialBgl;
+      case 'view-and-scene-depth':
+        return undefined;
+      default: {
+        const cached = state.perShaderMaterialLayoutCache
+          .get(materialShaderId)
+          ?.get(materialLayoutSlot('pbr', false));
+        return sameMaterialLayoutPublication(
+          cached,
+          artifact?.program?.identity ?? '',
+          artifact?.paramSchema ?? explicitParamSchema,
+        )
+          ? (cached.layout?.materialBgl ?? undefined)
+          : undefined;
+      }
+    }
+  };
   return {
     getMaterialShaderBindingContract,
     getOrBuildPreparedStoragePipelineLayout,
@@ -630,6 +703,7 @@ export function createMaterialLayoutCache({
     getOrBuildPerShaderMaterialLayout,
     getParamSchema,
     getMaterialBindGroupLayout,
+    lookupMaterialBindGroupLayout,
   };
 }
 
@@ -705,6 +779,7 @@ function preparedMaterialLayoutFacts(
       bindings === 'post-process'
         ? 'post-process'
         : bindings === 'render-material-and-scene-depth' ||
+            bindings === 'render-lit-material-and-scene-depth' ||
             bindings === 'render-standard-material-and-scene-depth'
           ? 'view-depth'
           : bindings === 'render-material-with-scene-depth'
@@ -715,10 +790,24 @@ function preparedMaterialLayoutFacts(
       bindings === 'post-process' ||
       bindings === 'render-material-with-scene-depth' ||
       bindings === 'render-material-and-scene-depth' ||
+      bindings === 'render-lit-material-and-scene-depth' ||
       bindings === 'render-standard-material-and-scene-depth',
     meshLayout: undefined,
     clusterLayout: undefined,
   };
+}
+
+/** Prepared features use the exact program requested by the raster pipeline. */
+function selectPreparedViewLayout(
+  device: RhiDevice,
+  base: BindGroupLayout,
+  projectsLighting: boolean,
+  selectedReads: ReturnType<typeof viewEntryReads>,
+  sourceEntries: Parameters<typeof viewEntryReads>[0],
+): BindGroupLayout | undefined {
+  if (!projectsLighting) return undefined;
+  const reads = selectedReads ?? viewEntryReads(sourceEntries, undefined, 'fs_main');
+  return reads === undefined ? undefined : projectViewLayout(device, base, reads);
 }
 
 /** A prepared Standard material draw needs the complete shared View ABI plus scene depth. */

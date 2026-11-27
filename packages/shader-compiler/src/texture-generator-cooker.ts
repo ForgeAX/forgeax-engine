@@ -6,11 +6,13 @@ import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import {
   TEXTURE_GENERATOR_VERTEX_ENTRY,
   TEXTURE_GENERATOR_VERTEX_SOURCE,
+  TEXTURE_GENERATOR_VOLUME_SOURCE,
 } from '@forgeax/engine-shader';
 import {
   canonicalJson,
   type ManifestEntry,
   sha256,
+  TEXTURE_GENERATOR_VOLUME_ENTRY,
   validateTextureGenerator,
 } from '@forgeax/engine-types';
 import { compileShader, reachableShaderImportIds } from './compile.js';
@@ -53,7 +55,8 @@ export function createTextureGeneratorPackCooker(
       return `sha256:${sha256(
         canonicalJson({
           implementation,
-          format: 'texture-generator-programs/1',
+          format: 'texture-generator-programs/3',
+          volume: TEXTURE_GENERATOR_VOLUME_SOURCE,
           native,
           vertex: TEXTURE_GENERATOR_VERTEX_SOURCE,
           sources: [...snapshot.engine, ...snapshot.project]
@@ -97,15 +100,22 @@ export function createTextureGeneratorPackCooker(
           ]),
         );
         const compiled = (
-          await compileShader(`${source.source}\n${TEXTURE_GENERATOR_VERTEX_SOURCE}`, {
-            id: source.moduleId,
-            imports,
-            renderEntries: {
-              vertex: TEXTURE_GENERATOR_VERTEX_ENTRY,
-              fragment: pass.program.fragmentEntry,
-              colorFormats: colorFormats(pass.writes),
+          await compileShader(
+            `${source.source}\n${pass.kind === 'raster' ? TEXTURE_GENERATOR_VERTEX_SOURCE : TEXTURE_GENERATOR_VOLUME_SOURCE}`,
+            {
+              id: source.moduleId,
+              imports,
+              ...(pass.kind === 'raster'
+                ? {
+                    renderEntries: {
+                      vertex: TEXTURE_GENERATOR_VERTEX_ENTRY,
+                      fragment: pass.program.fragmentEntry,
+                      colorFormats: colorFormats(pass.writes),
+                    },
+                  }
+                : { computeEntry: TEXTURE_GENERATOR_VOLUME_ENTRY }),
             },
-          })
+          )
         ).unwrap();
         entries.set(source.moduleId, {
           ...compiled.manifestEntry,
@@ -121,11 +131,15 @@ export function createTextureGeneratorPackCooker(
         programs: {
           compilerFingerprint,
           entries: [...entries.values()],
-          passes: recipe.passes.map((pass) => ({
-            module: pass.program.module,
-            fragmentEntry: pass.program.fragmentEntry,
-            colorFormats: colorFormats(pass.writes),
-          })),
+          passes: recipe.passes.map((pass) =>
+            pass.kind === 'raster'
+              ? {
+                  module: pass.program.module,
+                  fragmentEntry: pass.program.fragmentEntry,
+                  colorFormats: colorFormats(pass.writes),
+                }
+              : { module: pass.program.module, computeEntry: TEXTURE_GENERATOR_VOLUME_ENTRY },
+          ),
         },
       };
       validateTextureGenerator(payload, true).unwrap();

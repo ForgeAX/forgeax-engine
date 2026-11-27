@@ -42,6 +42,7 @@ function makeRegistry(postSpawnHook?: PostSpawnHook): AssetRegistry {
       getMaterialShaderManifest: vi.fn().mockReturnValue(undefined),
       findMaterialArtifact: vi.fn().mockReturnValue({ ok: false, error: new Error('mock') }),
       materialArtifact: vi.fn().mockReturnValue(undefined),
+      materialParamSchemaProjection: vi.fn().mockReturnValue(undefined),
       getPipeline: vi.fn().mockReturnValue(undefined),
       installMaterialArtifact: vi.fn(),
       inspect: vi.fn().mockReturnValue({ materialShaders: [] }),
@@ -50,13 +51,29 @@ function makeRegistry(postSpawnHook?: PostSpawnHook): AssetRegistry {
   });
 }
 
-function makeWorld(reg: AssetRegistry): World {
+function makeWorld(reg: AssetRegistry, nested = false): World {
   const world = new World({ assets: reg });
-  for (const component of [T709Tag, T709MaterialCarrier, SceneInstance]) {
+  for (const component of [
+    T709Tag,
+    T709MaterialCarrier,
+    SceneInstance,
+    ...(nested ? [ChildOf, Children] : []),
+  ]) {
     world.components.register(component).unwrap();
   }
   sourceWorlds.set(reg, world);
   return world;
+}
+
+function spawnScene(
+  reg: AssetRegistry,
+  handle: Parameters<AssetRegistry['instantiate']>[0],
+  world: World,
+  mode: 'anchor' | 'flat',
+) {
+  return mode === 'anchor'
+    ? [reg.instantiate(handle, world).unwrap()]
+    : reg.instantiateFlat(handle, world).unwrap();
 }
 
 const sourceWorlds = new WeakMap<AssetRegistry, World>();
@@ -249,9 +266,7 @@ describe('AssetRegistry.instantiate', () => {
 
   it('uses each nested Scene reference table and the parent table for instance overrides', async () => {
     const reg = makeRegistry();
-    const world = makeWorld(reg);
-    world.components.register(ChildOf).unwrap();
-    world.components.register(Children).unwrap();
+    const world = makeWorld(reg, true);
     const Carrier = defineComponent('ReflectedNestedCarrier', {
       arbitrary: 'asset<material>',
       choices: 'array<asset<material>, 2>',
@@ -592,14 +607,9 @@ describe('AssetRegistry.instantiate', () => {
     reg.release(handle).unwrap();
   });
 
-  it.each([
-    'anchor',
-    'flat',
-  ] as const)('rejects a stale authored %s instance override before spawning its child', async (_mode) => {
+  it('rejects a stale authored instance override before spawning its child', async () => {
     const reg = makeRegistry();
-    const world = makeWorld(reg);
-    world.components.register(ChildOf).unwrap();
-    world.components.register(Children).unwrap();
+    const world = makeWorld(reg, true);
     const stale = reg.create(material()).unwrap();
     reg.release(stale).unwrap();
     declareSource(reg, CHILD_GUID, {
@@ -630,9 +640,7 @@ describe('AssetRegistry.instantiate', () => {
     'flat',
   ] as const)('applies authored %s array overrides that add a component without leaking grants', async (mode) => {
     const reg = makeRegistry();
-    const world = makeWorld(reg);
-    world.components.register(ChildOf).unwrap();
-    world.components.register(Children).unwrap();
+    const world = makeWorld(reg, true);
     declareSource(reg, MATERIAL_GUID, material());
     declareSource(reg, CHILD_GUID, {
       kind: 'scene',
@@ -658,10 +666,7 @@ describe('AssetRegistry.instantiate', () => {
       } as SceneAsset)
     ).unwrap();
     for (let cycle = 0; cycle < 3; cycle++) {
-      const roots =
-        mode === 'anchor'
-          ? [reg.instantiate(handle, world).unwrap()]
-          : reg.instantiateFlat(handle, world).unwrap();
+      const roots = spawnScene(reg, handle, world, mode);
       const members = roots.flatMap((root) => [root, ...world.iterDescendants(root)]);
       const member = defined(
         members.find((entity) => world.hasComponent(entity, T709MaterialCarrier)),
@@ -694,14 +699,8 @@ describe('AssetRegistry.instantiate', () => {
     };
     const handle = (await loadScene(reg, scene)).unwrap();
     for (let cycle = 0; cycle < 3; cycle++) {
-      const roots =
-        mode === 'anchor'
-          ? [reg.instantiate(handle, world).unwrap()]
-          : reg.instantiateFlat(handle, world).unwrap();
-      const sibling =
-        mode === 'anchor'
-          ? [reg.instantiate(handle, world).unwrap()]
-          : reg.instantiateFlat(handle, world).unwrap();
+      const roots = spawnScene(reg, handle, world, mode);
+      const sibling = spawnScene(reg, handle, world, mode);
       const first = reg.read(handle).unwrap();
       const fields = first.entities.box?.components.T709MaterialCarrier as { materials: number[] };
       expect(fields.materials[0]).not.toBe(fields.materials[1]);
@@ -726,9 +725,7 @@ describe('AssetRegistry.instantiate', () => {
           }
         : { ok: true },
     );
-    const world = makeWorld(reg);
-    world.components.register(ChildOf).unwrap();
-    world.components.register(Children).unwrap();
+    const world = makeWorld(reg, true);
     declareSource(reg, MATERIAL_GUID, material());
     declareSource(reg, CHILD_GUID, {
       kind: 'scene',
@@ -742,10 +739,7 @@ describe('AssetRegistry.instantiate', () => {
         entities: { nested: { components: {}, instance: { source: CHILD_GUID } } },
       } as SceneAsset)
     ).unwrap();
-    const roots =
-      mode === 'anchor'
-        ? [reg.instantiate(handle, world).unwrap()]
-        : reg.instantiateFlat(handle, world).unwrap();
+    const roots = spawnScene(reg, handle, world, mode);
     const root = defined(roots[0]);
     const nested =
       mode === 'anchor'
@@ -776,31 +770,22 @@ describe('AssetRegistry.instantiate', () => {
     reg.release(handle).unwrap();
     expect(world.sharedRefs._liveCount()).toBe(0);
   });
-  it('materialises keyed entities and returns a synthetic root', async () => {
+  it('materialises keyed entities under a synthetic root', async () => {
     const reg = makeRegistry();
     const world = makeWorld(reg);
     const handle = (await loadScene(reg, twoEntityScene())).unwrap();
-    const result = reg.instantiate(handle, world);
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(typeof result.value).toBe('number');
+    const root = reg.instantiate(handle, world).unwrap();
+    expect(typeof root).toBe('number');
   });
 
-  it('materialises keyed entities flat for authoring', async () => {
-    const reg = makeRegistry();
-    const world = makeWorld(reg);
-    const handle = (await loadScene(reg, twoEntityScene())).unwrap();
-    const result = reg.instantiateFlat(handle, world);
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.value.length).toBe(2);
-  });
-
-  it('releases temporary scene grants across repeated flat playback', async () => {
+  it('materialises two flat roots and releases temporary grants across repeated playback', async () => {
     const reg = makeRegistry();
     const world = makeWorld(reg);
     const handle = (await loadScene(reg, twoEntityScene())).unwrap();
     const baseline = world.sharedRefs._liveCount();
     for (let cycle = 0; cycle < 20; cycle++) {
       const entities = reg.instantiateFlat(handle, world).unwrap();
+      expect(entities).toHaveLength(2);
       for (const entity of entities) world.despawn(entity).unwrap();
       expect(world.sharedRefs._liveCount()).toBe(baseline);
     }

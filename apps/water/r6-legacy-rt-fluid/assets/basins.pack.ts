@@ -30,6 +30,9 @@ import { presentationGuid } from '../../presentation-identity';
 import { terrainPresentation } from '../../terrain-presentation';
 import { BASIN_CENTERS, BASINS, fluidRecipe, WATER_R6_PACKAGE } from '../src/identity';
 
+const bedSlope = 2.25 / 24;
+const bedHeight = (localX: number) => -2.8 + (localX + 12) * bedSlope;
+
 function material(
   color: readonly [number, number, number, number],
   roughness = 0.8,
@@ -40,6 +43,11 @@ function material(
     parameters: standardSurfaceParameters([]),
     values: { baseColor: color, roughness },
     passes: [
+      {
+        name: 'deferred',
+        program: { module: 'forgeax_material::standard', fragmentEntry: 'fs_gbuffer' },
+        renderState: { tags: { LightMode: 'Deferred' }, queue: 2000 },
+      },
       {
         name: 'forward',
         program: { module: 'forgeax_material::standard' },
@@ -164,9 +172,8 @@ export default definePack({
           center = wx < 0 ? -14 : 14,
           localX = wx - center;
         const boundary = Math.min(12 - Math.abs(localX), 9 - Math.abs(wz));
-        const depth = 2.8 - ((localX + 12) / 24) * 2.25;
         const island = 0.75 - Math.hypot(localX - 2.5, wz + 1) * 0.9;
-        heights[z * columns + x] = boundary < 0 ? 0.5 : Math.max(-depth, island);
+        heights[z * columns + x] = boundary < 0 ? 0.5 : Math.max(bedHeight(localX), island);
       }
     const terrainSurface = terrainPresentation(guid);
     const floor = {
@@ -186,7 +193,9 @@ export default definePack({
       (key) => guid(`terrain/basins/${key}`),
       {
         [guid('material/floor')]: floor,
-        ...Object.fromEntries(Object.entries(terrainSurface.textures).map(([key, texture]) => [guid(key), texture])),
+        ...Object.fromEntries(
+          Object.entries(terrainSurface.textures).map(([key, texture]) => [guid(key), texture]),
+        ),
       },
     );
     if (!terrain.ok) return terrain;
@@ -200,10 +209,16 @@ export default definePack({
         },
       },
     };
-    const box = (key: string, color: string, pos: readonly number[], scale: readonly number[]) => {
+    const box = (
+      key: string,
+      color: string,
+      pos: readonly number[],
+      scale: readonly number[],
+      rotationZ = 0,
+    ) => {
       entities[key] = {
         components: {
-          Transform: { pos, scale },
+          Transform: { pos, scale, quat: [0, 0, Math.sin(rotationZ / 2), Math.cos(rotationZ / 2)] },
           MeshFilter: { assetHandle: guid('mesh/box') },
           MeshRenderer: { materials: [guid(`material/${color}`)] },
         },
@@ -211,6 +226,21 @@ export default definePack({
     };
     for (const basin of BASINS) {
       const x = BASIN_CENTERS[basin];
+      for (let offset = -10; offset <= 10; offset += 2)
+        box(
+          `${basin}-bed-x${offset}`,
+          'grid',
+          [x + offset, bedHeight(offset) + 0.035, 0],
+          [0.045, 0.035, 16],
+        );
+      for (let offset = -8; offset <= 8; offset += 2)
+        box(
+          `${basin}-bed-z${offset}`,
+          'grid',
+          [x, bedHeight(0) + 0.035, offset],
+          [22 * Math.hypot(1, bedSlope), 0.035, 0.045],
+          Math.atan(bedSlope),
+        );
       entities[basin] = {
         components: {
           Name: { value: basin },
@@ -267,8 +297,11 @@ export default definePack({
       values: {
         absorptionPerM: [0.32, 0.09, 0.055],
         scatteringPerM: [0.045, 0.075, 0.065],
-        roughness: 0.12,
-        fresnelRoughness: 0.28,
+        roughness: 0.045,
+        fresnelRoughness: 0.08,
+        refractionPixelNormalStrength: 1.008,
+        distantRefractionPixelNormalStrength: 1.002,
+        fluidNormalStrength: 0.65,
         foamRoughness: 0.8,
         foamMaskNearFluid: 0,
         foamScatteringPerM: [1.2, 1.3, 1.25],
@@ -300,6 +333,7 @@ export default definePack({
         values: {},
       },
       'material/white': material([0.87, 0.91, 0.86, 1]),
+      'material/grid': material([0.055, 0.18, 0.2, 1]),
       'material/red': material([0.78, 0.035, 0.05, 1], 0.26),
       'mesh/box': createBoxGeometry(1, 1, 1).unwrap(),
       'mesh/sphere': createSphereGeometry(1, 20, 12).unwrap(),

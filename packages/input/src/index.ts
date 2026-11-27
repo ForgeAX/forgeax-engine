@@ -63,6 +63,7 @@ export {
   GAMEPAD_FEEDBACK_CAPACITY,
   GAMEPAD_FEEDBACK_MAX_DURATION_MS,
 } from './gamepad-feedback';
+export { diffGamepadFrame } from './gamepad-frame';
 export type {
   GestureEvent,
   GestureState,

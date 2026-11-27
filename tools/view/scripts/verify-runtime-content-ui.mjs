@@ -47,6 +47,26 @@ try {
   assert.equal(await page.evaluate(() => globalThis.runtimeContentFixture.revealed()), 1);
   await page.getByLabel('Generator', { exact: true }).selectOption({ label: 'Box generator' });
   await page.getByLabel('width', { exact: true }).fill('8');
+  const selectedGenerator = await page.getByLabel('Generator', { exact: true }).inputValue();
+  const readsBeforeLocaleChange = await page.evaluate(() => globalThis.runtimeContentFixture.calls.length);
+  await page.evaluate(() => {
+    globalThis.__localizedWidthInput = document.querySelector('input[aria-label="width"]');
+    globalThis.runtimeContentFixture.setLocale('zh');
+  });
+  await page.getByRole('button', { name: '生成', exact: true }).waitFor();
+  assert.equal(await page.getByLabel('生成器', { exact: true }).inputValue(), selectedGenerator);
+  assert.equal(await page.getByLabel('width', { exact: true }).inputValue(), '8');
+  assert.equal(await page.evaluate(() => globalThis.__localizedWidthInput === document.activeElement), true,
+    'switching locale retains the actual parameter input and focus');
+  assert.equal(await page.evaluate(() => globalThis.runtimeContentFixture.calls.length), readsBeforeLocaleChange,
+    'translation does not remount the panel or repeat Engine reads');
+  await page.screenshot({ path: resolve(output, 'runtime-content-zh.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: resolve(output, 'runtime-content-zh-mobile.png') });
+  await page.setViewportSize(browserProofWorkload().runtimeViewport);
+  await page.evaluate(() => globalThis.runtimeContentFixture.setLocale('en'));
+  await page.getByRole('button', { name: 'Generate', exact: true }).waitFor();
+  assert.equal(await page.getByLabel('width', { exact: true }).inputValue(), '8');
   await page.getByRole('button', { name: 'Generate', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: 'Width must be at most 5' }).waitFor();
   const failedId = await page.evaluate(() => globalThis.runtimeContentFixture.calls.find(call => call.operation === 'runtime-pack.generate').args.instance.packageId);
@@ -77,6 +97,12 @@ try {
   'repeated saves retain only the latest export');
   await importRuntimeContent(page, page.getByTestId('runtime-content'), { name: 'saved.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(saved)) });
   await page.waitForFunction(() => globalThis.runtimeContentFixture.calls.some(call => call.operation === 'runtime-pack.restore'));
+  const currentSnapshot = { ...saved, schemaVersion: 'runtime-pack-source/3' };
+  await importRuntimeContent(page, page.getByTestId('runtime-content'), {
+    name: 'saved-v3.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(currentSnapshot)),
+  });
+  await page.waitForFunction(() => globalThis.runtimeContentFixture.calls.some(call =>
+    call.operation === 'runtime-pack.restore' && call.args.snapshot.schemaVersion === 'runtime-pack-source/3'));
   await page.getByLabel('width', { exact: true }).fill('8');
   await page.getByRole('button', { name: 'Generate', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: 'Width must be at most 5' }).waitFor();

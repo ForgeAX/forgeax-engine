@@ -9,10 +9,12 @@ import type {
 import type {
   BindGroup,
   BindGroupLayout,
+  Buffer,
   RenderPipeline,
   RhiDevice,
   Sampler,
   ShaderModule,
+  TextureView,
 } from '@forgeax/engine-rhi';
 import { ok, type Result, ShaderSource } from '@forgeax/engine-types';
 import type { DeviceScope } from '../../device/device-scope';
@@ -197,17 +199,84 @@ export function addStandardColorStagePass(
   input: RenderPipelineTarget,
   output: RenderPipelineTarget,
   fragmentWgsl: string,
+  parameterFloats: number,
+  writeParameters: (values: Float32Array, frame: RenderPipelineFrame) => void,
   stage?: StandardColorStageResources,
+  glare?: RenderPipelineTarget,
 ): Result<void, RenderGraphError> {
   const code = COLOR_STAGE_PRELUDE_WGSL + fragmentWgsl;
-  // The adapter keys modules by label; strengths and other source constants
-  // must not alias the first module requested under the stage's display name.
+  const values = new Float32Array(parameterFloats);
+  const bytes = new Uint8Array(values.buffer);
+  const uniform = graph.createBuffer(`${name}-params`, { size: bytes.byteLength });
+  if (!uniform.ok) return uniform;
+  const uniformBuffer = uniform.value;
+  const upload = graph.addCopyPass(`${name}-prepare`, {
+    accesses: [{ resource: uniformBuffer, usage: 'copy-dst' }],
+    encodeDirect: (_encoder, frame, resources) => {
+      writeParameters(values, frame);
+      frame.runtime.device.queue
+        .writeBuffer(resources.buffer(uniformBuffer).unwrap(), 0, bytes)
+        .unwrap();
+    },
+  });
+  if (!upload.ok) return upload;
+  let sourceBinding:
+    | {
+        program: ColorStageProgram;
+        view: TextureView;
+        glare: TextureView | undefined;
+        uniform: Buffer;
+        group: BindGroup;
+      }
+    | undefined;
   let moduleDescriptor: ReturnType<ShaderSource['descriptor']> | undefined;
   let unscopedPrograms: ColorStageProgram[] | undefined;
+  const bindSource = (program: ColorStageProgram, resources: GraphResourceResolver) => {
+    const device = program.device;
+    const inputView = resources.textureView(input.view);
+    if (!inputView.ok) throw inputView.error;
+    const buffer = resources.buffer(uniformBuffer).unwrap();
+    const glareView = glare === undefined ? undefined : resources.textureView(glare.view).unwrap();
+    if (
+      sourceBinding?.program !== program ||
+      sourceBinding.view !== inputView.value ||
+      sourceBinding.glare !== glareView ||
+      sourceBinding.uniform !== buffer
+    ) {
+      const group = device
+        .createBindGroup({
+          layout: program.layout,
+          entries: [
+            { binding: 0, resource: { kind: 'textureView', value: inputView.value } },
+            { binding: 1, resource: { kind: 'sampler', value: program.sampler } },
+            { binding: 2, resource: { kind: 'buffer', value: { buffer } } },
+            ...(glareView === undefined
+              ? []
+              : [
+                  {
+                    binding: 3,
+                    resource: { kind: 'textureView' as const, value: glareView },
+                  },
+                ]),
+          ],
+        })
+        .unwrap();
+      sourceBinding = {
+        program,
+        view: inputView.value,
+        glare: glareView,
+        uniform: buffer,
+        group,
+      };
+    }
+    return sourceBinding.group;
+  };
   const added = graph.addRasterPass(name, {
     accesses: [
       { resource: input.view, usage: 'sampled-read' },
+      ...(glare === undefined ? [] : [{ resource: glare.view, usage: 'sampled-read' as const }]),
       ...(stage?.accesses ?? []),
+      { resource: uniformBuffer, usage: 'uniform-read' },
       { resource: output.view, usage: 'color-attachment' },
     ],
     colorAttachments: [
@@ -257,6 +326,16 @@ export function addStandardColorStagePass(
           entries: [
             { binding: 0, visibility: 2, texture: { sampleType: 'float', viewDimension: '2d' } },
             { binding: 1, visibility: 2, sampler: { type: 'filtering' } },
+            { binding: 2, visibility: 2, buffer: { type: 'uniform' } },
+            ...(glare === undefined
+              ? []
+              : [
+                  {
+                    binding: 3,
+                    visibility: 2,
+                    texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
+                  },
+                ]),
           ],
         });
         if (!createdLayout.ok) throw createdLayout.error;
@@ -302,18 +381,9 @@ export function addStandardColorStagePass(
           programs.push(program);
         }
       }
-      const inputView = resources.textureView(input.view);
-      if (!inputView.ok) throw inputView.error;
-      const bindings = device.createBindGroup({
-        layout: program.layout,
-        entries: [
-          { binding: 0, resource: { kind: 'textureView', value: inputView.value } },
-          { binding: 1, resource: { kind: 'sampler', value: program.sampler } },
-        ],
-      });
-      if (!bindings.ok) throw bindings.error;
+      const sourceGroup = bindSource(program, resources);
       pass.setPipeline(program.pipeline);
-      pass.setBindGroup(0, bindings.value);
+      pass.setBindGroup(0, sourceGroup);
       if (stageBinding !== undefined) pass.setBindGroup(1, stageBinding.bindGroup);
       pass.draw(3, 1, 0, 0);
     },

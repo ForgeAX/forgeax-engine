@@ -207,7 +207,7 @@ describe('GPU-driven filtered-plan cache', () => {
     true,
   ])('observes raw membership growth and removal through partitions and LOD (bindings=%s)', async (bindings) => {
     const f = await fixture(true, 1);
-    const source = f.topology.query(f.topology.sourcePlan(), undefined);
+    const source = f.topology.query(f.topology.sourcePlan(), undefined).active;
     const batch = source.batches.at(0);
     const member = batch?.members?.at(0);
     const candidate = batch?.candidates.at(0);
@@ -263,7 +263,7 @@ describe('GPU-driven filtered-plan cache', () => {
       ]);
       f.availability.scene.sync(delta).unwrap();
       f.topology.apply(delta);
-      const next = f.topology.query(f.topology.sourcePlan(), undefined);
+      const next = f.topology.query(f.topology.sourcePlan(), undefined).active;
       const nextBatch = next.batches.at(0);
       if (nextBatch === undefined) throw Error('expected new canonical root');
       Object.assign(plan, { sourceGroups: next.sourceGroups });
@@ -295,7 +295,7 @@ describe('GPU-driven filtered-plan cache', () => {
     true,
   ])('captures LOD columns and observes raw edits on reuse (resident=%s)', async (resident) => {
     const f = await fixture(resident, 1);
-    const source = f.topology.query(f.topology.sourcePlan(), undefined);
+    const source = f.topology.query(f.topology.sourcePlan(), undefined).active;
     const batch = source.batches.at(0);
     if (batch?.binding === undefined) throw Error('expected shared batch');
     const coverages = [1, 0.5];
@@ -380,7 +380,7 @@ describe('GPU-driven filtered-plan cache', () => {
             ...pbrInputs,
             scene: {
               scene: availability.scene,
-              plan: topology.query(topology.sourcePlan(), undefined),
+              plan: topology.query(topology.sourcePlan(), undefined).active,
               slots: projection.slotsSnapshot(),
               slotAt: projection.slotAt,
             },
@@ -445,7 +445,7 @@ describe('GPU-driven filtered-plan cache', () => {
       topology.apply(delta);
     };
     apply(cpuSource);
-    const stablePlan = topology.query(topology.sourcePlan(), undefined);
+    const stablePlan = topology.query(topology.sourcePlan(), undefined).active;
     const observations: Array<{
       phase: string;
       preparedBatchBuilds: number;
@@ -470,7 +470,7 @@ describe('GPU-driven filtered-plan cache', () => {
             ...pbrInputs,
             scene: {
               scene: availability.scene,
-              plan: topology.query(topology.sourcePlan(), undefined),
+              plan: topology.query(topology.sourcePlan(), undefined).active,
               slots,
               slotAt: projection.slotAt,
             },
@@ -500,7 +500,7 @@ describe('GPU-driven filtered-plan cache', () => {
       const swapped = new MaterialResource({ ...cpuMaterial.snapshot, materialHandle: 901 });
       cpuSource = { ...cpuSource, material: swapped, materials: [swapped] };
       apply(cpuSource);
-      expect(topology.query(topology.sourcePlan(), undefined)).toBe(stablePlan);
+      expect(topology.query(topology.sourcePlan(), undefined).active).toBe(stablePlan);
       prepare('cpu-material-swap');
       prepare('map-order-only', (classes) => new Map([...classes].reverse()));
       const changeGpuBinding = (previous: Map<string, string>) => {
@@ -513,7 +513,7 @@ describe('GPU-driven filtered-plan cache', () => {
       prepare('gpu-binding-change', changeGpuBinding);
       cpuSource = cpuBase;
       apply(cpuSource);
-      expect(topology.query(topology.sourcePlan(), undefined)).not.toBe(stablePlan);
+      expect(topology.query(topology.sourcePlan(), undefined).active).not.toBe(stablePlan);
       prepare('cpu-promoted-to-gpu', changeGpuBinding);
       const stable = (phase: string) => ({
         phase,
@@ -525,8 +525,8 @@ describe('GPU-driven filtered-plan cache', () => {
       });
       expect(observations.slice(1, 4), JSON.stringify(observations)).toEqual([
         stable('stable'),
-        // Four radix pages plus the new 12-byte descriptor; GPU task headers stay fixed.
-        { ...stable('cpu-material-swap'), sharedInputUploadBytes: 4 * 1024 + 12 },
+        // One changed table word and one new 12-byte descriptor. GPU task headers stay fixed.
+        { ...stable('cpu-material-swap'), sharedInputUploadBytes: 4 + 12 },
         { ...stable('map-order-only'), filteredPlanBuilds: 1 },
       ]);
       expect(observations[4]).toMatchObject({
@@ -571,7 +571,7 @@ describe('GPU-driven filtered-plan cache', () => {
     ]);
     f.availability.scene.sync(delta).unwrap();
     f.topology.apply(delta);
-    const plan = f.topology.query(f.topology.sourcePlan(), undefined);
+    const plan = f.topology.query(f.topology.sourcePlan(), undefined).active;
     const slots = f.projection.slotsSnapshot();
     const classes = new Map([[`${source.entityKey}`, 'probe:7']]);
     const prepare = () => {
@@ -581,7 +581,7 @@ describe('GPU-driven filtered-plan cache', () => {
             ...f.pbrInputs,
             scene: {
               scene: f.availability.scene,
-              plan: f.topology.query(f.topology.sourcePlan(), undefined),
+              plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
               slots,
               slotAt: f.projection.slotAt,
             },
@@ -608,7 +608,7 @@ describe('GPU-driven filtered-plan cache', () => {
       });
       cpu.adopt({ ...cpu.snapshot, passes: source.material.snapshot.passes });
       f.availability.scene.sync({ ...f.projection.apply([]), materialUpdates: [cpu] }).unwrap();
-      expect(f.topology.query(f.topology.sourcePlan(), undefined)).toBe(plan);
+      expect(f.topology.query(f.topology.sourcePlan(), undefined).active).toBe(plan);
       expect(prepare()).toBe(2);
       expect(f.production.inspect().planRebuildCandidates).toBe(0);
     } finally {
@@ -660,7 +660,7 @@ describe('GPU-driven filtered-plan cache', () => {
               ...pbrInputs,
               scene: {
                 scene: availability.scene,
-                plan: topology.query(topology.sourcePlan(), undefined),
+                plan: topology.query(topology.sourcePlan(), undefined).active,
                 slots,
                 slotAt: projection.slotAt,
               },
@@ -714,7 +714,7 @@ describe('GPU-driven filtered-plan cache', () => {
     const { availability, production, projection, topology, gpuMesh, viewLayout, pbrInputs } =
       await fixture(withLod, entityCount);
     const slots = projection.slotsSnapshot();
-    const source = topology.query(topology.sourcePlan(), undefined);
+    const source = topology.query(topology.sourcePlan(), undefined).active;
     // A shared LOD chain never splits membership; the level is a GPU choice.
     expect(source.batches).toHaveLength(1);
     let visits = 0;
@@ -776,7 +776,7 @@ describe('GPU-driven filtered-plan cache', () => {
     let reads = 0;
     const scene = {
       scene: f.availability.scene,
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       slots,
       slotAt: (slot: number) => {
         reads += 1;
@@ -821,7 +821,7 @@ describe('GPU-driven filtered-plan cache', () => {
     const slots = projection.slotsSnapshot();
     const scene = {
       scene: availability.scene,
-      plan: topology.query(topology.sourcePlan(), undefined),
+      plan: topology.query(topology.sourcePlan(), undefined).active,
       slots,
       slotAt: projection.slotAt,
     };
@@ -893,7 +893,7 @@ describe('GPU-driven filtered-plan cache', () => {
     const camera = { ...makeZeroCameraFallbackSnapshot(), position: vec3.create(0, 0, 5) };
     const scene = {
       scene: availability.scene,
-      plan: topology.query(topology.sourcePlan(), undefined),
+      plan: topology.query(topology.sourcePlan(), undefined).active,
       slots,
       slotAt: slots.slotAt,
     };
@@ -963,7 +963,7 @@ describe('GPU-driven filtered-plan cache', () => {
     const camera = { ...makeZeroCameraFallbackSnapshot(), position: vec3.create(0, 0, 5) };
     const scene = {
       scene: availability.scene,
-      plan: topology.query(topology.sourcePlan(), undefined),
+      plan: topology.query(topology.sourcePlan(), undefined).active,
       slots,
       slotAt: slots.slotAt,
     };
@@ -1093,7 +1093,7 @@ describe('GPU-driven dirty scene rows', () => {
     const slots = projection.slotsSnapshot();
     const scene = {
       scene: gpuScene,
-      plan: topology.query(topology.sourcePlan(), undefined),
+      plan: topology.query(topology.sourcePlan(), undefined).active,
       slots,
       slotAt: projection.slotAt,
     };
@@ -1131,7 +1131,7 @@ describe('GPU-driven dirty scene rows', () => {
       const first = frame(false);
       expect(first.inspection).toMatchObject({
         batchCount: BATCHES,
-        preparedBatchBuilds: topology.query(topology.sourcePlan(), undefined).batches.length,
+        preparedBatchBuilds: topology.query(topology.sourcePlan(), undefined).active.batches.length,
       });
       expect(selectedCount(first.prepared.selection, slots)).toBe(BATCHES * PER_BATCH);
       // Scene-index draws read the shared GPU Scene tables; no per-draw Mesh

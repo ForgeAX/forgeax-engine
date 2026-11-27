@@ -40,6 +40,12 @@ export interface ChaosWebSocketProxy {
 
 export function startChaosWebSocketProxy(options: {
   readonly targetUrl: string;
+  readonly lateTransport?: {
+    connections: number;
+    blockedConnection: number | undefined;
+    ackDrops: number;
+    delayedActivationReports: number;
+  };
   readonly targetHostUrl?: string;
   readonly mode?: string;
   readonly sabotage?: string;

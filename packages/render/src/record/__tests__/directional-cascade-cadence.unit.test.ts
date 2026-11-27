@@ -9,6 +9,7 @@ import type { PersistentShadowCasterProjection } from '../../scene/render-scene'
 import { RenderScene } from '../../scene/render-scene';
 import type { ViewLights } from '../../world/render-lights';
 import {
+  captureDirectionalMatrices,
   type DirectionalCascadeCadenceState,
   directionalCascadeDue,
   directionalShadowSourceChanged,
@@ -30,6 +31,47 @@ const lights = (enabled = true, cascadeCount = 3) => ({
 });
 
 describe('authored CPU directional cascade cadence', () => {
+  it('captures only changed cascade values while the lights overwrite their scratch each frame', () => {
+    const input = lights();
+    const scratch = input.cascades.lightViewProj;
+    let accepted = captureDirectionalMatrices(scratch, undefined);
+    let cadence = prepareDirectionalCascadeCadence(
+      input,
+      undefined,
+      'first-publication',
+      accepted,
+    ).next;
+    for (let frame = 1; frame <= 60; frame++) {
+      const index = frame % input.cascades.cascadeCount;
+      const prior = accepted[index];
+      const writable = scratch[index];
+      if (prior === undefined || writable === undefined) throw new Error('missing cascade');
+      writable[12] = frame;
+      const next = captureDirectionalMatrices(scratch, accepted);
+      expect(next[index]).not.toBe(prior);
+      expect(prior[12]).not.toBe(frame);
+      for (let layer = 0; layer < scratch.length; layer++)
+        if (layer !== index) expect(next[layer]).toBe(accepted[layer]);
+      const decision = prepareDirectionalCascadeCadence(
+        input,
+        cadence ?? undefined,
+        'view-changed',
+        next,
+      );
+      expect(decision.cascadeMiss?.[index]).toBe('view-changed');
+      expect(decision.next?.lightViewProj).toBe(next);
+      expect(captureDirectionalMatrices(scratch, next)).toBe(next);
+      cadence = decision.next;
+      accepted = next;
+    }
+    const shortened = captureDirectionalMatrices(scratch.slice(0, 2), accepted);
+    expect(shortened).toHaveLength(2);
+    expect(shortened[1]).toBe(accepted[1]);
+    const grown = captureDirectionalMatrices(scratch, shortened);
+    expect(grown[2]).toEqual(accepted[2]);
+    expect(grown[2]).not.toBe(scratch[2]);
+  });
+
   it('refreshes opted source replacement before a whole-map World cache hit', () => {
     const world = new World();
     const lease = createRenderReadLease(world);
@@ -73,7 +115,7 @@ describe('authored CPU directional cascade cadence', () => {
           dispatchRevision,
           materials: new MaterialFrame(undefined),
           meshes: new MeshFrame(),
-          subsurface: { source: 0, authorVisible: 0, admitted: 0 },
+          subsurface: { source: 0, authorVisible: 0, admitted: 0 } as const,
         },
         meshDraws: new RenderScene(),
         renderables: [],
@@ -213,7 +255,7 @@ describe('authored CPU directional cascade cadence', () => {
           dispatchRevision: 1,
           materials: new MaterialFrame(undefined),
           meshes: new MeshFrame(),
-          subsurface: { source: 0, authorVisible: 0, admitted: 0 },
+          subsurface: { source: 0, authorVisible: 0, admitted: 0 } as const,
         },
       };
       expect(

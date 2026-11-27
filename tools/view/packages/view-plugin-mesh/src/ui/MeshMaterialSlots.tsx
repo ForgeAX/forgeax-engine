@@ -16,7 +16,7 @@ export function MeshMaterialSlots({ client, reader, workspace, slots, assetActio
   slots: readonly MeshMaterialSlot[];
   assetActions?: ResourceAssetActionResolver;
 }) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const visible = usePanelVisible();
   const scope = meshMaterialScope(workspace);
   const [leaseRevision, restartLease] = useReducer((value: number) => value + 1, 0);
@@ -66,7 +66,7 @@ export function MeshMaterialSlots({ client, reader, workspace, slots, assetActio
       const thumbnail = visible && thumbnails?.scope === thumbnailScope ? thumbnails.rows.get(reference?.guid ?? '') : undefined;
       return <div key={index} className="mesh-material-entry" data-testid={`mesh-material-slot-${index}`}>
         <MaterialSlot index={index} name={slot.slotName} source={t(reference?.status === 'builtin' ? 'mesh.engineDefault' : 'mesh.meshDefault')}>
-          <AssetReferenceField value={value}
+          <AssetReferenceField value={value} locale={locale}
             onOpen={actions?.onOpen ? () => { if (current()) actions.onOpen?.(); } : undefined}
             onBrowse={actions?.onBrowse ? () => { if (current()) actions.onBrowse?.(); } : undefined} labels={{
             none: t('mesh.none'), identityUnavailable: t('mesh.materialUnavailable'), readOnly: t('mesh.readOnlyMaterial'),
@@ -77,7 +77,7 @@ export function MeshMaterialSlots({ client, reader, workspace, slots, assetActio
         </MaterialSlot>
         {!resolved && reference?.status !== 'builtin' ? <Text as="div" variant="caption" tone="muted" role="status">{t('mesh.materialUnavailable')}</Text> : null}
         <CollapsibleSection title={t('mesh.slotDetails')} defaultOpen={false}>
-          {Object.entries(slot).map(([key, value]) => <PropertyRow key={key} label={key === 'slotName' ? 'Slot Name' : key === 'sourceKey' ? 'Source Key' : key === 'defaultMaterial' ? 'Default Material' : key}>
+          {Object.entries(slot).map(([key, value]) => <PropertyRow key={key} label={key === 'slotName' ? t('mesh.slotName') : key === 'sourceKey' ? t('mesh.sourceKey') : key === 'defaultMaterial' ? t('mesh.defaultMaterial') : key}>
             <span className="mesh-material-detail">{typeof value === 'object' ? JSON.stringify(value) : String(value)}</span>
           </PropertyRow>)}
         </CollapsibleSection>

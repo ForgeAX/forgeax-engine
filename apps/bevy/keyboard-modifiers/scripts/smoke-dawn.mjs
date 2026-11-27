@@ -56,8 +56,8 @@ const input = {
 const rafQueue = [];
 globalThis.requestAnimationFrame = (callback) => { rafQueue.push(callback); return rafQueue.length; };
 globalThis.cancelAnimationFrame = () => {};
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-const manifestUrl = URL.createObjectURL(new Blob([JSON.stringify(await buildEngineShaderManifest())], { type: 'application/json' }));
+const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const manifestUrl = URL.createObjectURL(new Blob([JSON.stringify(await buildEngineShaderTemplateManifest())], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(manifestUrl));
 const { createApp } = await import('@forgeax/engine-app/browser');
 const { Update } = await import('@forgeax/engine-ecs');

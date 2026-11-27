@@ -1,4 +1,9 @@
-import type { AssetChange, AssetRange } from '@forgeax/engine-assets-runtime/internal';
+import {
+  type AssetChange,
+  type AssetRange,
+  copyAssetRows,
+  copyStaticMeshRange,
+} from '@forgeax/engine-assets-runtime/internal';
 import {
   type Asset,
   type MaterialAsset,
@@ -10,7 +15,6 @@ import {
 } from '@forgeax/engine-types';
 import { RenderPublicationError } from './contract';
 import { beforePublishedMeshBufferWrite, ownPublishedMeshBuffers } from './mesh-buffer-ownership';
-import { isPackedRowsMesh } from './packed-rows-mesh';
 
 export interface PublishedAssetPatch {
   readonly handle: number;
@@ -83,10 +87,14 @@ export function publishAssetPatch(
       const rows = (range.byteLength - rowBytes) / stride + 1;
       const source = binary(value, range.path);
       const bytes = new Uint8Array(rows * rowBytes);
-      for (let row = 0; row < rows; row++) {
-        const offset = range.byteOffset + row * stride;
-        bytes.set(source.subarray(offset, offset + rowBytes), row * rowBytes);
-      }
+      if (
+        value.kind === 'mesh' &&
+        value.attributeStorage === 'static-streams' &&
+        range.path[0] === 'vertices'
+      )
+        copyStaticMeshRange(value, range, bytes, 'gather');
+      else
+        copyAssetRows(source.subarray(range.byteOffset), stride, bytes, rowBytes, rowBytes, rows);
       return { ...range, path: [...range.path], bytes };
     }),
   };
@@ -122,12 +130,14 @@ function writeStridedRows(
   rowBytes: number,
   stride: number,
 ): void {
-  for (
-    let source = 0, destination = offset;
-    source < bytes.byteLength;
-    source += rowBytes, destination += stride
-  )
-    target.set(bytes.subarray(source, source + rowBytes), destination);
+  copyAssetRows(
+    bytes,
+    rowBytes,
+    target.subarray(offset),
+    stride,
+    rowBytes,
+    bytes.byteLength / rowBytes,
+  );
 }
 
 function patchFieldsRecord(fields: PublishedAssetPatch['fields']): boolean {
@@ -165,6 +175,7 @@ function prepareMaterialPatch(
   return {
     value: { ...current, values: values as Record<string, MaterialValue | null> },
     change: {
+      stableKind: current.kind,
       handle: patch.handle as AssetChange['handle'],
       revision: patch.revision,
       removed: false,
@@ -280,7 +291,7 @@ function publishedRange(
  * channel without its rows cannot be represented and fails loudly.
  */
 function packedRowsPatch(current: MeshAsset | TextureAsset, patch: PublishedAssetPatch): boolean {
-  if (current.kind !== 'mesh' || !isPackedRowsMesh(current)) return false;
+  if (current.kind !== 'mesh' || current.attributeStorage === undefined) return false;
   const channels = patch.ranges.some((range) => range.path?.[0] === 'attributes');
   const rows = patch.ranges.some(
     (range) => range.path?.length === 1 && range.path[0] === 'vertices',
@@ -325,6 +336,7 @@ function prepareBinaryPatch(
     return branch;
   };
   const writes: {
+    vertexRange?: AssetRange;
     target: Uint8Array;
     bytes: Uint8Array;
     offset: number;
@@ -354,12 +366,25 @@ function prepareBinaryPatch(
     }
     const target = binary(next, range.path);
     if (range.byteOffset + range.byteLength > target.byteLength) return failBinaryPatch();
-    writes.push({ target, bytes: range.bytes.slice(), offset: range.byteOffset, rowBytes, stride });
-    ranges.push(publishedRange(range, rowBytes, stride));
+    const changed = publishedRange(range, rowBytes, stride);
+    writes.push({
+      target,
+      bytes: range.bytes.slice(),
+      offset: range.byteOffset,
+      rowBytes,
+      stride,
+      ...(current.kind === 'mesh' &&
+      current.attributeStorage === 'static-streams' &&
+      range.path[0] === 'vertices'
+        ? { vertexRange: changed }
+        : {}),
+    });
+    ranges.push(changed);
   }
   return {
     value: next as unknown as Asset,
     change: {
+      stableKind: current.kind,
       handle: patch.handle as AssetChange['handle'],
       revision: patch.revision,
       removed: false,
@@ -368,8 +393,11 @@ function prepareBinaryPatch(
     },
     commit: () => {
       for (const { target } of writes) beforePublishedMeshBufferWrite(target.buffer);
-      for (const { target, bytes, offset, rowBytes, stride } of writes)
-        writeStridedRows(target, bytes, offset, rowBytes, stride);
+      for (const { target, bytes, offset, rowBytes, stride, vertexRange } of writes) {
+        if (vertexRange)
+          copyStaticMeshRange(next as unknown as MeshAsset, vertexRange, bytes, 'scatter');
+        else writeStridedRows(target, bytes, offset, rowBytes, stride);
+      }
       if (current.kind === 'mesh') ownPublishedMeshBuffers(next as unknown as MeshAsset);
     },
   };
@@ -472,6 +500,7 @@ function prepareTerrainPatch(
   return {
     value,
     change: {
+      stableKind: current.kind,
       handle: patch.handle as AssetChange['handle'],
       revision: patch.revision,
       removed: false,

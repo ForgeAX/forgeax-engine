@@ -1,6 +1,7 @@
 import {
   ImportError,
   normalizeSourcePackageError,
+  type SourcePackageErrorCode,
   type SourcePackageErrorContext,
   sourcePackageError,
 } from '@forgeax/engine-import';
@@ -39,54 +40,64 @@ describe('source package structured failures', () => {
   });
 
   it.each([
-    ['source-package-meta-invalid', 'meta', { reason: 'missing subAssets' }],
-    ['source-package-conversion-failed', 'conversion', { reason: 'decoder rejected source' }],
-    ['source-package-ddc-failed', 'ddc', { reason: 'write denied' }],
-    ['source-package-publication-invalid', 'route-integrity', { missing: ['body.bin'] }],
-  ] as const)('includes recovery facts for %s', (code, stage, detail) => {
-    const error = sourcePackageError(code, context, { stage, ...detail });
-
-    expect(error.code).toBe(code);
-    expect(error.expected).toBeTruthy();
-    expect(error.hint).toMatch(
-      code === 'source-package-ddc-failed' ? /inspect.*retry/i : /rebuild|cold-cook|repair/i,
-    );
-    expect(error.detail).toMatchObject({
-      sourceMeta: context.sourceMeta,
-      anchorGuid: context.anchorGuid,
-      affectedGuids: context.affectedGuids,
-      stage,
+    [
+      'source-package-meta-invalid',
+      'meta',
+      { reason: 'missing subAssets' },
+      'a valid source Meta declaration with complete GUID topology',
+      'repair the Meta declaration, then rebuild or cold-cook the source package',
+    ],
+    [
+      'source-package-importer-missing',
+      'importer',
+      { registeredImporters: ['image'] },
+      'a registered importer for the source Meta importer key',
+      'register the named importer, then rebuild or cold-cook the source package',
+    ],
+    [
+      'source-package-conversion-failed',
+      'conversion',
+      { reason: 'decoder rejected source' },
+      'the configured importer to convert the source successfully',
+      'repair the source or importer, then rebuild or cold-cook the source package',
+    ],
+    [
+      'source-package-ddc-failed',
+      'ddc',
+      { reason: 'write denied' },
+      'a validated persistent DDC entry committed by the active publication owner',
+      'inspect the DDC failure and active publication, then retry through the producer',
+    ],
+    [
+      'source-package-publication-invalid',
+      'route-integrity',
+      { missing: ['body.bin'] },
+      'a complete Pack body, refs, artifacts, and route integrity',
+      'repair the missing product bytes, then rebuild or cold-cook the source package',
+    ],
+    [
+      'source-package-guid-closure-mismatch',
+      'closure',
+      {},
+      'exactly one produced asset for every declared GUID',
+      'repair the Meta topology or importer output, then rebuild the whole source package',
+    ],
+  ] as const)('reports typed recovery facts for %s', (code, stage, detail, expected, hint) => {
+    expect(sourcePackageError(code, context, { stage, ...detail })).toMatchObject({
+      code,
+      expected,
+      hint,
+      detail: { ...context, stage, ...detail },
     });
   });
 
-  it('keeps generation provenance readable for every publication stage', () => {
-    const stages = [
-      ['source-package-meta-invalid', 'meta'],
-      ['source-package-importer-missing', 'importer'],
-      ['source-package-conversion-failed', 'conversion'],
-      ['source-package-guid-closure-mismatch', 'closure'],
-      ['source-package-ddc-failed', 'ddc'],
-      ['source-package-publication-invalid', 'route-integrity'],
-    ] as const;
-
-    for (const [code, stage] of stages) {
-      const error = sourcePackageError(code, context, {
-        stage,
-        reason: `generation failed at ${stage}`,
-      });
-      expect(error).toMatchObject({
-        code,
-        detail: {
-          stage,
-          sourceMeta: context.sourceMeta,
-          anchorGuid: context.anchorGuid,
-          affectedGuids: context.affectedGuids,
-        },
-      });
-      expect(error.hint).toMatch(
-        code === 'source-package-ddc-failed' ? /inspect.*retry/i : /rebuild|cold-cook|repair/i,
-      );
-    }
+  it('retains the decoder result for unrecognized codes without inventing recovery', () => {
+    const unknown = 'source-package-unknown' as SourcePackageErrorCode;
+    const error = sourcePackageError(unknown, context, { stage: 'conversion' });
+    expect(error.code).toBe(unknown);
+    expect(error.expected).toBeUndefined();
+    expect(error.hint).toBeUndefined();
+    expect(error.detail).toEqual({ ...context, stage: 'conversion' });
   });
 
   it('preserves owner and recovery fields through browser JSON projection', () => {

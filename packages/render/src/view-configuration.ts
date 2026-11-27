@@ -1,14 +1,14 @@
 import type { RenderPipelineAsset, Result } from '@forgeax/engine-types';
 import type { DynamicGeometryError } from './dynamic-geometry';
 import { validateClusterGrid } from './pipeline/standard-pipeline';
-import { DEFAULT_CLUSTER_GRID, STANDARD_PIPELINE_ID } from './pipeline/standard-profile';
+import { DEFAULT_CLUSTER_GRID } from './pipeline/standard-profile';
 import {
   type CandidatePipelineDemandReader,
   type CandidatePipelineInput,
   CandidatePipelinePreparationOwner,
   type PreparedCandidatePipelines,
 } from './record/candidate-pipeline-preparation';
-import { resolveSsaoParameters, ssaoStructuralIdentity } from './ssao-config';
+import { resolveSsaoParameters } from './ssao-config';
 import type { ViewSettlementOwner } from './world/view-settlement';
 
 /**
@@ -28,10 +28,7 @@ export function configureViewStandard(
       ? config
       : {
           clusterGrid: DEFAULT_CLUSTER_GRID,
-          ssao: {
-            enabled: profileConfig.ssao !== false,
-            ...(typeof profileConfig.ssao === 'object' ? profileConfig.ssao : {}),
-          },
+          ambientOcclusion: profileConfig.ambientOcclusion,
           ...(profileConfig.gpuOcclusion === undefined
             ? {}
             : { gpuOcclusion: profileConfig.gpuOcclusion }),
@@ -44,8 +41,8 @@ export function configureViewStandard(
     const gridResult = validateClusterGrid(resolvedConfig.clusterGrid);
     if (!gridResult.ok) throw gridResult.error;
   }
-  if (resolvedConfig?.ssao?.enabled === true) {
-    const ssaoResult = resolveSsaoParameters(resolvedConfig.ssao);
+  if (resolvedConfig?.ambientOcclusion?.enabled === true) {
+    const ssaoResult = resolveSsaoParameters(resolvedConfig.ambientOcclusion);
     if (!ssaoResult.ok) throw ssaoResult.error;
   }
   // Install is a rare boot/swap event: a monotonic epoch forces the next
@@ -56,10 +53,7 @@ export function configureViewStandard(
   frameState.cameraStandardProfile = undefined;
   frameState.standardInstall.cameraSignature = JSON.stringify([
     profileConfig?.renderPath,
-    ssaoStructuralIdentity(
-      resolvedConfig?.ssao,
-      profileConfig?.pipelineId === STANDARD_PIPELINE_ID,
-    ),
+    resolvedConfig?.ambientOcclusion,
   ]);
 }
 

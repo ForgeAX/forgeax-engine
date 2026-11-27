@@ -1,24 +1,52 @@
-import { bindPreviewHost, type PreviewHost } from '@forgeax/engine-preview';
 import materialPreviewPlugin, { materialPreview } from '@forgeax/engine-preview/material';
 import meshPreviewPlugin, { meshPreview } from '@forgeax/engine-preview/mesh';
 import texturePreviewPlugin, { texturePreview } from '@forgeax/engine-preview/texture';
 import vfxPreviewPlugin, { vfxPreview } from '@forgeax/engine-preview/vfx';
-import type { ToolContribution, ToolDescriptor } from '@forgeax/engine-tool-runtime';
+import {
+  domainFailureError,
+  type ToolContribution,
+  type ToolDomainFailure,
+  type ToolTerminal,
+} from '@forgeax/engine-tool-runtime';
+import { failToolRun } from '../types.js';
 
-export const nativePreviewPlugins = [
-  ['@forgeax/engine-preview/material', materialPreviewPlugin, materialPreview],
-  ['@forgeax/engine-preview/mesh', meshPreviewPlugin, meshPreview],
-  ['@forgeax/engine-preview/vfx', vfxPreviewPlugin, vfxPreview],
-  ['@forgeax/engine-preview/texture', texturePreviewPlugin, texturePreview],
+const nativePreviewPlugins = [
+  ['material', materialPreviewPlugin, materialPreview],
+  ['mesh', meshPreviewPlugin, meshPreview],
+  ['vfx', vfxPreviewPlugin, vfxPreview],
+  ['texture', texturePreviewPlugin, texturePreview],
 ] as const;
 export const nativePreviewTools = nativePreviewPlugins.map(
   ([, , tool]) => tool as ToolContribution,
 );
-export const nativePreviewDescriptors: readonly ToolDescriptor[] = nativePreviewTools.map(
-  ({ descriptor }) => descriptor,
+export const nativePreviewDescriptors = nativePreviewTools.map(({ descriptor }) => descriptor);
+
+const previewByOperation = new Map(
+  nativePreviewPlugins.map((entry) => [entry[2].descriptor.id, entry]),
 );
-export function createNativePreviewPlugin(host: PreviewHost, name: string) {
-  const selected = nativePreviewPlugins.find(([candidate]) => candidate === name);
-  if (!selected) throw new TypeError(`unknown preview plugin ${name}`);
-  return bindPreviewHost(selected[1], host);
+
+export function nativePreviewOwner(operation: string) {
+  return previewByOperation.get(operation);
+}
+
+export const retiredPreviewOperationFailure: ToolDomainFailure = {
+  code: 'preview-operation-migrated',
+  expected: 'a domain-specific preview contribution selected from the project catalog',
+  hint: 'Use material.preview, mesh.preview, vfx.preview, or texture.preview with a Project GUID.',
+  detail: {
+    operation: 'preview.run',
+    replacements: nativePreviewDescriptors.map(({ id }) => id),
+  },
+};
+
+export function retiredPreviewTool(): ToolTerminal<never> {
+  return failToolRun(
+    domainFailureError(
+      retiredPreviewOperationFailure.code,
+      retiredPreviewOperationFailure.expected,
+      retiredPreviewOperationFailure.hint,
+      retiredPreviewOperationFailure.detail,
+    ),
+    [],
+  );
 }

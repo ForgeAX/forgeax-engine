@@ -1,6 +1,29 @@
 import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
-import { resolveReflectionProbeBinding } from './frame-lighting';
+import type { ReflectionProbeTable, ReflectionProbeTableRow } from '../reflection/gpu-table';
+import type { ReflectionProbeSelectionResult } from '../reflection/projection';
 import type { ReflectionProbeRecordState } from './render-context';
+
+/** The receiver keeps the same diffuse sky and binds its selected specular environment. */
+export function reflectionProbeResources(
+  fallback: SkylightBindGroupResources,
+  probe: Required<Pick<ReflectionProbeTableRow, 'filteredView' | 'sampler' | 'uniformBuffer'>>,
+): SkylightBindGroupResources {
+  return {
+    ...fallback,
+    prefilterView: probe.filteredView,
+    prefilterSampler: probe.sampler,
+    intensityBuffer: probe.uniformBuffer,
+  };
+}
+
+function selectedProbeIndex(
+  selection: ReflectionProbeSelectionResult | undefined,
+  table: ReflectionProbeTable,
+): number | undefined {
+  return selection?.kind === 'probe'
+    ? table.cpuIndexByPrimitive(String(selection.entityKey))
+    : undefined;
+}
 
 /** Conservative frame demand: resident probes without a selected receiver need no lighting coverage. */
 export function referencedReflectionProbeIndices(
@@ -8,8 +31,8 @@ export function referencedReflectionProbeIndices(
 ): ReadonlySet<number> {
   const indices = new Set<number>();
   for (const selection of probes.selections.values()) {
-    const binding = resolveReflectionProbeBinding(selection, probes.table);
-    if (!binding.useSkylight && binding.probeIndex !== undefined) indices.add(binding.probeIndex);
+    const index = selectedProbeIndex(selection, probes.table);
+    if (index !== undefined) indices.add(index);
   }
   return indices;
 }
@@ -25,11 +48,7 @@ export function reflectionProbeMaterial(
   if (resourceClass?.startsWith('probe:')) {
     index = Number(resourceClass.slice(6));
   } else if (entityKey !== undefined) {
-    const selection = probes.selections.get(`${entityKey}`);
-    if (selection === undefined) return undefined;
-    const binding = resolveReflectionProbeBinding(selection, probes.table);
-    if (binding.useSkylight) return undefined;
-    index = binding.probeIndex;
+    index = selectedProbeIndex(probes.selections.get(String(entityKey)), probes.table);
   }
   if (index === undefined || !Number.isSafeInteger(index) || index < 0) return undefined;
   // The table owner publishes sorted, possibly sparse indices.
@@ -50,15 +69,11 @@ export function reflectionProbeMaterial(
   )
     return undefined;
   return {
-    resources: {
-      irradianceView: skylight.irradianceView,
-      irradianceSampler: skylight.irradianceSampler,
-      prefilterView: row.filteredView,
-      skylightPrefilterView: skylight.prefilterView,
-      prefilterSampler: row.sampler,
-      brdfLutView: skylight.brdfLutView,
-      intensityBuffer: row.uniformBuffer,
-    },
+    resources: reflectionProbeResources(skylight, {
+      filteredView: row.filteredView,
+      sampler: row.sampler,
+      uniformBuffer: row.uniformBuffer,
+    }),
     probeIndex: row.index,
   };
 }

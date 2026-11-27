@@ -1,6 +1,7 @@
-import type { BindGroupLayout, RhiDevice, TextureView } from '@forgeax/engine-rhi';
+import type { BindGroupLayout, PipelineLayout, RhiDevice, TextureView } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import type { ShaderEntryPointReads } from '@forgeax/engine-types';
+import { projectViewLayout, type viewEntryReads } from '../environment/bindings';
 import { createHdrpBindGroupLayoutDescriptor } from '../pbr-pipeline';
 import type { PipelineState } from '../render-system';
 import { isOwnedWaterMeshAdmissionUpload } from '../water/mesh-source-admission';
@@ -11,6 +12,7 @@ import {
 import { resolveMaterialPipelineBindGroups } from './material/pipeline-helpers';
 import type { LayoutKind } from './material-shader-policy';
 import { completeFrameFailure } from './renderer-frame-transaction';
+import type { WebGPURendererInternals } from './webgpu-renderer-contract';
 
 export function runSameWaterMeshDraw(
   left: import('../water/wave-material').WaterMeshInstanceDrawUpload,
@@ -102,179 +104,178 @@ export function runDestroyWaterMaterialFrameEntry(
   for (const buffer of buffers) destroy(buffer);
 }
 
-export function runWaterMaterialFrameLayout(
-  waterWavesBindGroupLayouts: WeakMap<
-    object,
-    Map<string, import('@forgeax/engine-rhi').BindGroupLayout>
-  >,
-  currentBuildDevice: () => import('@forgeax/engine-rhi').RhiDevice,
-  internals: import('./webgpu-renderer-contract').WebGPURendererInternals,
-  state: PipelineState,
-  waterInfoFormat: 'rgba16float' | 'rgba32float' | 'none',
-): BindGroupLayout | undefined {
-  let layouts = waterWavesBindGroupLayouts.get(state as object);
-  if (layouts === undefined) {
-    layouts = new Map();
-    waterWavesBindGroupLayouts.set(state as object, layouts);
-  }
-  const cached = layouts.get(`frame:${waterInfoFormat}`);
-  if (cached !== undefined) return cached;
-  const created = currentBuildDevice().createBindGroupLayout({
-    label: `water-material-frame-layout:${waterInfoFormat}`,
-    entries: waterMaterialFrameBindGroupLayoutEntries(
-      waterInfoFormat === 'none' ? undefined : waterInfoFormat,
-      0,
-      undefined,
-      waterInfoFormat !== 'none',
-    ),
-  });
-  if (!created.ok) {
-    internals.errorRegistry.fire(created.error);
-    return undefined;
-  }
-  layouts.set(`frame:${waterInfoFormat}`, created.value);
-  return created.value;
-}
-
-export function runWaterMaterialGroup2Layout(
-  waterWavesBindGroupLayouts: WeakMap<
-    object,
-    Map<string, import('@forgeax/engine-rhi').BindGroupLayout>
-  >,
-  currentBuildDevice: () => import('@forgeax/engine-rhi').RhiDevice,
-  internals: import('./webgpu-renderer-contract').WebGPURendererInternals,
-  state: PipelineState,
-  layoutKind: LayoutKind,
-  waterInfoFormat: 'rgba16float' | 'rgba32float' | undefined,
-  entryPoints?: readonly ShaderEntryPointReads[],
-): BindGroupLayout | undefined {
-  let layouts = waterWavesBindGroupLayouts.get(state as object);
-  if (layouts === undefined) {
-    layouts = new Map();
-    waterWavesBindGroupLayouts.set(state as object, layouts);
-  }
-  const waterEntries = waterMaterialFrameBindGroupLayoutEntries(waterInfoFormat, 16, entryPoints);
-  const key = `group2:${layoutKind}:${waterInfoFormat}:${waterEntries.map((entry) => `${entry.binding}:${entry.visibility}`).join(',')}`;
-  const cached = layouts.get(key);
-  if (cached !== undefined) return cached;
-  const baseEntries: import('@forgeax/engine-rhi').BindGroupLayoutEntry[] =
-    layoutKind === 'hdrp-pbr'
-      ? createHdrpBindGroupLayoutDescriptor(currentBuildDevice().caps.storageBuffer).entries
-      : [
-          {
-            binding: 0,
-            visibility: 3,
-            buffer: {
-              type: currentBuildDevice().caps.storageBuffer ? 'read-only-storage' : 'uniform',
-              hasDynamicOffset: true,
-            },
-          },
-        ];
-  const created = currentBuildDevice().createBindGroupLayout({
-    label: `water-waves-${layoutKind}-group2:${waterInfoFormat}`,
-    entries: [...baseEntries, ...waterEntries],
-  });
-  if (!created.ok) {
-    internals.errorRegistry.fire(created.error);
-    return undefined;
-  }
-  layouts.set(key, created.value);
-  return created.value;
-}
-
-export function runWaterWavesPipelineLayout(
-  currentBuildDevice: () => import('@forgeax/engine-rhi').RhiDevice,
-  internals: import('./webgpu-renderer-contract').WebGPURendererInternals,
-  waterWavesPipelineLayouts: WeakMap<
+/** Device-building state owns its Water layouts for as long as that state is live. */
+export function createWaterFrameLayouts(
+  internals: WebGPURendererInternals,
+  currentBuildDevice: () => RhiDevice,
+) {
+  const waterWavesBindGroupLayouts = new WeakMap<object, Map<string, BindGroupLayout>>();
+  const waterWavesPipelineLayouts = new WeakMap<
     object,
     Map<
       string,
       {
-        readonly pipelineLayout: import('@forgeax/engine-rhi').PipelineLayout;
-        readonly group2Layout: import('@forgeax/engine-rhi').BindGroupLayout;
+        readonly pipelineLayout: PipelineLayout;
+        readonly group2Layout: BindGroupLayout;
+        readonly view: BindGroupLayout;
       }
     >
-  >,
-  waterMaterialGroup2Layout: (
-    state: import('../record/render-context').PipelineState,
-    layoutKind: import('./material-shader-policy').LayoutKind,
+  >();
+
+  function waterMaterialFrameLayout(
+    state: PipelineState,
+    waterInfoFormat: 'rgba16float' | 'rgba32float' | 'none',
+  ): BindGroupLayout | undefined {
+    let layouts = waterWavesBindGroupLayouts.get(state as object);
+    if (layouts === undefined) {
+      layouts = new Map();
+      waterWavesBindGroupLayouts.set(state as object, layouts);
+    }
+    const cached = layouts.get(`frame:${waterInfoFormat}`);
+    if (cached !== undefined) return cached;
+    const created = currentBuildDevice().createBindGroupLayout({
+      label: `water-material-frame-layout:${waterInfoFormat}`,
+      entries: waterMaterialFrameBindGroupLayoutEntries(
+        waterInfoFormat === 'none' ? undefined : waterInfoFormat,
+        0,
+        undefined,
+        waterInfoFormat !== 'none',
+      ),
+    });
+    if (!created.ok) {
+      internals.errorRegistry.fire(created.error);
+      return undefined;
+    }
+    layouts.set(`frame:${waterInfoFormat}`, created.value);
+    return created.value;
+  }
+
+  // A View can render several WaterInfo targets. The selected target follows
+  // the Body draw offsets, so the Water system entries share its physical group
+  // while the camera's View binding stays usable across every Body in the pass.
+  function waterMaterialGroup2Layout(
+    state: PipelineState,
+    layoutKind: LayoutKind,
     waterInfoFormat: 'rgba16float' | 'rgba32float' | undefined,
-    entryPoints?: readonly import('@forgeax/engine-types').ShaderEntryPointReads[] | undefined,
-  ) => import('@forgeax/engine-rhi').BindGroupLayout | undefined,
-  state: PipelineState | null,
-  layoutKind: LayoutKind,
-  probeBlend: boolean,
-  waterInfoFormat: 'rgba16float' | 'rgba32float' | undefined,
-  materialBgl: BindGroupLayout | undefined,
-  shaderIdentity: string,
-  entryPoints?: readonly ShaderEntryPointReads[],
-): {
-  readonly pipelineLayout: import('@forgeax/engine-rhi').PipelineLayout;
-  readonly group2Layout: BindGroupLayout;
-} | null {
-  if (state === null) return null;
-  const meshLayoutKind =
-    layoutKind === 'hdrp-pbr' || layoutKind === 'surface-direct-cluster-pbr'
-      ? 'hdrp-pbr'
-      : layoutKind === 'pbr' || layoutKind === 'surface-direct-pbr'
-        ? 'pbr'
-        : undefined;
-  if (meshLayoutKind === undefined) return null;
-  const limits = currentBuildDevice().limits;
-  const requiredLimits = {
-    maxBindingsPerBindGroup:
-      meshLayoutKind === 'hdrp-pbr' ? (currentBuildDevice().caps.storageBuffer ? 16 : 12) : 10,
-    maxUniformBuffersPerShaderStage: 7,
-    maxSampledTexturesPerShaderStage: 1,
-  } as const;
-  const exceeded = Object.entries(requiredLimits).find(
-    ([name, required]) => Number(limits[name as keyof typeof limits] ?? 0) < required,
-  );
-  if (!currentBuildDevice().caps.storageBuffer || exceeded !== undefined) {
-    const [name, required] = exceeded ?? ['storageBuffer', 1];
-    const actual =
-      name === 'storageBuffer'
-        ? Number(currentBuildDevice().caps.storageBuffer)
-        : Number(limits[name as keyof typeof limits] ?? 0);
-    internals.errorRegistry.fire(
-      new RhiError({
-        code: 'limit-exceeded',
-        expected: `Water wave group(2) layout requires ${name} >= ${required}`,
-        hint: `use a device satisfying the ${layoutKind} water layout limit ${name} >= ${required}; current value is ${actual} for ${waterInfoFormat}`,
-      }),
+    entryPoints?: readonly ShaderEntryPointReads[],
+  ): BindGroupLayout | undefined {
+    let layouts = waterWavesBindGroupLayouts.get(state as object);
+    if (layouts === undefined) {
+      layouts = new Map();
+      waterWavesBindGroupLayouts.set(state as object, layouts);
+    }
+    const waterEntries = waterMaterialFrameBindGroupLayoutEntries(waterInfoFormat, 16, entryPoints);
+    const key = `group2:${layoutKind}:${waterInfoFormat}:${waterEntries.map((entry) => `${entry.binding}:${entry.visibility}`).join(',')}`;
+    const cached = layouts.get(key);
+    if (cached !== undefined) return cached;
+    const baseEntries: import('@forgeax/engine-rhi').BindGroupLayoutEntry[] =
+      layoutKind === 'hdrp-pbr'
+        ? createHdrpBindGroupLayoutDescriptor(currentBuildDevice().caps.storageBuffer).entries
+        : [
+            {
+              binding: 0,
+              visibility: 3,
+              buffer: {
+                type: currentBuildDevice().caps.storageBuffer ? 'read-only-storage' : 'uniform',
+                hasDynamicOffset: true,
+              },
+            },
+          ];
+    const created = currentBuildDevice().createBindGroupLayout({
+      label: `water-waves-${layoutKind}-group2:${waterInfoFormat}`,
+      entries: [...baseEntries, ...waterEntries],
+    });
+    if (!created.ok) {
+      internals.errorRegistry.fire(created.error);
+      return undefined;
+    }
+    layouts.set(key, created.value);
+    return created.value;
+  }
+
+  function admitsWaterWavesLayout(
+    meshLayoutKind: 'pbr' | 'hdrp-pbr',
+    layoutKind: LayoutKind,
+    waterInfoFormat: 'rgba16float' | 'rgba32float' | undefined,
+  ): boolean {
+    const limits = currentBuildDevice().limits;
+    const requiredLimits = {
+      maxBindingsPerBindGroup:
+        meshLayoutKind === 'hdrp-pbr' ? (currentBuildDevice().caps.storageBuffer ? 16 : 12) : 10,
+      maxUniformBuffersPerShaderStage: 7,
+      maxSampledTexturesPerShaderStage: 1,
+    } as const;
+    const exceeded = Object.entries(requiredLimits).find(
+      ([name, required]) => Number(limits[name as keyof typeof limits] ?? 0) < required,
     );
-    return null;
+    if (!currentBuildDevice().caps.storageBuffer || exceeded !== undefined) {
+      const [name, required] = exceeded ?? ['storageBuffer', 1];
+      const actual =
+        name === 'storageBuffer'
+          ? Number(currentBuildDevice().caps.storageBuffer)
+          : Number(limits[name as keyof typeof limits] ?? 0);
+      internals.errorRegistry.fire(
+        new RhiError({
+          code: 'limit-exceeded',
+          expected: `Water wave group(2) layout requires ${name} >= ${required}`,
+          hint: `use a device satisfying the ${layoutKind} water layout limit ${name} >= ${required}; current value is ${actual} for ${waterInfoFormat}`,
+        }),
+      );
+      return false;
+    }
+    return true;
   }
-  let layouts = waterWavesPipelineLayouts.get(state as object);
-  if (layouts === undefined) {
-    layouts = new Map();
-    waterWavesPipelineLayouts.set(state as object, layouts);
+
+  function waterWavesPipelineLayout(
+    state: PipelineState | null,
+    layoutKind: LayoutKind,
+    probeBlend: boolean,
+    waterInfoFormat: 'rgba16float' | 'rgba32float' | undefined,
+    materialBgl: BindGroupLayout | undefined,
+    shaderIdentity: string,
+    entryPoints?: readonly ShaderEntryPointReads[],
+    reads?: ReturnType<typeof viewEntryReads>,
+  ) {
+    if (state === null) return null;
+    const meshLayoutKind =
+      layoutKind === 'hdrp-pbr' || layoutKind === 'surface-direct-cluster-pbr'
+        ? 'hdrp-pbr'
+        : layoutKind === 'pbr' || layoutKind === 'surface-direct-pbr'
+          ? 'pbr'
+          : undefined;
+    if (meshLayoutKind === undefined) return null;
+    if (!admitsWaterWavesLayout(meshLayoutKind, layoutKind, waterInfoFormat)) return null;
+    let layouts = waterWavesPipelineLayouts.get(state as object);
+    if (layouts === undefined) {
+      layouts = new Map();
+      waterWavesPipelineLayouts.set(state as object, layouts);
+    }
+    const view =
+      reads === undefined
+        ? state.viewBindGroupLayout
+        : projectViewLayout(currentBuildDevice(), state.viewBindGroupLayout, reads);
+    const key = `${shaderIdentity}:${layoutKind}:${probeBlend}:${waterInfoFormat}:${[...(reads ?? [])].map(([slot, stage]) => `${slot}:${stage}`).join(',')}`;
+    const cached = layouts.get(key);
+    if (cached !== undefined) return cached;
+    const group2 = waterMaterialGroup2Layout(state, meshLayoutKind, waterInfoFormat, entryPoints);
+    const group3 = resolveMaterialPipelineBindGroups(
+      layoutKind,
+      state,
+      probeBlend,
+    )?.instancesLayout;
+    if (group2 === undefined || group3 == null) return null;
+    const created = currentBuildDevice().createPipelineLayout({
+      label: `water-waves-${layoutKind}-pipeline-layout`,
+      bindGroupLayouts: [view, materialBgl ?? state.materialBindGroupLayout, group2, group3],
+    });
+    if (!created.ok) {
+      internals.errorRegistry.fire(created.error);
+      return null;
+    }
+    const layout = { pipelineLayout: created.value, group2Layout: group2, view };
+    layouts.set(key, layout);
+    return layout;
   }
-  const key = `${shaderIdentity}:${layoutKind}:${probeBlend}:${waterInfoFormat}`;
-  const cached = layouts.get(key);
-  if (cached !== undefined) return cached;
-  const group2 = waterMaterialGroup2Layout(state, meshLayoutKind, waterInfoFormat, entryPoints);
-  const group3 = resolveMaterialPipelineBindGroups(
-    layoutKind,
-    state,
-    false,
-    probeBlend,
-  )?.instancesLayout;
-  if (group2 === undefined || group3 == null) return null;
-  const created = currentBuildDevice().createPipelineLayout({
-    label: `water-waves-${layoutKind}-pipeline-layout`,
-    bindGroupLayouts: [
-      state.viewBindGroupLayout,
-      materialBgl ?? state.materialBindGroupLayout,
-      group2,
-      group3,
-    ],
-  });
-  if (!created.ok) {
-    internals.errorRegistry.fire(created.error);
-    return null;
-  }
-  const layout = { pipelineLayout: created.value, group2Layout: group2 };
-  layouts.set(key, layout);
-  return layout;
+
+  return { waterMaterialFrameLayout, waterWavesPipelineLayout };
 }

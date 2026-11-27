@@ -1,8 +1,13 @@
+import { mat4 } from '@forgeax/engine-math';
 import { RhiError } from '@forgeax/engine-rhi';
 import { type PassSelector, RenderQueue } from '@forgeax/engine-types';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { BatchSources, MemberCandidates } from '../gpu-driven/batch-members';
-import type { GpuDrivenBatch, GpuDrivenBatchBinding } from '../gpu-driven/batch-topology';
+import type {
+  GpuDrivenBatch,
+  GpuDrivenBatchBinding,
+  LodHeightCamera,
+} from '../gpu-driven/batch-topology';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type { MaterialResource } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
@@ -14,11 +19,14 @@ import type {
   MaterialSnapshot,
   RenderableSnapshot,
 } from '../render-system-extract';
+import { CapturedSceneTransform } from '../scene/captured-transform';
 import { drawChangesSince } from '../scene/draw-evidence';
 import type { FrameList } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import { TreeFrame } from '../scene/frame-tree-list';
-import type { MaterialFrame } from '../scene/material-dispatch';
+import { type MaterialFrame, usesAcceptedSpriteGeometry } from '../scene/material-dispatch';
+import { SceneDrawSlot } from '../scene/mesh-draw';
+import type { CameraVisibility } from '../scene/persistent-cull';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { type BinnedItem, BinnedPhase, type BinPlacement } from '../systems/binned-phase';
@@ -30,7 +38,14 @@ import {
   TRANSPARENT_SORT_MODE_LAYER_Y,
   TRANSPARENT_SORT_MODE_LAYER_YZ,
 } from '../systems/transparent-sort-config';
-import type { ValidatedRenderable } from './frame-snapshot';
+import {
+  type ViewDrawOrderKey,
+  ViewDrawOrderReader,
+  type ViewDrawOrderSelection,
+} from '../systems/view-draw-order';
+import { selectCpuLodRow } from './cpu-lod';
+import { issueDrawRows } from './draw-row-pages';
+import type { DrawRows, ValidatedRenderable } from './frame-snapshot';
 import { variantSetFromDefines } from './helpers';
 import {
   MaterialBindingIndex,
@@ -55,12 +70,13 @@ function invalid(expected: string): never {
 
 export type DirectDrawScene = Pick<
   PersistentGpuDrivenState,
-  'plan' | 'slotAt' | 'drawSnapshotAt' | 'unbatchedSlots' | 'skin'
+  'plan' | 'slotAt' | 'drawSnapshotAt' | 'unbatchedSlots' | 'skin' | 'allocatedSourceAddress'
 > &
   Partial<Pick<PersistentGpuDrivenState, 'slots' | 'draws'>>;
 
 /** Draw ordering of a sorted (transparent) consumer, read once per sync. */
 export interface DirectDrawSort {
+  readonly sourceOrder?: ViewDrawOrderSelection | undefined;
   readonly mode: number;
   readonly yzAlpha: number;
   readonly camera: CameraSnapshot | undefined;
@@ -87,9 +103,7 @@ export interface DirectDrawInput {
   /** Accepted material versions the rows read; changed versions requeue their readers. */
   readonly materials: MaterialFrame | undefined;
   /** Validates unbatched and view-owned sources; reports each row's input index. */
-  readonly prepareUnbatched: (
-    sources: FrameList<RenderableSnapshot>,
-  ) => readonly ValidatedRenderable[];
+  readonly prepareUnbatched: (sources: FrameList<RenderableSnapshot>) => DrawRows;
   /** Material admission of unbatched and view-owned submeshes. */
   readonly admits?: ((material: MaterialResource) => boolean) | undefined;
   readonly viewDraws: FrameList<RenderableSnapshot>;
@@ -102,12 +116,12 @@ export interface DirectDrawInput {
       ) => MeshGpuHandles)
     | undefined;
   /** Camera admission; its fixed evidence names every row whose answer may differ. */
-  readonly visible?: ((source: RenderableSnapshot) => boolean) | undefined;
+  readonly visible?: CameraVisibility | undefined;
   /** Camera geometry mask; absent for shadow consumers. */
   readonly cullMask?: number;
   readonly admission?: CameraAdmission | undefined;
   /** Camera-dependent row projection (CPU LOD); a changed `lodCamera` re-projects LOD rows. */
-  readonly lod: (rows: readonly ValidatedRenderable[]) => readonly ValidatedRenderable[];
+  readonly lod?: LodHeightCamera | ((rows: readonly ValidatedRenderable[]) => DrawRows) | undefined;
   /** Facts `lod` reads from the camera; changed tokens re-project LOD rows. */
   readonly lodCamera?: readonly unknown[] | undefined;
   /** Resident geometry versions unbatched validation reads; a change re-reads those rows. */
@@ -119,12 +133,18 @@ export interface DirectDrawInput {
   readonly sort?: DirectDrawSort | undefined;
 }
 
-/** The ordered work of one emit; arrays are replaced whenever their content changes. */
-export interface DirectDrawOutput {
-  readonly rows: readonly ValidatedRenderable[];
+export interface NativeMeshRowSpan {
+  /** Half-open range containing all keyed mesh draws and terrain sections. Empty for ordinary geometry. */
+  readonly nativeStart: number;
+  readonly nativeEnd: number;
+}
+
+/** The sealed row addresses and material dispatch order of one pass. */
+export interface DirectDrawOutput extends NativeMeshRowSpan {
+  /** Leading rows placed by distinct view dispatch owners, before undispatched rows. */
+  readonly dispatchedPrefix?: number | undefined;
+  readonly rows: DrawRows;
   readonly dispatch: readonly DispatchEntry[];
-  /** The row of each dispatch entry, index-aligned. */
-  readonly entryRows: readonly ValidatedRenderable[];
   readonly materialPasses?: MaterialPassLookup | undefined;
   /** Persistent entity-to-material facts, independent of pose and recording state. */
   readonly materialRows?: MaterialRelationFrame | undefined;
@@ -132,6 +152,8 @@ export interface DirectDrawOutput {
 
 /** Cumulative phase work; tests and benches read deltas. */
 export interface DirectDrawPhaseWork {
+  /** Copies needed to install a different pass address or material overlay. */
+  readdressed: number;
   /** Candidate rows rebuilt from their sources. */
   rebuilt: number;
   /** Batches whose selection or membership was re-judged. */
@@ -149,10 +171,9 @@ export interface DirectDrawPhaseWork {
 }
 
 type MutableRow = { -readonly [K in keyof ValidatedRenderable]: ValidatedRenderable[K] };
-type MutableEntry = { -readonly [K in keyof DispatchEntry]: DispatchEntry[K] };
 
 interface Contribution {
-  readonly binding: GpuDrivenBatchBinding;
+  readonly port: DirectBatchPort;
   readonly generation: number;
   readonly entityKey: number;
   readonly instanceCount: number;
@@ -169,15 +190,60 @@ interface SelectedBatch {
   readonly world: RenderResourceScope;
 }
 
+/** One selected physical binding for all its members. A pose never changes its source submesh. */
+class DirectBatchPort {
+  readonly indices: readonly number[];
+  section: MeshGpuHandles['submeshes'][number] | undefined;
+  constructor(
+    readonly id: number,
+    readonly binding: GpuDrivenBatchBinding,
+    public current: SelectedBatch,
+  ) {
+    this.indices =
+      binding.drawItemIndex === 0 ? FIRST_SUBMESH : Object.freeze([binding.drawItemIndex]);
+    this.section = current.mesh.submeshes[binding.drawItemIndex];
+  }
+
+  bind(current: SelectedBatch): void {
+    if (this.current.mesh !== current.mesh)
+      this.section = current.mesh.submeshes[this.binding.drawItemIndex];
+    this.current = current;
+  }
+}
+
+interface DrawSections {
+  readonly port: DirectBatchPort;
+  readonly indices: readonly number[];
+  readonly assetHandle: RenderableSnapshot['assetHandle'];
+  readonly entityKey: number | undefined;
+  readonly generation: number | undefined;
+}
+
+/** Only multi-section members own a roster. Published rows borrow its immutable indices.
+ * Edits to membership or resident geometry retire that selection before the next draw. */
+class AdditionalDrawBatches extends Map<number, Contribution> {
+  sections: DrawSections | undefined;
+}
+
 interface Member {
+  /** The change queue can outlive a slot replacement during the same sync. */
+  live: boolean;
+  changeAddress: number;
+  moveAddress: number;
+  sortVisit: number;
   readonly key: number;
   /** Scene row address (the entity's GPU row); undefined for a view-owned draw. */
   readonly slot: number | undefined;
-  /** Selected batches drawing this row, by batch id, in admission order. */
-  readonly contributions: Map<number, Contribution>;
+  /** The first selected batch in admission order; most geometry has just one. */
+  firstBatch: Contribution | undefined;
+  additionalBatches: AdditionalDrawBatches | undefined;
   unbatched: boolean;
+  /** Current layer and visibility decision, including for rows awaiting geometry. */
+  admitted: boolean;
   /** View-owned source of a member without a Scene row. */
   view: RenderableSnapshot | undefined;
+  /** This queue visit has received only Scene slot evidence. */
+  slotOnly: boolean;
   /** Scene row version the current row was built from. */
   version: number;
   /** Scene row read by the latest rebuild. */
@@ -187,27 +253,90 @@ interface Member {
   drawn: ValidatedRenderable | undefined;
   /** Addressed publication, retained until projection, overlay or compact address changes. */
   published: ValidatedRenderable | undefined;
+  /** A native batched row may start at the last issued address and pass state. */
+  preaddressed: boolean;
   overlay: DispatchEntry | undefined;
   materials: readonly MaterialResource[];
   meshKey: number | undefined;
   lod: boolean;
   items: readonly DrawItem[];
   materialPasses: MemberMaterialPasses | undefined;
-  /** The projected row, material frame and Pass selector the current items were placed from. */
+  /** The latest projected row with the geometry and bindings used by the placed items. */
   placed: ValidatedRenderable | undefined;
-  placedMaterials: MaterialFrame | undefined;
+  placedMaterialEpoch: number;
   placedSelector: PassSelector | undefined;
+  /** Compact index in the most recently emitted roster, before the pass offset. */
+  outputIndex: number;
   emitted: number;
 }
 
 interface DrawItem extends BinnedItem {
   readonly owner: Member;
   readonly bin: number;
-  readonly entry: MutableEntry | undefined;
+  readonly entry: DispatchEntry | undefined;
+  publishedEntry?: DispatchEntry;
   /** Sorted phase id, or -1 when the entry keeps its bin position. */
   sortId: number;
 }
 
+/** The active change list uses each phase member's own address. Repeated
+ * contributions from transforms, materials, residency and visibility enqueue
+ * the member once. Retirement and same-slot replacement have distinct identities. */
+class ChangedDrawMembers {
+  private readonly rows: (Member | undefined)[] = [];
+  size = 0;
+
+  constructor(private readonly address: 'changeAddress' | 'moveAddress') {}
+
+  has(member: Member): boolean {
+    const index = member[this.address];
+    return index >= 0 && this.rows[index] === member;
+  }
+
+  add(member: Member): void {
+    if (this.address === 'changeAddress') member.slotOnly = false;
+    if (!this.has(member)) this.append(member);
+  }
+
+  addSlot(member: Member): void {
+    if (this.has(member)) return;
+    member.slotOnly = true;
+    this.append(member);
+  }
+
+  private append(member: Member): void {
+    member[this.address] = this.size;
+    this.rows[this.size++] = member;
+  }
+
+  remove(member: Member): void {
+    const index = member[this.address];
+    if (index < 0 || this.rows[index] !== member) return;
+    const last = --this.size;
+    if (index !== last) {
+      const moved = this.rows[last] as Member;
+      this.rows[index] = moved;
+      moved[this.address] = index;
+    }
+    this.rows[last] = undefined;
+    member[this.address] = -1;
+  }
+
+  forEach(visit: (member: Member) => void): void {
+    for (let index = 0; index < this.size; index++) visit(this.rows[index] as Member);
+  }
+
+  release(residents: number): void {
+    const working = Math.min(this.size, residents);
+    if (this.rows.length > Math.max(128, working * 4)) this.rows.length = working;
+    this.rows.fill(undefined, 0, this.size);
+    this.size = 0;
+  }
+}
+
+type MemberChanges = ChangedDrawMembers | Set<Member>;
+
+const FIRST_SUBMESH = Object.freeze([0]);
 const TAIL = 2 ** 40;
 const UNBATCHED_BIN = -1;
 const VIEW_BIN = -2;
@@ -221,6 +350,7 @@ function sortedEntry(entry: DispatchEntry, all: boolean): boolean {
 }
 
 function sameTokens(left: readonly unknown[], right: readonly unknown[]): boolean {
+  if (left === right) return true;
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
   return true;
@@ -259,13 +389,46 @@ function sameReads(before: RenderableSnapshot, after: RenderableSnapshot): boole
 }
 
 /** Equal arithmetic terms remain a distance tie under motion on a shared axis. */
-function equalDistanceTerms(left: Float32Array, right: Float32Array, eye: Float64Array): boolean {
+function equalDistanceTerms(
+  left: Float32Array,
+  leftOffset: number,
+  right: Float32Array,
+  rightOffset: number,
+  eye: Float64Array,
+): boolean {
   for (let axis = 0; axis < 3; axis++) {
-    const a = (left[12 + axis] ?? 0) - (eye[axis] ?? 0);
-    const b = (right[12 + axis] ?? 0) - (eye[axis] ?? 0);
+    const a = (left[leftOffset + 12 + axis] ?? 0) - (eye[axis] ?? 0);
+    const b = (right[rightOffset + 12 + axis] ?? 0) - (eye[axis] ?? 0);
     if (a * a !== b * b) return false;
   }
   return true;
+}
+
+function sourceAddress(
+  scene: DirectDrawScene,
+  record: RenderSceneSlot | undefined,
+  source: RenderableSnapshot,
+  fallback: number,
+): number {
+  return record !== undefined &&
+    source.nativeDraw === undefined &&
+    source.terrainSection === undefined
+    ? (scene.allocatedSourceAddress?.(record) ?? fallback)
+    : fallback;
+}
+
+function keyedDraw(row: ValidatedRenderable | undefined): boolean {
+  return row?.source.nativeDraw !== undefined || row?.source.terrainSection !== undefined;
+}
+
+/** A fixed residual already owns admission for its slots; the camera tests the remaining rows. */
+type AdmissionReads = 'changes' | 'all' | NonNullable<CameraAdmission['residual']>;
+
+function participates(
+  source: Pick<RenderableSnapshot, 'authorVisible' | 'shadowCaster'>,
+  shadow: boolean,
+): boolean {
+  return source.authorVisible !== false && (!shadow || source.shadowCaster !== false);
 }
 
 function sourceVisible(input: DirectDrawInput, source: RenderableSnapshot): boolean {
@@ -284,12 +447,15 @@ function sourceVisible(input: DirectDrawInput, source: RenderableSnapshot): bool
  * and changed members are rebuilt and requeued (dequeue before enqueue).
  * Scene Pass consumers bin dispatch entries by (queue, Pass); a sorted
  * consumer feeds its {@link SortedPhase} the same member diffs. {@link emit}
- * projects the queued state; an unchanged queue returns the previous arrays.
+ * publishes the queued rows and material dispatch.
  */
 export class DirectDrawPhase {
   private readonly bins = new BinnedPhase<DrawItem>();
   private readonly members = new Map<number, Member>();
-  private readonly selected = new Map<number, SelectedBatch>();
+  private availableChanges: ChangedDrawMembers | undefined = new ChangedDrawMembers(
+    'changeAddress',
+  );
+  private readonly selected = new Map<number, DirectBatchPort>();
   /** Every plan batch by id, and the batches drawing each material. */
   private readonly known = new Map<number, GpuDrivenBatch>();
   private readonly byMaterial = new Map<MaterialResource, Set<number>>();
@@ -303,6 +469,8 @@ export class DirectDrawPhase {
    * re-resolves them.
    */
   private readonly morphed = new Map<Member, SelectedBatch>();
+  /** Borrowed material publications cannot prove stable Pass identity across replacement. */
+  private materialEpoch = 0;
   private readonly materialReaders = new Map<MaterialResource, Set<Member>>();
   private readonly meshReaders = new Map<number, Set<Member>>();
   private readonly lodMembers = new Set<Member>();
@@ -320,26 +488,53 @@ export class DirectDrawPhase {
   private cullMask: number | undefined;
   private viewDraws: FrameList<RenderableSnapshot> | undefined;
   private lodCamera: readonly unknown[] = [];
+  private lodMode: 'native' | 'external' | 'none' | undefined;
   private geometry: readonly unknown[] = [];
   private sort = new SortedPhase('layered');
+  private readonly sourceOrderReader = new ViewDrawOrderReader();
   private sortItems: (DrawItem | undefined)[] = [];
   private sortInputs: DirectDrawSort | undefined;
+  private sortVisit = 0;
+  private completedSourceOrder: ViewDrawOrderSelection | undefined;
+  /** Which entries belong to the currently populated sorted phase. */
+  private sortAll: boolean | undefined;
+  // Number columns only. The sorting workspace never retains a draw or a material.
+  private readonly sortedPositions: number[] = [];
+  private readonly sortPermutation: number[] = [];
+  private readonly sortValues: number[] = [];
   private sortBins = -1;
   /** Every retained distance value is evaluated at this same eye. */
+  private readonly lodWorld = mat4.create();
   private readonly sortEye = new Float64Array([Number.NaN, Number.NaN, Number.NaN]);
   /** Per-axis camera displacement interval preserving the retained order. */
   private readonly sortRange = new Float64Array(6);
   private rangeChanged = -1;
   /** Sorted entries the phase cannot address take the engine sort. */
   private unaddressable = 0;
+  /** Geometry publications whose placed work still occupies its emitted address. */
+  private readonly movedRows = new ChangedDrawMembers('moveAddress');
+  // Requested by a retained shadow atlas after emit. This identity owns no row or mesh.
+  private meshDomain: object | undefined;
+
+  issuedMeshDomain(): object {
+    this.meshDomain ??= {};
+    return this.meshDomain;
+  }
+
+  private observeIssuedMesh(rows: DrawRows, index: number, row: ValidatedRenderable): void {
+    if (this.meshDomain !== undefined && rows.at(index)?.mesh.changeToken !== row.mesh.changeToken)
+      this.meshDomain = undefined;
+  }
+
   private emittedRevision = -1;
   private emittedSort = -1;
   private emittedOffset = 0;
   private epoch = 0;
-  private output: DirectDrawOutput = { rows: [], dispatch: [], entryRows: [] };
+  private output: DirectDrawOutput = { rows: [], dispatch: [], nativeStart: 0, nativeEnd: 0 };
   private readonly materialRows = new MaterialRelations();
   private retainBindings = false;
   readonly work: DirectDrawPhaseWork = {
+    readdressed: 0,
     rebuilt: 0,
     batches: 0,
     cold: 0,
@@ -388,23 +583,52 @@ export class DirectDrawPhase {
       this.emittedRevision = -1;
     }
     this.syncMaterialPassMode(input);
-    const dirty = new Set<Member>(this.pending);
-    const previousSort = this.sortInputs;
-    this.sortInputs = input.sort;
-    if (previousSort === undefined) this.adoptSortEye();
-    const lodCamera = input.lodCamera ?? [];
-    const lodMoved = !sameTokens(lodCamera, this.lodCamera);
-    this.lodCamera = lodCamera;
-    this.syncBatches(input, dirty);
-    this.syncUnbatched(input.scene.unbatchedSlots ?? EMPTY_SLOTS, dirty);
-    this.syncEvidence(input, dirty);
-    this.syncGeometry(input.geometry ?? [], dirty);
-    this.syncAdmission(input, dirty);
-    this.syncViewDraws(input, dirty);
-    this.rebuild(input, dirty);
-    this.touchMorphed(input, dirty);
-    if (lodMoved) this.reprojectLod(input, dirty);
-    this.syncSort(previousSort);
+    const changes = this.availableChanges;
+    this.availableChanges = undefined;
+    // An integration callback can enter the same phase. Its private Set
+    // leaves the outer walk's member addresses intact.
+    const dirty = changes ?? new Set<Member>();
+    try {
+      for (const member of this.pending) dirty.add(member);
+      const previousSort = this.sortInputs;
+      this.sortVisit++;
+      this.sortInputs = input.sort;
+      if (input.sort?.sourceOrder !== this.completedSourceOrder) this.sort.invalidate();
+      if (previousSort === undefined) this.adoptSortEye();
+      const lodCamera = input.lodCamera ?? [];
+      const mode =
+        input.lod === undefined ? 'none' : typeof input.lod === 'function' ? 'external' : 'native';
+      const lodMoved = mode !== this.lodMode || !sameTokens(lodCamera, this.lodCamera);
+      this.syncBatches(input, dirty);
+      this.syncUnbatched(input.scene.unbatchedSlots ?? EMPTY_SLOTS, dirty);
+      this.syncEvidence(input, dirty);
+      this.syncGeometry(input.geometry ?? [], dirty);
+      const admission = this.syncAdmission(input, dirty);
+      this.syncViewDraws(input, dirty);
+      this.rebuild(input, dirty, input.scene.draws === undefined ? 'all' : admission);
+      this.touchMorphed(input, dirty);
+      if (lodMoved) this.reprojectLod(input, dirty);
+      this.syncSort(previousSort);
+      this.lodCamera = lodCamera;
+      this.lodMode = mode;
+    } catch (cause) {
+      this.lodMode = undefined;
+      this.completedSourceOrder = undefined;
+      // A failed camera read can leave unvisited rows outside the residual.
+      this.admission = undefined;
+      // Input cursors may already have advanced. Retry the actual live
+      // members even when the next frame carries no additional edits.
+      dirty.forEach((member) => {
+        if (member.live) this.pending.add(member);
+      });
+      this.emittedRevision = -1;
+      throw cause;
+    } finally {
+      if (changes !== undefined) {
+        changes.release(this.members.size);
+        this.availableChanges = changes;
+      }
+    }
   }
 
   /** Rows-only and borrowed consumers allocate no owned material-group state. */
@@ -419,7 +643,7 @@ export class DirectDrawPhase {
 
   // ── Batches ───────────────────────────────────────────────────────────
 
-  private syncBatches(input: DirectDrawInput, dirty: Set<Member>): void {
+  private syncBatches(input: DirectDrawInput, dirty: MemberChanges): void {
     const batches = input.scene.plan.batches;
     const previous = this.batches;
     // Asset scopes are part of every batch's answer; resident tables diff per binding.
@@ -497,7 +721,7 @@ export class DirectDrawPhase {
   }
 
   /** A replaced resident table re-selects only bindings whose geometry changed. */
-  private syncMeshes(input: DirectDrawInput, dirty: Set<Member>): void {
+  private syncMeshes(input: DirectDrawInput, dirty: MemberChanges): void {
     const previous = this.residents;
     const meshes = input.meshes;
     this.residents = meshes;
@@ -512,7 +736,7 @@ export class DirectDrawPhase {
     previous: GpuDrawSelection | undefined,
     gpu: GpuDrawSelection | undefined,
     input: DirectDrawInput,
-    dirty: Set<Member>,
+    dirty: MemberChanges,
   ): void {
     if (previous === gpu || previous === undefined || gpu === undefined) return;
     for (const binding of gpu.changedBindingsSince(previous))
@@ -541,55 +765,87 @@ export class DirectDrawPhase {
     batchId: number,
     batch: GpuDrivenBatch | undefined,
     input: DirectDrawInput,
-    dirty: Set<Member>,
+    dirty: MemberChanges,
   ): void {
-    const before = this.selected.get(batchId);
+    const before = this.selected.get(batchId)?.current;
     const after = batch === undefined ? undefined : this.selectBatch(batch, input);
     if (before === after) return;
     this.work.batches += 1;
     if (before?.derived === true) this.derivedBatches -= 1;
     if (after?.derived === true) this.derivedBatches += 1;
-    if (after === undefined) this.selected.delete(batchId);
-    else this.selected.set(batchId, after);
-    if (
-      before !== undefined &&
-      after !== undefined &&
-      before.batch.binding === after.batch.binding &&
-      MemberCandidates.is(before.batch.candidates) &&
-      MemberCandidates.is(after.batch.candidates)
-    ) {
-      const binding = after.batch.binding as GpuDrivenBatchBinding;
-      after.batch.candidates.changesSince(before.batch.candidates, (slot, _left, right) => {
-        const member = this.member(slot);
-        if (right === undefined) member.contributions.delete(batchId);
-        else member.contributions.set(batchId, contribution(binding, right));
-        dirty.add(member);
-      });
-      // Material versions reach their readers through the MaterialFrame diff;
-      // other geometry or scope answers re-read every member of the batch.
-      if (before.mesh !== after.mesh || before.world !== after.world)
-        for (const member of after.batch.members ?? []) {
-          const owner = this.members.get(member.primitiveIndex);
-          if (owner !== undefined) dirty.add(owner);
-        }
+    const port = this.publishBatch(batchId, after);
+    if (before !== undefined && port !== undefined && this.updateLinkedMembers(before, port, dirty))
       return;
-    }
     if (before !== undefined)
       for (const member of before.batch.members ?? []) {
         const owner = this.members.get(member.primitiveIndex);
         if (owner === undefined) continue;
-        owner.contributions.delete(batchId);
+        removeContribution(owner, batchId);
         dirty.add(owner);
       }
-    if (after !== undefined) {
-      const binding = after.batch.binding as GpuDrivenBatchBinding;
-      const members = after.batch.members ?? invalid('native source members for a direct batch');
+    if (port !== undefined) {
+      const members =
+        port.current.batch.members ?? invalid('native source members for a direct batch');
       for (const member of members) {
         const owner = this.member(member.primitiveIndex);
-        owner.contributions.set(batchId, contribution(binding, member));
+        setContribution(owner, contribution(port, member));
         dirty.add(owner);
       }
     }
+  }
+
+  /** Native candidate pages name changed members directly. A resident mesh or scope
+   * replacement additionally changes every member that reads that physical binding. */
+  private updateLinkedMembers(
+    before: SelectedBatch,
+    port: DirectBatchPort,
+    dirty: MemberChanges,
+  ): boolean {
+    const current = port.current;
+    const left = before.batch.candidates;
+    const right = current.batch.candidates;
+    if (
+      before.batch.binding !== port.binding ||
+      !MemberCandidates.is(left) ||
+      !MemberCandidates.is(right)
+    )
+      return false;
+    right.changesSince(left, (slot, _left, right) => {
+      const member = this.member(slot);
+      if (right === undefined) removeContribution(member, port.id);
+      else setContribution(member, contribution(port, right));
+      dirty.add(member);
+    });
+    // Material versions reach their readers through the MaterialFrame diff;
+    // other geometry or scope answers re-read every member of the batch.
+    if (before.mesh !== current.mesh || before.world !== current.world)
+      for (const member of current.batch.members ?? []) {
+        const owner = this.members.get(member.primitiveIndex);
+        if (owner === undefined) continue;
+        if (before.mesh !== current.mesh && owner.additionalBatches !== undefined)
+          owner.additionalBatches.sections = undefined;
+        dirty.add(owner);
+      }
+    return true;
+  }
+
+  private publishBatch(
+    batchId: number,
+    current: SelectedBatch | undefined,
+  ): DirectBatchPort | undefined {
+    if (current === undefined) {
+      this.selected.delete(batchId);
+      return undefined;
+    }
+    const binding = current.batch.binding as GpuDrivenBatchBinding;
+    const before = this.selected.get(batchId);
+    if (before?.binding === binding) {
+      before.bind(current);
+      return before;
+    }
+    const port = new DirectBatchPort(batchId, binding, current);
+    this.selected.set(batchId, port);
+    return port;
   }
 
   private selectBatch(batch: GpuDrivenBatch, input: DirectDrawInput): SelectedBatch | undefined {
@@ -600,7 +856,7 @@ export class DirectDrawPhase {
     const mesh = input.prepareGeometry?.(base, material) ?? base;
     const derived = mesh !== base;
     const world = input.sourceScope ?? invalid('the asset scope of a direct batch');
-    const previous = this.selected.get(batch.batchId);
+    const previous = this.selected.get(batch.batchId)?.current;
     // Equal facts keep the retained selection, so judge() sees no change.
     return previous !== undefined &&
       previous.batch === batch &&
@@ -614,7 +870,7 @@ export class DirectDrawPhase {
 
   // ── Unbatched rows, Scene evidence, camera admission, view draws ──────
 
-  private syncUnbatched(unbatched: ReadonlySet<number>, dirty: Set<Member>): void {
+  private syncUnbatched(unbatched: ReadonlySet<number>, dirty: MemberChanges): void {
     const previous = this.unbatched;
     this.unbatched = unbatched;
     if (previous === unbatched) return;
@@ -633,11 +889,13 @@ export class DirectDrawPhase {
     }
   }
 
-  private syncEvidence(input: DirectDrawInput, dirty: Set<Member>): void {
+  private syncEvidence(input: DirectDrawInput, dirty: MemberChanges): void {
     const materials = input.materials;
     const previousMaterials = this.materials;
     this.materials = materials;
     if (previousMaterials !== materials) {
+      if (previousMaterials?.hasBorrowedValues || materials?.hasBorrowedValues)
+        this.materialEpoch++;
       if (materials !== undefined && previousMaterials !== undefined)
         materials.changesSince(previousMaterials, (before, after) => {
           // Binding counts change with membership; rows read only versions and Passes.
@@ -652,17 +910,28 @@ export class DirectDrawPhase {
             !materials.hasBorrowedValues &&
             !previousMaterials.hasBorrowedValues &&
             before?.passes === after?.passes;
-          for (const member of this.materialReaders.get(resource) ?? [])
+          const spriteChanged =
+            this.retainBindings &&
+            samePasses &&
+            before !== undefined &&
+            after !== undefined &&
+            before.snapshot.passes !== after.snapshot.passes &&
+            usesAcceptedSpriteGeometry(before) !== usesAcceptedSpriteGeometry(after);
+          for (const member of this.materialReaders.get(resource) ?? []) {
+            if (!samePasses) member.placed = undefined;
             if (
               !samePasses ||
-              member.contributions.size === 0 ||
+              spriteChanged ||
+              member.firstBatch === undefined ||
               member.row?.source.morph !== undefined
             )
               dirty.add(member);
+          }
           for (const batchId of this.byMaterial.get(resource) ?? [])
             this.judge(batchId, this.known.get(batchId), input, dirty);
         });
       else {
+        this.materialEpoch++;
         for (const member of this.members.values()) dirty.add(member);
         for (const [batchId, batch] of this.known) this.judge(batchId, batch, input, dirty);
       }
@@ -671,14 +940,12 @@ export class DirectDrawPhase {
     const draws = input.scene.draws;
     this.draws = draws;
     if (previous === draws) return;
-    const slots = draws?.slots;
     const linked = drawChangesSince(previous, draws, {
-      slot: (slot) => {
+      slot: (slot, version) => {
         const member = this.members.get(slot);
-        if (member === undefined) return;
-        // Page diffs report every lane of a changed page; an unchanged row keeps its version.
-        if (slots !== undefined && slots.versionAt(slot) === member.version) return;
-        dirty.add(member);
+        if (member === undefined || version === member.version) return;
+        if (dirty instanceof ChangedDrawMembers) dirty.addSlot(member);
+        else dirty.add(member);
       },
       row: (slot) => {
         const member = this.members.get(slot);
@@ -695,49 +962,58 @@ export class DirectDrawPhase {
   }
 
   /** Changed residency re-reads rows that validation prepared outside a batch. */
-  private syncGeometry(geometry: readonly unknown[], dirty: Set<Member>): void {
+  private syncGeometry(geometry: readonly unknown[], dirty: MemberChanges): void {
     if (sameTokens(this.geometry, geometry)) return;
     this.geometry = geometry;
     for (const member of this.members.values())
-      if (member.contributions.size === 0) dirty.add(member);
+      if (member.firstBatch === undefined) dirty.add(member);
   }
 
-  private syncAdmission(input: DirectDrawInput, dirty: Set<Member>): void {
-    if (input.cullMask !== this.cullMask) {
-      this.cullMask = input.cullMask;
-      for (const member of this.members.values()) dirty.add(member);
-    }
+  /** True when every current source needs a layer/predicate sample. */
+  private syncAdmission(input: DirectDrawInput, dirty: MemberChanges): AdmissionReads {
+    const maskChanged = input.cullMask !== this.cullMask;
+    this.cullMask = input.cullMask;
     const visible = input.visible;
     const admission = input.admission;
     const previousVisible = this.visibility;
     const previous = this.admission;
     this.visibility = visible;
     this.admission = admission;
-    if (visible === undefined && previousVisible === undefined) return;
+    if (maskChanged) return 'all';
+    if (visible === undefined && previousVisible === undefined) return 'changes';
     if (
       visible !== undefined &&
       previousVisible !== undefined &&
       admission !== undefined &&
       previous !== undefined
     ) {
-      if (admission === previous) return;
+      if (admission === previous) return 'changes';
       const flip = (slot: number) => {
         const member = this.members.get(slot);
         if (member !== undefined) dirty.add(member);
       };
+      if ('sceneOwner' in admission || 'sceneOwner' in previous) {
+        if (
+          !('sceneOwner' in admission && 'sceneOwner' in previous) ||
+          admission.sceneOwner !== previous.sceneOwner ||
+          admission.residency !== previous.residency ||
+          input.viewDraws.length !== 0
+        )
+          return 'all';
+        admission.hidden.changesSince(previous.hidden, flip);
+        return 'changes';
+      }
       admission.hidden.changesSince(previous.hidden, flip);
       admission.residual.changesSince(previous.residual, flip);
-      // Rows outside the residual set are judged by the camera itself.
-      if (admission.frusta !== previous.frusta)
-        for (const member of this.members.values())
-          if (member.slot === undefined || !admission.residual.has(member.slot)) dirty.add(member);
-      return;
+      // A new frustum requires a visibility read outside the fixed residual.
+      // Only a changed answer or independent Scene evidence requires new draw work.
+      return admission.frusta !== previous.frusta ? admission.residual : 'changes';
     }
     // Without fixed evidence, admission is re-read for every candidate.
-    for (const member of this.members.values()) dirty.add(member);
+    return 'all';
   }
 
-  private syncViewDraws(input: DirectDrawInput, dirty: Set<Member>): void {
+  private syncViewDraws(input: DirectDrawInput, dirty: MemberChanges): void {
     const viewDraws = input.viewDraws;
     if (this.viewDraws === viewDraws) return;
     this.viewDraws = viewDraws;
@@ -765,16 +1041,24 @@ export class DirectDrawPhase {
     let member = this.members.get(key);
     if (member === undefined) {
       member = {
+        live: true,
+        changeAddress: -1,
+        moveAddress: -1,
+        sortVisit: -1,
         key,
         slot,
-        contributions: new Map(),
+        firstBatch: undefined,
+        additionalBatches: undefined,
         unbatched: false,
+        admitted: false,
         view: undefined,
+        slotOnly: false,
         version: -1,
         record: undefined,
         row: undefined,
         drawn: undefined,
         published: undefined,
+        preaddressed: false,
         overlay: undefined,
         materials: [],
         meshKey: undefined,
@@ -782,8 +1066,9 @@ export class DirectDrawPhase {
         items: [],
         materialPasses: undefined,
         placed: undefined,
-        placedMaterials: undefined,
+        placedMaterialEpoch: -1,
         placedSelector: undefined,
+        outputIndex: -1,
         emitted: -1,
       };
       this.members.set(key, member);
@@ -801,42 +1086,156 @@ export class DirectDrawPhase {
     this.pending.delete(member);
     this.morphed.delete(member);
     this.members.delete(member.key);
+    member.live = false;
+    this.movedRows.remove(member);
   }
 
-  private rebuild(input: DirectDrawInput, dirty: Set<Member>): void {
-    if (dirty.size === 0) return;
-    // The output also contains rows without a matching pass-bin placement.
-    // Their source changes must publish even when bin membership stays empty.
-    this.emittedRevision = -1;
-    const sources: RenderableSnapshot[] = [];
-    const owners: Member[] = [];
-    const built: Member[] = [];
-    const live: Member[] = [];
-    for (const member of dirty) {
-      if (this.members.get(member.key) !== member) continue;
-      if (member.view === undefined && member.contributions.size === 0 && !member.unbatched) {
+  private rebuild(input: DirectDrawInput, dirty: MemberChanges, sample: AdmissionReads): void {
+    if (sample === 'changes' && dirty.size === 0) return;
+    let unbatched: { sources: RenderableSnapshot[]; owners: Member[] } | undefined;
+    // An external projector receives its complete ordered batch. Native LOD
+    // is row-local and is applied during the subsequent placement walk.
+    const externalRows = typeof input.lod === 'function' ? ([] as Member[]) : undefined;
+    // The addressed change queue already contains the projection work in order.
+    // A borrowed all-row walk discovers its subset while reading the external source.
+    const sampled = sample === 'all' ? ([] as Member[]) : undefined;
+    const candidates = sample === 'changes' ? dirty : this.members;
+    const drawAt = input.scene.drawSnapshotAt;
+    const project = drawAt?.locate === input.scene.slotAt ? drawAt.project : undefined;
+    const slots = input.scene.draws?.slots;
+    const projectCamera = drawAt?.projectCamera;
+    const visibility = input.visible?.slots;
+    const camera =
+      visibility !== undefined &&
+      visibility.cameraVisible === input.visible &&
+      slots !== undefined &&
+      slots.slotAt === drawAt?.locate &&
+      visibility.addresses === slots.identities &&
+      project !== undefined &&
+      projectCamera === project
+        ? visibility
+        : undefined;
+    candidates.forEach((member) => {
+      if (!member.live) return;
+      const changed = sample === 'changes' || dirty.has(member);
+      if (
+        !changed &&
+        typeof sample === 'object' &&
+        member.slot !== undefined &&
+        sample.has(member.slot)
+      )
+        return;
+      if (member.view === undefined && member.firstBatch === undefined && !member.unbatched) {
         this.retire(member);
-        continue;
+        return;
+      }
+      const tracked = input.scene.draws !== undefined;
+      // Fixed draw evidence names every changed projection. A selected batch's
+      // row already owns the exact source passed to the admission predicate.
+      const retained =
+        sample === 'all' && !changed && tracked && member.firstBatch !== undefined
+          ? member.row
+          : undefined;
+      // Join the fixed production row once. A custom camera predicate observes the
+      // complete source; native participation without a predicate needs only authored fields.
+      const located =
+        retained === undefined && project !== undefined && member.slot !== undefined
+          ? input.scene.slotAt(member.slot)
+          : undefined;
+      let current: RenderableSnapshot | undefined;
+      let cameraTested = false;
+      if (retained !== undefined) current = retained.source;
+      else if (member.slot === undefined) current = member.view;
+      else if (project === undefined)
+        current = (drawAt ?? invalid('the Scene-owned direct draw projection'))(member.slot);
+      else if (located !== undefined && camera !== undefined && projectCamera !== undefined) {
+        current = projectCamera(located, input, camera);
+        cameraTested = true;
+      } else if (
+        located !== undefined &&
+        (!(located instanceof SceneDrawSlot) ||
+          input.visible !== undefined ||
+          input.cullMask !== undefined ||
+          participates(located.content, input.shadow))
+      )
+        current = project(located);
+      const admitted = current !== undefined && (cameraTested || sourceVisible(input, current));
+      if (!changed) {
+        // Borrowed producers can replace a projection independently of its Scene slot.
+        const sourceChanged =
+          !tracked &&
+          member.slot !== undefined &&
+          ((admitted && current !== member.row?.source) ||
+            (located ?? input.scene.slotAt(member.slot)) !== member.record);
+        if (admitted === member.admitted && !sourceChanged) return;
+        dirty.add(member);
+      }
+      const sameAdmission = member.admitted === admitted;
+      member.admitted = admitted;
+      const previous = member.row;
+      const before = member.record;
+      const source = this.candidate(member, input, admitted ? current : undefined, located);
+      const after = member.record;
+      sampled?.push(member);
+      // A native slot carries one shared content object across successive poses.
+      // Any independent residency, batch, material or view edit takes the full join.
+      if (
+        dirty instanceof ChangedDrawMembers &&
+        member.slotOnly &&
+        changed &&
+        sameAdmission &&
+        member.firstBatch !== undefined &&
+        after instanceof SceneDrawSlot &&
+        after.retainsContentOf(before)
+      ) {
+        if (source === undefined && previous === undefined) return;
+        if (
+          source !== undefined &&
+          previous !== undefined &&
+          previous.world !== undefined &&
+          previous.submeshIndices !== undefined &&
+          previous.source.morph === undefined &&
+          source.morph === undefined &&
+          sameReads(previous.source, source)
+        ) {
+          member.row = this.issueBatchedRow(
+            member,
+            input,
+            source,
+            previous.world,
+            previous.mesh,
+            previous.submeshIndices,
+          );
+          if (externalRows !== undefined) externalRows.push(member);
+          return;
+        }
       }
       this.work.rebuilt += 1;
-      const previous = member.row;
       this.pending.delete(member);
       this.morphed.delete(member);
       member.row = undefined;
-      live.push(member);
-      const source = this.candidate(member, input);
-      this.reread(member, previous?.source, source);
-      if (source === undefined) continue;
-      if (member.contributions.size > 0) {
+      member.preaddressed = false;
+      if (member.firstBatch !== undefined) {
         member.row = this.batchedRow(member, source, input);
-        if (member.row !== undefined) built.push(member);
-        continue;
+        this.reread(member, previous?.source, source);
+        if (member.row !== undefined) externalRows?.push(member);
+        return;
       }
-      if (input.admits !== undefined && !sourceMaterials(source).some(input.admits)) continue;
-      sources.push(source);
-      owners.push(member);
-    }
-    if (sources.length > 0) {
+      this.reread(member, previous?.source, source);
+      if (source === undefined) return;
+      if (
+        input.admits !== undefined &&
+        !(source.materials.length === 0
+          ? input.admits(source.material)
+          : source.materials.some(input.admits))
+      )
+        return;
+      unbatched ??= { sources: [], owners: [] };
+      unbatched.sources.push(source);
+      unbatched.owners.push(member);
+    });
+    if (unbatched !== undefined) {
+      const { sources, owners } = unbatched;
       const prepared = new Set<Member>();
       for (const row of input.prepareUnbatched(sources)) {
         const member = owners[row.renderableIndex];
@@ -845,20 +1244,21 @@ export class DirectDrawPhase {
         const indices = admittedSubmeshes(row, input.admits);
         if (indices === null) continue;
         const sceneSlot = member.record;
-        member.row = {
+        const projected: MutableRow = {
           ...row,
-          ...(sceneSlot === undefined ? {} : { sceneSlot }),
-          ...(indices === row.submeshIndices || indices === undefined
-            ? {}
-            : { submeshIndices: indices }),
+          meshSlot: sourceAddress(input.scene, sceneSlot, row.source, row.meshSlot),
         };
-        built.push(member);
+        if (sceneSlot !== undefined) projected.sceneSlot = sceneSlot;
+        if (indices !== undefined && indices !== row.submeshIndices)
+          projected.submeshIndices = indices;
+        member.row = projected;
+        externalRows?.push(member);
       }
       // An admitted source without a row awaits its resources.
       for (const member of owners) if (!prepared.has(member)) this.pending.add(member);
     }
-    this.project(input, built);
-    this.requeue(input, live);
+    if (externalRows !== undefined) this.project(input, externalRows);
+    this.requeue(input, sampled ?? dirty);
   }
 
   /** Reverse indices of the new source; a moved row reading the same materials and Mesh keeps them. */
@@ -873,36 +1273,89 @@ export class DirectDrawPhase {
   }
 
   /** Place live members again, keeping the placements of rows that only moved. */
-  private requeue(input: DirectDrawInput, live: readonly Member[]): void {
-    const queued: (readonly [number, readonly BinPlacement<DrawItem>[]])[] = [];
-    for (const member of live) {
+  private requeue(
+    input: DirectDrawInput,
+    live: { forEach(visit: (member: Member) => void): void },
+  ): void {
+    let queued: (readonly [number, readonly BinPlacement<DrawItem>[]])[] | undefined;
+    const lod = input.lod;
+    live.forEach((member) => {
+      if (!member.live) return;
+      // An absent draw retiring another absent draw has no bin or roster edit.
+      if (
+        member.row === undefined &&
+        member.drawn === undefined &&
+        member.placed === undefined &&
+        member.items.length === 0
+      )
+        return;
+      if (typeof lod !== 'function' && member.row !== undefined) {
+        member.drawn =
+          lod === undefined
+            ? member.row
+            : selectCpuLodRow(member.row, lod, undefined, this.lodWorld);
+        member.published = undefined;
+      }
       if (this.keepsPlacement(member, input)) {
         // Same bins and entries; only the row (transform, temporal record) moved.
-        this.leaveSort(member);
+        if (
+          this.emittedRevision >= 0 &&
+          input.materials?.hasBorrowedValues === false &&
+          keyedDraw(member.placed) === keyedDraw(member.drawn)
+        )
+          this.movedRows.add(member);
+        else this.emittedRevision = -1;
+        member.placed = member.drawn;
         this.work.retained += 1;
-        continue;
+        return;
       }
+      // Rows without bin placement can still enter or leave the output roster.
+      this.emittedRevision = -1;
+      queued ??= [];
       queued.push([member.key, this.place(member, input)]);
-    }
+    });
     // Bulk changes (cold start, selection flips) sort each touched bin once.
-    if (queued.length > BULK_QUEUE) this.bins.queueMany(queued);
-    else for (const [key, placements] of queued) this.bins.queue(key, placements);
-    for (const member of live) this.enterSort(member);
+    if (queued !== undefined) {
+      if (queued.length > BULK_QUEUE) this.bins.queueMany(queued);
+      else for (const [key, placements] of queued) this.bins.queue(key, placements);
+    }
+    // Retained placements keep their sort membership. Only a new placement can
+    // introduce a sorted entry into a phase that owns no sort keys.
+    if (
+      this.sortInputs !== undefined &&
+      this.sortAll === this.sortInputs.all &&
+      (queued !== undefined || this.sort.length !== 0 || this.unaddressable !== 0)
+    )
+      live.forEach((member) => {
+        if (member.live) this.syncMemberSort(member);
+      });
   }
 
   /** Camera-dependent projection of rebuilt rows. */
-  private project(input: DirectDrawInput, built: readonly Member[]): void {
+  private project(input: DirectDrawInput, built: readonly Member[], cameraMoved = false): void {
     if (built.length === 0) return;
-    const drawn = input.lod(built.map((member) => member.row as MutableRow));
+    const lod = input.lod;
+    const borrowed =
+      typeof lod === 'function' ? lod(built.map((member) => this.lodInputRow(member))) : undefined;
     for (let index = 0; index < built.length; index++) {
       const member = built[index] as Member;
-      member.drawn = drawn[index] ?? member.row;
+      const row = member.row as ValidatedRenderable;
+      const next =
+        typeof lod === 'function'
+          ? (borrowed?.at(index) ?? row)
+          : lod === undefined
+            ? row
+            : selectCpuLodRow(row, lod, undefined, this.lodWorld);
+      if (cameraMoved && next === member.drawn) continue;
+      member.drawn = next;
+      member.sortVisit = -1;
+      if (cameraMoved) this.emittedRevision = -1;
       member.published = undefined;
     }
   }
 
   /** Keep retained morph streams alive; a re-created stream replaces the row's mesh. */
-  private touchMorphed(input: DirectDrawInput, rebuilt: ReadonlySet<Member>): void {
+  private touchMorphed(input: DirectDrawInput, rebuilt: Pick<MemberChanges, 'has'>): void {
     const replaced: Member[] = [];
     for (const [member, selected] of this.morphed) {
       const row = member.row;
@@ -919,63 +1372,83 @@ export class DirectDrawPhase {
   }
 
   /** The camera moved: re-project LOD rows that this sync did not rebuild. */
-  private reprojectLod(input: DirectDrawInput, rebuilt: ReadonlySet<Member>): void {
-    const members = [...this.lodMembers].filter(
-      (member) => member.row !== undefined && !rebuilt.has(member),
-    );
-    if (members.length === 0) return;
-    const drawn = input.lod(members.map((member) => member.row as MutableRow));
-    for (let index = 0; index < members.length; index++) {
-      const member = members[index] as Member;
-      const next = drawn[index] ?? member.row;
-      if (next === member.drawn) continue;
-      // A level changes geometry only; entries and bins keep their identity.
+  private reprojectLod(input: DirectDrawInput, rebuilt: Pick<MemberChanges, 'has'>): void {
+    const lod = input.lod;
+    if (typeof lod === 'function') {
+      const members = [...this.lodMembers].filter(
+        (member) => member.row !== undefined && !rebuilt.has(member),
+      );
+      this.project(input, members, true);
+      return;
+    }
+    for (const member of this.lodMembers) {
+      const row = member.row;
+      if (row === undefined || rebuilt.has(member)) continue;
+      const before = member.drawn;
+      const next =
+        lod === undefined
+          ? row
+          : selectCpuLodRow(
+              row,
+              lod,
+              this.lodMode === 'native' ? before : undefined,
+              this.lodWorld,
+            );
+      if (next === before) continue;
       member.drawn = next;
+      member.sortVisit = -1;
       member.published = undefined;
-      this.emittedRevision = -1;
+      // Native LOD changes only physical index ranges. Its existing pass placement,
+      // material and transparent-sort position belong to the same source.
+      if (
+        this.lodMode === 'native' &&
+        this.emittedRevision >= 0 &&
+        member.placed === before &&
+        member.outputIndex >= 0 &&
+        input.materials?.hasBorrowedValues === false
+      ) {
+        member.placed = next;
+        this.movedRows.add(member);
+      } else this.emittedRevision = -1;
     }
   }
 
-  /** The member's current source, or undefined when it draws nothing in this consumer. */
-  private candidate(member: Member, input: DirectDrawInput): RenderableSnapshot | undefined {
-    if (member.slot === undefined) {
-      const source = member.view;
-      if (
-        source === undefined ||
-        !sourceVisible(input, source) ||
-        source.authorVisible === false ||
-        (input.shadow && source.shadowCaster === false)
-      )
-        return undefined;
-      return source;
-    }
-    const scene = input.scene;
-    const record = scene.slotAt(member.slot);
-    member.record = record;
-    member.version = record?.version ?? 0;
-    const validateDirectMemberContributions = () => {
-      for (const contribution of member.contributions.values())
-        if (
-          record === undefined ||
-          record.generation !== contribution.generation ||
-          record.entityKey !== contribution.entityKey
-        )
-          invalid('a live generation for each direct batch member');
+  /** An external row projection sees the original mesh input, independent of a prior dispatch. */
+  private lodInputRow(member: Member): ValidatedRenderable {
+    const row = member.row as ValidatedRenderable;
+    if (!member.preaddressed) return row;
+    const { variantSet: _variant, ...fields } = row;
+    member.preaddressed = false;
+    member.row = {
+      ...fields,
+      renderableIndex: 0,
+      renderState: undefined,
+      stencilReference: undefined,
     };
-    validateDirectMemberContributions();
-    if (record === undefined) {
-      if (member.unbatched) invalid('a live unbatched Scene slot');
-      return undefined;
-    }
-    const snapshotAt = scene.drawSnapshotAt ?? invalid('the Scene-owned direct draw projection');
-    const source = snapshotAt(member.slot);
-    if (source === undefined || !sourceVisible(input, source)) return undefined;
-    const selectDirectSourceCandidate = (source: RenderableSnapshot) => {
-      if (source.authorVisible === false || (input.shadow && source.shadowCaster === false))
+    return member.row;
+  }
+
+  /** The member's current source, or undefined when it draws nothing in this consumer. */
+  private candidate(
+    member: Member,
+    input: DirectDrawInput,
+    source: RenderableSnapshot | undefined,
+    located: RenderSceneSlot | undefined,
+  ): RenderableSnapshot | undefined {
+    if (member.slot !== undefined) {
+      const record = located ?? input.scene.slotAt(member.slot);
+      member.record = record;
+      member.version = record?.version ?? 0;
+      if (record === undefined) {
+        if (member.firstBatch !== undefined)
+          invalid('a live generation for each direct batch member');
+        if (member.unbatched) invalid('a live unbatched Scene slot');
         return undefined;
+      }
       // Native view owners have already projected these roots into actual draw geometry.
       if (
-        member.contributions.size === 0 &&
+        source !== undefined &&
+        member.firstBatch === undefined &&
         (source.terrain !== undefined ||
           source.glyph !== undefined ||
           source.tilemap !== undefined ||
@@ -987,55 +1460,74 @@ export class DirectDrawPhase {
           source.instances?.instanceCount === 0)
       )
         return undefined;
-      return source;
-    };
-    return selectDirectSourceCandidate(source);
+    }
+    return source !== undefined && participates(source, input.shadow) ? source : undefined;
   }
 
   private batchedRow(
     member: Member,
-    source: RenderableSnapshot,
+    source: RenderableSnapshot | undefined,
     input: DirectDrawInput,
   ): MutableRow | undefined {
-    const indices: number[] = [];
-    let selected: SelectedBatch | undefined;
-    for (const [batchId, contribution] of member.contributions) {
-      if (contribution.instanceCount === 0) continue;
-      const batch = this.selected.get(batchId) ?? invalid('a selected batch for each contribution');
-      const binding = contribution.binding;
-      if (source.assetHandle !== binding.assetHandle)
-        invalid('matching source and resident mesh identities');
-      if (batch.mesh.submeshes[binding.drawItemIndex] === undefined)
-        invalid('the source submesh addressed by the direct batch');
-      if (selected !== undefined && selected.mesh !== batch.mesh)
-        invalid('one resident geometry per source slot');
-      selected = batch;
-      indices.push(binding.drawItemIndex);
+    const sceneSlot = member.record;
+    const first = member.firstBatch as Contribution;
+    const additional = member.additionalBatches;
+    let port = first.port;
+    let indices = port.indices;
+    if (additional === undefined) {
+      if (!activeContribution(first, sceneSlot, source)) return undefined;
+    } else {
+      const sections = drawSections(first, additional, sceneSlot, source);
+      if (sections === undefined) return undefined;
+      port = sections.port;
+      indices = sections.indices;
     }
-    if (selected === undefined) return undefined;
+    if (source === undefined) return undefined;
+    const selected = port.current;
     // A shared morph batch drawn directly deforms each member's own stream.
     const mesh =
       source.morph === undefined
         ? selected.mesh
         : (input.prepareGeometry?.(selected.base, selected.material, source) ?? selected.mesh);
     if (mesh !== selected.mesh) this.morphed.set(member, selected);
+    return this.issueBatchedRow(member, input, source, selected.world, mesh, indices);
+  }
+
+  private issueBatchedRow(
+    member: Member,
+    input: DirectDrawInput,
+    source: RenderableSnapshot,
+    world: RenderResourceScope,
+    mesh: MeshGpuHandles,
+    indices: readonly number[],
+  ): MutableRow {
     const sceneSlot = member.record;
-    return {
+    // A moved member has a new detached source but often the same pass address.
+    // Issue can use this one new row directly. A re-sort or changed overlay still
+    // produces the current address without mutating previously submitted rows.
+    const previous = typeof input.lod === 'function' ? undefined : member.published;
+    member.preaddressed = previous !== undefined;
+    const row: MutableRow = {
       source,
-      ...(sceneSlot === undefined ? {} : { sceneSlot }),
-      world: selected.world,
+      world,
       mesh,
-      renderableIndex: 0,
-      meshSlot: 0,
+      renderableIndex: previous?.renderableIndex ?? 0,
+      meshSlot: sourceAddress(input.scene, sceneSlot, source, 0),
       submeshIndices: indices,
-      renderState: undefined,
-      stencilReference: undefined,
+      renderState: previous?.renderState,
+      stencilReference: previous?.stencilReference,
     };
+    if (sceneSlot !== undefined) row.sceneSlot = sceneSlot;
+    if (previous?.variantSet !== undefined) row.variantSet = previous.variantSet;
+    return row;
   }
 
   /** Reverse indices of the materials and Mesh a member's source reads. */
   private read(member: Member, source: RenderableSnapshot): void {
-    member.materials = [...new Set([source.material, ...source.materials])];
+    const authored = source.materials;
+    if (authored.length === 0 || (authored.length === 1 && authored[0] === source.material))
+      member.materials = [source.material];
+    else member.materials = [...new Set([source.material, ...authored])];
     for (const material of member.materials) {
       let readers = this.materialReaders.get(material);
       if (readers === undefined) {
@@ -1088,31 +1580,16 @@ export class DirectDrawPhase {
     const materials = input.materials;
     if (entries === undefined || materials === undefined) return this.keepsRowBin(member);
     return (
-      this.samePlacementMaterials(member, materials) &&
+      member.placedMaterialEpoch === this.materialEpoch &&
       member.placedSelector === entries.selector &&
       samePlacedFacts(before, after)
     );
   }
 
-  /** Pass identity is the material owner's projection; unrelated values do not place draws. */
-  private samePlacementMaterials(member: Member, materials: MaterialFrame): boolean {
-    const before = member.placedMaterials;
-    if (before === materials) return true;
-    if (before === undefined || before.hasBorrowedValues || materials.hasBorrowedValues)
-      return false;
-    for (const resource of member.materials) {
-      const previous = before.get(resource);
-      if (previous === undefined || previous.passes !== materials.get(resource)?.passes)
-        return false;
-    }
-    return true;
-  }
-
   /** A rows-only consumer's single item stays in the bin `place` would choose. */
   private keepsRowBin(member: Member): boolean {
-    const first = member.contributions.keys().next();
     const key =
-      first.done !== true ? first.value : member.slot === undefined ? VIEW_BIN : UNBATCHED_BIN;
+      member.firstBatch?.port.id ?? (member.slot === undefined ? VIEW_BIN : UNBATCHED_BIN);
     const item = member.items[0] as DrawItem;
     return member.items.length === 1 && item.entry === undefined && item.bin === key;
   }
@@ -1125,7 +1602,7 @@ export class DirectDrawPhase {
     member.materialPasses = undefined;
     const row = member.row === undefined ? undefined : member.drawn;
     member.placed = row;
-    member.placedMaterials = input.materials;
+    member.placedMaterialEpoch = this.materialEpoch;
     member.placedSelector = input.entries?.selector;
     if (row === undefined) {
       member.drawn = undefined;
@@ -1140,9 +1617,8 @@ export class DirectDrawPhase {
     const materials = input.materials;
     if (entries === undefined || materials === undefined) {
       // Rows-only consumers keep batch order, then unbatched and view-owned rows.
-      const first = member.contributions.keys().next();
       const key =
-        first.done !== true ? first.value : member.slot === undefined ? VIEW_BIN : UNBATCHED_BIN;
+        member.firstBatch?.port.id ?? (member.slot === undefined ? VIEW_BIN : UNBATCHED_BIN);
       const item: DrawItem = {
         rank: member.key,
         member: member.key,
@@ -1156,27 +1632,19 @@ export class DirectDrawPhase {
     } else {
       const source = row.source;
       const identity = source.entityKey;
-      const drawMaterials = [...(row.submeshIndices ?? row.mesh.submeshes.keys())].map((index) => {
-        const submesh = row.mesh.submeshes[index];
-        if (submesh === undefined) throw new Error('Direct draw has no selected submesh');
-        return source.materials[submesh.materialSlot] ?? source.material;
+      materials.drawEntries(source, 0, row, (entry, pass) => {
+        if (entries.selector !== undefined && !matchPass(entry.tags, entries.selector)) return;
+        const item: DrawItem = {
+          rank: identity,
+          member: member.key,
+          owner: member,
+          bin: pass,
+          entry,
+          sortId: -1,
+        };
+        items.push(item);
+        placements.push({ key: pass, major: entry.queue, minor: pass, item });
       });
-      materials.drawEntries(
-        { source, renderableIndex: 0, materials: drawMaterials },
-        (entry, pass) => {
-          if (entries.selector !== undefined && !matchPass(entry.tags, entries.selector)) return;
-          const item: DrawItem = {
-            rank: identity,
-            member: member.key,
-            owner: member,
-            bin: pass,
-            entry: entry as MutableEntry,
-            sortId: -1,
-          };
-          items.push(item);
-          placements.push({ key: pass, major: entry.queue, minor: pass, item });
-        },
-      );
     }
     member.items = items;
     return placements;
@@ -1184,29 +1652,67 @@ export class DirectDrawPhase {
 
   // ── Sorted entries ────────────────────────────────────────────────────
 
-  private enterSort(member: Member): void {
+  private syncMemberSort(member: Member): void {
     const inputs = this.sortInputs;
     if (inputs === undefined) return;
+    const visit = this.sortVisit;
     let ordinal = 0;
+    let value: number | undefined;
+    let group: number | undefined;
+    let priority = 0,
+      depth = 0,
+      tie = 0;
+    const sourceOrder = inputs.sourceOrder;
     for (const item of member.items) {
       const entry = item.entry;
       if (entry === undefined || !sortedEntry(entry, inputs.all)) continue;
-      const key = this.sortKey((member.drawn as MutableRow).source, ordinal++);
-      if (key === undefined) {
-        this.unaddressable += 1;
-        item.sortId = -2;
+      const entryOrdinal = ordinal++;
+      if (item.sortId === -2) continue;
+      if (entryOrdinal === 0 && sourceOrder !== undefined) {
+        const key = this.readMemberOrder(member, sourceOrder);
+        // A second draw can reenter this reader. Only the scalar keys belong to this member.
+        if (key !== undefined) {
+          group = key[0];
+          priority = key[1];
+          depth = key[2];
+          tie = key[3];
+        }
+      }
+      if (group !== undefined) {
+        this.writeSortedItem(item, entryOrdinal, group, priority, depth, tie);
         continue;
       }
-      const id = this.sort.enter(
-        key,
-        entry.layer,
-        this.sortValue(member, inputs),
-        entry.materialHandle,
-        this.bins.ordinalOf(item.bin),
-      );
-      item.sortId = id;
-      this.sortItems[id] = item;
+      value ??= this.sortValue(member, inputs);
+      const bin = this.bins.ordinalOf(item.bin);
+      if (sourceOrder === undefined)
+        this.writeSortedItem(item, entryOrdinal, entry.layer, value, entry.materialHandle, bin);
+      else
+        this.writeSortedItem(item, entryOrdinal, Number.NEGATIVE_INFINITY, entry.layer, value, bin);
     }
+    member.sortVisit = visit;
+  }
+
+  private writeSortedItem(
+    item: DrawItem,
+    ordinal: number,
+    group: number,
+    priority: number,
+    depth: number,
+    tie: number,
+  ): void {
+    if (item.sortId >= 0) {
+      this.sort.update(item.sortId, group, priority, depth, tie);
+      return;
+    }
+    const key = this.sortKey((item.owner.drawn as MutableRow).source, ordinal);
+    if (key === undefined) {
+      this.unaddressable += 1;
+      item.sortId = -2;
+      return;
+    }
+    const id = this.sort.enter(key, group, priority, depth, tie);
+    item.sortId = id;
+    this.sortItems[id] = item;
   }
 
   private leaveSort(member: Member): void {
@@ -1236,35 +1742,72 @@ export class DirectDrawPhase {
       inputs.mode === TRANSPARENT_SORT_MODE_LAYER_YZ
         ? this.materials?.get(source.material)?.snapshot
         : undefined;
+    const pose = CapturedSceneTransform.storage(source.transform);
     if (inputs.mode === TRANSPARENT_SORT_MODE_DISTANCE) {
       if (inputs.camera === undefined) return 0;
-      const world = source.transform.world;
-      const dx = (world[12] ?? 0) - (this.sortEye[0] ?? 0);
-      const dy = (world[13] ?? 0) - (this.sortEye[1] ?? 0);
-      const dz = (world[14] ?? 0) - (this.sortEye[2] ?? 0);
+      const world = CapturedSceneTransform.column(pose);
+      const offset = CapturedSceneTransform.offset(pose);
+      const dx = (world[offset + 12] ?? 0) - (this.sortEye[0] ?? 0);
+      const dy = (world[offset + 13] ?? 0) - (this.sortEye[1] ?? 0);
+      const dz = (world[offset + 14] ?? 0) - (this.sortEye[2] ?? 0);
       return -(dx * dx + dy * dy + dz * dz);
     }
-    return transparentSortValue(
-      source.transform.world,
-      pivot,
-      inputs.mode,
-      inputs.yzAlpha,
-      inputs.camera,
+    return transparentSortValue(pose, pivot, inputs.mode, inputs.yzAlpha, inputs.camera);
+  }
+
+  private readMemberOrder(
+    member: Member,
+    order: ViewDrawOrderSelection,
+  ): ViewDrawOrderKey | undefined {
+    const source = (member.drawn as ValidatedRenderable).source;
+    const pose = CapturedSceneTransform.storage(source.transform);
+    return this.sourceOrderReader.read(
+      order,
+      source.entityKey,
+      CapturedSceneTransform.column(pose),
+      CapturedSceneTransform.offset(pose),
     );
+  }
+
+  /** Opaque work retains its precedence in a combined pass. */
+  private sourceSortKey(item: DrawItem, inputs: DirectDrawSort): ViewDrawOrderKey {
+    const entry = item.entry as DispatchEntry;
+    const key =
+      inputs.sourceOrder === undefined
+        ? undefined
+        : this.readMemberOrder(item.owner, inputs.sourceOrder);
+    if (key !== undefined) return key;
+    const value = this.sortValue(item.owner, inputs);
+    const fallback = this.sourceOrderReader.key;
+    fallback[0] = Number.NEGATIVE_INFINITY;
+    fallback[1] = entry.layer;
+    fallback[2] = value;
+    fallback[3] = this.bins.ordinalOf(item.bin);
+    return fallback;
   }
 
   /** Adopt this sync's sort inputs: a changed formula re-evaluates every sorted value. */
   private syncSort(previous: DirectDrawSort | undefined): void {
     const inputs = this.sortInputs;
+    if (inputs?.sourceOrder === undefined) this.completedSourceOrder = undefined;
     if (inputs === undefined) {
       if (previous !== undefined) this.resetSort();
       return;
     }
-    this.sort.setOrder(inputs.mode === TRANSPARENT_SORT_MODE_DISTANCE ? 'distance' : 'layered');
-    if (previous === undefined || previous.all !== inputs.all) {
-      // Which entries sort changed: enter every member again.
-      this.resetSort();
-      for (const member of this.members.values()) this.enterSort(member);
+    this.sort.setOrder(
+      !inputs.sourceOrder && inputs.mode === TRANSPARENT_SORT_MODE_DISTANCE
+        ? 'distance'
+        : 'layered',
+    );
+    const sourceModeChanged = Boolean(previous?.sourceOrder) !== Boolean(inputs.sourceOrder);
+    if (this.sortAll !== inputs.all || sourceModeChanged) {
+      this.resetSort(inputs.all);
+      this.sort.invalidate();
+      for (const member of this.members.values()) this.syncMemberSort(member);
+    }
+    if (inputs.sourceOrder !== undefined) {
+      this.publishViewOrder(inputs.sourceOrder);
+      return;
     }
     this.syncSortTies();
     this.sort.commit();
@@ -1292,6 +1835,17 @@ export class DirectDrawPhase {
       this.sort.commit();
       this.rangeChanged = -1;
     }
+  }
+
+  private publishViewOrder(source: ViewDrawOrderSelection): void {
+    if (source !== this.completedSourceOrder) {
+      for (const item of this.sortItems) {
+        if (item !== undefined && item.owner.sortVisit !== this.sortVisit)
+          this.syncMemberSort(item.owner);
+      }
+    }
+    this.sort.commit();
+    this.completedSourceOrder = source;
   }
 
   private syncSortTies(): void {
@@ -1354,20 +1908,28 @@ export class DirectDrawPhase {
       this.work.orderConstraints += 1;
       const before = this.sort.at(position - 1);
       const after = this.sort.at(position);
-      const left = this.sortItems[before]?.owner.drawn?.source.transform.world;
-      const right = this.sortItems[after]?.owner.drawn?.source.transform.world;
-      if (left === undefined || right === undefined) {
+      const leftTransform = this.sortItems[before]?.owner.drawn?.source.transform;
+      const rightTransform = this.sortItems[after]?.owner.drawn?.source.transform;
+      if (leftTransform === undefined || rightTransform === undefined) {
         this.sortRange.fill(0);
         return;
       }
+      const leftPose = CapturedSceneTransform.storage(leftTransform);
+      const rightPose = CapturedSceneTransform.storage(rightTransform);
+      const left = CapturedSceneTransform.column(leftPose),
+        leftOffset = CapturedSceneTransform.offset(leftPose);
+      const right = CapturedSceneTransform.column(rightPose),
+        rightOffset = CapturedSceneTransform.offset(rightPose);
       const a = this.sort.valueOf(before);
       const b = this.sort.valueOf(after);
       // Stay clear of cancellation around a distance tie. A tied pair can
       // remain unbounded only when every squared coordinate term is equal.
       const margin = Math.max(0, b - a - Number.EPSILON * 8 * (Math.abs(a) + Math.abs(b) + 1));
-      const equalTerms = margin === 0 && equalDistanceTerms(left, right, this.sortEye);
+      const equalTerms =
+        margin === 0 && equalDistanceTerms(left, leftOffset, right, rightOffset, this.sortEye);
       for (let axis = 0; axis < 3; axis++) {
-        const slope = 2 * ((right[12 + axis] ?? 0) - (left[12 + axis] ?? 0));
+        const slope =
+          2 * ((right[rightOffset + 12 + axis] ?? 0) - (left[leftOffset + 12 + axis] ?? 0));
         if (
           !Number.isFinite(margin) ||
           !Number.isFinite(slope) ||
@@ -1384,7 +1946,8 @@ export class DirectDrawPhase {
     }
   }
 
-  private resetSort(): void {
+  private resetSort(all?: boolean): void {
+    this.sortAll = all;
     for (const member of this.members.values()) for (const item of member.items) item.sortId = -1;
     this.sort = new SortedPhase(this.sort.order);
     this.sortItems = [];
@@ -1399,7 +1962,7 @@ export class DirectDrawPhase {
   /**
    * Emit step: the queued bins and order as ordered rows and dispatch, with
    * `offset` the first `renderableIndex` of this consumer's rows in a combined
-   * index space. An unchanged queue and offset return the previous arrays.
+   * index space. Moved rows replace their addressed pages in the published order.
    */
   emit(offset = 0): DirectDrawOutput {
     const revision = this.bins.revision;
@@ -1407,11 +1970,36 @@ export class DirectDrawPhase {
     if (
       revision === this.emittedRevision &&
       sort === this.emittedSort &&
-      offset === this.emittedOffset &&
+      (offset === this.emittedOffset || this.materials?.hasBorrowedValues === false) &&
       this.unaddressable === 0 &&
       this.sort.ordered
-    )
+    ) {
+      if (offset !== this.emittedOffset) return this.relocate(offset);
+      if (this.movedRows.size > 0) {
+        const previous = this.output.rows;
+        if (this.retainBindings) this.materialRows.begin(this.materials as MaterialFrame);
+        const rows = issueDrawRows(previous.length, previous, (write) => {
+          this.movedRows.forEach((member) => {
+            const index = member.outputIndex;
+            const row = this.publishRow(member, offset + index);
+            this.observeIssuedMesh(previous, index, row);
+            write(index, row);
+            if (this.retainBindings) this.materialRows.move(index, row);
+          });
+        });
+        this.output = {
+          ...this.output,
+          rows,
+          materialRows: this.retainBindings ? this.materialRows.finish(rows.length) : undefined,
+        };
+        this.movedRows.release(this.members.size);
+        this.work.emitted++;
+      }
       return this.output;
+    }
+    // A failed full placement may have written candidate compact addresses.
+    // Force the next emission to rebuild those addresses before publishing them.
+    this.emittedRevision = -1;
     this.work.emitted += 1;
     const epoch = ++this.epoch;
     const items: DrawItem[] = [];
@@ -1430,9 +2018,49 @@ export class DirectDrawPhase {
       }
     this.order(items);
     this.output = this.emitOrdered(items, rows, epoch, offset);
+    this.movedRows.release(this.members.size);
     this.emittedRevision = revision;
     this.emittedSort = sort;
     this.emittedOffset = offset;
+    return this.output;
+  }
+
+  /** A preceding pass changed width. The admitted membership, local indices
+   * and order still belong to this phase, including concurrent pose writes. */
+  private relocate(offset: number): DirectDrawOutput {
+    const previous = this.output;
+    const delta = offset - this.emittedOffset;
+    const rows = issueDrawRows(previous.rows.length, undefined, (write) => {
+      for (const member of this.members.values()) {
+        if (member.emitted !== this.epoch) continue;
+        const index = member.outputIndex;
+        const row = this.publishRow(member, offset + index);
+        this.observeIssuedMesh(previous.rows, index, row);
+        write(index, row);
+      }
+    });
+    let materialRows = previous.materialRows;
+    if (this.retainBindings && this.movedRows.size > 0) {
+      this.materialRows.begin(this.materials as MaterialFrame);
+      this.movedRows.forEach((member) => {
+        this.materialRows.move(member.outputIndex, member.published as ValidatedRenderable);
+      });
+      materialRows = this.materialRows.finish(rows.length);
+    }
+    const dispatch = previous.dispatch.map((entry) => ({
+      ...entry,
+      renderableIndex: entry.renderableIndex + delta,
+    }));
+    this.output = {
+      ...previous,
+      rows,
+      dispatch,
+      materialRows,
+      materialPasses: previous.materialPasses?.atOffset(offset),
+    };
+    this.emittedOffset = offset;
+    this.movedRows.release(this.members.size);
+    this.work.emitted++;
     return this.output;
   }
 
@@ -1448,14 +2076,10 @@ export class DirectDrawPhase {
     // Borrowed tables keep ordinary replacement; fixed entries can retain the
     // already consumed dispatch array when its actual order and indices agree.
     if (this.materials === undefined || this.materials.hasBorrowedValues) nextDispatch = [];
-    let dispatchCount = 0;
+    const startsWithDispatch = members.length === 0;
     for (const item of items) {
       const owner = item.owner;
-      const entry = item.entry as MutableEntry;
-      if (nextDispatch === undefined && previousDispatch[dispatchCount] !== entry)
-        nextDispatch = previousDispatch.slice(0, dispatchCount);
-      nextDispatch?.push(entry);
-      dispatchCount += 1;
+      const entry = item.entry as DispatchEntry;
       // The last entry of a row owns its overlay (render state, stencil, variant).
       owner.overlay = entry;
       if (entry.tags.LightMode !== 'ShadowCaster' && owner.emitted !== epoch) {
@@ -1463,6 +2087,7 @@ export class DirectDrawPhase {
         members.push(owner);
       }
     }
+    const dispatchedPrefix = startsWithDispatch ? members.length : undefined;
     // Rows without a view entry follow in member order.
     for (const member of this.members.values())
       if (member.drawn !== undefined && member.emitted !== epoch) {
@@ -1470,23 +2095,54 @@ export class DirectDrawPhase {
         if (member.items.length === 0) member.overlay = undefined;
         members.push(member);
       }
-    const rows = members.map((member, index) => this.publishRow(member, offset + index));
-    const entryRows = items.map((item) => item.owner.published as ValidatedRenderable);
-    const materialRows = this.addressRows(rows);
-    if (nextDispatch === undefined && dispatchCount !== previousDispatch.length)
-      nextDispatch = previousDispatch.slice(0, dispatchCount);
-    let dispatch = nextDispatch ?? previousDispatch;
-    for (let index = 0; index < dispatch.length; index++) {
-      const entry = dispatch[index] as MutableEntry;
-      const renderableIndex = (entryRows[index] as ValidatedRenderable).renderableIndex;
-      if (entry.renderableIndex !== renderableIndex) {
-        // Same entry objects with shifted compact indices need a new cache key.
-        if (dispatch === previousDispatch) dispatch = previousDispatch.slice();
-        entry.renderableIndex = renderableIndex;
+    const ownedMaterials = this.retainBindings;
+    if (ownedMaterials) this.materialRows.begin(this.materials as MaterialFrame);
+    else this.materialRows.clear();
+    let nativeStart = 0;
+    let nativeEnd = 0;
+    const previousRows = this.output.rows;
+    if (previousRows.length !== members.length) this.meshDomain = undefined;
+    const rows = issueDrawRows(members.length, undefined, (write) => {
+      for (let index = 0; index < members.length; index++) {
+        const member = members[index] as Member;
+        member.outputIndex = index;
+        const row = this.publishRow(member, offset + index);
+        this.observeIssuedMesh(previousRows, index, row);
+        write(index, row);
+        if (keyedDraw(row)) {
+          if (nativeEnd === 0) nativeStart = index;
+          nativeEnd = index + 1;
+        }
+        if (ownedMaterials) this.materialRows.write(index, row);
       }
+    });
+    const materialRows = ownedMaterials ? this.materialRows.finish(rows.length) : undefined;
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index] as DrawItem;
+      const entry = (item.publishedEntry ?? item.entry) as DispatchEntry;
+      const row = item.owner.published as ValidatedRenderable;
+      const renderableIndex = row.renderableIndex;
+      // A captured pass or pending submission still owns its original compact address.
+      const published =
+        entry.renderableIndex === renderableIndex ? entry : { ...entry, renderableIndex };
+      item.publishedEntry = published;
+      if (nextDispatch === undefined && previousDispatch[index] !== published)
+        nextDispatch = previousDispatch.slice(0, index);
+      nextDispatch?.push(published);
     }
+    if (nextDispatch === undefined && items.length !== previousDispatch.length)
+      nextDispatch = previousDispatch.slice(0, items.length);
+    const dispatch = nextDispatch ?? previousDispatch;
     const materialPasses = this.projectMaterialPasses(items, dispatch, epoch, offset);
-    return { rows, dispatch, entryRows, materialPasses, materialRows };
+    return {
+      rows,
+      dispatch,
+      materialPasses,
+      materialRows,
+      dispatchedPrefix,
+      nativeStart,
+      nativeEnd,
+    };
   }
 
   /** Never mutate a borrowed LOD row or a publication sealed by a downstream owner. */
@@ -1494,31 +2150,24 @@ export class DirectDrawPhase {
     const projected = member.drawn as ValidatedRenderable;
     const row = member.published ?? projected;
     const overlay = member.overlay;
-    const renderState = overlay === undefined ? projected.renderState : overlay.renderState;
+    const base = member.preaddressed ? undefined : projected;
+    const renderState = overlay === undefined ? base?.renderState : overlay.renderState;
     const stencilReference =
-      overlay === undefined ? projected.stencilReference : overlay.stencilReference;
+      overlay === undefined ? base?.stencilReference : overlay.stencilReference;
     const variantSet =
-      overlay === undefined ? projected.variantSet : variantSetFromDefines(overlay.defines);
-    member.published =
+      overlay === undefined ? base?.variantSet : variantSetFromDefines(overlay.defines);
+    if (
       row.renderableIndex === renderableIndex &&
       row.renderState === renderState &&
       row.stencilReference === stencilReference &&
       row.variantSet === variantSet
-        ? row
-        : { ...row, renderableIndex, renderState, stencilReference, variantSet };
-    return member.published;
-  }
-
-  /** Persistent binding relations follow the same immutable emitted row order. */
-  private addressRows(rows: readonly ValidatedRenderable[]): MaterialRelationFrame | undefined {
-    const ownedMaterials = this.retainBindings;
-    if (ownedMaterials) this.materialRows.begin(this.materials as MaterialFrame);
-    else this.materialRows.clear();
-    for (let index = 0; index < rows.length; index++) {
-      const row = rows[index] as ValidatedRenderable;
-      if (ownedMaterials) this.materialRows.write(index, row);
+    ) {
+      member.published = row;
+    } else {
+      this.work.readdressed++;
+      member.published = { ...row, renderableIndex, renderState, stencilReference, variantSet };
     }
-    return ownedMaterials ? this.materialRows.finish(rows.length) : undefined;
+    return member.published;
   }
 
   private appendMaterialPass(owner: Member, entry: DispatchEntry, epoch: number): void {
@@ -1556,48 +2205,82 @@ export class DirectDrawPhase {
   private order(items: DrawItem[]): void {
     const inputs = this.sortInputs;
     if (inputs === undefined) return;
-    if (inputs.mode === TRANSPARENT_SORT_MODE_DISTANCE && inputs.camera === undefined) return;
-    const positions: number[] = [];
+    if (
+      !inputs.sourceOrder &&
+      inputs.mode === TRANSPARENT_SORT_MODE_DISTANCE &&
+      inputs.camera === undefined
+    )
+      return;
+    const positions = this.sortedPositions;
+    positions.length = 0;
     for (let index = 0; index < items.length; index++)
       if (sortedEntry((items[index] as DrawItem).entry as DispatchEntry, inputs.all))
         positions.push(index);
     if (positions.length <= 1) return;
-    const sorted =
-      this.unaddressable > 0 || !this.sort.ordered
-        ? this.freshOrder(items, positions, inputs)
-        : this.phaseOrder();
-    for (let index = 0; index < positions.length; index++)
-      items[positions[index] as number] = sorted[index] as DrawItem;
-  }
-
-  private phaseOrder(): DrawItem[] {
-    const sorted: DrawItem[] = [];
-    this.sort.forEachId((id) => sorted.push(this.sortItems[id] as DrawItem));
-    return sorted;
+    if (this.unaddressable > 0 || !this.sort.ordered) {
+      this.freshOrder(items, positions, inputs);
+    } else {
+      let next = 0;
+      this.sort.forEachId((id) => {
+        items[positions[next++] as number] = this.sortItems[id] as DrawItem;
+      });
+    }
   }
 
   /** The engine's stable sort, for values without a consistent order or unaddressable rows. */
   private freshOrder(
-    items: readonly DrawItem[],
+    items: DrawItem[],
     positions: readonly number[],
     inputs: DirectDrawSort,
-  ): DrawItem[] {
-    const keyed = positions.map((position) => {
-      const item = items[position] as DrawItem;
-      return { item, position, value: this.sortValue(item.owner, inputs) };
-    });
+  ): void {
+    const order = this.sortPermutation;
+    const values = this.sortValues;
+    const sourceOrder = inputs.sourceOrder !== undefined;
+    order.length = positions.length;
+    values.length = sourceOrder ? positions.length * 4 : positions.length;
+    for (let index = 0; index < positions.length; index++) {
+      order[index] = index;
+      const item = items[positions[index] as number] as DrawItem;
+      if (sourceOrder) {
+        const key = this.sourceSortKey(item, inputs);
+        for (let lane = 0; lane < 4; lane++) values[index * 4 + lane] = key[lane] as number;
+      } else values[index] = this.sortValue(item.owner, inputs);
+    }
     const layered = inputs.mode !== TRANSPARENT_SORT_MODE_DISTANCE;
-    keyed.sort((a, b) => {
-      const x = a.item.entry as DispatchEntry;
-      const y = b.item.entry as DispatchEntry;
+    order.sort((a, b) => {
+      if (sourceOrder) {
+        for (let lane = 0; lane < 4; lane++) {
+          const difference = (values[a * 4 + lane] as number) - (values[b * 4 + lane] as number);
+          if (difference) return difference;
+        }
+        return a - b;
+      }
+      const x = (items[positions[a] as number] as DrawItem).entry as DispatchEntry;
+      const y = (items[positions[b] as number] as DrawItem).entry as DispatchEntry;
       if (layered && x.layer !== y.layer) return x.layer - y.layer;
-      if (a.value < b.value) return -1;
-      if (a.value > b.value) return 1;
+      const left = values[a] as number;
+      const right = values[b] as number;
+      if (left < right) return -1;
+      if (left > right) return 1;
       if (layered && x.materialHandle !== y.materialHandle)
         return x.materialHandle - y.materialHandle;
-      return a.position - b.position;
+      return a - b;
     });
-    return keyed.map(({ item }) => item);
+    // Apply destination -> source cycles to the selected positions, preserving intervening opaque draws.
+    for (let first = 0; first < order.length; first++) {
+      if (order[first] === first) continue;
+      const held = items[positions[first] as number] as DrawItem;
+      let dest = first;
+      let source = order[dest] as number;
+      while (source !== first) {
+        items[positions[dest] as number] = items[positions[source] as number] as DrawItem;
+        order[dest] = dest;
+        dest = source;
+        source = order[dest] as number;
+      }
+      items[positions[dest] as number] = held;
+      order[dest] = dest;
+    }
   }
 }
 
@@ -1616,8 +2299,91 @@ function unindex<K>(map: Map<K, Set<number>>, key: K, id: number): void {
   if (ids?.size === 0) map.delete(key);
 }
 
+function activeContribution(
+  member: Contribution,
+  slot: RenderSceneSlot | undefined,
+  source: RenderableSnapshot | undefined,
+): boolean {
+  if (
+    slot !== undefined &&
+    (slot.generation !== member.generation || slot.entityKey !== member.entityKey)
+  )
+    invalid('a live generation for each direct batch member');
+  if (source === undefined || member.instanceCount === 0) return false;
+  const { binding, section } = member.port;
+  if (source.assetHandle !== binding.assetHandle)
+    invalid('matching source and resident mesh identities');
+  if (section === undefined) invalid('the source submesh addressed by the direct batch');
+  return true;
+}
+
+function drawSections(
+  first: Contribution,
+  additional: AdditionalDrawBatches,
+  slot: RenderSceneSlot | undefined,
+  source: RenderableSnapshot | undefined,
+): DrawSections | undefined {
+  const held = additional.sections;
+  if (
+    held !== undefined &&
+    source !== undefined &&
+    held.assetHandle === source.assetHandle &&
+    held.generation === slot?.generation &&
+    held.entityKey === slot?.entityKey
+  )
+    return held;
+  let selected: DirectBatchPort | undefined;
+  let indices: number[] | undefined;
+  const rest = additional.values();
+  for (
+    let member: Contribution | undefined = first;
+    member !== undefined;
+    member = rest.next().value
+  ) {
+    if (!activeContribution(member, slot, source)) continue;
+    const port = member.port;
+    if (selected !== undefined) {
+      if (port.current.mesh !== selected.current.mesh)
+        invalid('one resident geometry per source slot');
+      indices ??= [selected.binding.drawItemIndex];
+      indices.push(port.binding.drawItemIndex);
+    }
+    selected = port;
+  }
+  if (selected === undefined) return undefined;
+  additional.sections = {
+    port: selected,
+    indices: indices === undefined ? selected.indices : Object.freeze(indices),
+    assetHandle: selected.binding.assetHandle,
+    entityKey: slot?.entityKey,
+    generation: slot?.generation,
+  };
+  return additional.sections;
+}
+
+function setContribution(member: Member, value: Contribution): void {
+  if (member.additionalBatches !== undefined) member.additionalBatches.sections = undefined;
+  if (member.firstBatch === undefined || member.firstBatch.port.id === value.port.id) {
+    member.firstBatch = value;
+    return;
+  }
+  member.additionalBatches ??= new AdditionalDrawBatches();
+  member.additionalBatches.set(value.port.id, value);
+}
+
+function removeContribution(member: Member, batchId: number): void {
+  const additional = member.additionalBatches;
+  if (additional !== undefined) additional.sections = undefined;
+  if (member.firstBatch?.port.id === batchId) {
+    // Preserve insertion order when the first of several submeshes leaves.
+    member.firstBatch = additional?.values().next().value;
+    if (member.firstBatch !== undefined) additional?.delete(member.firstBatch.port.id);
+  } else additional?.delete(batchId);
+  if (additional?.size === 0) member.additionalBatches = undefined;
+}
+
 function contribution(
-  binding: GpuDrivenBatchBinding,
+  port: DirectBatchPort,
   member: {
     readonly generation: number;
     readonly entityKey: number;
@@ -1625,15 +2391,11 @@ function contribution(
   },
 ): Contribution {
   return {
-    binding,
+    port,
     generation: member.generation,
     entityKey: member.entityKey,
     instanceCount: member.instanceCount,
   };
-}
-
-function sourceMaterials(source: RenderableSnapshot): readonly MaterialResource[] {
-  return source.materials.length === 0 ? [source.material] : source.materials;
 }
 
 /** Submeshes whose material the consumer admits (undefined: all); null when none remains. */
@@ -1642,14 +2404,24 @@ function admittedSubmeshes(
   admits: ((material: MaterialResource) => boolean) | undefined,
 ): readonly number[] | undefined | null {
   if (admits === undefined) return row.submeshIndices;
-  const indices = [...(row.submeshIndices ?? row.mesh.submeshes.keys())].filter((index) => {
+  const source = row.source;
+  const selected = row.submeshIndices;
+  const count = selected?.length ?? row.mesh.submeshes.length;
+  let first = -1;
+  let accepted: number[] | undefined;
+  for (let local = 0; local < count; local++) {
+    const index = selected === undefined ? local : (selected[local] as number);
     const submesh = row.mesh.submeshes[index];
-    return (
-      submesh !== undefined &&
-      admits(row.source.materials[submesh.materialSlot] ?? row.source.material)
-    );
-  });
-  return indices.length === 0 ? null : indices;
+    if (submesh === undefined || !admits(source.materials[submesh.materialSlot] ?? source.material))
+      continue;
+    if (first < 0) first = index;
+    else {
+      accepted ??= [first];
+      accepted.push(index);
+    }
+  }
+  if (first < 0) return null;
+  return accepted ?? (first === 0 ? FIRST_SUBMESH : [first]);
 }
 
 function linkedBatches(

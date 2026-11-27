@@ -58,12 +58,26 @@ for (const [kind, count] of [
   });
 }
 
+function changingTransmissionTitles(source) {
+  const names = [];
+  const alternating = source.match(/'(records sixty alternating[^']+)'/)?.[1];
+  const replacement = source.match(/'(releases inactive glass[^']+)'/)?.[1];
+  const directColor = source.match(/'(composites current-frame stock[^']+)'/)?.[1];
+  assert.ok(alternating && replacement && directColor);
+  for (const path of ['forward', 'deferred']) {
+    names.push(alternating.replace('%s', path), directColor.replace('%s', path));
+    for (const shadow of ['false', 'true'])
+      names.push(replacement.replace('%s', path).replace('%s', shadow));
+  }
+  return names;
+}
+
 for (const [kind, file, count] of [
   ['shadow-fields', 'packages/runtime/src/__tests__/shadow-fields-observable.dawn.test.ts', 12],
   [
     'transmission',
     'packages/render/src/transmission/__tests__/standard-transmission.dawn.test.ts',
-    8,
+    16,
   ],
 ])
   test(`${kind} real test titles are selected and passed exactly once`, () => {
@@ -71,6 +85,7 @@ for (const [kind, file, count] of [
     const names = [...source.matchAll(/\bit\(\s*'([^']+)'/g)]
       .map((match) => match[1])
       .filter((name) => name !== 'emits the canonical 60-frame Dawn roster receipt');
+    if (kind === 'transmission') names.push(...changingTransmissionTitles(source));
     assert.equal(names.length, count);
     const partitions = DAWN_TEST_PARTITIONS[kind];
     const covered = new Set();
@@ -137,7 +152,7 @@ test('unknown or misplaced Smoke owner rejects before native process startup', a
   );
 });
 
-test('transmission Smoke owners conserve all nine real assertions and the direct five-process route', () => {
+test('transmission Smoke owners conserve every static and changing transmission case', () => {
   const features = DAWN_TEST_PARTITIONS.transmission;
   const canonical = { pattern: 'emits the canonical 60-frame Dawn roster receipt', count: 1 };
   const roster = [...features, canonical];
@@ -146,16 +161,17 @@ test('transmission Smoke owners conserve all nine real assertions and the direct
     'utf8',
   );
   const names = [...source.matchAll(/\bit\(\s*'([^']+)'/g)].map((match) => match[1]);
-  assert.equal(names.length, 9);
+  names.push(...changingTransmissionTitles(source));
+  assert.equal(names.length, 17);
   assert.deepEqual(selectTransmissionSmokeOwner(features), roster);
-  assert.equal(roster.length, 5);
+  assert.equal(roster.length, 7);
   assert.deepEqual(selectTransmissionSmokeOwner(features, 'frames'), [canonical]);
-  assert.equal(selectDawnTestPartitions('transmission', {}).length, 4);
+  assert.equal(selectDawnTestPartitions('transmission', {}).length, 6);
   assert.throws(() => selectTransmissionSmokeOwner(features, 'typo'), /unknown/);
   const allCovered = new Set();
   for (const [owner, expected] of [
-    ['features-a', 4],
-    ['features-b', 4],
+    ['features-a', 6],
+    ['features-b', 10],
     ['frames', 1],
   ]) {
     const covered = new Set();

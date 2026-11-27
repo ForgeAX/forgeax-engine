@@ -122,12 +122,14 @@ export function prepareStandardOutputResources(
   if (output !== undefined && output.colorLut > 0 && output.colorLutStrength > 0) {
     const lut = prepareStandardLutGpu({
       world,
-      handle: output.colorLut as AssetHandle<'texture'>,
+      handle: output.colorLut as AssetHandle<'texture' | 'gpu-texture'>,
       strength: output.colorLutStrength,
+      previous: state.pendingStandardLutGpuResources ?? state.standardLutGpuResources,
       gpuStore: internals.gpuStore,
       device: internals.device,
     });
     if (!lut.ok) {
+      if (lut.error.code === 'standard-lut-generation-pending') return ok(undefined);
       state.standardLutState = recordStandardLutFailure(state.standardLutState, lut.error);
       state.pendingStandardLutGpuResources = undefined;
       return err(
@@ -145,13 +147,7 @@ export function prepareStandardOutputResources(
       );
     }
     const accepted = state.standardLutGpuResources;
-    if (
-      accepted?.sourceKey !== lut.value.sourceKey ||
-      accepted.texture !== lut.value.texture ||
-      accepted.strength !== lut.value.strength
-    ) {
-      state.pendingStandardLutGpuResources = lut.value;
-    }
+    state.pendingStandardLutGpuResources = accepted === lut.value ? undefined : lut.value;
   } else {
     state.pendingStandardLutGpuResources = undefined;
     state.standardLutGpuResources = undefined;
@@ -239,6 +235,7 @@ function stageAutoExposureState(
       fallback: exposure.fallback,
       generation: state.targetGeneration,
       historyIdentity: autoExposureHistoryIdentity(internals, camera),
+      ...(exposure.adaptation === undefined ? {} : { adaptation: exposure.adaptation }),
     });
     if (!parameterWrite.ok) {
       internals.errorRegistry.fire(parameterWrite.error);

@@ -2,6 +2,7 @@ import {
   type AudioBackend,
   type AudioClipIdentity,
   type AudioIntent,
+  type AudioIntentBackendOptions,
   type AudioPlayOptions,
   type AudioPreparationReceipt,
   type AudioState,
@@ -534,9 +535,19 @@ export function createHostAudioConsumer(
   return consumer;
 }
 
-export function createWebAudioBackend(engine = new WebAudioEngine()): AudioBackend {
-  const consumer = createHostAudioConsumer(engine);
+export function createWebAudioBackend(
+  engine = new WebAudioEngine(),
+  options?: {
+    readonly host?: Parameters<typeof createHostAudioConsumer>[1];
+    readonly publication?: Pick<
+      AudioIntentBackendOptions,
+      'maxPublishedBytes' | 'maxPublishedSources'
+    >;
+  },
+): AudioBackend {
+  const consumer = createHostAudioConsumer(engine, options?.host);
   const backend = createAudioIntentBackend({
+    ...options?.publication,
     emit: (intent) => consumer.consume(intent),
     state: () => consumer.state(),
   });

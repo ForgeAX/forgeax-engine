@@ -82,13 +82,25 @@ async function compiledModule(device: RhiDevice, source: string, options: Record
 
 async function rendererReadyPasses(device: RhiDevice) {
   const gbuffer = readFileSync(resolve('packages/shader/src/standard-gbuffer.wgsl'), 'utf8');
+  const depthPyramid = readFileSync(
+    resolve('packages/shader/src/depth-pyramid-sample.wgsl'),
+    'utf8',
+  );
   const common = readFileSync(resolve('packages/shader/src/common.wgsl'), 'utf8');
   const ssao = await compiledModule(
     device,
     readFileSync(resolve('packages/shader/src/hdrp-ssao.wgsl'), 'utf8'),
     {
       id: 'forgeax_hdrp::ssao',
-      imports: { 'forgeax_pbr::gbuffer': gbuffer, 'forgeax_view::common': common },
+      imports: {
+        'forgeax_depth_pyramid::sample': depthPyramid,
+        forgeax_scene_temporal: readFileSync(
+          resolve('packages/shader/src/scene-temporal.wgsl'),
+          'utf8',
+        ),
+        'forgeax_pbr::gbuffer': gbuffer,
+        'forgeax_view::common': common,
+      },
     },
   );
   const gtaoCompute = await compiledModule(
@@ -99,6 +111,11 @@ async function rendererReadyPasses(device: RhiDevice) {
       computeEntry: 'cs_gtao_calc',
       imports: {
         'forgeax_hdrp::ssao': readFileSync(resolve('packages/shader/src/hdrp-ssao.wgsl'), 'utf8'),
+        'forgeax_depth_pyramid::sample': depthPyramid,
+        forgeax_scene_temporal: readFileSync(
+          resolve('packages/shader/src/scene-temporal.wgsl'),
+          'utf8',
+        ),
         'forgeax_pbr::gbuffer': gbuffer,
         'forgeax_view::common': common,
       },
@@ -280,7 +297,16 @@ async function runGraph(
   } as unknown as PerPassResources;
   const errorRegistry = new RhiErrorListenerRegistry();
   const frameState = {
-    installedPipelineConfig: { ssao: { enabled: true, algorithm: 'gtao', quality: 'medium' } },
+    installedPipelineConfig: {
+      ambientOcclusion: {
+        enabled: true,
+        method: 'gtao',
+        quality: 'medium',
+        bias: 0,
+        radius: 0.25,
+        intensity: 1,
+      },
+    },
     postProcessBgCache: new WeakMap<object, unknown>(),
   };
   const runtime = { device, errorRegistry };
@@ -336,7 +362,7 @@ async function runGraph(
   }
 }
 
-it('executes the prepared GTAO compute and fragment entries through the production typed graph', async () => {
+it('executes the prepared GTAO compute and fragment entries through the retained typed primitive', async () => {
   const adapter = value(await rhi.requestAdapter());
   const device = value(await adapter.requestDevice());
   const size = { width: 128, height: 128 };

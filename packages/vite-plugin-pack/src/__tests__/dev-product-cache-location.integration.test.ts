@@ -1,9 +1,9 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { expect, it, onTestFinished } from 'vitest';
 import { createPluginPackInternal } from '../plugin-pack.js';
 
 const authored = (marker: number) => `export default {
@@ -15,12 +15,15 @@ const authored = (marker: number) => `export default {
   } } }),
 };`;
 
-// A copied or freshly created project directory must reuse the products its
-// content already produced: the dev server is where every play and dev session
-// first waits for Pack cooking.
-it('reuses dev Pack products from an equal project at another location and re-cooks edits', async () => {
-  const machine = await mkdtemp(join(tmpdir(), 'forgeax-dev-product-cache-location-'));
-  const buildCacheRoot = join(machine, 'build-cache');
+it.each([
+  'shared',
+  'template copy',
+] as const)('reuses dev Pack products after relocation (%s)', async (topology) => {
+  const machine = await mkdtemp(join(tmpdir(), 'forgeax-dev-product-cache-relocation-'));
+  const cache = (project: string) =>
+    topology === 'shared'
+      ? join(machine, 'build-cache')
+      : join(project, '.forgeax', 'ddc', 'build-cache');
   let cooks = 0;
   const cooker: NativeCooker = {
     key: 'material',
@@ -43,7 +46,7 @@ it('reuses dev Pack products from an equal project at another location and re-co
       cookers: [cooker],
       runtimeBinding: createStandaloneRuntimeAssetBinding('location'),
       ddc: {
-        buildCacheRoot,
+        buildCacheRoot: cache(project),
         projectDdcRoot: join(project, '.forgeax', 'ddc', 'v2'),
         identityRoot: project,
       },
@@ -56,21 +59,21 @@ it('reuses dev Pack products from an equal project at another location and re-co
       await plugin.closeBundle();
     }
   };
-  const project = async (name: string, marker: number) => {
+  const project = async (name: string, marker: number, source?: string) => {
     const root = join(machine, name);
     await mkdir(join(root, 'assets'), { recursive: true });
     await writeFile(join(root, 'assets', 'material.pack.ts'), authored(marker));
+    if (source && topology === 'template copy')
+      await cp(cache(source), cache(root), { recursive: true });
     return root;
   };
-  try {
-    expect(await serve(await project('first', 1))).toEqual(['material']);
-    expect(cooks).toBe(1);
-    expect(await serve(await project('copy', 1))).toEqual(['material']);
-    expect(cooks).toBe(1);
-    const edited = await project('edited', 2);
-    expect(await serve(edited)).toEqual(['material']);
-    expect(cooks).toBe(2);
-  } finally {
-    await rm(machine, { recursive: true, force: true });
-  }
+  onTestFinished(() => rm(machine, { recursive: true, force: true }));
+  const first = await project('first', 1);
+  expect(await serve(first)).toEqual(['material']);
+  expect(cooks).toBe(1);
+  expect(await serve(await project('copy', 1, first))).toEqual(['material']);
+  expect(cooks).toBe(1);
+  const edited = await project('edited', 2, first);
+  expect(await serve(edited)).toEqual(['material']);
+  expect(cooks).toBe(2);
 });

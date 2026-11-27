@@ -1,13 +1,13 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { shaderManifestUrl } from '../../../../runtime/src/__tests__/shader-manifest-url.fixture';
 import { loadPublishedRayKernels } from './published-kernels.fixture';
 import { verifyRetainedRayScene } from './scene-projection.gpu-fixture';
 
 const published = await loadPublishedRayKernels(
-  shaderManifestUrl(await buildEngineShaderManifest()),
+  shaderManifestUrl(await buildEngineShaderTemplateManifest()),
 );
 
 it('traces retained offscreen contributors and replays edits after original resources retire', async () => {

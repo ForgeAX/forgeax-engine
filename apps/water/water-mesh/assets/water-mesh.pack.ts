@@ -18,6 +18,7 @@ import {
   LAKE_CENTER,
   lakeOutline,
   RIVER_PATH,
+  RIVER_TANGENTS,
   WORLD_COLUMNS,
   WORLD_ORIGIN,
   WORLD_SPACING_M,
@@ -203,6 +204,8 @@ export default definePack({
       scatteringPerM: [0.025, 0.045, 0.05],
       roughness: 0.075,
       fresnelRoughness: 0.11,
+      refractionPixelNormalStrength: 1.008,
+      distantRefractionPixelNormalStrength: 1.002,
       normalStrength: 0.18,
       distantNormalStrength: 0.18,
       normalTilingM: 8,
@@ -297,14 +300,8 @@ export default definePack({
           closed: false,
           interpolationVersion: 'water-spline/2',
           points: RIVER_PATH.map((p, i) => {
-            const before = RIVER_PATH[Math.max(0, i - 1)] ?? p;
-            const after = RIVER_PATH[Math.min(RIVER_PATH.length - 1, i + 1)] ?? p;
-            const divisor = i === 0 || i === RIVER_PATH.length - 1 ? 1 : 2;
-            const tangent = [
-              (after[0] - before[0]) / divisor,
-              (after[1] - before[1]) / divisor,
-              (after[2] - before[2]) / divisor,
-            ] as const;
+            const tangent = RIVER_TANGENTS[i];
+            if (!tangent) throw new Error('Missing river tangent');
             return {
               ...point(i, p[0], p[1], p[2], 2.8, p[3]),
               interpolationMode: 'curve-custom-tangent' as const,
@@ -431,8 +428,9 @@ export default definePack({
       'material/transition-ocean': {
         kind: 'material',
         parent: family.guids['river-to-ocean'],
-        // The estuary shares Ocean optics; River flow detail belongs to the upstream branch.
-        staticSwitches: { waterFlowmap: false },
+        // Explicit terminal continuity supplies waves across both River material regions.
+        // Keep their base deformation equal; the stock velocity-masked transition is separate.
+        staticSwitches: { waterFlowmap: false, waterTransitionOcean: false },
         values: { roughness: 0.075 },
       },
       'material/custom': {

@@ -103,13 +103,14 @@ const equations: Readonly<Record<WaterFluidStage, string>> = {
       sample1(q + vec2<f32>(0.0, texel.y)).g));
     let source = sample0(q - velocity * p[0].z / p[1].zw);
     var depth = source.r - p[5].y * p[0].z + sample2(uv).r;
-    var bed = 0.0;
+    var bed = select(0.0, p[7].y - p[5].x, p[14].z >= 2.0);
     if (p[7].z > 0.5) {
       let field = terrain(uv);
       let targetDepth = max(field.x - field.y, 0.0);
       let start = select(targetDepth, depth, source.g > -650.0);
       depth = mix(start, targetDepth, 1.0 - exp(-p[15].y * p[0].z));
-      bed = mix(field.y, -targetDepth, p[15].z);
+      let depthOnlyBed = select(-targetDepth, p[7].y - targetDepth, p[14].z >= 2.0);
+      bed = mix(field.y, depthOnlyBed, p[15].z);
     }
     var foam = 0.0;
     if (p[7].w > 0.5) {
@@ -134,10 +135,11 @@ const equations: Readonly<Record<WaterFluidStage, string>> = {
     let cell = p[1].zw / (p[0].xy - vec2<f32>(1.0));
     let divergence = (sample1(uv + vec2<f32>(texel.x, 0.0)).r - velocity.x) / cell.x
       + (sample1(uv + vec2<f32>(0.0, texel.y)).g - velocity.y) / cell.y;
-    let expansion = clamp(max(divergence * p[0].z, 0.0), 0.0, 1.0);
+    let expansion = select(clamp(max(divergence * p[0].z, 0.0), 0.0, 1.0),
+      clamp(divergence * p[0].z, -0.5, 1.0), p[14].z >= 2.0);
     let depth = max(value.r / (1.0 + expansion), 0.0);
     // The source copies bed centimeters into its scalar foam channel at this boundary.
-    return vec4<f32>(depth, value.g, value.g * 100.0, 1.0);`,
+    return vec4<f32>(depth, value.g, select(value.g * 100.0, value.b, p[14].z >= 2.0), 1.0);`,
   gravity: `
     let value = sample0(uv);
     let left = sample0(uv - vec2<f32>(texel.x, 0.0));
@@ -166,7 +168,9 @@ const equations: Readonly<Record<WaterFluidStage, string>> = {
     let value = sample0(uv);
     let normal = normal0(uv, p[5].z, p[18].y, p[18].z);
     let ao = clamp((boxMask2D(uv, p[18].w) - 0.02) / 0.98, 0.0, 1.0);
-    return vec4<f32>(vec3<f32>(normal.xz, value.r - p[18].x) * ao, clamp(ao * value.b, 0.0, 1.0));`,
+    let surface = select(p[7].y, value.r + value.g, value.r > 0.0);
+    let displacement = select(value.r - p[18].x, surface - p[7].y, p[14].z >= 2.0);
+    return vec4<f32>(vec3<f32>(normal.xz, displacement) * ao, clamp(ao * value.b, 0.0, 1.0));`,
   wave: `
     let world = p[1].xy + (uv - vec2<f32>(0.5)) * p[1].zw;
     var wave = legacyGerstner(world);
@@ -287,7 +291,8 @@ ${
     ? `fn elevation0(uv: vec2<f32>, foamDensity: f32, foamHeightScale: f32) -> f32 {
   let value = sample0(uv);
   let cell = p[1].z / (p[0].x - 1.0);
-  return value.r + value.g + (1.0 - exp(-value.b * foamDensity)) * foamHeightScale * cell;
+  let surface = select(value.r + value.g, p[7].y, p[14].z >= 2.0 && value.r <= 0.0);
+  return surface + (1.0 - exp(-value.b * foamDensity)) * foamHeightScale * cell;
 }
 fn normal0(uv: vec2<f32>, heightScale: f32, foamDensity: f32, foamHeightScale: f32) -> vec3<f32> {
   let texel = vec2<f32>(1.0) / p[0].xy;

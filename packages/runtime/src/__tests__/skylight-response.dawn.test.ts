@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
@@ -8,7 +8,7 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { RESPONSE_SIZE, renderResponse, responseSamples } from './skylight-response.fixture';
 import { unwrap } from './specular-aa.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 
 for (const renderPath of ['forward', 'deferred'] as const) {
   it(`solid Skylight matches uniform panorama BRDF response in ${renderPath}`, {

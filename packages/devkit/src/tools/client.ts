@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { HostAssemblyError } from '@forgeax/engine-host';
-import { Context, createToolApiPlugin, registerTools } from '@forgeax/engine-plugin';
+import { Context, createToolApiPlugin } from '@forgeax/engine-plugin';
 import {
   createToolCommandRegistry,
   defineCommand,
@@ -19,9 +19,9 @@ import {
   toolJsonSchema,
 } from '@forgeax/engine-tool-runtime';
 import type { ProjectCookers } from '../build/cookers.js';
-import { discoverPluginAssets } from '../build/plugin-assets.js';
 import { createOperationHistoryStore } from '../operation-history.js';
 import { readProjectFacts } from '../project.js';
+import { failCommand, failToolRun } from '../types.js';
 import {
   createProjectToolCatalogAuthority,
   describeTool,
@@ -29,11 +29,17 @@ import {
   loadToolCatalog,
   materializeToolDescriptorCatalog,
   type ToolCatalogEntry,
-  type ToolRealmOwner,
 } from './catalog.js';
 import { decorateResourcePreviewTerminal } from './cli-adapter.js';
-import { retiredPreviewTool } from './preview-migration.js';
+import { mountToolProviders } from './execution.js';
+import { retiredPreviewTool } from './preview-catalog.js';
 import type { ProjectToolBinding, ProjectToolDiscoveryOptions } from './project-tools.js';
+
+export interface ToolRealmOwner
+  extends Pick<ToolApiProviderInput, 'realm' | 'module'>,
+    Partial<Pick<ToolApiProviderInput, 'sourceId' | 'providerId'>> {
+  readonly contributions: ToolApiProviderInput['tools'];
+}
 
 export interface ToolClientOptions extends ProjectToolDiscoveryOptions {
   readonly projectRoot: string;
@@ -75,16 +81,15 @@ interface HelpArgs {
 }
 
 function missingTool(id: string): ToolTerminal<never> {
-  return {
-    outcome: 'failed',
-    failure: {
+  return failToolRun(
+    {
       code: 'tool-capability-unavailable',
       expected: `tool ${id} to exist in the project-derived catalog`,
       hint: 'Run forgeax help --tree and choose one of the discovered command paths.',
       detail: { capability: `tool:${id}`, realm: 'build' },
     },
-    artifacts: [],
-  };
+    [],
+  );
 }
 
 function hostToolFailure(
@@ -139,11 +144,7 @@ function uniqueContributions(
 export async function createToolClient(options: ToolClientOptions): Promise<ToolClient> {
   const projectDiscovery = options.projectDiscovery;
   let initialSources = options.inventory;
-  const nativePreviewIds = new Set(
-    (await import('./preview-catalog.js')).nativePreviewTools.map(
-      ({ descriptor }) => descriptor.id,
-    ),
-  );
+  const { nativePreviewOwner } = await import('./preview-catalog.js');
   const builtins = options.baseContributions ?? [
     ...(await import('./contributions.js')).createDefaultContributions(options.projectRoot, () => {
       const taken = initialSources;
@@ -160,21 +161,22 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
   // own load failure when invoked.
   let project: readonly ProjectToolBinding[] = [];
   let projectDiscoveryFailure: unknown;
-  if (projectDiscovery === undefined) {
-    try {
-      if (initialSources === undefined) {
-        const facts = await readProjectFacts(options.projectRoot);
-        if (!facts.ok) throw facts.error;
-        initialSources = await discoverPluginAssets(facts.value);
-      }
+  try {
+    if (projectDiscovery !== undefined) {
+      project = await projectDiscovery(options.projectRoot);
+    } else {
       project = await (await import('./project-tools.js')).discoverProjectTools(
         options.projectRoot,
-        { ...options, inventory: initialSources },
+        options,
+        (inventory) => {
+          initialSources = inventory;
+        },
       );
-    } catch (error) {
-      projectDiscoveryFailure = error;
-      project = [];
     }
+  } catch (error) {
+    projectDiscoveryFailure = error;
+  }
+  if (projectDiscovery === undefined) {
     const { devKitBackendHostPack } = await import('../backend-process.js');
     const hostPack = devKitBackendHostPack(options.projectRoot);
     if (hostPack !== undefined) {
@@ -184,13 +186,6 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
       } catch (error) {
         projectDiscoveryFailure ??= error;
       }
-    }
-  } else {
-    try {
-      project = await projectDiscovery(options.projectRoot);
-    } catch (error) {
-      projectDiscoveryFailure = error;
-      project = [];
     }
   }
   let commandRegistry: ReturnType<typeof createToolCommandRegistry>;
@@ -218,11 +213,9 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
     },
     (args) => commandRegistry.help(args.path ?? [], args.tree === true),
   );
-  const declared = new Set(
-    [...builtins, ...project.map((binding) => binding.contribution)].map(
-      ({ descriptor }) => descriptor.id,
-    ),
-  );
+  const projectContributions = project.map(({ contribution }) => contribution);
+  const projectIds = new Set(projectContributions.map(({ descriptor }) => descriptor.id));
+  const declared = new Set([...projectIds, ...builtins.map(({ descriptor }) => descriptor.id)]);
   let liveContributions: readonly ToolContribution[] = [];
   if (projectDiscovery === undefined) {
     try {
@@ -235,45 +228,43 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
       projectDiscoveryFailure ??= error;
     }
   }
-  const projectContributions = [
-    ...project.map((binding) => binding.contribution),
-    ...liveContributions,
-  ];
-  const contributions = [...builtins, ...projectContributions].map((contribution) => {
-    const descriptor = {
-      ...contribution.descriptor,
-      path: contribution.descriptor.path ?? operationCommandPath(contribution.descriptor.id),
-    };
-    if (nativePreviewIds.has(descriptor.id)) {
+  const contributions = [...builtins, ...projectContributions, ...liveContributions].map(
+    (contribution) => {
+      const descriptor = {
+        ...contribution.descriptor,
+        path: contribution.descriptor.path ?? operationCommandPath(contribution.descriptor.id),
+      };
+      if (nativePreviewOwner(descriptor.id) !== undefined) {
+        return {
+          ...contribution,
+          descriptor,
+          // Native previews perform their per-run plugin/host activation in
+          // the domain owner. The Tool API still owns admission and the
+          // outer executor lifetime; this adapter preserves that owner path.
+          execute: async (
+            args: unknown,
+            context: import('@forgeax/engine-tool-runtime').ToolExecutionContext,
+          ) => {
+            const nativePreview = await import('./native-preview.js');
+            return nativePreview.runNativePreviewTool(
+              contribution as ToolContribution<unknown, unknown>,
+              args,
+              {
+                signal: context.signal,
+                ...(context.snapshot === undefined ? {} : { snapshot: context.snapshot }),
+                ...(context.caller === undefined ? {} : { caller: context.caller }),
+              },
+              options.projectRoot,
+            );
+          },
+        };
+      }
       return {
         ...contribution,
         descriptor,
-        // Native previews perform their per-run plugin/host activation in
-        // the domain owner. The Tool API still owns admission and the
-        // outer executor lifetime; this adapter preserves that owner path.
-        execute: async (
-          args: unknown,
-          context: import('@forgeax/engine-tool-runtime').ToolExecutionContext,
-        ) => {
-          const nativePreview = await import('./native-preview.js');
-          return nativePreview.runNativePreviewTool(
-            contribution as ToolContribution<unknown, unknown>,
-            args,
-            {
-              signal: context.signal,
-              ...(context.snapshot === undefined ? {} : { snapshot: context.snapshot }),
-              ...(context.caller === undefined ? {} : { caller: context.caller }),
-            },
-            options.projectRoot,
-          );
-        },
       };
-    }
-    return {
-      ...contribution,
-      descriptor,
-    };
-  }) as readonly ToolContribution[];
+    },
+  ) as readonly ToolContribution[];
   const allContributions = [helpContribution, ...contributions] as readonly ToolContribution[];
   const realmOwnerContributions =
     options.realmOwners?.flatMap((owner) => owner.contributions) ?? [];
@@ -282,11 +273,9 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
     ...realmOwnerContributions,
   ]);
   commandRegistry = createToolCommandRegistry(catalogContributions);
-  let ownerContext = options.context;
-  let ownsContext = false;
-  if (ownerContext === undefined) {
-    ownerContext = new Context();
-    ownsContext = true;
+  const ownsContext = options.context === undefined;
+  const ownerContext = options.context ?? new Context();
+  if (ownsContext) {
     if (options.toolApi === undefined) {
       await ownerContext.plugin(createToolApiPlugin());
     } else {
@@ -311,8 +300,6 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
   }
   let buildSession: Promise<ProjectCookers> | undefined;
   const sourceId = `devkit-local:${crypto.randomUUID()}`;
-  const providersByOperation = new Map<string, Array<{ providerId: string; sourceId: string }>>();
-  const ownerFibers = [] as Array<{ dispose: () => Promise<unknown> }>;
   const ownerInputs: readonly ClientProviderInput[] =
     options.realmOwners === undefined
       ? TOOL_REALMS.map((realm) => ({
@@ -320,10 +307,7 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
           tools: allContributions.filter(
             (contribution) =>
               contribution.descriptor.realm === realm &&
-              !projectContributions.includes(contribution) &&
-              !project.some(
-                (binding) => binding.contribution.descriptor.id === contribution.descriptor.id,
-              ),
+              !projectIds.has(contribution.descriptor.id),
           ),
           sourceId,
         }))
@@ -334,32 +318,16 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
           ...(owner.providerId === undefined ? {} : { providerId: owner.providerId }),
           ...(owner.module === undefined ? {} : { module: owner.module }),
         }));
-  for (const [index, owner] of ownerInputs.entries()) {
-    if (owner.tools.length === 0) continue;
-    const providerId =
-      owner.providerId ?? `devkit-tool-client:${owner.realm}:${index}:${crypto.randomUUID()}`;
-    const bound = {
+  const mount = await mountToolProviders(
+    ownerContext,
+    ownerInputs.map((owner, index) => ({
+      ...owner,
       name: `forgeax:devkit-tool-provider/${owner.realm}/${index}`,
-      inject: ['toolApi'],
-      apply(ctx: Context) {
-        ctx.effect(() =>
-          registerTools(ctx, owner.tools, {
-            sourceId: owner.sourceId,
-            providerId,
-            module: owner.module ?? '@forgeax/engine-devkit',
-            realm: owner.realm,
-          }),
-        );
-      },
-    };
-    const fiber = await ownerContext.plugin(bound);
-    ownerFibers.push(fiber);
-    for (const tool of owner.tools) {
-      const routes = providersByOperation.get(tool.descriptor.id) ?? [];
-      routes.push({ providerId, sourceId: owner.sourceId });
-      providersByOperation.set(tool.descriptor.id, routes);
-    }
-  }
+      providerId:
+        owner.providerId ?? `devkit-tool-client:${owner.realm}:${index}:${crypto.randomUUID()}`,
+    })),
+    ownsContext,
+  );
   const descriptors = catalogContributions.map(({ descriptor }) => descriptor);
   const loadedResult = await loadToolCatalog(
     createProjectToolCatalogAuthority(options.projectRoot, descriptors),
@@ -374,8 +342,7 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
     runOptions: ToolRunOptions = {},
   ): Promise<ToolTerminal<TResult>> => {
     if (id === 'preview.run') return retiredPreviewTool() as ToolTerminal<TResult>;
-    const record = api.list().find(({ descriptor }) => descriptor.id === id);
-    if (record === undefined) {
+    if (api.describe(id).length === 0) {
       if (project.some((binding) => binding.realm === 'host' && binding.declaration.id === id)) {
         try {
           const { runDevKitBackendTool } = await import('../backend-process.js');
@@ -402,27 +369,7 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
       }
       return missingTool(id) as ToolTerminal<TResult>;
     }
-    const routes = providersByOperation.get(id) ?? [];
-    const requestedRoute =
-      runOptions.providerId === undefined || runOptions.sourceId === undefined
-        ? undefined
-        : routes.find(
-            (route) =>
-              route.providerId === runOptions.providerId && route.sourceId === runOptions.sourceId,
-          );
-    const provider =
-      requestedRoute ??
-      (runOptions.providerId === undefined &&
-      runOptions.sourceId === undefined &&
-      routes.length === 1
-        ? routes[0]
-        : undefined);
-    let terminal = await api.run<TResult>(id, args, {
-      ...runOptions,
-      ...(provider === undefined
-        ? {}
-        : { providerId: provider.providerId, sourceId: provider.sourceId }),
-    }).terminal;
+    let terminal = await api.run<TResult>(id, args, mount.prefer(id, { ...runOptions })).terminal;
     terminal = decorateResourcePreviewTerminal(terminal as ToolTerminal<TResult>);
     if (id === 'asset.plugin.inspect' && projectDiscoveryFailure !== undefined) {
       const reason =
@@ -437,15 +384,12 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
             ...(current !== null && typeof current === 'object' && !Array.isArray(current)
               ? current
               : { value: current }),
-            extensionDiscovery: {
-              ok: false,
-              error: {
-                code: 'project-command-discovery-failed',
-                expected: 'project command contract modules to load without side effects',
-                hint: 'Repair the commandContract module; built-in commands remain available.',
-                detail: { reason },
-              },
-            },
+            extensionDiscovery: failCommand(
+              'project-command-discovery-failed',
+              'project command contract modules to load without side effects',
+              'Repair the commandContract module; built-in commands remain available.',
+              { reason },
+            ),
           },
         } as ToolTerminal<TResult>;
       }
@@ -492,22 +436,7 @@ export async function createToolClient(options: ToolClientOptions): Promise<Tool
       } catch (cause) {
         failures.push(cause);
       }
-      for (const fiber of [...ownerFibers].reverse()) {
-        try {
-          await fiber.dispose();
-        } catch (cause) {
-          failures.push(cause);
-        }
-      }
-      ownerFibers.length = 0;
-      if (ownsContext) {
-        try {
-          await ownerContext.fiber.dispose();
-        } catch (cause) {
-          failures.push(cause);
-        }
-      }
-      if (failures.length) throw new AggregateError(failures, 'Tool client cleanup failed');
+      await mount.dispose(failures, 'Tool client cleanup failed');
     },
   };
 }

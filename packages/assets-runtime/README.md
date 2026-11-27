@@ -14,6 +14,12 @@ content intact; source Catalog/publication evidence remains unchanged and
 its existing collision and publication rules. App owns author preview lifetime;
 this capability does not introduce editor state into game registries.
 
+Acceptance may read candidate content and retain/release consumer references.
+It cannot change content, publish another transaction, capture versions or read
+an observer batch after dependency validation. A rejected callback leaves cleanup
+of its external consumers to the caller; restoring content does not undo World
+side effects or consume caller-owned consumer references.
+
 `AssetRegistry` owns runtime asset identity, content, revisions and lifetime.
 Games create or load one asset, bind its handle, and edit that same asset. A
 Renderer, physics world or player adopts changes at its own execution boundary.
@@ -54,11 +60,13 @@ assets.release(material).unwrap();
 | `create(content)` | Capture and validate independent runtime content; return a caller-owned handle |
 | `load(guid, kind, { signal }?)` | Read the verified source closure, or retain the already loaded runtime identity |
 | `read(handle)` | Return detached content, including copied arrays and buffers |
+| `read(handle, fields)` | Return only the named top-level fields as detached content from the current revision |
 | `update(handle, patch)` | Commit a validated patch; material `values` merge named parameters |
 | `replace(handle, content)` | Replace complete same-kind content under the existing handle |
 | `writeRange(handle, range)` | Commit a mesh attribute, texture pixel or Terrain height range |
 | `copy(handle)` | Create independently editable content and preserve its admitted domain contracts |
 | `snapshot(handle)` | Retain exact content and dependency versions; dispose when finished |
+| `unload(guid)` | Release the Registry's cached runtime identity if it is the sole holder. Returns `false` when unloaded or still held. A later load can adopt a fresh identity. |
 | `reload(handle, { conflict })` | Explicitly adopt a current source closure without silently discarding gameplay edits |
 | `source(handle)` / `sourceOf(handle)` | Read adopted provenance / adopted provenance with the modified flag |
 | `retain(handle)` / `release(handle)` | Transfer reference ownership independently of rendering |
@@ -66,6 +74,54 @@ assets.release(material).unwrap();
 Full signatures live in [AssetRegistry](src/asset-registry.ts). Mesh geometry
 factories belong to [Geometry](../geometry/README.md); there are no reserved
 built-in mesh handles or additional World payload registrations.
+
+`load(guid, 'mesh', { usage: 'render' })` allows a verified static Mesh to keep its
+draw metadata in Engine and its geometry in a split Render Worker. If preparation
+or exact recovery cannot be provided, the load keeps complete CPU content.
+The split Render Worker reserves bytes before handoff. A first load can take
+the built-in Mesh decoder's original, exclusively held backing. Other eligible
+loads use a private copy. A normal load can take precedence before handoff or
+restore the same revision after handoff.
+
+Pass the same usage to a Scene load to prefer Render residency for its
+draw-only Mesh references. A direct MeshFilter reference qualifies when no
+other reference in the closure needs that Mesh. Nested scenes and unknown
+component schemas use the ordinary CPU path. During Engine Worker bootstrap,
+the staged split receiver prepares requested geometry after its device becomes
+ready and before it accepts its first World publication.
+A second split Render receiver restores that revision into shared Engine CPU storage before
+it publishes its first scene. Each receiver then owns its own render resources.
+`meshCpuResidency(handle)` reports the current mode, the Registry bytes and the
+recovery artifact bytes, and whether the handoff transferred original storage
+or copied it. For CPU residents, `cpuRetentionReason` reports the
+ordinary CPU requirement, the receiver topology or the reason the current Mesh
+revision could not move to Render. Recovery artifact capacity and Render
+preparation have distinct budget reasons. The Render budget charges prepared
+Mesh content until its leases and release grace have ended. The storage field
+distinguishes a lease on the original publication from an independent copy.
+Producer caches and GPU allocations have separate owners.
+
+Select fields when gameplay only needs retained asset data.
+
+```ts
+const { materialSlots } = assets.read(meshHandle, ['materialSlots']).unwrap();
+const { shape, format } = assets.read(textureHandle, ['shape', 'format']).unwrap();
+```
+
+The handle's payload type determines the accepted keys and result type. Field
+reads work for built-in and custom assets, including GPU texture descriptors.
+They copy only the selected values and perform no I/O, readback or residency
+changes. A missing optional field returns `undefined`. A render-resident Mesh
+can return its material slots, bounds, submeshes and layout declarations. A
+selection that includes transferred geometry fails with
+`asset-cpu-data-unavailable` and lists the unavailable fields in `detail.fields`.
+
+Use ordinary `load(guid, 'mesh')` before reading complete content, copying,
+editing or building a collider. It restores complete CPU content for the same handle and revision.
+Concurrent loads share the restore. If every waiting load is cancelled before
+adoption, the Mesh keeps its visual residency.
+Until then, synchronous geometry operations return `asset-cpu-data-unavailable`
+and exact triangle picking can report `cpu-geometry-unavailable`.
 
 ## Content created during play
 
@@ -201,7 +257,11 @@ accepted runtime closure.
 
 ## Domain preparation
 
-Freshly parsed Pack material programs share validated immutable ABI facts. Runtime edits and decoder payloads stay detached; source publication integrity checks still run before admission.
+Compiled Pack materials share validated immutable ABI facts. Scriptable Pack
+materials admit the verified WGSL source library before rendering. The Asset
+Registry resolves program requests in the renderer's context and shares the
+selected artifacts across equal source and static contracts. Runtime edits and
+decoded source data stay detached.
 
 Engine/Runtime installs the default domain contributions. A bare Registry must
 install the contributions used by source loading or custom content. For example,
@@ -346,7 +406,7 @@ linear light.
 
 ## AssetEvidence SDK boundary
 
-`inspect(guid)` and `verifyByGuid(guid)` project injected source, Catalog, Cook
+`inspect(guid)` projects injected source, Catalog, Cook
 receipt and package verification evidence. `configureAssetEvidence(source)`
 provides that host capability. Missing evidence remains unknown, and source
 readiness is distinct from actual runtime adoption or GPU completion.
@@ -370,9 +430,11 @@ Performance evidence and remaining acceptance belong to the
 
 ## Runtime content
 
-Mesh content has one retained vertex representation: interleaved rows. Full
-authoring channels are validated before admission and then discarded from the
-owned runtime value. The native binary decoder validates rows directly without
+A mesh owns one vertex buffer in its admitted layout. Rigid meshes can keep
+split streams for presentation. Fixed versions retain that layout for engine consumers. Detached public reads
+from live assets or fixed snapshots receive interleaved rows. Both preserve the live stream storage,
+and copying an asset preserves the original layout in the independent copy.
+Full authoring channels are validated on admission and then discarded. The native binary decoder validates rows directly without
 allocating duplicate channels. Read CPU lanes through geometry's
 `meshAttributeWindow`; request explicit contiguous output with `copyMeshAttribute`
 when needed. Attribute range edits write the corresponding strided row lanes;
@@ -446,11 +508,78 @@ ordinary numeric updates.
 Asset changes are retained in a bounded journal with independent consumer
 cursors. Repeated writes coalesce by identity; writing does not visit entity or
 consumer lists. Empty reads reuse an empty batch. Default limits are 65,536
-identities, 1 GiB of owned content, 128 snapshots, 64 ranges, 32 observer
+identities, 4 GiB of owned content, 128 snapshots, 64 ranges, 32 observer
 channels and 1,024 dependencies per asset. Exceeding a limit returns a structured
 failure before adoption.
 
 ### Internal readers across realms
+
+`runtimeAssets(owner).beginAdoption(check?)` starts one private ingestion candidate.
+Each `adopt` owns its captured payload; preparation uses the explicit candidate
+reader while ordinary owner reads remain committed. Initial committed inputs get
+protected holds and revision guards. Unrelated ordinary transactions can run
+between steps; they share the candidate's byte and identity budget. Commit checks
+the merged graph, exposes the synchronous acceptance view, rechecks inputs, then
+publishes records without another payload copy. Consumer references on existing
+targets use their current holder counts. Old dependency edges retire separately.
+
+On rejection, new private identities lose read/validate/retain access but keep a
+release-only settlement route for consumer cleanup after callback unwind. Such
+consumers own their grants; cancellation never decrements them automatically.
+`stepRetirement(maxWork)` bounds actual reference decrements and private record
+removal. Outstanding consumers and capacity remain inspectable; `closed` denotes
+owner termination, not proof that external consumers returned their grants.
+Ordinary Registry load/reload now drive this same private preparation route with
+one active ingestion and queued selection after concurrent source I/O. The default
+driver yields host tasks at a 2 ms launch threshold; it does not preempt a running
+item. Original reload conflict epochs and independent caller holds remain intact.
+Source expectations retain metadata/entry identity, not payload versions. Each
+step validates before and after synchronous source consumption, and extension
+context reads plus extension exit recheck source facts. GUID/provenance publication
+uses captured descriptors after record acceptance. Retired decoder cache entries
+are invalidated before reuse, rather than relabelled with a new lease.
+
+Final records retain their full logical byte charge. The known copy/take kernel
+accounts additional mutable capture storage and proves exact same-capture object/
+buffer transfer credit; it does not globally deduplicate equal record contents or
+claim a physical JS heap limit. Source/Cook payloads remain with their source/shader
+owners; ingestion generators do not keep their POD across yields.
+
+The App-frame-driven Level route is not integrated. Source I/O/decode, each single
+asset, initial metadata capture, graph/publication work and complete frames still
+require measured bounds. Cooperative preparation alone is not proof of nonblocking
+cold loading, GPU/native readiness or a supported Level size.
+
+Domain tasks that suspend drive `runtimeAssets(owner).beginContentCapture(root)`
+in bounded steps rather than retaining an ordinary borrowed value. Begin fixes
+the exact closure and reserves real holds and snapshot capacity; the final seal
+returns the engine-only fixed lease. Its `read` returns stable borrowed fixed
+values; do not edit or retain them after retirement. Public reads still return
+detached copies. Closure collection, each copy and `matchesCurrent` validation
+remain measured preparation work.
+
+Scene preparation additionally drives the internal
+`createSceneContentPublicationTask(registry, lease, root)` against that same
+Registry's sealed lease. It resolves nested GUIDs only within the captured
+closure and checks root/nested adopted receipts against complete current Catalog
+publications. Previously edited source Scenes cannot reuse an old producer
+receipt. Every resume and the returned guard's final `validate()` recheck content
+and publication facts; observed invalidation stays terminal. A healthy Catalog
+revision can reuse a complete row proof for roots with the same output set.
+Each root must match its accepted row, full output membership and publication
+fence. No current payload borrow or public read supplies nested
+content. Dispose the task before retiring its caller-owned lease to close suspended
+fixed-value readers. These are source-publication facts, not Render or native
+readiness; closure and publication scans remain measured work.
+
+`lease.retire()` transfers those holds to one idempotent retirement cursor.
+`deferRelease(handles)` similarly consumes already-owned references, without
+creating new assets or changing ordinary `release`. Drain the cursor with
+`step(maxReferences)`; the budget covers dependency decrements as well as roots.
+Custody cannot be consumed by an unrelated release. Pending holds remain live
+and charged until their owner processes them; another consumer may retain the
+same asset while retirement proceeds. Owner disposal is sufficient CPU retirement
+evidence, but does not replace a Render submission or receiver retirement proof.
 
 Domain owners that already reserve bytes for an exclusive content copy can
 capture a revision guard through the internal records owner. The guard retains
@@ -584,13 +713,19 @@ absence of WebCrypto never disables verification.
 All mipmap entrypoints consume `RhiDevice` and opaque RHI resource handles. The
 injected shader factory accepts that same device and returns `ShaderModule`, so
 backend factories pass directly through initialization and recovery. Async
-generation prewarms the pipeline and uses the synchronous submission path; errors
-remain `RhiError` throughout.
+generation prewarms the pipeline and uses the synchronous submission path.
+Ordinary preparation failures return `RhiError`; combined preparation and
+unconfirmed scratch retirement retain both causes in an aggregate failure.
 
 The internal `encodeMipmaps` helper records into a caller encoder and returns
 backend-temporary cleanup without finishing or submitting. `prepareMipmaps` delegates to
-it and retains its finish/discard transaction. Dynamic Canvas updates share the
-Renderer's submission rather than opening a separate queue path.
+it and retains its finish/discard transaction. Its optional capture callback
+transfers cleanup responsibility before encoding, not permission to finish or
+submit. Cancellation during encoding defers scratch release until encoding stops;
+failed cleanup attempts every owned scratch and remains faulted on repeat discard.
+The same receipt survives encoding failure so its caller can retain unconfirmed
+resources. Dynamic Canvas updates share the Renderer's submission rather than
+opening a separate queue path.
 
 `prepareMipmaps` and `blitMipmapsSync` accept `arrayLayerCount` for 2D array and
 cube textures; omission retains the single-layer 2D path. All layers retain the
@@ -608,6 +743,14 @@ that same transaction, retiring any backend temporaries exactly once.
 Catalog revision windows use Types’ `checkCatalogRevisionContinuity` for the same
 root membership, monotonicity and single-step rules in Pack production and Runtime
 replica admission. Shape validation and replica row/scope checks remain separate.
+
+Generated color outputs can choose the default `box`, `gaussian` (a separable
+4×4 binomial kernel), or `{ kind: 'sharpen', strength }` (integer 0–10).
+Sharpening adds the difference between the narrow and 8×8 broad filter's
+luminance to the narrow-filtered RGB. Alpha follows the narrow filter.
+Strength zero selects Gaussian. The wider filters clamp edge taps and use
+the same linear-light and sRGB attachment contract as the default.
+GPU-authored custom chains select their own filtering in the generator recipe.
 
 For generated normal outputs, `GeneratedTextureDescriptor.mipFilter` may select
 `normal-roughness` (default: `box`). This mode requires linear `rgba8unorm` and
@@ -647,3 +790,26 @@ Retiring a publication source releases its Catalog replica directory and cached
 snapshot. Runtime handles keep their accepted content and provenance; immutable
 observations already returned to callers remain valid. A retired source refuses
 new reads, and a replacement source builds its own current directory.
+
+`beginContentCapture` reserves the initial exact closure, snapshot capacity and
+real holds atomically before any copy. Each `step(maxAssets)` copies from
+committed records after checking the original revisions; only the final seal
+returns a readable lease. Staged adoption excludes begin, step, seal and custody
+changes. A replaced dependency invalidates the whole candidate; expected versions
+are never refreshed to mix sources. Pending cancellation/disposal clears its
+partial copies, guards and reservation, then retires real holds through the owner.
+The owner settles unfinished capture cleanup on close without a future frame or
+caller step. Registry root/nested publication fences remain a separate authority.
+Per-asset copying, initial closure collection and guards remain measured,
+indivisible work.
+
+Scene publication continuations recheck fixed content, adopted source identity
+and modification, and the current root plus every required Catalog sibling.
+Catalog admission captures and freezes its own publication graph; it does not
+freeze the producer's observation. Source tuples share those immutable facts,
+while privately prepared publications use the Registry's owned captured rows.
+Unchanged inputs reuse successful normalization and complete-output checks.
+Multiple roots with the same exact accepted outputs can use one complete proof,
+including separately decoded wire envelopes. Changed rows rerun the full checker,
+and failure or disposal drops the derived caches. Acquisition/copying and cache
+misses remain real measured work; this is not native or streaming-budget proof.

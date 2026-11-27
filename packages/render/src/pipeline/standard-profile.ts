@@ -1,6 +1,7 @@
 import type { GlobalSdfGrid } from '../raytracing/global-sdf';
 import type { GlobalSdfQueryOptions } from '../raytracing/global-sdf-query';
-import type { SsaoParameterConfig } from '../ssao-config';
+import type { RenderPipelineTopology } from '../render-pipeline';
+import { type AmbientOcclusionSettings, DEFAULT_AMBIENT_OCCLUSION_METHOD } from '../ssao-config';
 import type { StandardOutputContract } from './standard-output/types';
 export const STANDARD_PIPELINE_ID = 'forgeax::standard' as const;
 /**
@@ -75,11 +76,19 @@ export interface StandardCardCapture {
   readonly resolution: number;
   readonly maxCaptureBytes: number;
   readonly budget: number;
+  /** Card-space bounce probe lattice and atlas update rate. */
+  readonly radiosity?: {
+    readonly probeSpacing: 4 | 8;
+    readonly hemisphereResolution: 3 | 4;
+    readonly updateFactor: 64 | 128;
+  };
 }
 
 /** Lumen-Lite style world irradiance field (UE r.Lumen.IrradianceFieldGather).
  * The probe lattice spans the Global SDF region; every budget is per frame. */
 export interface StandardIrradianceField {
+  /** Allow native Ray Query when available; false forces software Global SDF. Default: true. */
+  readonly hardwareRayTracing?: boolean;
   readonly region: StandardGlobalSdfRegion;
   /** World distance between lattice probes (>= region spacing). */
   readonly probeSpacing: number;
@@ -122,6 +131,8 @@ export interface StandardScreenProbes {
   readonly downsample: 4 | 8 | 16 | 32;
   /** Adaptive probe capacity as a fraction of uniform probes, in [0, 1]. */
   readonly adaptiveFraction: number;
+  /** Candidates per uniform tile, independent of the admitted adaptive budget. Defaults to four. */
+  readonly adaptiveCandidates?: 4 | 8 | 16;
   /** 'brdf' culls probe directions below the cosine PDF floor and refines the
    * highest-PDF texels with the freed rays (UE ImportanceSampling). */
   readonly importance: 'uniform' | 'brdf';
@@ -129,8 +140,16 @@ export interface StandardScreenProbes {
   readonly screenTrace: { readonly maxSteps: number; readonly thickness: number };
   /** Probe-space spatial radiance filter passes (0..4). */
   readonly filterPasses: number;
+  /** Preintegrate directional radiance per probe before interpolating pixel lighting. */
+  readonly irradiance?: 'probe-octahedral' | 'probe-sh3';
+  /** Reconstruct from nearby surface probes using screen-space weights. */
+  readonly integration?: 'screen-space';
+  /** One geometry-weighted irradiance lookup per pixel on supported screen-space receivers. */
+  readonly interpolation?: 'stochastic';
   /** Short-range screen AO radius in world units applied to this lane only; 0 disables. */
   readonly shortRangeAo: number;
+  /** Dedicated short-range horizon pass shared by pixels in the output footprint. */
+  readonly shortRangeAoMode?: 'half-scalar' | 'full-bent';
   /** Shared probe/pixel response budget (1 = no accumulation). One active
    * history uses the full cap; two split it so their steady EMA mean ages
    * sum to maxFrames - 1 rather than doubling the response delay. */
@@ -143,10 +162,37 @@ export interface StandardScreenProbes {
   };
 }
 
+export interface MeshDfApproxPolicy {
+  readonly receiverBiasVoxels: number;
+  readonly expansionVoxels: number;
+  readonly maxErrorVoxels: number;
+  /** Split into Mesh DF and Global SDF at this distance in world units. */
+  readonly nearDistance?: number;
+}
+
+export function isMeshDfApproxPolicy(value: unknown): value is MeshDfApproxPolicy {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = ['receiverBiasVoxels', 'expansionVoxels', 'maxErrorVoxels', 'nearDistance'];
+  if (Object.keys(value).some((key) => !keys.includes(key))) return false;
+  const { receiverBiasVoxels, expansionVoxels, maxErrorVoxels, nearDistance } =
+    value as MeshDfApproxPolicy;
+  const distance = typeof nearDistance === 'number' ? Math.fround(nearDistance) : NaN;
+  return (
+    [receiverBiasVoxels, expansionVoxels, maxErrorVoxels].every(
+      (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 64,
+    ) &&
+    maxErrorVoxels > 0 &&
+    (nearDistance === undefined || (Number.isFinite(distance) && distance >= 2 ** -126))
+  );
+}
+
 export interface StandardScreenProbeGi extends StandardDiffuseGiCommon {
   readonly gather: 'screen-probe';
   readonly probes: StandardScreenProbes;
   readonly field: StandardIrradianceField;
+  /** Opt-in software visibility: near Mesh DF and far Global SDF.
+   * Omit for the strict software reference. Hardware Ray Query is independent. */
+  readonly softwareTracing?: MeshDfApproxPolicy & { readonly nearDistance: number };
 }
 
 /** Build-time baked irradiance volume (UE precomputed volumetric lightmap,
@@ -206,8 +252,18 @@ export interface StandardProbePlacement {
   readonly global?: StandardProbeGlobal;
 }
 
+export interface StandardAtmosphereProfile {
+  readonly aerialPerspectiveQuality?: 'fast' | 'rgb';
+  /** Fast volume integration starts no closer than the camera near plane. */
+  readonly aerialPerspectiveStartM?: number;
+  readonly aerialPerspectiveRangeM?: number;
+  readonly traceSampleCountScale?: number;
+  readonly sampleCountMaxPerSlice?: number;
+  readonly skyAtmosphereAffectsHeightFog?: boolean;
+}
+
 export interface StandardProfile {
-  /** App configuration revision captured by compiled scene graphs and frame receipts. */
+  /** App configuration revision acknowledged by a submitted scene using this profile. */
   readonly configurationRevision?: number;
   /** Concrete budgets derived from the active engine quality selection. */
   readonly quality?: import('../quality').RenderQualityBudgets;
@@ -215,12 +271,28 @@ export interface StandardProfile {
   readonly outputContract?: StandardOutputContract;
   /** Merge ready native view raster passes whose shaders only read depth. */
   readonly featureReadOnlyDepthBatching?: boolean;
+  /** Generate filtered scene color for rough transmission. Defaults to off. */
+  readonly roughRefraction?: boolean;
   /** Explicit off/on diagnostic override of the production policy. */
   readonly featureReadOnlyDepthBatchDiagnostic?: boolean;
   readonly pipelineId: typeof STANDARD_PIPELINE_ID;
   readonly lightCount: StandardLightCount;
   /** Graph topology selector; all local lights use the shared Cluster path. */
   readonly renderPath: 'forward' | 'deferred';
+  /** Fixed GBuffer contract for every view using this Deferred profile. */
+  readonly gbufferFormat?: 'default';
+  /** Fast AP stores RGB inscatter and scalar transmittance in a single volume. */
+  readonly atmosphere?: StandardAtmosphereProfile | undefined;
+  /** Opt-in projected receiver for automatically biased Deferred directional Vogel PCF. */
+  readonly deferredDirectionalShadowReceiver?: 'projected';
+  /** Allows directional lights to opt into screen-space contact shadows. Defaults to true. */
+  readonly contactShadows?: boolean;
+  /** Screen projection is the default for eligible Forward views. */
+  readonly forwardDirectionalShadowReceiver?: 'screen';
+  /** Fade local projected shadows by their estimated screen texel demand. */
+  readonly forwardShadowViewFade?: true;
+  /** Select the fixed comparison Gather kernel for default square Spot shadows. */
+  readonly forwardShadowSpotFilter?: 'gather';
   /** Subsurface kernel samples: low=13, high=25 per axis; defaults to high. */
   readonly subsurfaceQuality?: 'low' | 'high';
   /** Rigid deferred surface identity/geometry attachment for transport and inspection. */
@@ -228,9 +300,10 @@ export interface StandardProfile {
   readonly diffuseGi?: StandardDiffuseGi;
   readonly probePlacement?: StandardProbePlacement;
   readonly pbr: boolean;
+  /** Sample directional environment reflections. Sky SH and diffuse GI are independent. */
   readonly ibl: boolean;
-  readonly ssao: boolean | SsaoParameterConfig;
-  /** Seeds `RenderPipelineAsset.config.gpuOcclusion`; omitted is off for Forward, on for Deferred. */
+  readonly ambientOcclusion: AmbientOcclusionSettings;
+  /** Controls Standard Deferred GPU occlusion; omitted means on. */
   readonly gpuOcclusion?: boolean | undefined;
   /** Opt-in ordering experiment only; omitted preserves production GBuffer order. */
   readonly gbufferBatchOrderDiagnostic?:
@@ -243,6 +316,7 @@ export interface StandardProfile {
 
 export const DEFAULT_STANDARD_PROFILE: StandardProfile = Object.freeze({
   featureReadOnlyDepthBatching: true,
+  roughRefraction: false,
   pipelineId: STANDARD_PIPELINE_ID,
   // Runtime light admission follows the selected profile; physical Cluster
   // capacity comes from the published DirectLightSlot reflection.
@@ -251,7 +325,8 @@ export const DEFAULT_STANDARD_PROFILE: StandardProfile = Object.freeze({
   outputContract: 'standard-output-v2',
   pbr: true,
   ibl: true,
-  ssao: false,
+  contactShadows: true,
+  ambientOcclusion: Object.freeze({ enabled: true, method: DEFAULT_AMBIENT_OCCLUSION_METHOD }),
   postStages: STANDARD_POST_STAGE_NAMES,
 });
 
@@ -259,4 +334,26 @@ export function resolveVolumetricFogProfile(
   profile: Pick<StandardProfile, 'volumetricFog'>,
 ): StandardVolumetricFogProfile {
   return profile.volumetricFog ?? { quality: 'high', depth: 64, tileSize: 4 };
+}
+
+export function standardTopology(
+  topology: RenderPipelineTopology,
+  profile: StandardProfile = topology.standardProfile ?? DEFAULT_STANDARD_PROFILE,
+): RenderPipelineTopology {
+  if (
+    topology.pipelineId === STANDARD_PIPELINE_ID &&
+    topology.standardProfile === profile &&
+    topology.config?.ambientOcclusion !== undefined
+  )
+    return topology;
+  const config = {
+    ...(topology.config ?? {}),
+    ambientOcclusion: topology.config?.ambientOcclusion ?? profile.ambientOcclusion,
+  };
+  return {
+    ...topology,
+    pipelineId: STANDARD_PIPELINE_ID,
+    standardProfile: profile,
+    config,
+  };
 }

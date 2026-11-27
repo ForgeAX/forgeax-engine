@@ -134,7 +134,7 @@ const mockCanvas = {
 const { World } = await import('@forgeax/engine-ecs');
 const { constructRuntimeRendererHost } = await import('@forgeax/engine-runtime/internal/renderer-host');
 const { DEFAULT_STANDARD_PROFILE } = await import('@forgeax/engine-render');
-const { createShaderModule, rhi } = await import('@forgeax/engine-rhi-webgpu');
+const webgpu = await import('@forgeax/engine-rhi-webgpu');
 const {
   Camera,
   MeshFilter,
@@ -163,7 +163,7 @@ const constructed = await constructRuntimeRendererHost(
     },
   },
   { shaderManifestUrl: MANIFEST_URL },
-  { rhi, createShaderModule },
+  webgpu,
 ).catch((err) => {
   originalConsoleError(`[smoke] FAIL - renderer host threw: ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);

@@ -180,7 +180,6 @@ export class TilemapSources {
         handle: 0,
         world,
         assets,
-        programSelections: undefined,
         material: {
           kind: 'material',
           passes,

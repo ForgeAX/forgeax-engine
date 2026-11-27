@@ -1,6 +1,6 @@
 import { createStandardPbrArtifactReceipt } from '@forgeax/engine-shader';
 import { expect, it } from 'vitest';
-import { skinnedPositionProof } from '../render-system-extract';
+import { skinnedPositionProof } from '../material-program-selection';
 
 const rigid = createStandardPbrArtifactReceipt(false);
 const skinned = createStandardPbrArtifactReceipt(true);

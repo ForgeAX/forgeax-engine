@@ -4,11 +4,13 @@ import type { World } from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import type { box3 } from '@forgeax/engine-math';
 import type { MaterialCookRasterContext } from '@forgeax/engine-pack/material-cook';
+import type { RecorderSession } from '@forgeax/engine-profiler';
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { stereoEyeCameras } from '../components/stereo-camera';
 import { renderFeatureViewIdentity } from '../features/view';
 import { projectGlyphView } from '../glyph-source';
+import { type RenderResidencyGroup, residencySelected } from '../gpu-driven/batch-residency';
 import type { SubmissionPlan } from '../gpu-driven/batch-topology';
 import { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import {
@@ -16,6 +18,7 @@ import {
   GpuDrivenMaterialProgramProjection,
   gpuShadowProgramsCompatible,
 } from '../gpu-driven/material-artifacts';
+import type { MeshExecutionPlans } from '../gpu-driven/mesh-batches';
 import type { GpuScene } from '../gpu-scene';
 import type {
   FrameCacheCounters,
@@ -26,10 +29,12 @@ import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type { RenderPublicationIdentity } from '../publication/contract';
 import type { PreparedRenderPublication } from '../publication/receiver';
 import type { RenderResourceScope } from '../publication/resource-scope';
+import { runProfiledRenderPhase } from '../record/render-context';
 import {
   ReflectionProbeProjection,
   type ReflectionProbeSelectionResult,
 } from '../reflection/projection';
+import type { CameraSnapshot } from '../render-contract';
 import type {
   DispatchList,
   ExtractedFrame,
@@ -56,11 +61,17 @@ import { type FrameList, FrameProjection, sparseRowsOf } from './frame-list';
 import { FrameIntersection } from './frame-set';
 import type { MaterialFrame } from './material-dispatch';
 import type { MeshFrame } from './mesh-frame';
-import { attachProbeRecord, attachProbeRecords, type ProbeAttachMemo } from './probe-attach';
+import { attachProbeRecords, type ProbeAttachMemo } from './probe-attach';
 import type { ProbeBlendBufferProjection } from './probe-blend';
-import { type FrameCacheTally, worldBounds, writeBounds } from './render-scene-snapshots';
+import { type FrameCacheTally, writeTransformedWorldBounds } from './render-scene-snapshots';
 import type { RenderSceneBounds, RenderSceneSlot } from './render-scene-types';
-import { RenderScene, type RenderSceneSubmissionCapture, sceneRow } from './render-scene-view';
+import {
+  GeneratedViewRows,
+  RenderScene,
+  type RenderSceneSubmissionCapture,
+  sceneRow,
+  sceneSkinSlotsOf,
+} from './render-scene-view';
 import { ResidualRoster } from './residual-roster';
 import {
   type CompositionEntry,
@@ -101,11 +112,8 @@ function adoptedAdvance(adoption: RenderSceneAdoption): SceneAdvance {
   return adoption.advance;
 }
 
-/**
- * Complete ShadowCaster producer projection retained beside the camera-cull
- * submission frame. The persistent scene owns this sequence; record consumes
- * it for the CPU residual lane without rebuilding a second scene projection.
- */
+const EMPTY_VIEW_DRAWS: readonly RenderableSnapshot[] = Object.freeze([]);
+
 /** Receiver-local authority; never transported as an ECS lease or packet field. */
 export interface ShadowPublicationSource {
   readonly resources: RenderResourceScope;
@@ -113,8 +121,12 @@ export interface ShadowPublicationSource {
   readonly isCurrent: () => boolean;
 }
 
+/** The complete caster sequence owned by the view, independent of camera admission. */
 export interface PersistentShadowCasterProjection {
-  readonly meshDraws: Pick<RenderScene, 'meshDrawSlot' | 'beginMeshDrawFrame'>;
+  readonly meshDraws: Pick<
+    RenderScene,
+    'meshDrawSlot' | 'beginMeshDrawFrame' | 'beginOwnedMeshDrawFrame' | 'addressOwnedMeshDrawRows'
+  >;
   /**
    * Caster content evidence: unchanged owner and revisions prove every
    * published renderable and its dispatch are unchanged, whatever else the
@@ -123,6 +135,8 @@ export interface PersistentShadowCasterProjection {
   readonly content: {
     readonly materials: import('./material-dispatch').MaterialFrame;
     readonly meshes: MeshFrame;
+    /** Fixed row identities for direct draw admission and source-specific overlays. */
+    readonly rows?: Pick<import('./scene-slots').SceneSlotFrame, 'lookup'>;
     readonly subsurface: {
       readonly source: SubsurfaceDemand;
       readonly authorVisible: SubsurfaceDemand;
@@ -147,6 +161,8 @@ export interface PersistentShadowCasterProjection {
   ) => boolean;
   readonly renderables: FrameList<RenderableSnapshot>;
   readonly dispatch: DispatchList;
+  /** Skin membership when the original fixed scene rows own the complete source projection. */
+  readonly hasDeformingCaster?: boolean | undefined;
   /** CPU Skin candidates under a current shadow owner, resolved from this fixed frame. */
   readonly skinRows?: (
     owner: Pick<GpuDrawSelection, 'ownsAll'> | undefined,
@@ -173,6 +189,8 @@ export interface PersistentGpuDrivenState {
   /** Fixed numeric roots borrowed through this physical recording. */
   readonly skin?: SkinSceneFrame | undefined;
   readonly meshes?: MeshFrame;
+  /** Prospective fixed material demand from this same Scene owner. */
+  readonly materialPrograms?: GpuDrivenMaterialProgramIndex;
   readonly completeGeometry?: boolean;
   /** Geometry rows without native batch membership, maintained by Scene changes. */
   readonly unbatchedSlots?: ReadonlySet<number>;
@@ -183,15 +201,31 @@ export interface PersistentGpuDrivenState {
   readonly scene: GpuScene;
   readonly plan: SubmissionPlan;
   /** Native source plans expand only when a recording actually requests tasks. */
-  readonly queryPlan?: () => SubmissionPlan;
+  readonly queryExecution?: () => MeshExecutionPlans;
+  /** Present after native execution query; distinct from a source-only resident link. */
+  readonly residentExecution?: SubmissionPlan;
   readonly slots: FrameList<RenderSceneSlot>;
   /**
    * Fixed-frame record by stable slot address, resolving one indexed page path.
    * Old frame callbacks keep their original records through later updates.
    */
   readonly slotAt: (slot: number) => RenderSceneSlot | undefined;
+  /** Existing ordinary physical address. Final recording validates it after roster retirement. */
+  readonly allocatedSourceAddress?: (record: RenderSceneSlot) => number | undefined;
   /** Indexed temporal/probe projection for an actual draw, without materializing the scene. */
-  readonly drawSnapshotAt?: (slot: number) => RenderableSnapshot | undefined;
+  readonly drawSnapshotAt?: ((slot: number) => RenderableSnapshot | undefined) & {
+    /** Membership of the captured source root this reader actually projects. */
+    readonly mayHaveWaterSources?: boolean;
+    /** A located row can be projected directly only with its paired fixed-frame locator. */
+    readonly locate?: (slot: number) => RenderSceneSlot | undefined;
+    readonly project?: (row: RenderSceneSlot) => RenderableSnapshot | undefined;
+    /** Apply this exact camera's physical slot selection before issuing a draw. */
+    readonly projectCamera?: (
+      row: RenderSceneSlot,
+      camera: Pick<CameraSnapshot, 'cullMask'>,
+      visibility: import('./persistent-cull').SlotCameraVisibility,
+    ) => RenderableSnapshot | undefined;
+  };
   /** Roots `drawSnapshotAt` reads; retained consumers link two states through their diff. */
   readonly draws?: DrawEvidence;
   /** Native Scene's existing entity index; borrowed states can omit this projection. */
@@ -267,7 +301,8 @@ export class PersistentRenderScene {
   private gpuRasterOwned: GpuRasterOwnership | undefined;
   private rasterLaneCandidate: { readonly owned: GpuRasterOwnership | undefined } | undefined;
   private latestRasterLane: GpuRasterOwnership | undefined;
-  private terrainCandidate: FrameList<RenderableSnapshot> = [];
+  private terrainCandidate: FrameList<RenderableSnapshot> = EMPTY_VIEW_DRAWS;
+  private terrainWriting: Map<string, RenderableSnapshot> | undefined;
   private terrainAccepted = new Map<string, RenderableSnapshot>();
   private temporalCapture:
     | { readonly projection: RenderScene; readonly capture: RenderSceneSubmissionCapture }
@@ -287,6 +322,7 @@ export class PersistentRenderScene {
         readonly renderables: FrameList<RenderableSnapshot>;
         readonly dispatch: DispatchList;
         readonly projection: PersistentVisibilityProjection;
+        readonly roster: SceneSlotFrame | undefined;
       }
     | undefined;
   private visibilityProjectionRevision = 0;
@@ -403,7 +439,7 @@ export class PersistentRenderScene {
       if (advance.remapped) projection.observeRemap();
       projection.observe(advance.delta);
     }
-    if (projection.observedRows !== projection.sceneRows.revision) projection.observeBaseline();
+    if (projection.observedRows !== projection.sceneRows.revision) projection.observeCurrentRows();
     view.seq = advance.seq;
     return view;
   }
@@ -419,8 +455,9 @@ export class PersistentRenderScene {
     this.materialProgramProjection.clear();
     this.temporalCapture = undefined;
     this.latestRasterLane = undefined;
-    this.terrainCandidate = [];
+    this.terrainCandidate = EMPTY_VIEW_DRAWS;
     this.terrainAccepted.clear();
+    this.terrainWriting = undefined;
     this.visibilityProjectionCache = undefined;
     this.invalidateActiveEntityRevision();
     if (view === undefined) return;
@@ -442,7 +479,8 @@ export class PersistentRenderScene {
     frame: ExtractedFrame,
     view: ViewEntry,
     viewIdentity: string | undefined,
-    publishedWaterMeshOwners: Iterable<RenderableSnapshot>,
+    publishedWaterMeshOwners: Iterable<RenderableSnapshot> | undefined,
+    retainedWaterPresent: boolean,
   ) {
     const entry = view.shared;
     const shared = this.shared;
@@ -479,6 +517,7 @@ export class PersistentRenderScene {
       tilemapView.materials,
       viewIdentity,
       publishedWaterMeshOwners,
+      retainedWaterPresent,
     );
   }
 
@@ -524,34 +563,41 @@ export class PersistentRenderScene {
     const cached = this.visibilityProjectionCache;
     const scene = this.view?.projection;
     const sceneRevision = scene?.revisionValue() ?? 0;
-    if (
-      cached !== undefined &&
-      cached.scene === scene &&
-      cached.sceneRevision === sceneRevision &&
-      cached.sourceScope === sourceScope &&
-      cached.renderables === renderables &&
-      cached.dispatch === dispatch
-    ) {
-      this.visibilityProjectionHits += 1;
-      return cached.projection;
-    }
-    this.visibilityProjectionMisses += 1;
     let activeEntityKeys: ReadonlySet<number>;
     let activeEntityRevision: number;
-    if (roster === undefined) {
+    const captured =
+      roster === undefined
+        ? this.view?.cull.activeIdentities(renderables)
+        : new SlotIdentityKeys(roster);
+    if (captured === undefined) {
       const keys = new Set<number>();
       for (const renderable of renderables) keys.add(renderable.entityKey);
       activeEntityKeys = keys;
       activeEntityRevision = this.activeEntityRevision(keys);
     } else {
-      const keys = new SlotIdentityKeys(roster);
-      activeEntityKeys = keys;
-      activeEntityRevision = this.rosterEntityRevision(keys);
+      activeEntityKeys = captured;
+      activeEntityRevision = this.rosterEntityRevision(captured);
     }
+    if (
+      captured !== undefined &&
+      cached !== undefined &&
+      cached.projection.activeEntityRevision === activeEntityRevision &&
+      cached.scene === scene &&
+      cached.sceneRevision === sceneRevision &&
+      cached.sourceScope === sourceScope &&
+      cached.renderables === renderables &&
+      cached.dispatch === dispatch &&
+      cached.roster === roster
+    ) {
+      this.visibilityProjectionHits += 1;
+      return cached.projection;
+    }
+    this.visibilityProjectionMisses += 1;
     const projection = { renderables, dispatch, activeEntityKeys, activeEntityRevision };
     this.visibilityProjectionCache = {
       scene,
       sceneRevision,
+      roster,
       sourceScope,
       renderables,
       dispatch,
@@ -561,18 +607,21 @@ export class PersistentRenderScene {
   }
 
   /**
-   * Advance the projection revision only when the active stable-entity set
-   * changes. Camera fingerprints and scene-plan identity cover view/topology
-   * changes; keeping this token set-stable preserves the GPU filtered-plan
-   * cache on ordinary no-change frames.
+   * Borrowed sequences publish their actual current membership. An earlier
+   * caller can still hold the exposed Set, so the revision owns its own keys.
    */
   private activeEntityRevision(activeEntityKeys: ReadonlySet<number>): number {
     const previous = this.lastActiveEntityKeys;
-    if (
-      previous === undefined ||
-      previous.size !== activeEntityKeys.size ||
-      [...previous].some((key) => !activeEntityKeys.has(key))
-    ) {
+    let changed = previous?.size !== activeEntityKeys.size;
+    if (!changed && previous !== undefined) {
+      for (const key of previous) {
+        if (!activeEntityKeys.has(key)) {
+          changed = true;
+          break;
+        }
+      }
+    }
+    if (changed) {
       this.lastActiveEntityKeys = new Set(activeEntityKeys);
       this.visibilityProjectionRevision += 1;
     }
@@ -692,25 +741,17 @@ export class PersistentRenderScene {
   ): ExtractedFrame {
     const direct = this.directRenderWorld(assets);
     const source = direct.source;
-    let resourceFrame: ExtractedFrame | undefined;
     source.staged = true;
     source.assets = assets;
     source.world = world;
     source.lease = lease;
-    // The step's first built frame is its resource frame.
-    source.buildCandidateFrame = (request) => {
-      const frame = buildCandidateFrame(request);
-      resourceFrame ??= frame;
-      return frame;
-    };
+    source.buildCandidateFrame = buildCandidateFrame;
     const adoption = this.runDirectFrame(direct);
-    const advance = this.sharedStep(() => adoptedAdvance(adoption));
-    const frame = resourceFrame ?? buildCandidateFrame('none');
-    return this.deriveFramePlan(
-      this.follow(advance),
-      frame,
-      renderFeatureViewIdentity(frame.cameras[0]),
-    );
+    try {
+      return this.followAdoption(adoption);
+    } finally {
+      adoption.localFrame = undefined;
+    }
   }
 
   private directRenderWorld(
@@ -726,21 +767,29 @@ export class PersistentRenderScene {
 
   /**
    * Derive this view's frame from the frame's shared scene adoption (the
-   * `render-scene` system's product), building only its own resource frame,
-   * which it fences on `resourceWorld`'s asset closure. An adoption failure is
+   * `render-scene` system's product), using its adopted primary frame or
+   * fencing a separately selected view on the same asset closure. An adoption failure is
    * this view's extraction failure.
    */
   followAdoption(
     adoption: RenderSceneAdoption,
-    buildCandidateFrame: (request: PersistentRenderCandidateRequest) => ExtractedFrame,
+    buildCandidateFrame?: (request: PersistentRenderCandidateRequest) => ExtractedFrame,
+    profileSession?: RecorderSession,
   ): ExtractedFrame {
     const advance = this.sharedStep(() => adoptedAdvance(adoption));
-    const resourceFrame = buildCandidateFrame('none');
-    this.shared.fenceViewResourceFrame(resourceFrame);
-    return this.deriveFramePlan(
+    const resourceFrame =
+      buildCandidateFrame === undefined ? adoption.localFrame : buildCandidateFrame('none');
+    if (resourceFrame === undefined)
+      throw new Error('A primary local view requires its adopted frame');
+    if (buildCandidateFrame !== undefined) this.shared.fenceViewResourceFrame(resourceFrame);
+    const identity = renderFeatureViewIdentity(resourceFrame.cameras[0]);
+    if (profileSession === undefined)
+      return this.deriveFramePlan(this.follow(advance), resourceFrame, identity);
+    const view = runProfiledRenderPhase(profileSession, 'extract/follow-adoption', () =>
       this.follow(advance),
-      resourceFrame,
-      renderFeatureViewIdentity(resourceFrame.cameras[0]),
+    );
+    return runProfiledRenderPhase(profileSession, 'extract/derive-view', () =>
+      this.deriveFramePlan(view, resourceFrame, identity, profileSession),
     );
   }
 
@@ -897,24 +946,39 @@ export class PersistentRenderScene {
     return { scene, slotForEntity: view.projection.slotsSnapshot().lookup };
   }
 
-  compositionGpuDrivenState(): PersistentGpuDrivenState | undefined {
+  /** A requested group derives prospective demand without changing ordinary visibility. */
+  compositionGpuDrivenState(
+    preparing?: RenderResidencyGroup,
+  ): PersistentGpuDrivenState | undefined {
     const view = this.view;
     const scene = this.shared.gpuSceneResident;
     if (view === undefined || scene === undefined || view.shared !== this.shared.entry)
       return undefined;
     const entry = view.shared;
-    const slots = view.projection.slotsSnapshot();
-    const meshes = view.projection.meshFrame();
-    const materials = entry.materialDispatch.materials();
-    const retained = this.compositionRetainedScene();
+    const projection = preparing === undefined ? view.projection : entry.projection;
+    const slots = projection.slotsSnapshot();
+    const meshes = projection.meshFrame();
+    const demand =
+      preparing === undefined
+        ? undefined
+        : entry.materialDispatch.queryResident(
+            slots,
+            entry.topology.captureResidentSelection(),
+            meshes,
+          );
+    const materials = demand?.materials ?? entry.materialDispatch.materials();
+    const retained = preparing === undefined ? this.compositionRetainedScene() : undefined;
     const unavailable = entry.unavailableSlots;
-    const sourcePlan = this.shared.batchPlan(entry);
+    const sourcePlan =
+      preparing === undefined
+        ? this.shared.batchPlan(entry)
+        : entry.topology.preparationSourcePlan(preparing);
     const draws: DrawEvidence = {
       slots,
       meshes,
       unavailable,
       probe: entry.probeProjection.recordBufferProjection(),
-      temporal: view.projection.temporalDrawInputs(),
+      temporal: projection.temporalDrawInputs(),
     };
     return {
       draws,
@@ -923,13 +987,25 @@ export class PersistentRenderScene {
       scene,
       meshes,
       plan: sourcePlan,
-      queryPlan: () => entry.topology.query(sourcePlan, meshes, materials),
+      queryExecution: () => entry.topology.query(sourcePlan, meshes, materials),
+      ...(demand === undefined
+        ? {}
+        : {
+            materialPrograms: this.materialProgramProjection.project(demand.dispatch, materials),
+          }),
       completeGeometry: entry.topology.completeGeometry,
       unbatchedSlots: entry.topology.unbatchedSlots,
-      pipelinePreparationSlots: view.projection.pipelinePreparationSlots,
+      ...(preparing === undefined
+        ? {
+            pipelinePreparationSlots: entry.topology
+              .captureResidencySelection()
+              .selectSlots(projection.pipelinePreparationSlots),
+          }
+        : {}),
       slots,
       slotAt: slots.slotAt,
-      drawSnapshotAt: this.slotDraws(view),
+      allocatedSourceAddress: projection.allocatedSourceAddress,
+      drawSnapshotAt: this.slotDraws(view, projection, materials, slots.mayHaveWaterSources),
       slotForEntity: slots.lookup,
       sourceIdentity: entry.source.identity,
       structureMetrics: this.shared.structureMetrics,
@@ -942,21 +1018,19 @@ export class PersistentRenderScene {
    * temporal and probe facts, undefined for absent or unavailable rows.
    * Readers address rows by slot (entity) and never by frame rank.
    */
-  private slotDraws(view: ViewEntry): (slot: number) => RenderableSnapshot | undefined {
+  private slotDraws(
+    view: ViewEntry,
+    projection = view.projection,
+    materials = view.shared.materialDispatch.materials(),
+    mayHaveWaterSources = true,
+  ) {
     const entry = view.shared;
-    const unavailable = entry.unavailableSlots;
-    const drawAt = view.projection.drawFrame(
-      entry.materialDispatch.materials(),
-      this.temporalCounters,
-      view.projection.meshFrame(),
-    );
-    const probeAt = entry.probeProjection.captureRecordLookup();
-    const probeMemo = this.probeAttachMemo.bySnapshot;
-    return (slot) => {
-      if (unavailable.has(slot)) return undefined;
-      const source = drawAt(slot);
-      return source === undefined ? undefined : attachProbeRecord(source, probeAt(slot), probeMemo);
-    };
+    return projection.drawFrame(materials, this.temporalCounters, projection.meshFrame(), {
+      unavailable: entry.unavailableSlots,
+      probeAt: entry.probeProjection.captureRecordLookup(),
+      probeMemo: this.probeAttachMemo.bySnapshot,
+      mayHaveWaterSources,
+    });
   }
 
   /** This view staged a temporal capture for the frame being submitted. */
@@ -988,21 +1062,31 @@ export class PersistentRenderScene {
       }
       this.temporalCapture = undefined;
     }
-    if (terrainReady)
-      this.terrainAccepted = new Map(
-        this.terrainCandidate.flatMap((source) =>
-          source.terrainSection === undefined
-            ? []
-            : [[terrainSectionKey(source, source.terrainSection.index), source] as const],
-        ),
-      );
-    this.terrainCandidate = [];
+    if (terrainReady) {
+      if (this.terrainCandidate.length === 0) {
+        this.terrainAccepted.clear();
+        this.terrainWriting = undefined;
+      } else {
+        // Publish complete submitted sections together. A failed read leaves accepted history intact.
+        this.terrainWriting ??= new Map<string, RenderableSnapshot>();
+        const writing = this.terrainWriting;
+        writing.clear();
+        for (const source of this.terrainCandidate) {
+          const section = source.terrainSection;
+          if (section !== undefined) writing.set(terrainSectionKey(source, section.index), source);
+        }
+        this.terrainWriting = this.terrainAccepted;
+        this.terrainAccepted = writing;
+        this.terrainWriting.clear();
+      }
+    }
+    this.terrainCandidate = EMPTY_VIEW_DRAWS;
     return ok(undefined);
   }
 
   /** Drop the attempt's staged temporal capture and raster lane when its frame did not submit. */
   discardTemporalFrame(): void {
-    this.terrainCandidate = [];
+    this.terrainCandidate = EMPTY_VIEW_DRAWS;
     this.rasterLaneCandidate = undefined;
     this.temporalCapture = undefined;
   }
@@ -1039,10 +1123,12 @@ export class PersistentRenderScene {
     view: ViewEntry,
     resourceFrame: ExtractedFrame,
     viewIdentity: string | undefined,
+    profileSession?: RecorderSession,
   ): ExtractedFrame {
     const entry = view.shared;
     const projection = view.projection;
     const dispatch = this.shared.materialPasses(entry);
+    const residencySelection = entry.topology.captureResidencySelection();
     const candidateFrame: ExtractedFrame = {
       ...resourceFrame,
       hiddenEntityReports: entry.hiddenEntityReports,
@@ -1058,12 +1144,14 @@ export class PersistentRenderScene {
     );
     projection.setTemporalTracking(view.temporalDemanded);
     this.shared.projectProbes(entry, candidateFrame);
-    const materialized = projection.materialize();
+    const bindings = entry.materialDispatch.materials();
+    const materialized = projection.materialize(residencySelection, bindings);
     const candidates = view.temporalDemanded
       ? projection.materializeTemporal(
           this.temporalCounters,
-          entry.materialDispatch.materials(),
+          bindings,
           entry.unavailableSlots.size === 0 ? undefined : entry.unavailableSlots,
+          residencySelection,
         )
       : materialized;
     const acceptedSlots = projection.slotsSnapshot();
@@ -1085,13 +1173,19 @@ export class PersistentRenderScene {
       this.probeAttachMemo,
     );
     // Publication frames carry deltas; their complete owners live in the adopted scene rows.
+    const retainedWaterPresent = projection.hasSource('waterMeshSource');
     const waterMeshOwners =
-      entry.publicationRevision === undefined ? resourceFrame.renderables : materialized;
+      entry.publicationRevision === undefined
+        ? resourceFrame.renderables
+        : retainedWaterPresent
+          ? materialized
+          : undefined;
     const { frame: ownedFrame, materials: materialFrame } = this.projectSceneSources(
       frameWithProbes,
       view,
       viewIdentity,
       waterMeshOwners,
+      retainedWaterPresent,
     );
     const resource = entry.source;
     const publicationRevision = entry.publicationRevision;
@@ -1119,9 +1213,9 @@ export class PersistentRenderScene {
       projection.hasSource('terrain') ||
       projection.hasSource('glyph') ||
       projection.hasSource('tilemap') ||
-      frameWithProbes.renderables.some((source) => source.waterMeshSource !== undefined);
+      ownedFrame.renderables !== frameWithProbes.renderables;
     const skinFrame = this.prepareSkinFrame(view);
-    const { frame: result, subsurface } = view.cull.cull({
+    const cullInput: Parameters<ViewCull['cull']>[0] = {
       shared: entry,
       projection,
       frame: ownedFrame,
@@ -1132,7 +1226,13 @@ export class PersistentRenderScene {
       gpuSelection: this.gpuCullSelection(entry.token),
       plan: () => this.shared.batchPlan(entry),
       slotDraws: () => this.slotDraws(view),
-    });
+    };
+    const { frame: result, subsurface } =
+      profileSession === undefined
+        ? view.cull.cull(cullInput)
+        : runProfiledRenderPhase(profileSession, 'extract/derive-view/cull', () =>
+            view.cull.cull(cullInput),
+          );
     const materialProgramProjection = this.materialProgramProjection;
     const shadowSlots = projection.slotsSnapshot();
     const skinSlots = shadowSlots.indexedSlots('skin');
@@ -1141,21 +1241,30 @@ export class PersistentRenderScene {
     const shadowUnbatched = entry.topology.unbatchedSlots;
     const shadowSkinResidual = this.shadowSkinResidual;
     const shadowSkinIntersection = this.shadowSkinIntersection;
+    const viewDraws =
+      ownedFrame.renderables instanceof GeneratedViewRows
+        ? ownedFrame.renderables.draws
+        : hasGeneratedDraws
+          ? ownedFrame.renderables.filter(
+              (source) => source.terrainSection !== undefined || source.generatedMesh !== undefined,
+            )
+          : EMPTY_VIEW_DRAWS;
     this.shadowProjection = {
+      get hasDeformingCaster() {
+        const slots = sceneSkinSlotsOf(ownedFrame.renderables, shadowSlots);
+        return slots === undefined ? undefined : slots.size > 0;
+      },
       meshDraws: projection,
       content: {
         materials: materialFrame,
         meshes: meshFrame,
+        rows: shadowSlots,
         subsurface,
         owner: view,
         sceneRevision: projection.revisionValue(),
         dispatchRevision: entry.materialDispatch.revisionValue(),
         ...(publicationSource === undefined ? {} : { publicationSource }),
-        viewDraws: !hasGeneratedDraws
-          ? []
-          : ownedFrame.renderables.filter(
-              (source) => source.terrainSection !== undefined || source.generatedMesh !== undefined,
-            ),
+        viewDraws,
       },
       renderables: ownedFrame.renderables,
       dispatch: ownedFrame.dispatch,
@@ -1186,19 +1295,20 @@ export class PersistentRenderScene {
         return materialProgramProjection.project(ownedFrame.dispatch, materialFrame);
       },
       worldBoundsOf: (source, out, row) => {
+        if (!residencySelected(residencySelection, source.residencyGroup)) return false;
         const slot = sceneRow(row, source) ?? shadowSlots.lookup(source.entityKey);
         return source.terrainSection !== undefined || source.generatedMesh !== undefined
-          ? writeBounds(worldBounds(source), out)
+          ? writeTransformedWorldBounds(out, source.localAabb, source.transform.world)
           : slot !== undefined &&
               projection.writeCullingWorldBoundsAt(slot, out, meshFrame, materialFrame, skinFrame);
       },
     };
 
-    this.terrainCandidate = !hasGeneratedDraws
-      ? []
-      : result.renderables.filter(
-          (source) => source.terrainSection !== undefined || source.generatedMesh !== undefined,
-        );
+    this.terrainCandidate = viewDraws.some((source) => source.terrainSection !== undefined)
+      ? result.renderables === ownedFrame.renderables
+        ? viewDraws
+        : result.renderables.filter((source) => source.terrainSection !== undefined)
+      : EMPTY_VIEW_DRAWS;
     return result;
   }
 }

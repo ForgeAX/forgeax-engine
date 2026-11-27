@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { offscreenCanvas } from './hdr-evidence.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
@@ -19,7 +19,7 @@ it.each([
   try {
     await verifyTsrRenderer(
       surface.canvas,
-      shaderManifestUrl(await buildEngineShaderManifest()),
+      shaderManifestUrl(await buildEngineShaderTemplateManifest()),
       output ? (name, bytes) => writeFile(`${output}/${name}`, bytes) : undefined,
       renderPath,
     );

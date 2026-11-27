@@ -15,6 +15,7 @@ declare class RawBroadPhase {
     constructor();
     projectPoint(narrow_phase: RawNarrowPhase, bodies: RawRigidBodySet, colliders: RawColliderSet, point: RawVector, solid: boolean, filter_flags: number, filter_groups: number | null | undefined, filter_exclude_collider: number | null | undefined, filter_exclude_rigid_body: number | null | undefined, filter_predicate: Function): RawPointColliderProjection | undefined;
     projectPointAndGetFeature(narrow_phase: RawNarrowPhase, bodies: RawRigidBodySet, colliders: RawColliderSet, point: RawVector, filter_flags: number, filter_groups: number | null | undefined, filter_exclude_collider: number | null | undefined, filter_exclude_rigid_body: number | null | undefined, filter_predicate: Function): RawPointColliderProjection | undefined;
+    setStaticBodyParticipation(parameters: RawIntegrationParameters, bodies: RawRigidBodySet, colliders: RawColliderSet, handles: Float64Array, enabled: Uint8Array, apply: boolean): boolean;
 }
 
 declare class RawCCDSolver {
@@ -2475,6 +2476,10 @@ declare class World {
      * generally automatically done at the beginning and the end of each simulation step with World.step.
      * If the positions need to be updated without running a simulation step this method can be called manually.
      */
+    /** Fixed single-collider roster participation, including immediate native scene queries.
+     * Does not advance the timestep or publish contact/solver effects. */
+    validateStaticBodyParticipation(handles: Float64Array, enabled: Uint8Array): boolean;
+    setStaticBodyParticipation(handles: Float64Array, enabled: Uint8Array): boolean;
     propagateModifiedBodyPositionsToColliders(): void;
     /**
      * The current simulation timestep.

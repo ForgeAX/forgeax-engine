@@ -63,7 +63,7 @@ describe('IBL residency publication', () => {
     expect(source).toContain("scope._adopt('buffer', prefBuf");
     expect(source).toContain("scope._adopt('buffer', cubeVertex");
     const fence = iblSource.indexOf('await device.queue.onSubmittedWorkDone()');
-    const candidateWrites = iblSource.indexOf('candidate.irradianceTexture = adoptIblTexture');
+    const candidateWrites = iblSource.indexOf('candidate.prefilterTexture = adoptIblTexture');
     expect(candidateWrites).toBeLessThan(fence);
   });
 
@@ -78,22 +78,17 @@ describe('IBL residency publication', () => {
     expect(iblSource).toContain('stage}-device-scope-generation');
   });
 
-  it('retains each bounded irradiance-face submission before the next face', () => {
+  it('projects SH from the finished source cube before bounded PMREM submissions', () => {
     const runStart = iblSource.indexOf('export async function runIblPrecompute(');
-    const prefilterStart = iblSource.indexOf('// (b) PMREM prefilter', runStart);
-    const irradianceStart = iblSource.indexOf('// (c) irradiance convolve', runStart);
-    const brdfStart = iblSource.indexOf('// (d) brdf-lut', irradianceStart);
-    // The irradiance sum reads the finished PMREM atlas, so it follows the prefilter.
-    expect(prefilterStart).toBeGreaterThan(runStart);
-    expect(irradianceStart).toBeGreaterThan(prefilterStart);
-    const faceMarkers = iblSource.match(/submitStage\(`irradiance-face-\$\{face\}`/g) ?? [];
-    expect(faceMarkers).toHaveLength(1);
-    expect(iblSource.slice(irradianceStart, brdfStart)).toMatch(
-      /await submitStage\(`irradiance-face-\$\{face\}`, true\)/,
+    const cubeSubmitted = iblSource.indexOf(
+      "await submitStage('equirect-to-cube', true)",
+      runStart,
     );
-    expect(iblSource.slice(irradianceStart, brdfStart)).toContain('candidatePrefilterView');
-    expect(iblSource.slice(irradianceStart, brdfStart)).not.toContain(
-      "await submitStage('irradiance', true)",
-    );
+    const projected = iblSource.indexOf('projection.record(encoder)', cubeSubmitted);
+    const prefilterStart = iblSource.indexOf('// (b) PMREM prefilter', projected);
+    expect(cubeSubmitted).toBeGreaterThan(runStart);
+    expect(projected).toBeGreaterThan(cubeSubmitted);
+    expect(prefilterStart).toBeGreaterThan(projected);
+    expect(iblSource.slice(prefilterStart)).toContain('await submitStage(`prefilter-level-');
   });
 });

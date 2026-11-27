@@ -7,11 +7,9 @@ it('bounds Pack lanes by CPU, heap headroom, free memory and the explicit serial
     parallelism: 16,
     freeBytes: 64 * GiB,
     heapHeadroomBytes: 8 * GiB,
-    concurrentCookers: true,
   };
   expect(packBuildConcurrency(room)).toBe(3);
   expect(packBuildConcurrency({ ...room, heapHeadroomBytes: 16 * GiB })).toBe(4);
-  expect(packBuildConcurrency({ ...room, concurrentCookers: false })).toBe(1);
   expect(packBuildConcurrency({ ...room, parallelism: 1 })).toBe(1);
   expect(packBuildConcurrency({ ...room, freeBytes: 3 * GiB })).toBe(1);
   expect(packBuildConcurrency({ ...room, heapHeadroomBytes: 3 * GiB })).toBe(1);

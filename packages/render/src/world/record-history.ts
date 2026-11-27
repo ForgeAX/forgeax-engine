@@ -37,6 +37,8 @@ export interface DirectionalShadowOutcome {
  * The recording only stages; the Render World submission systems publish.
  */
 export class RecordHistory {
+  /** Opened at view preparation and closed in cleanup, including rejected and empty submissions. */
+  finishUniformWrites: (() => void) | undefined;
   submittedFrames = 0;
   lastGeneration: number | undefined;
   configurationRevision: number | undefined;

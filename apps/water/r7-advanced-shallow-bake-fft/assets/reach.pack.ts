@@ -50,6 +50,11 @@ const standard = (
   values: { baseColor: color, roughness, metallic },
   passes: [
     {
+      name: 'deferred',
+      program: { module: 'forgeax_material::standard', fragmentEntry: 'fs_gbuffer' },
+      renderState: { tags: { LightMode: 'Deferred' }, queue: 2000 },
+    },
+    {
       name: 'forward',
       program: { module: 'forgeax_material::standard' },
       renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
@@ -224,17 +229,18 @@ export default definePack({
     const oceanPatchConfig: NonNullable<WaterAdvancedSimulationSource['oceanPatchConfig']> = {
       algorithm: 'ocean-spectrum-fft/2',
       windAngleDegrees: 180,
-      windSpeedMPerSec: 0.55,
+      windSpeedMPerSec: 4,
       noiseTextureGuid: guid('texture/ocean-phase'),
       fftResolution: 128,
-      domainLengthM: 2.5,
-      normalDomainSizeM: 1.5,
+      domainLengthM: 16,
+      normalDomainSizeM: 16,
       gravityMPerSec2: 9.8,
-      phillipsAmplitude: 0.0003,
+      phillipsAmplitude: 0.0064,
       windAlignment: 0,
-      timeScale: 2.5,
+      // Compensate the legacy FFT phase factor for gravity-wave propagation in this 16 m domain.
+      timeScale: 1 / (0.1 * Math.sqrt((2 * Math.PI) / 16)),
       slosh: 1,
-      chopHack: 5,
+      chopHack: 0,
       twiddle: 'positive',
       normalization: 'none',
       normalRtFormat: 'rgba16float',
@@ -268,6 +274,7 @@ export default definePack({
               waterShallowSimulation:
                 name === 'shallow' || name === 'river' || name === 'river-fft',
               waterOceanPatch: name === 'ocean-active' || name === 'river-fft',
+              waterOceanDisplacement: name === 'ocean-active',
               waterDynamicBoundsClip: false,
             },
             values: {
@@ -277,10 +284,11 @@ export default definePack({
               fresnelRoughness: 0.12,
               waterAlbedo: [0.55, 0.85, 0.82],
               specular: 0.35,
-              refractionPixelNormalStrength: 1.08,
+              refractionPixelNormalStrength: 1.005,
+              distantRefractionPixelNormalStrength: 1.001,
               foamRoughness: 0.45,
               oceanPatchDomainM: 16,
-              oceanPatchNormalStrength: 1.4,
+              oceanPatchNormalStrength: 1,
             },
           } satisfies MaterialAsset,
           readByGuid,

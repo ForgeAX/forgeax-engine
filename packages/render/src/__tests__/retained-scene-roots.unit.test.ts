@@ -3,7 +3,7 @@ import { box3 } from '@forgeax/engine-math';
 import { standardTextureMask } from '@forgeax/engine-shader';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { expect, test, vi } from 'vitest';
-import { MaterialResource } from '../material-resource';
+import { captureMaterialSnapshot, MaterialResource } from '../material-resource';
 import {
   type DispatchEntry,
   defaultMaterialSnapshot,
@@ -20,7 +20,7 @@ import { FrameSet } from '../scene/frame-set';
 import { MaterialFrame } from '../scene/material-dispatch';
 import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
-import { RowViews, SceneSlotFrame, SceneSlots } from '../scene/scene-slots';
+import { SceneSlotFrame, SceneSlotPage, SceneSlots } from '../scene/scene-slots';
 import { standardSceneDataContributorForDispatch } from '../temporal/standard-scene-data-admission';
 import { standardSceneDataContributorAt } from '../world/feature-view-systems';
 
@@ -91,6 +91,70 @@ test('lazy draw callbacks retain identity, submitted pose and material versions 
   expect(retained.temporal?.previousTransform.world[12]).toBe(1);
   expect(retained.temporal?.reactiveReasons).not.toContain('displacement-source');
   expect(frame.lookup(8)).toBeUndefined();
+});
+
+test('temporal selection observes mutable material inputs while earlier draws keep their result', () => {
+  const params = { displacementScale: 0 };
+  const videos = new Map([['displacementTexture', 1 as AssetHandle<'video'>]]);
+  const material = new MaterialResource({
+    ...defaultMaterialSnapshot(),
+    paramSnapshot: params,
+    videoTextureFields: videos,
+  });
+  const scene = new RenderScene();
+  scene.setTemporalTracking(true);
+  update(scene, source(1, 0, material));
+  const slot = required(scene.slot(1)).slot;
+  const read = scene.drawFrame(new MaterialFrame(undefined).with(material));
+  const first = required(read(slot));
+  for (let frame = 1; frame <= 60; frame++) {
+    params.displacementScale = frame % 2;
+    expect(read(slot)?.temporal?.reactiveReasons.includes('displacement-source')).toBe(
+      frame % 2 === 1,
+    );
+  }
+  expect(first.temporal?.reactiveReasons).not.toContain('displacement-source');
+});
+
+test('one accepted material supplies displacement to changing rows and historical frame readers', () => {
+  const videos = new Map([['displacementTexture', 1 as AssetHandle<'video'>]]);
+  const reads = vi.spyOn(videos, 'has');
+  try {
+    const material = new MaterialResource(
+      captureMaterialSnapshot({
+        ...defaultMaterialSnapshot(),
+        paramSnapshot: { displacementScale: 1 },
+        videoTextureFields: videos,
+      }),
+    );
+    const scene = new RenderScene();
+    scene.setTemporalTracking(true);
+    update(scene, source(1, 0, material));
+    const slot = required(scene.slot(1)).slot;
+    const original = new MaterialFrame(undefined).with(material);
+    for (let frame = 1; frame <= 60; frame++) {
+      update(scene, source(1, frame, material));
+      const accepted = new MaterialFrame(undefined).with(material);
+      expect(scene.drawFrame(accepted)(slot)?.temporal?.reactiveReasons).toContain(
+        'displacement-source',
+      );
+    }
+    material.adopt(
+      captureMaterialSnapshot({
+        ...defaultMaterialSnapshot(),
+        paramSnapshot: { displacementScale: 0 },
+      }),
+    );
+    expect(scene.drawFrame(original)(slot)?.temporal?.reactiveReasons).toContain(
+      'displacement-source',
+    );
+    expect(
+      scene.drawFrame(new MaterialFrame(undefined).with(material))(slot)?.temporal?.reactiveReasons,
+    ).not.toContain('displacement-source');
+    expect(reads).toHaveBeenCalledTimes(1);
+  } finally {
+    reads.mockRestore();
+  }
 });
 
 test('primary material fallback uses only the accepted root and rejects missing versions', () => {
@@ -238,21 +302,22 @@ test('old and new bounds remain independent across updates, geometry versions an
   expect(scene.cullingWorldBoundsAt(current, meshes, materials)?.min[0]).toBe(9);
 });
 
-test('RenderBounds is a numeric slot column proven by row, geometry and material frame', () => {
+test('rigid bounds use the addressed pose without retaining per-slot world boxes', () => {
   const material = new MaterialResource(defaultMaterialSnapshot());
   const materials = new MaterialFrame(undefined).with(material);
   const scene = new RenderScene();
   update(scene, source(1, 0, material));
   const row = required(scene.slot(1));
   const meshes = new MeshFrame().with(1, createBoxGeometry(2, 2, 2).unwrap());
-  const columns = (scene.sceneRows as unknown as { bounds: { radius: Float64Array } }).bounds;
-  expect(columns.radius).toBeInstanceOf(Float64Array);
+  expect(scene.sceneRows.cullingBoundsBackingBytes).toBe(0);
   const out = box3.create();
   expect(scene.writeCullingWorldBoundsAt(row, out, meshes, materials)).toBe(true);
+  expect(scene.sceneRows.cullingBoundsBackingBytes).toBe(0);
   expect([...out]).toEqual([-1, -1, -1, 1, 1, 1]);
   update(scene, source(1, 5, material));
   const moved = required(scene.slot(1));
   expect(scene.writeCullingWorldBoundsAt(moved, out, meshes, materials)).toBe(true);
+  expect(scene.sceneRows.cullingBoundsBackingBytes).toBe(0);
   expect(out[0]).toBe(4);
   // The previous record still derives its own bounds without disturbing the row.
   expect(scene.cullingWorldBoundsAt(row, meshes, materials)?.min[0]).toBe(-1);
@@ -333,7 +398,7 @@ test('SceneData-only contributor reads leave pose, Mesh draw and temporal rows l
   const counters = { hits: 0, misses: 0 };
   const rows = scene.materializeTemporal(counters, new MaterialFrame(undefined).with(material));
   const dispatch = surfaceDispatch(material);
-  const read = vi.spyOn(RowViews.prototype, 'read');
+  const read = vi.spyOn(SceneSlotPage.prototype, 'read');
   try {
     const contributor = standardSceneDataContributorAt(rows, dispatch, 'forward');
     expect(contributor?.facts?.sourceTuple).toEqual([7, dispatch.materialHandle, 0]);
@@ -358,7 +423,7 @@ test('surface columns retain rank holes, captured generations and consecutive po
   scene.apply([{ kind: 'remove', entityKey: 2 }]);
   const held = scene.materialize();
   const dispatch = surfaceDispatch(material, 1);
-  const read = vi.spyOn(RowViews.prototype, 'read');
+  const read = vi.spyOn(SceneSlotPage.prototype, 'read');
   try {
     for (let frame = 0; frame < 4; frame++) {
       scene.apply([

@@ -15,33 +15,22 @@ import {
 } from '@forgeax/engine-render';
 
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { compileShader } from '@forgeax/engine-shader-compiler';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { createBarrelRendererFixture } from './barrel-distortion-gpu-fixture';
-import { shaderManifestUrl } from './shader-manifest-url.fixture';
+import { rewriteShaderTemplateSources, shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
-// Compile the resolve from authored source, retaining the producer's immutable
-// material fleet instead of recompiling thousands of unrelated variants.
-const manifest = await buildEngineShaderManifest();
+const manifest = await buildEngineShaderTemplateManifest();
 const resolveSource = readFileSync('packages/shader/src/taa-resolve.wgsl', 'utf8');
-export async function resolveManifestUrl(source: string) {
-  const compiledResolve = (await compileShader(source, { id: 'taa-maturity-resolve' })).unwrap();
-  return shaderManifestUrl({
-    schemaVersion: manifest.schemaVersion,
-    materialShaders: manifest.materialShaders,
-    entries: manifest.entries.map((entry) =>
-      entry.wgsl.includes('fs_taa_resolve')
-        ? {
-            ...compiledResolve.manifestEntry,
-            glsl: '' as const,
-            bindings: JSON.stringify(compiledResolve.bindings),
-          }
-        : entry,
-    ),
-  });
+export function resolveManifestUrl(source: string) {
+  const replaced = rewriteShaderTemplateSources(manifest, (candidate) =>
+    candidate === resolveSource ? source : candidate,
+  );
+  if (source !== resolveSource && replaced.patched !== 1)
+    throw new Error('TAA control must replace the one authored resolve source');
+  return shaderManifestUrl(replaced.manifest);
 }
-const sourceManifestUrl = await resolveManifestUrl(resolveSource);
+const sourceManifestUrl = shaderManifestUrl(manifest);
 
 export const ROOT = 'artifacts/taa-maturity';
 export const save = (name: string, data: Uint8Array | string) => {

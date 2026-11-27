@@ -1,5 +1,6 @@
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
+import { renderGraphCompileCount } from '@forgeax/engine-render-graph';
 import type {
   RenderPipelineDescriptor,
   Result,
@@ -279,10 +280,13 @@ function oitPipelines(device: OitNullDevice | undefined) {
   };
 }
 
-function liveGraphBytes(inspection: { renderGraphResourceAllocation?: { liveBytes: number } }) {
+function liveTargetBytes(inspection: {
+  renderGraphResourceAllocation?: { liveBytes: number };
+  viewTargetAllocation?: { liveBytes: number };
+}) {
   const bytes = inspection.renderGraphResourceAllocation?.liveBytes;
   if (bytes === undefined) throw new Error('Missing render-graph allocation facts');
-  return bytes;
+  return bytes + (inspection.viewTargetAllocation?.liveBytes ?? 0);
 }
 
 const NO_INELIGIBLE = {
@@ -482,18 +486,18 @@ describe('weighted blended OIT lifecycle', () => {
       host.spawnDraws(['eligible', 'eligible']);
       host.setTransparency('sorted');
       await host.draw();
-      const sortedBytes = liveGraphBytes(await host.draw());
+      const sortedBytes = liveTargetBytes(await host.draw());
       for (let cycle = 0; cycle < 3; cycle += 1) {
         host.setTransparency('weighted-blended');
         await host.draw();
         const oit = await host.draw();
         expect(oit.perFramePassNames).toContain(OIT_COMPOSITE_PASS);
-        expect(liveGraphBytes(oit) - sortedBytes).toBe(WIDTH * HEIGHT * OIT_BYTES_PER_PIXEL);
+        expect(liveTargetBytes(oit) - sortedBytes).toBe(WIDTH * HEIGHT * OIT_BYTES_PER_PIXEL);
         host.setTransparency('sorted');
         await host.draw();
         const sorted = await host.draw();
         expect(sorted.perFramePassNames).not.toContain(OIT_ACCUMULATE_PASS);
-        expect(liveGraphBytes(sorted)).toBe(sortedBytes);
+        expect(liveTargetBytes(sorted)).toBe(sortedBytes);
       }
 
       host.setTransparency('weighted-blended');
@@ -510,10 +514,10 @@ describe('weighted blended OIT lifecycle', () => {
         expect(resized.perFramePassNames).toContain(OIT_COMPOSITE_PASS);
         host.setTransparency('sorted');
         await host.draw();
-        const baseline = liveGraphBytes(await host.draw());
+        const baseline = liveTargetBytes(await host.draw());
         host.setTransparency('weighted-blended');
         await host.draw();
-        expect(liveGraphBytes(await host.draw()) - baseline).toBe(
+        expect(liveTargetBytes(await host.draw()) - baseline).toBe(
           width * height * OIT_BYTES_PER_PIXEL,
         );
       }
@@ -522,6 +526,44 @@ describe('weighted blended OIT lifecycle', () => {
       const settled = oitPipelines(host.adapter.devices[0]);
       for (let frame = 0; frame < 10; frame += 1) await host.draw();
       expect(oitPipelines(host.adapter.devices[0])).toEqual(settled);
+      expect(host.errors).toEqual([]);
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it('records sixty changes in weighted and residual membership without recompiling the view', async () => {
+    const host = await oitRenderer();
+    const patterns = [['eligible'], ['eligible', 'additive'], ['additive']] as const;
+    try {
+      host.spawnDraws(patterns[0]);
+      await host.draw();
+      await host.draw();
+      const compiles = renderGraphCompileCount();
+      const device = host.adapter.devices[0];
+      if (device === undefined) throw new Error('Missing device');
+      for (let tick = 0; tick < 60; tick++) {
+        const phase = tick % 3;
+        host.spawnDraws(patterns[phase] ?? []);
+        const first = device.framePassNames.length;
+        const inspection = await host.draw();
+        const encoded = device.framePassNames.slice(first).flatMap((name) => name.split(' + '));
+        for (const names of [inspection.perFramePassNames, encoded]) {
+          expect(
+            names.includes(OIT_ACCUMULATE_PASS),
+            `frame ${tick}, passes ${names.join(',')}`,
+          ).toBe(phase !== 2);
+          expect(names.includes(OIT_COMPOSITE_PASS)).toBe(phase !== 2);
+          expect(names.includes('transparent')).toBe(phase !== 0);
+        }
+        expect(inspection.viewTargetAllocation?.liveBytes).toBe(
+          phase === 2 ? 0 : WIDTH * HEIGHT * OIT_BYTES_PER_PIXEL,
+        );
+      }
+      expect(
+        renderGraphCompileCount(),
+        JSON.stringify(host.renderer.inspect().featureGraph?.recentCompileChanges?.slice(-2)),
+      ).toBe(compiles);
       expect(host.errors).toEqual([]);
     } finally {
       host.dispose();

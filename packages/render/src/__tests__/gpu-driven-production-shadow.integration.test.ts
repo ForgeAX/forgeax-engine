@@ -119,6 +119,7 @@ describe('GPU-driven production shadow projection', () => {
     3, 4,
   ])('selects captured shadow rows without rebuilding joins across %i cascades', async (cascades) => {
     const f = await productionShadowFixture(2, cascades);
+    f.apply(f.rows.map((row) => updateSnapshot({ ...row, mobility: 'static' })));
     const project = vi.spyOn(batchTopology, 'buildBatchAlignedSubmission');
     try {
       const first = f.prepare();
@@ -440,7 +441,7 @@ describe('GPU-driven production shadow projection', () => {
       [shadow],
     );
     expect(plan.shadowValidatedOrdered).toMatchObject([shadow]);
-    expect(plan.shadowValidatedOrdered[0]?.meshSlot).toBe(withMain ? 1 : 0);
+    expect(plan.shadowValidatedOrdered.at(0)?.meshSlot).toBe(withMain ? 1 : 0);
     const slot = plan.materialSlots.indexOf(material.snapshot);
     expect(slot).toBeGreaterThanOrEqual(0);
     expect(plan.materialBindings[slot]?.material).toBe(material);
@@ -567,6 +568,7 @@ describe('GPU-driven production shadow projection', () => {
         defaultWhiteTextureView: {} as never,
         skylightFallback: {
           irradianceView: {} as never,
+          skySh: {} as never,
           prefilterView: {} as never,
           brdfLutView: {} as never,
           sampler: {} as never,
@@ -586,7 +588,6 @@ describe('GPU-driven production shadow projection', () => {
         meshBindGroupCache: new Map(),
         instancesBgPerEntity: new Map(),
         shadowMaterialBindGroups: new WeakMap(),
-        materialBgShared: new Map(),
       },
       materialSlotIndices: [[0, 1, 2]],
       materialSlots: materials.map((material) => material.snapshot),
@@ -666,7 +667,11 @@ describe('GPU-driven production shadow projection', () => {
     const feature = vi.fn();
     const context = {
       camera: {},
-      runtime: { device, getMaterialShaderPipeline: () => pipeline },
+      runtime: {
+        device,
+        getMaterialShaderPipeline: () => pipeline,
+        getMaterialShaderPipelineEntry: cpuPipeline,
+      },
       pipelineState: {
         projectorAvailable: false,
         perPassResources: { shadowSampler: {} },
@@ -675,6 +680,12 @@ describe('GPU-driven production shadow projection', () => {
         shadowAtlasFallbackTextureView: {},
         shadowParamsBuffer: buffer,
         shadowCasterCascadeBuffer: buffer,
+        identityInstanceBuffer: buffer,
+        instancesBindGroupLayout: device
+          .createBindGroupLayout({
+            entries: [{ binding: 0, visibility: 1, buffer: { type: 'uniform' } }],
+          })
+          .unwrap(),
         viewBindGroupLayout: layout,
         materialBindGroupLayout: layout,
         materialUniformBuffer: { buffer },
@@ -726,11 +737,8 @@ describe('GPU-driven production shadow projection', () => {
       gpuDrivenShadowBatchProjections: new Map([[key, new Map()]]),
       bindGroupCounts: { createBindGroup: 0, keys: [] },
     } as never;
-    const pass = {
-      setBindGroup: vi.fn(),
-      setPipeline: cpuPipeline,
-      setVertexBuffer: cpuPipeline,
-    } as unknown as RhiRenderPassEncoder;
+    // Residual selection must precede actual encoding on both Direct paths.
+    const pass = { setBindGroup: vi.fn() } as unknown as RhiRenderPassEncoder;
     const encode = () =>
       kind === 'directional'
         ? encodeDirectionalShadowPass(context, pass, 0, feature)

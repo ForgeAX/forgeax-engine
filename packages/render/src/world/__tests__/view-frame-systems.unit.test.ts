@@ -1,3 +1,4 @@
+import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { defineSystem, World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import { createProfiler, type RecorderSession } from '@forgeax/engine-profiler';
@@ -5,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { type CameraSnapshot, RENDER_PHASE_CATALOG } from '../../render-contract';
 
 import type { ExtractedFrame } from '../../render-system-extract';
+import { SceneComposition } from '../../scene/scene-composition';
 import { RenderScenePublishOrder, RenderViewFrameOrder } from '../../system-order';
 import {
   RenderView,
@@ -71,9 +73,11 @@ function setup(
   world.addSystem(RenderPrepare, systemToken1).unwrap();
   registerViewFrameSystem(world);
   world.insertResource(RenderSceneDelta, { advance: undefined, failure: undefined });
+  const shared = new SceneComposition();
   const scene = {
+    shared,
     publicationBaselineRequired: () => false,
-    materialSnapshotCacheStore: () => ({}),
+    materialSnapshotCacheStore: vi.fn(shared.materialSnapshotCacheStore.bind(shared)),
     resetView: vi.fn(),
     followPublication: vi.fn((_adoption, frame) => {
       order.push('publication');
@@ -98,8 +102,9 @@ function setup(
     standardInstall: { configured: undefined, built, cameraSignature: '', cameraFailure: '' },
   };
   const internals = {
+    assets: new AssetRegistry(),
     device: { queue: {}, caps: { backendKind: 'null', storageBuffer: false }, limits: {} },
-    errorRegistry: { fire: () => undefined },
+    errorRegistry: { fire: vi.fn() },
     ...(options.profileSession === undefined
       ? {}
       : { profiler: { activeSession: () => options.profileSession } }),
@@ -121,6 +126,61 @@ function setup(
 }
 
 describe('render-view-frame', () => {
+  it('sets the receiving device material context before projecting a published scene', () => {
+    const frame = { cameras: [], renderables: [] } as unknown as ExtractedFrame;
+    const { world, owner } = setup(() => frame);
+    const publication = { frame } as never;
+    const source = {
+      staged: false,
+      publication: undefined,
+      world: undefined,
+      lease: undefined,
+      buildCandidateFrame: undefined,
+    } satisfies RenderSceneSource;
+    world.insertResource(RenderSceneInput, source);
+
+    stageRenderScene(
+      world,
+      owner as unknown as Parameters<typeof stageRenderScene>[1],
+      undefined,
+      opts,
+      undefined,
+      publication,
+      undefined,
+    );
+
+    expect(source.publication).toBe(publication);
+    expect(owner.scene.materialSnapshotCacheStore).toHaveBeenCalledWith(
+      expect.objectContaining({ backend: 'webgpu', capability: 'uniform-fallback' }),
+    );
+  });
+
+  it.each([
+    { primary: true, cameraEntityKey: 7, useAdoption: true },
+    { primary: true, cameraEntityKey: 8, useAdoption: false },
+    { primary: false, cameraEntityKey: 7, useAdoption: false },
+  ])('selects the local source frame by view role and camera ($primary, $cameraEntityKey)', ({
+    primary,
+    cameraEntityKey,
+    useAdoption,
+  }) => {
+    const frame = { cameras: [], renderables: [] } as unknown as ExtractedFrame;
+    const { world, staged, source, sourceWorld, lease, owner } = setup(() => frame);
+    world.addComponent(staged, { component: RenderView, data: { primary } }).unwrap();
+    source.stage([], [], sourceWorld, { cameraEntityKey }, lease, undefined);
+    const adoption = world.getResource(RenderSceneDelta);
+    adoption.localFrame = frame;
+    beginRenderFrame(world, 1);
+    expect(owner.scene.followAdoption).toHaveBeenCalledWith(
+      adoption,
+      useAdoption ? undefined : expect.any(Function),
+      undefined,
+    );
+    expect(viewFrameOf(world, staged)?.result).toEqual({ ok: true, value: frame });
+    expect(adoption.localFrame).toBeUndefined();
+    endRenderFrame(world);
+  });
+
   it('routes the primary display WaterMesh projection through its selected publication camera', () => {
     const camera = { entityKey: 7 } as CameraSnapshot;
     const frame = { cameras: [camera], renderables: [] } as unknown as ExtractedFrame;
@@ -231,6 +291,7 @@ describe('render-view-frame', () => {
       parentPhase: 'extract',
     });
     expect(owner.scene.followAdoption).toHaveBeenCalledTimes(1);
+    expect(owner.internals.errorRegistry.fire).not.toHaveBeenCalled();
   });
 
   it('keeps staged resource-frame timing on the session pinned at frame entry', () => {

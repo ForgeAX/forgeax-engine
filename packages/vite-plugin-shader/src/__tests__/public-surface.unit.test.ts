@@ -2,18 +2,26 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
+  admitShaderTemplateManifest,
   createMaterialProgramArtifactReceipt,
+  findVariantByDefines,
   LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
   LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
+  ShaderRegistry,
 } from '@forgeax/engine-shader';
 import { MATERIAL_WGSL_PROFILE } from '@forgeax/engine-shader-compiler';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { describe, expect, it } from 'vitest';
 import {
   extractDefineImportPath,
   loadEngineShaderEntries,
 } from '../engine-inputs/load-engine-shader-entries.js';
 import * as publicSurface from '../index.js';
-import { buildEngineShaderManifest, VIEW_ABI } from '../index.js';
+import {
+  buildEngineShaderManifest,
+  buildEngineShaderTemplateManifest,
+  VIEW_ABI,
+} from '../index.js';
 import { publishShaderManifest } from '../manifest-publication.js';
 
 const reflection = {
@@ -125,6 +133,17 @@ const waterEntries = materialShaders
   }));
 const sharedEntries = [sharedEntry, ...resamplingEntries, ...waterEntries];
 
+async function readProductionTemplates(pointShadows = false) {
+  const wire = await buildEngineShaderTemplateManifest({ pointShadows });
+  const registry = new ShaderRegistry({
+    manifestUrl: 'memory://engine-surface/shaders/manifest.json',
+    readText: async () => JSON.stringify(wire),
+    prepareProgramCompiler: prepareShaderProgramCompiler,
+  });
+  (await registry.loadManifest()).unwrap();
+  return { registry, wire };
+}
+
 describe('vite-plugin-shader public engine input surface', () => {
   it('keeps the plugin front door without a version mirror', () => {
     expect(typeof publicSurface.forgeaxShader).toBe('function');
@@ -135,7 +154,7 @@ describe('vite-plugin-shader public engine input surface', () => {
     expect(VIEW_ABI.moduleId).toBe('forgeax_view::common');
     expect(VIEW_ABI.group).toBe(0);
     expect(VIEW_ABI.binding).toBe(0);
-    expect(VIEW_ABI.byteLength).toBe(1312);
+    expect(VIEW_ABI.byteLength).toBe(1392);
     expect(VIEW_ABI.fields.map((field) => field.name)).toEqual([
       'worldViewProj',
       'inverseViewProj',
@@ -154,15 +173,27 @@ describe('vite-plugin-shader public engine input surface', () => {
       'atmosphereControl',
       'fogSky',
       'ssrQuality',
+      'subsurfaceProfiles',
+      'groundSolar',
     ]);
-    expect(VIEW_ABI.fields.at(-2)).toEqual({
+    expect(VIEW_ABI.fields.at(-4)).toEqual({
       name: 'fogSky',
       offsetBytes: 1280,
       sizeBytes: 16,
     });
-    expect(VIEW_ABI.fields.at(-1)).toEqual({
+    expect(VIEW_ABI.fields.at(-3)).toEqual({
       name: 'ssrQuality',
       offsetBytes: 1296,
+      sizeBytes: 16,
+    });
+    expect(VIEW_ABI.fields.at(-2)).toEqual({
+      name: 'subsurfaceProfiles',
+      offsetBytes: 1312,
+      sizeBytes: 64,
+    });
+    expect(VIEW_ABI.fields.at(-1)).toEqual({
+      name: 'groundSolar',
+      offsetBytes: 1376,
       sizeBytes: 16,
     });
     expect(JSON.stringify(VIEW_ABI)).not.toMatch(/device|buffer|texture/i);
@@ -187,16 +218,13 @@ describe('vite-plugin-shader public engine input surface', () => {
       '#define_import_path forgeax_depth_pyramid::reduce',
     );
     expect(entries.ssrTrace.source).toContain('#define_import_path forgeax_ssr::trace');
-    expect(entries.ssrTemporal.source).toContain('#define_import_path forgeax_ssr::temporal');
     expect(entries.ssrCompose.source).toContain('fn fs_ssr_compose(');
     for (const reader of [
       entries.hdrpSsao,
       entries.hdrpGtaoCompute,
       entries.ssrTrace,
-      entries.ssrTemporal,
       entries.ssrCompose,
       entries.ssrTraceFragment,
-      entries.ssrTemporalFragment,
       entries.ssrComposeFragment,
       entries.rayRasterSource,
       entries.rayProbePlacement,
@@ -221,7 +249,6 @@ describe('vite-plugin-shader public engine input surface', () => {
       [entries.depthPyramidSeed, entries.depthPyramidSeedFragment],
       [entries.depthPyramidReduce, entries.depthPyramidReduceFragment],
       [entries.ssrTrace, entries.ssrTraceFragment],
-      [entries.ssrTemporal, entries.ssrTemporalFragment],
       [entries.ssrCompose, entries.ssrComposeFragment],
     ] as const) {
       expect(fragment.id).not.toBe(native.id);
@@ -235,13 +262,14 @@ describe('vite-plugin-shader public engine input surface', () => {
     expect(entries.hdrpGtaoCompute.source).toContain('fn cs_gtao_calc(');
     expect(entries.imports['forgeax_hdrp::ssao']).toContain('fn gtaoRawVisibility(');
 
-    const manifest = await buildEngineShaderManifest();
-    const computeEntries = manifest.entries.filter((entry) =>
-      entry.wgsl.includes('fn cs_gtao_calc('),
-    );
+    const { registry } = await readProductionTemplates();
+    const computeEntries = [...registry.entries()].filter((entry) => entry.role === 'gtaoCompute');
+    expect(computeEntries[0]?.wgsl).toContain('fn cs_gtao_calc(');
     expect(computeEntries, 'runtime must receive the compiled GTAO compute module').toHaveLength(1);
     expect(
-      manifest.materialShaders.some((shader) => shader.identifier.includes('gtao-compute')),
+      [...registry.materialShaderManifestEntries()].some((shader) =>
+        shader.identifier.includes('gtao-compute'),
+      ),
       'the compute adapter is a renderer utility, not a material shader',
     ).toBe(false);
   }, 300_000);
@@ -251,10 +279,8 @@ describe('vite-plugin-shader public engine input surface', () => {
     expect(entries.imports.forgeax_scene_temporal).toContain(
       '#define_import_path forgeax_scene_temporal',
     );
-    const manifest = await buildEngineShaderManifest();
-    const shadow = manifest.materialShaders.find(
-      (entry) => entry.identifier === 'forgeax::default-shadow-caster',
-    );
+    const { registry, wire } = await readProductionTemplates();
+    const shadow = registry.materialShaderManifestEntry('forgeax::default-shadow-caster');
     expect(shadow, 'shadow Surface must compile with its texture-use helpers').toBeDefined();
     expect(shadow?.composedWgsl).toContain('fs_shadow');
     // Canonical shadow and color passes share the texture mask and normal/bump
@@ -267,86 +293,95 @@ describe('vite-plugin-shader public engine input surface', () => {
       'forgeax::pbr-skin',
       'forgeax::default-unlit',
     ]) {
-      const shader = manifest.materialShaders.find((entry) => entry.identifier === identifier);
+      const shader = registry.materialShaderManifestEntry(identifier);
       expect(shader, `${identifier} must compile through the engine manifest`).toBeDefined();
       expect(shader?.composedWgsl).toContain('packSceneTemporalV1');
-      if (identifier !== 'forgeax::default-unlit') {
-        for (const variant of shader?.variants ?? []) {
-          expect(variant.composedWgsl).toContain('@id(64000)');
-          // Discard sources are compile-time axes (LOD_DITHER / CLIPPING_PLANES);
-          // no program carries the 64001 override constant any more.
-          expect(variant.composedWgsl).not.toMatch(/@id\(64001\)/);
-          for (const field of [
-            'baseColor',
-            'metallicRoughness',
-            'normal',
-            'emissive',
-            'occlusion',
-          ]) {
-            expect(
-              variant.composedWgsl,
-              `${identifier} must retain declared ${field} sampling`,
-            ).toMatch(new RegExp(`textureSample\\(\\s*${field}Texture(?:_\\d+)?\\s*,`));
-          }
+      if (identifier === 'forgeax::default-unlit' || shader === undefined) continue;
+      // Select the actual texture-backed, storage-backed and lean vertex paths.
+      // The remaining lighting recipe axes are tested by their owning contracts.
+      const selections: readonly Readonly<Record<string, boolean>>[] = [
+        { STORAGE_BUFFER_AVAILABLE: true },
+        { STORAGE_BUFFER_AVAILABLE: false },
+        ...(identifier === 'forgeax::pbr-skin'
+          ? [{ SKINNING_DISABLED: false }]
+          : [{ STANDARD_LEAN_INPUTS: true }]),
+      ];
+      for (const selection of selections) {
+        const variant = findVariantByDefines(shader, selection);
+        expect(variant, `${identifier} must publish ${JSON.stringify(selection)}`).toBeDefined();
+        if (variant === undefined) continue;
+        const code = variant.composedWgsl;
+        expect(code).toContain('@id(64000)');
+        // LOD dithering and clipping are compile-time axes, with no 64001 override.
+        expect(code).not.toMatch(/@id\(64001\)/);
+        for (const field of ['baseColor', 'metallicRoughness', 'normal', 'emissive', 'occlusion']) {
+          expect(code, `${identifier} must retain declared ${field} sampling`).toMatch(
+            new RegExp(`textureSample\\(\\s*${field}Texture(?:_\\d+)?\\s*,`),
+          );
         }
       }
     }
+    const shared = admitShaderTemplateManifest(wire).unwrap();
+    const entriesByIdentifier = new Map(
+      [...registry.entries()].map((entry) => [entry.identifier, entry]),
+    );
+    const utilitiesContaining = (marker: string) =>
+      wire.entries
+        .filter(({ program }) => shared.programs.get(program)?.template.source.includes(marker))
+        .flatMap(({ identifier }) => {
+          const entry = entriesByIdentifier.get(identifier);
+          return entry === undefined ? [] : [entry];
+        });
+    const temporal = [...shared.programs.values()].find(({ template }) =>
+      Object.values(template.imports).some((source) => source.includes('struct SceneTemporalV1')),
+    );
     expect(
-      manifest.entries.some((entry) => entry.wgsl.includes('SceneTemporalV1')),
-      'the temporal utility closure must survive manifest compilation',
-    ).toBe(true);
+      temporal,
+      'the temporal utility closure must survive manifest publication',
+    ).toBeDefined();
     for (const marker of [
       'depth_pyramid_seed',
       'depth_pyramid_reduce',
       'ssr_trace',
-      'ssr_temporal',
+      'vs_ssr_compose',
       'depth_pyramid_seed_fragment',
       'depth_pyramid_reduce_fragment',
       'ssr_trace_fragment',
-      'ssr_temporal_fragment',
       'vs_ssr_compose_fragment',
     ]) {
       expect(
-        manifest.entries.filter((entry) => entry.wgsl.includes(`fn ${marker}(`)),
+        utilitiesContaining(`fn ${marker}(`).filter((entry) =>
+          entry.wgsl.includes(`fn ${marker}(`),
+        ),
         `${marker} must be published in the engine manifest`,
       ).toHaveLength(1);
     }
+    expect(utilitiesContaining('fn ssr_temporal(')).toEqual([]);
+    expect(utilitiesContaining('fn ssr_temporal_fragment(')).toEqual([]);
   }, 300_000);
 
   it.each([
     false,
     true,
   ])('retains SSAO in the standalone manifest: point=%s', async (pointShadows) => {
-    const previousShared = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
-    const previousSource = process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD;
-    delete process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
-    delete process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD;
-    try {
-      const manifest = await buildEngineShaderManifest({ pointShadows });
-      expect(
-        manifest.entries.filter(
-          (entry) => entry.wgsl.includes('fs_ssao_calc') && entry.wgsl.includes('fs_ssao_blur'),
-        ),
-        'default standalone manifests must support the runtime Standard SSAO switch',
-      ).toHaveLength(1);
-    } finally {
-      if (previousShared === undefined) delete process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
-      else process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST = previousShared;
-      if (previousSource === undefined) delete process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD;
-      else process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD = previousSource;
-    }
+    const { registry } = await readProductionTemplates(pointShadows);
+    const entries = [...registry.entries()].filter((entry) => entry.role === 'ssao');
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.wgsl).toContain('fs_ssao_calc');
+    expect(entries[0]?.wgsl).toContain('fs_ssao_blur');
   }, 300_000);
 
   it('routes point-shadow defines through the standalone manifest builder', async () => {
-    // Inspect real admitted WGSL through the public route. The complete source
-    // build belongs to core/shared producers; single-worker and packaged-builder
-    // regressions retain real compilation and source fallback.
-    const manifest = await buildEngineShaderManifest({ pointShadows: true });
-    const skin = manifest.materialShaders.find((entry) => entry.identifier === 'forgeax::pbr-skin');
+    const { registry } = await readProductionTemplates(true);
+    const skin = registry.materialShaderManifestEntry('forgeax::pbr-skin');
     expect(skin, 'the point-shadow manifest must compile the skinned Standard entry').toBeDefined();
-    expect(
-      skin?.variants.some((variant) => variant.composedWgsl.includes('evalPointShadowed')),
-    ).toBe(true);
+    const variant =
+      skin &&
+      findVariantByDefines(skin, {
+        CLUSTER_FORWARD_AVAILABLE: true,
+        STORAGE_BUFFER_AVAILABLE: true,
+      });
+    expect(variant?.composedWgsl).toContain('evalPointShadowed');
   }, 600_000);
 
   it('reuses a validated shared shader projection for the base manifest', async () => {

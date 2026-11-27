@@ -224,7 +224,7 @@ fn resolveSkinDemand(@builtin(workgroup_id) id: vec3<u32>, @builtin(num_workgrou
     }
     if (lane == 0u) {
       skinOutput[skinDemand.descriptorBase + skinDemandHashSlot].w =
-        select(0u, 1u | select(0u, 2u, history && !resetHistory), invalid == 0u);
+        select(0u, 1u | select(0u, 2u, history && !resetHistory) | (skinInputs[skinDemandBinding + 3u] << 2u), invalid == 0u);
     }
   }
 }

@@ -50,6 +50,7 @@ export function createSmokePlatform(canvas, { manual = false } = {}) {
 // Built browser consumers discover their platform through the canvas's Window.
 // Retain the fixture's clock/frame queue and expose a borderless, zero-inset view.
 export function bindSmokeCanvasWindow(canvas, view, document) {
+  const links = [];
   Object.assign(canvas, {
     ownerDocument: document,
     clientWidth: canvas.width,
@@ -67,6 +68,7 @@ export function bindSmokeCanvasWindow(canvas, view, document) {
     innerHeight: canvas.height,
     addEventListener() {},
     removeEventListener() {},
+    dispatchEvent: (event) => !event.defaultPrevented,
     getComputedStyle() {
       return { paddingLeft: '0px', paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px' };
     },
@@ -78,5 +80,15 @@ export function bindSmokeCanvasWindow(canvas, view, document) {
     addEventListener() {},
     removeEventListener() {},
     createElement: () => ({ relList: { supports: () => true }, style: {}, remove() {} }),
+    getElementsByTagName: (name) => (name === 'link' ? links : []),
+    head: {
+      appendChild(link) {
+        // Node performs the dynamic import itself. Record the browser's preload hint.
+        if (link.rel !== 'modulepreload')
+          throw new Error(`Unexpected Dawn smoke link: ${link.rel}`);
+        links.push(link);
+        return link;
+      },
+    },
   });
 }

@@ -46,7 +46,11 @@ export class PreparedRenderPipelineOwner {
   }
 
   /** Borrow only the existing generation-owned compilation flights. */
-  pendingCompletion(): Promise<Result<void, RhiError>> | undefined {
+  pendingCompletion(key?: string): Promise<Result<void, RhiError>> | undefined {
+    if (key !== undefined) {
+      const flight = this.flights.get(key);
+      return flight?.result === undefined ? flight?.completion : undefined;
+    }
     const pending = [...this.flights.values()].flatMap((flight) =>
       flight.result === undefined && flight.completion !== undefined ? [flight.completion] : [],
     );

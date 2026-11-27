@@ -24,6 +24,8 @@ export interface StandardLocalLightInput {
    * it with each cluster cell in addition to the binning sphere.
    */
   readonly cone?: BinningCone;
+  /** Emitting front of a one-sided rectangle, in world space. */
+  readonly rectNormal?: Vec3;
   /** Whether the shadow producer admitted this local light to its atlas. */
   readonly shadowed: boolean;
   /**
@@ -49,6 +51,8 @@ export interface StandardLightFrame {
   readonly lightCount: StandardLightCount;
   /** Point/spot/rect lights the view's Cluster dropped before `local` was built. */
   readonly droppedLocalLights?: number;
+  /** Packed proof shared by the View and local-light slot uploads. */
+  readonly deferredChannelProjection?: number;
   /** Graph path carried into inspection from the active Standard profile. */
   readonly renderPath: 'forward' | 'deferred';
 }

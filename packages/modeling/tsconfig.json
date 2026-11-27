@@ -9,6 +9,7 @@
     "rootDir": "./src",
     "tsBuildInfoFile": "./dist/.tsbuildinfo",
     "types": [
+      "@webgpu/types",
       "node"
     ]
   },

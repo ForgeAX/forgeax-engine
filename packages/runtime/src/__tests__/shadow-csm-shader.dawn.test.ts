@@ -236,7 +236,7 @@ describe('CSM shader cascade selection + atlas UV + blend (M5/w17)', () => {
   });
 
   it('production Directional PCSS uses raw depth and comparison without new bindings', () => {
-    expect(directionalShader).toContain('fn _samplePcssForCascade');
+    expect(directionalShader).toContain('fn sampleDirectionalPcss');
     expect(directionalShader).toContain('shadow_load_raw_depth');
     expect(directionalShader).toContain('shadow_sample_compare');
     expect(directionalShader).toContain('PCSS_MEDIUM_RAW_TAPS : u32 = 8u');

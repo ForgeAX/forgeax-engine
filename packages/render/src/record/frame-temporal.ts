@@ -3,6 +3,7 @@
 // parameters projected from that view at record time.
 
 import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
+import { standardBloomAdmitted } from '../bloom-admission';
 import { isTemporalAntialias } from '../components/camera';
 import { BARREL_DISTORTION_POST_PROCESS_ID } from '../features/barrel-distortion';
 import {
@@ -25,6 +26,7 @@ import {
   motionBlurSampleDelta,
   motionBlurTemporalDemand,
 } from '../features/motion-blur/motion-blur-params';
+import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
 import { OUTPUT_GAMUT_CODE } from '../output-color-space';
 import type { RenderExtent } from '../pipeline/render-extent';
 import type { RenderResourceScope } from '../publication/resource-scope';
@@ -41,6 +43,7 @@ import {
 } from './barrel-distortion-frame';
 import type { RenderFrameState } from './frame-snapshot';
 import type { RenderSystemInternals } from './render-context';
+import { standardGtaoTemporalDemand } from './standard-ao-admission';
 
 export interface FrameClockSample {
   readonly deltaSeconds: number;
@@ -163,11 +166,11 @@ function clockResetReason(
   return firstFrame ? ('first-frame' as const) : undefined;
 }
 
-function reusedTemporalHistory(reusable: TemporalView | undefined) {
+function reusedTemporalHistory(reusable: TemporalView | undefined, geometryPrevious = reusable) {
   return {
-    ...(reusable?.currentUnjitteredViewProjection === undefined
+    ...(geometryPrevious?.currentUnjitteredViewProjection === undefined
       ? {}
-      : { previousUnjitteredViewProjection: reusable.currentUnjitteredViewProjection }),
+      : { previousUnjitteredViewProjection: geometryPrevious.currentUnjitteredViewProjection }),
     ...(reusable?.currentCameraPosition === undefined
       ? {}
       : { previousCameraPosition: reusable.currentCameraPosition }),
@@ -204,7 +207,8 @@ export function resolveFrameTemporal(
 ) {
   const previous = frameState.temporalView.accepted;
   const motionBlurDemand = motionBlurDemandFor(camera);
-  const temporalDemand = standardSceneTemporalDemand(camera, visibleSurfaceActive);
+  const gtao = standardGtaoTemporalDemand(internals, frameState);
+  const temporalDemand = standardSceneTemporalDemand(camera, visibleSurfaceActive || gtao);
   const deltaSeconds =
     temporalReset || clock.invalidSampleTime
       ? Number.NaN
@@ -226,17 +230,25 @@ export function resolveFrameTemporal(
     fogSignature,
     currentUnjitteredViewProjection,
   );
+  const clockReset = clockResetReason(
+    temporalReset,
+    motionBlurDemand,
+    intervalValid,
+    motionBlurFirstFrame(camera, motionBlurDemand, previous),
+  );
   const resetReason =
     temporalDemand && environmentReady
-      ? (resolveTemporalReset(previous?.input, candidate) ??
-        clockResetReason(
-          temporalReset,
-          motionBlurDemand,
-          intervalValid,
-          motionBlurFirstFrame(camera, motionBlurDemand, previous),
-        ))
+      ? (resolveTemporalReset(previous?.input, candidate) ?? clockReset)
       : undefined;
   const reusable = resetReason === undefined ? previous : undefined;
+  // Lighting resets color history, not the geometry projection used by rigid
+  // motion. Previous camera validity still resets for volume color history.
+  // An overlapping clock discontinuity also breaks the geometry pair.
+  const geometryPrevious =
+    clockReset === undefined &&
+    (resetReason === 'environment-change' || resetReason === 'fog-change')
+      ? previous
+      : reusable;
   const view = createTemporalView({
     ...candidate,
     frameIndex: resetReason === undefined ? candidate.frameIndex : 0,
@@ -249,7 +261,7 @@ export function resolveFrameTemporal(
       reusable !== undefined &&
       (!motionBlurDemand || intervalValid),
     resetReason,
-    ...reusedTemporalHistory(reusable),
+    ...reusedTemporalHistory(reusable, geometryPrevious),
   });
   frameState.temporalView.stage(
     pendingTemporalCommitFor(internals, cameraCount, environmentReady, view),
@@ -257,13 +269,10 @@ export function resolveFrameTemporal(
   return {
     view,
     previous,
-    recordCamera: view.mode !== 'off' ? { ...camera, temporal: view } : camera,
+    recordCamera: view.mode !== 'off' || gtao ? { ...camera, temporal: view } : camera,
     deltaSeconds,
     motionBlurDemand,
-    continuousGeometry:
-      reusable !== undefined ||
-      resetReason === 'environment-change' ||
-      resetReason === 'fog-change',
+    continuousGeometry: geometryPrevious !== undefined,
     currentUnjitteredViewProjection,
   };
 }
@@ -318,13 +327,13 @@ function setDepthOfFieldParams(
   params: Map<string, Uint8Array>,
   camera: CameraSnapshot,
   depthOfField: NonNullable<CameraSnapshot['depthOfField']>,
-  targetH: number,
+  outputExtent: { readonly width: number; readonly height: number },
 ): void {
   const dofParams = packDepthOfFieldParams(depthOfField, {
-    outputHeight: targetH,
+    outputWidth: outputExtent.width,
+    outputHeight: outputExtent.height,
     near: camera.near,
     far: camera.far,
-    useTemporalDepth: isTemporalAntialias(camera.antialias),
   });
   for (const id of [...DEPTH_OF_FIELD_POST_PROCESS_IDS, ...DEPTH_OF_FIELD_MSAA_POST_PROCESS_IDS]) {
     params.set(id, dofParams);
@@ -347,8 +356,21 @@ export function buildFramePostProcessParams(
   temporalView: TemporalView,
   targetH: number,
   barrelMapping: ReturnType<typeof resolveSubmittedBarrelMapping>,
-): Map<string, Uint8Array> {
-  const params = new Map(postProcessParams);
+  featureEffects: ReadonlyMap<string, PostProcessShaderEntry>,
+  nativeDisplayGrade = false,
+): ReadonlyMap<string, Uint8Array> {
+  // Native display issues lens, white balance and output gamut from its current camera UBO.
+  // Explicit and feature-owned bytes remain addressable by other fullscreen readers.
+  // Declared and legacy graphs retain a detached writable projection for camera overrides.
+  let own = nativeDisplayGrade ? undefined : new Map(postProcessParams);
+  for (const [id, effect] of featureEffects) {
+    if (effect.frameParams !== undefined && !postProcessParams.has(id)) {
+      own ??= new Map(postProcessParams);
+      own.set(id, effect.frameParams);
+    }
+  }
+  if (nativeDisplayGrade) return own ?? postProcessParams;
+  const params = own ?? new Map(postProcessParams);
   stampOutputGamut(internals, postProcessParams, params);
   if (camera.motionBlur !== undefined && motionBlurDemand) {
     params.set(
@@ -356,8 +378,12 @@ export function buildFramePostProcessParams(
       packMotionBlurFrameParams(camera.motionBlur, deltaSeconds, temporalView.historyValid),
     );
   }
-  if (camera.depthOfField !== undefined)
-    setDepthOfFieldParams(params, camera, camera.depthOfField, targetH);
+  if (camera.depthOfField !== undefined) {
+    setDepthOfFieldParams(params, camera, camera.depthOfField, {
+      width: temporalView.input.width,
+      height: targetH,
+    });
+  }
   if (
     camera.lensEffects !== undefined ||
     internals.getPostProcessParamsBuffer?.(LENS_EFFECTS_POST_PROCESS_ID) !== undefined
@@ -372,8 +398,13 @@ export function buildFramePostProcessParams(
     );
   }
   if (camera.lensFlare !== undefined) {
-    const lensFlareParams = packLensFlareParams(camera.lensFlare);
-    for (const program of LENS_FLARE_PROGRAMS) params.set(program.name, lensFlareParams);
+    const lensFlareParams = packLensFlareParams(
+      camera.lensFlare,
+      standardBloomAdmitted(camera) ? camera.bloomIntensity : 0,
+    );
+    for (const program of LENS_FLARE_PROGRAMS) {
+      if (program.params !== undefined) params.set(program.name, lensFlareParams);
+    }
   }
   if (barrelMapping !== undefined && barrelMapping.strength > 0) {
     params.set(BARREL_DISTORTION_POST_PROCESS_ID, packBarrelDistortionParams(barrelMapping));

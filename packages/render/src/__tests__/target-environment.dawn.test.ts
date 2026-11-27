@@ -24,7 +24,6 @@ it('filters a completed HDR cube on the GPU and publishes retained native lighti
   const shaders: Record<string, string> = {};
   for (const [name, file] of [
     ['equirectToCube', 'ibl-equirect-to-cube'],
-    ['irradiance', 'ibl-irradiance'],
     ['prefilter', 'ibl-prefilter'],
     ['brdfLut', 'ibl-brdf-lut'],
   ]) {
@@ -87,60 +86,20 @@ it('filters a completed HDR cube on the GPU and publishes retained native lighti
     if (!filtered.ok) throw new Error(JSON.stringify(filtered.error), { cause: filtered.error });
     const views = resolveTargetEnvironment(filtered.value.source, device);
     if (views === undefined) throw new Error('missing completed environment views');
-    const createModule = recorder.backend.createShaderModuleImmediate;
-    if (createModule === undefined) throw new Error('missing recorder shader factory');
-    const module = createModule(device, {
-      code: `
-@group(0) @binding(0) var irradiance: texture_cube<f32>;
-@group(0) @binding(1) var radianceSampler: sampler;
-@group(0) @binding(2) var<storage, read_write> values: array<vec4<f32>>;
-@compute @workgroup_size(1) fn main() { values[0] = textureSampleLevel(irradiance, radianceSampler, vec3<f32>(0.0, 0.0, 1.0), 0.0); }
-`,
-    }).unwrap();
-    const layout = device
-      .createBindGroupLayout({
-        entries: [
-          { binding: 0, visibility: 4, texture: { sampleType: 'float', viewDimension: 'cube' } },
-          { binding: 1, visibility: 4, sampler: { type: 'filtering' } },
-          { binding: 2, visibility: 4, buffer: { type: 'storage' } },
-        ],
-      })
-      .unwrap();
-    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] }).unwrap();
-    const pipeline = device
-      .createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint: 'main' } })
-      .unwrap();
-    const output = device.createBuffer({ size: 16, usage: 0x80 | 0x04 }).unwrap(),
-      readback = device.createBuffer({ size: 16, usage: 0x08 | 0x01 }).unwrap();
-    const sampler = device.createSampler({ minFilter: 'linear', magFilter: 'linear' }).unwrap();
-    const group = device
-      .createBindGroup({
-        layout,
-        entries: [
-          { binding: 0, resource: { kind: 'textureView', value: views.irradiance } },
-          { binding: 1, resource: { kind: 'sampler', value: sampler } },
-          { binding: 2, resource: { kind: 'buffer', value: { buffer: output } } },
-        ],
-      })
-      .unwrap();
-    const encoder = device.createCommandEncoder().unwrap(),
-      pass = encoder.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, group);
-    pass.dispatchWorkgroups(1);
-    pass.end();
-    encoder.copyBufferToBuffer(output, 0, readback, 0, 16);
+    const bytes = 112;
+    const readback = device.createBuffer({ size: bytes, usage: 0x08 | 0x01 }).unwrap();
+    const encoder = device.createCommandEncoder().unwrap();
+    encoder.copyBufferToBuffer(views.skySh, 0, readback, 0, bytes);
     device.queue.submit([encoder.finish().unwrap()]).unwrap();
     await device.queue.onSubmittedWorkDone();
     const mapped = (await readback.mapAsync(1)).unwrap();
     const values = new Float32Array(mapped.getMappedRange().unwrap().slice(0));
     mapped.unmap();
     [2, 0.5, 0.125].forEach((expected, index) => {
-      expect(values[index]).toBeCloseTo(expected, 1);
+      expect(values[index * 4 + 3]).toBeCloseTo(expected, 1);
     });
     filtered.value.release();
     expect(resolveTargetEnvironment(filtered.value.source, device)).toBeUndefined();
-    device.destroyBuffer(output);
     device.destroyBuffer(readback);
     const directory = resolve(
       process.env.FORGEAX_PARITY_EVIDENCE_DIR ?? 'artifacts/three-target-environment',

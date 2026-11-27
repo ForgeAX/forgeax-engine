@@ -7,7 +7,12 @@ import type {
 import { RenderGraphError } from '@forgeax/engine-render-graph';
 import { err, mipDimension, ok, type Result, textureFormatBlock } from '@forgeax/engine-types';
 import { standardBloomAdmitted } from '../bloom-admission';
-import { isFxaaAntialias, isTemporalAntialias } from '../components/camera';
+import {
+  BLOOM_QUALITY_HIGH,
+  BLOOM_QUALITY_LOW,
+  isFxaaAntialias,
+  isTemporalAntialias,
+} from '../components/camera';
 import { addTypedDebugOverlayPass } from '../debug-draw-glue';
 import type { GraphAtmosphere } from '../environment/luts';
 import { RenderFeatureCapabilityMissingError, SceneDataUnavailableError } from '../errors/render';
@@ -22,18 +27,26 @@ import {
   LENS_EFFECTS_POST_PROCESS_ID,
 } from '../features/lens-effects';
 import { isLensFlarePostProcess, LENS_FLARE_POST_PROCESS_ID } from '../features/lens-flare';
-import { addLensFlarePasses } from '../features/lens-flare-graph';
+import {
+  addLensFlarePasses,
+  LENS_FLARE_BOKEH,
+  LENS_FLARE_COMBINED,
+  LENS_FLARE_PREFILTER,
+} from '../features/lens-flare-graph';
 import {
   addMotionBlurPass,
   MOTION_BLUR_FEATURE_IDENTITY,
 } from '../features/motion-blur/motion-blur-feature';
+import { addSceneVelocityMotionBlur } from '../features/motion-blur/scene-velocity-motion-blur';
 import { addDistanceOutlinePasses } from '../features/outline/distance-graph';
 import { addOutlinePasses } from '../features/outline/graph';
 import { isOutlinePostProcess } from '../features/outline/shaders';
-import { addSmaaPasses } from '../features/smaa/graph';
+import { addSmaaBlend, addSmaaWeights } from '../features/smaa/graph';
 import { isSmaaPostProcess } from '../features/smaa/shaders';
+import { POST_PROCESS_OUTPUT_DEPTH } from '../features/targets';
 import { GPU_TEXTURE_USAGE_COPY_SRC } from '../gpu-texture-usage';
 import type {
+  OutputDither,
   RenderPipelineBuildContext,
   RenderPipelineBuildError,
   RenderPipelineFrame,
@@ -46,6 +59,7 @@ import {
   resolveOutputDither,
 } from '../render-pipeline';
 import { SSR_SCENE_COLOR_HISTORY_PROGRAM } from '../ssr/scene-color-input';
+import type { SceneVelocityInputs } from '../temporal/default-gbuffer-velocity';
 import { SCENE_DATA_TEMPORAL_V1_SCHEMA } from '../temporal/scene-data';
 import { bindStandardSceneDataTarget } from '../temporal/standard-scene-data';
 import { usesTsrCompute } from '../tsr/capabilities';
@@ -62,14 +76,27 @@ import {
   TYPED_BLOOM_PASS_NAMES,
   type TypedTemporalResolveTargets,
 } from '../typed-render-graph-primitives';
-import { renderExtentSize, temporalAnalysisCapacity } from './render-extent';
-import { addSsaoSceneColorPass, type SceneColorAo } from './ssao-scene-color';
+import { addBloomDownsampleChain } from './bloom-downsample';
+import { type BloomFilterFormat, bloomFilterFormat } from './bloom-filter-format';
+import { addBloomPrefilter } from './bloom-prefilter';
+import { addHdrOutputEffects } from './hdr-output-effects';
+import { addPostSceneColorHalf, declarePostSceneColorHalf } from './post-scene-color';
+import {
+  renderExtentSize,
+  renderInternalCopySize,
+  renderInternalSize,
+  temporalAnalysisCapacity,
+} from './render-extent';
 import type { WaterInfoGraphTargets } from './standard-build-context';
 import {
   addAutoExposureExposurePass,
   addAutoExposureGraphPasses,
 } from './standard-output/auto-exposure/gpu';
-import { createStandardOutputPlan } from './standard-output/graph';
+import {
+  nativeGradeNeedsLinearImage,
+  nativeGradeOverlaysLinearImage,
+  usesNativeGrade,
+} from './standard-output/layout';
 import { addStandardColorLutPass } from './standard-output/lut-gpu';
 import { addNativeOutputParameters, addNativeOutputPass } from './standard-output/native-gpu';
 import { addStandardToneLutPass } from './standard-output/tone-lut';
@@ -80,8 +107,6 @@ export interface StandardPostSurface {
   readonly display?: RenderPipelineTarget;
   readonly storage: RenderPipelineTarget;
 }
-
-const STANDARD_BLOOM_MAX_LEVELS = 5;
 
 /** One authored Bloom contract drives declaration and compiled-graph validation. */
 const STANDARD_BLOOM_TARGET_SPEC = {
@@ -99,11 +124,12 @@ interface StandardBloomLevelDimensions {
 function deriveStandardBloomLevels(
   outputWidth: number,
   outputHeight: number,
+  levelCount: number,
 ): readonly StandardBloomLevelDimensions[] {
   const levels: StandardBloomLevelDimensions[] = [];
   let width = Math.max(1, Math.ceil(outputWidth / 2));
   let height = Math.max(1, Math.ceil(outputHeight / 2));
-  for (let level = 0; level < STANDARD_BLOOM_MAX_LEVELS; level += 1) {
+  for (let level = 0; level < levelCount; level += 1) {
     levels.push({ width, height });
     width = Math.max(1, Math.ceil(width / 2));
     height = Math.max(1, Math.ceil(height / 2));
@@ -112,7 +138,6 @@ function deriveStandardBloomLevels(
 }
 
 interface StandardBloomTargetSpecs {
-  readonly composited: GraphTextureDescriptor & { readonly label: string };
   readonly horizontal: readonly (GraphTextureDescriptor & { readonly label: string })[];
   readonly vertical: readonly (GraphTextureDescriptor & { readonly label: string })[];
   readonly levels: readonly StandardBloomLevelDimensions[];
@@ -121,24 +146,20 @@ interface StandardBloomTargetSpecs {
 function standardBloomTargetSpecs(
   outputWidth: number,
   outputHeight: number,
+  levelCount: number,
+  filterFormat: BloomFilterFormat,
 ): StandardBloomTargetSpecs {
-  const levels = deriveStandardBloomLevels(outputWidth, outputHeight);
+  const levels = deriveStandardBloomLevels(outputWidth, outputHeight, levelCount);
   return {
-    composited: {
-      label: STANDARD_BLOOM_TARGET_SPEC.composited.label,
-      format: STANDARD_BLOOM_TARGET_SPEC.composited.format,
-      size: { width: outputWidth, height: outputHeight },
-      domain: 'linear-hdr',
-    },
     horizontal: levels.map((size, level) => ({
       label: `${STANDARD_BLOOM_TARGET_SPEC.horizontalPrefix}${level}`,
-      format: 'rgba16float' as const,
+      format: filterFormat,
       size,
       domain: 'linear-hdr' as const,
     })),
     vertical: levels.map((size, level) => ({
       label: `${STANDARD_BLOOM_TARGET_SPEC.verticalPrefix}${level}`,
-      format: 'rgba16float' as const,
+      format: filterFormat,
       size,
       domain: 'linear-hdr' as const,
     })),
@@ -187,7 +208,7 @@ function textureBytes(resource: CompiledBloomResource): number | undefined {
     resource.kind !== 'texture' ||
     descriptor === undefined ||
     descriptor.kind !== 'texture' ||
-    descriptor.format !== 'rgba16float'
+    (descriptor.format !== 'rgba16float' && descriptor.format !== 'rg11b10ufloat')
   )
     return undefined;
   const texelBytes = textureFormatBlock(descriptor.format).bytesPerBlock;
@@ -203,8 +224,20 @@ function textureBytes(resource: CompiledBloomResource): number | undefined {
   return resource.byteSize === descriptorBytes && descriptorBytes > 0 ? descriptorBytes : undefined;
 }
 
+function compiledBloomPyramid(targets: readonly CompiledBloomResource[]) {
+  const levelCount = targets.filter(({ label }) => label.startsWith('bloom-horizontal-')).length;
+  if (levelCount < BLOOM_QUALITY_LOW || levelCount > BLOOM_QUALITY_HIGH) return undefined;
+  const descriptor = targets.find(({ label }) => label === 'bloom-horizontal-0')?.descriptor;
+  if (descriptor?.kind !== 'texture') return undefined;
+  const format = descriptor.format;
+  return format === 'rgba16float' || format === 'rg11b10ufloat'
+    ? { levelCount, filterFormat: format }
+    : undefined;
+}
+
 function resourceSize(
   resource: CompiledBloomResource,
+  format: BloomFilterFormat = 'rgba16float',
 ): { readonly width: number; readonly height: number } | undefined {
   const descriptor = resource.descriptor;
   if (resource.kind !== 'texture' || descriptor.kind !== 'texture') return undefined;
@@ -218,7 +251,7 @@ function resourceSize(
     return undefined;
   }
   if (
-    descriptor.format !== 'rgba16float' ||
+    descriptor.format !== format ||
     descriptor.domain !== 'linear-hdr' ||
     descriptor.width <= 0 ||
     descriptor.height <= 0 ||
@@ -238,10 +271,11 @@ function resourceSize(
 function hasPassAccesses(
   pass: CompiledRenderGraphInfo['passes'][number] | undefined,
   accesses: readonly { readonly resource: string; readonly usage: string }[],
+  kind: 'raster' | 'compute' = 'raster',
 ): boolean {
   return (
     pass !== undefined &&
-    pass.kind === 'raster' &&
+    pass.kind === kind &&
     pass.accesses.length === accesses.length &&
     accesses.every(
       (access, index) =>
@@ -254,64 +288,65 @@ function hasPassAccesses(
 function bloomOutputSize(
   graph: CompiledRenderGraphInfo,
   compositedResource: CompiledRenderGraphInfo['resources'][number] | undefined,
-  nativeGrade: CompiledRenderGraphInfo['passes'][number] | undefined,
+  outputPass: CompiledRenderGraphInfo['passes'][number] | undefined,
 ): StandardBloomLevelDimensions | undefined {
   const gradeOutput = graph.resources.find(
     (resource) =>
       resource.label ===
-      nativeGrade?.accesses.find((access) => access.usage === 'color-attachment')?.resource,
+      outputPass?.accesses.find((access) => access.usage === 'color-attachment')?.resource,
   )?.descriptor;
   return compositedResource === undefined
     ? gradeOutput?.kind === 'texture' &&
       gradeOutput.sampleCount === 1 &&
-      gradeOutput.domain === 'display-encoded'
+      (gradeOutput.domain === 'display-encoded' ||
+        gradeOutput.domain === 'linear-ldr' ||
+        gradeOutput.domain === 'linear-hdr')
       ? { width: gradeOutput.width, height: gradeOutput.height }
       : undefined
     : resourceSize(compositedResource);
 }
 
-function hasBloomPassTopology(
+function inspectBloomGraphOutput(
   graph: CompiledRenderGraphInfo,
-  passes: CompiledRenderGraphInfo['passes'],
-  orderedHorizontal: CompiledRenderGraphInfo['resources'],
-  expectedVerticalLabels: readonly string[],
-  composited: CompiledRenderGraphInfo['resources'],
-  nativeGrade: CompiledRenderGraphInfo['passes'][number] | undefined,
-): boolean {
-  const sceneLabel = passes[0]?.accesses[0]?.resource;
-  return (
-    sceneLabel !== undefined &&
-    !sceneLabel.startsWith('bloom-') &&
-    graph.resources.some((resource) => resource.label === sceneLabel) &&
-    orderedHorizontal.every(
-      (_, level) =>
-        hasPassAccesses(passes[level * 2], [
-          {
-            resource: level === 0 ? sceneLabel : `bloom-vertical-${level - 1}`,
-            usage: 'sampled-read',
-          },
-          { resource: `bloom-horizontal-${level}`, usage: 'color-attachment' },
-        ]) &&
-        hasPassAccesses(passes[level * 2 + 1], [
-          { resource: `bloom-horizontal-${level}`, usage: 'sampled-read' },
-          { resource: `bloom-vertical-${level}`, usage: 'color-attachment' },
-        ]),
-    ) &&
-    (composited.length === 0
-      ? nativeGrade !== undefined &&
-        nativeGrade.kind === 'raster' &&
-        nativeGrade.executionIndex > (passes.at(-1)?.executionIndex ?? Infinity) &&
-        [sceneLabel, ...expectedVerticalLabels].every(
-          (label, index) =>
-            nativeGrade.accesses.filter((access) => access.usage === 'sampled-read')[index]
-              ?.resource === label,
-        )
-      : hasPassAccesses(passes.at(-1), [
-          { resource: sceneLabel, usage: 'sampled-read' },
-          ...expectedVerticalLabels.map((resource) => ({ resource, usage: 'sampled-read' })),
-          { resource: STANDARD_BLOOM_TARGET_SPEC.composited.label, usage: 'color-attachment' },
+  composited: CompiledRenderGraphInfo['resources'][number] | undefined,
+  glare: CompiledRenderGraphInfo['passes'][number] | undefined,
+): { extent: StandardBloomLevelDimensions; bloomScene: string } | undefined {
+  const grade = graph.passes.find(({ name }) => name === 'standard-grade');
+  const glareConsumer =
+    glare === undefined
+      ? undefined
+      : graph.passes.find((pass) =>
+          pass.accesses.some(
+            ({ resource, usage }) => resource === LENS_FLARE_COMBINED && usage === 'sampled-read',
+          ),
+        );
+  const terminal =
+    composited === undefined
+      ? (glareConsumer ?? grade)
+      : graph.passes.find(({ name }) => name === TYPED_BLOOM_PASS_NAMES.composite);
+  const sampled = terminal?.accesses.filter(({ usage }) => usage === 'sampled-read');
+  const scene = sampled?.[0]?.resource;
+  const bloomScene =
+    glare === undefined
+      ? scene
+      : (graph.passes.find(({ name }) => name === 'chromatic-aberration')?.accesses[0]?.resource ??
+        scene);
+  const extent = bloomOutputSize(graph, composited, terminal);
+  if (
+    !extent ||
+    scene === undefined ||
+    sampled?.[1]?.resource !== (glare === undefined ? 'bloom-vertical-0' : LENS_FLARE_COMBINED) ||
+    (composited === undefined
+      ? (sampled?.length ?? 0) > 3
+      : !hasPassAccesses(terminal, [
+          { resource: scene, usage: 'sampled-read' },
+          { resource: 'bloom-vertical-0', usage: 'sampled-read' },
+          { resource: composited.label, usage: 'color-attachment' },
         ]))
-  );
+  )
+    return undefined;
+
+  return { extent, bloomScene: bloomScene ?? scene };
 }
 
 /** Derive Bloom target/pass facts solely from the compiled Standard graph. */
@@ -319,98 +354,152 @@ export function inspectStandardBloomGraph(
   graph: CompiledRenderGraphInfo | undefined,
 ): StandardBloomGraphInspection {
   if (graph === undefined) return emptyBloomGraphInspection();
-  const composited = graph.resources.filter(
-    (resource) => resource.label === STANDARD_BLOOM_TARGET_SPEC.composited.label,
+  const targets = graph.resources.filter(
+    ({ label }) =>
+      label === STANDARD_BLOOM_TARGET_SPEC.composited.label ||
+      label === 'bloom-prefilter' ||
+      label.startsWith('bloom-downsample-') ||
+      label.startsWith(STANDARD_BLOOM_TARGET_SPEC.horizontalPrefix) ||
+      label.startsWith(STANDARD_BLOOM_TARGET_SPEC.verticalPrefix),
   );
-  const horizontal = graph.resources
-    .filter((resource) => resource.label.startsWith(STANDARD_BLOOM_TARGET_SPEC.horizontalPrefix))
-    .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
-  const vertical = graph.resources
-    .filter((resource) => resource.label.startsWith(STANDARD_BLOOM_TARGET_SPEC.verticalPrefix))
-    .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true }));
-  const targets = [...composited, ...horizontal, ...vertical];
-  const nativeGrade = graph.passes.find((pass) => pass.name === 'standard-grade');
-  const passes = graph.passes
-    .filter(
-      (pass) =>
-        pass.name === TYPED_BLOOM_PASS_NAMES.composite ||
-        pass.name.startsWith(`${TYPED_BLOOM_PASS_NAMES.horizontal}-`) ||
-        pass.name.startsWith(`${TYPED_BLOOM_PASS_NAMES.vertical}-`),
-    )
-    .sort((left, right) => left.executionIndex - right.executionIndex);
+  const passes = graph.passes.filter(({ name }) => name.startsWith('bloom-'));
   if (targets.length === 0 && passes.length === 0) return emptyBloomGraphInspection();
-  if (composited.length > 1 || (composited.length === 0 && nativeGrade === undefined))
-    return invalidBloomGraphInspection();
-  const compositedResource = composited[0];
-  const compositedSize = bloomOutputSize(graph, compositedResource, nativeGrade);
-  if (compositedSize === undefined) return invalidBloomGraphInspection();
+  const find = (name: string) => passes.find((pass) => pass.name === name);
+  const pyramid = compiledBloomPyramid(targets);
+  if (pyramid === undefined) return invalidBloomGraphInspection();
+  const { levelCount, filterFormat } = pyramid;
+  const composited = targets.find(({ label }) => label === 'bloom-composited');
+  const glare = graph.passes.find(({ name }) => name === LENS_FLARE_COMBINED);
+  const output = inspectBloomGraphOutput(graph, composited, glare);
+  if (output === undefined) return invalidBloomGraphInspection();
+  const { extent, bloomScene } = output;
 
-  const expected = standardBloomTargetSpecs(compositedSize.width, compositedSize.height);
-  const expectedHorizontalLabels = expected.horizontal.map((entry) => entry.label);
-  const expectedVerticalLabels = expected.vertical.map((entry) => entry.label);
-  const orderedHorizontal = horizontal.sort((left, right) =>
-    left.label.localeCompare(right.label, undefined, { numeric: true }),
-  );
-  const orderedVertical = vertical.sort((left, right) =>
-    left.label.localeCompare(right.label, undefined, { numeric: true }),
-  );
-  const completeTargetSet =
-    targets.length ===
-      composited.length + expectedHorizontalLabels.length + expectedVerticalLabels.length &&
-    orderedHorizontal.length === expectedHorizontalLabels.length &&
-    orderedVertical.length === expectedVerticalLabels.length &&
-    orderedHorizontal.every(
-      (resource, level) => resource.label === expectedHorizontalLabels[level],
-    ) &&
-    orderedVertical.every((resource, level) => resource.label === expectedVerticalLabels[level]) &&
-    orderedHorizontal.every(
-      (resource, level) =>
-        resourceSize(resource)?.width === expected.levels[level]?.width &&
-        resourceSize(resource)?.height === expected.levels[level]?.height,
-    ) &&
-    orderedVertical.every(
-      (resource, level) =>
-        resourceSize(resource)?.width === expected.levels[level]?.width &&
-        resourceSize(resource)?.height === expected.levels[level]?.height,
-    );
-  const expectedPassNames = expectedHorizontalLabels.flatMap((label, level) => [
-    label,
-    expectedVerticalLabels[level],
-  ]);
-  if (composited.length !== 0) expectedPassNames.push(TYPED_BLOOM_PASS_NAMES.composite);
-  const completePassSet =
-    passes.length === expectedPassNames.length &&
-    passes.every((pass, index) => pass.name === expectedPassNames[index]);
-  const passTopology =
-    completePassSet &&
-    hasBloomPassTopology(
-      graph,
-      passes,
-      orderedHorizontal,
-      expectedVerticalLabels,
-      composited,
-      nativeGrade,
-    );
-  if (!completeTargetSet || !passTopology) {
+  const levelDimensions = deriveStandardBloomLevels(extent.width, extent.height, levelCount);
+  const prefilter = find('bloom-prefilter');
+  const firstSource = find('bloom-horizontal-0')?.accesses[0]?.resource;
+  const sharedSeed = prefilter === undefined ? firstSource : prefilter.accesses[0]?.resource;
+  const matchesSize = (
+    name: string,
+    size: StandardBloomLevelDimensions,
+    format?: BloomFilterFormat,
+  ) => {
+    const texture = graph.resources.find(({ label }) => label === name);
+    if (!texture) return false;
+    const actual = resourceSize(texture, format);
+    return actual?.width === size.width && actual?.height === size.height;
+  };
+  const seedMatches = (
+    halfSize: StandardBloomLevelDimensions,
+    firstSource: string,
+    sharedSeed: string,
+  ) => {
+    if (
+      !matchesSize(sharedSeed, halfSize) ||
+      (glare !== undefined &&
+        (!matchesSize(LENS_FLARE_COMBINED, halfSize) ||
+          !hasPassAccesses(glare, [
+            { resource: LENS_FLARE_BOKEH, usage: 'sampled-read' },
+            { resource: LENS_FLARE_COMBINED, usage: 'color-attachment' },
+            { resource: 'bloom-vertical-0', usage: 'sampled-read' },
+          ]) ||
+          graph.passes.find(({ name }) => name === LENS_FLARE_PREFILTER)?.accesses[0]?.resource !==
+            sharedSeed)) ||
+      !graph.passes.some(
+        (pass) =>
+          pass.accesses.some(
+            ({ resource, usage }) =>
+              resource === sharedSeed &&
+              (usage === 'storage-write' || usage === 'color-attachment'),
+          ) &&
+          pass.accesses.some(
+            ({ resource, usage }) =>
+              resource === bloomScene && (usage === 'storage-write' || usage === 'sampled-read'),
+          ),
+      ) ||
+      (prefilter !== undefined &&
+        (firstSource !== 'bloom-prefilter' ||
+          !matchesSize(firstSource, halfSize) ||
+          !hasPassAccesses(prefilter, [
+            { resource: sharedSeed, usage: 'sampled-read' },
+            { resource: firstSource, usage: 'color-attachment' },
+          ])))
+    )
+      return false;
+    return true;
+  };
+  const halfSize = levelDimensions[0];
+  if (
+    halfSize === undefined ||
+    firstSource === undefined ||
+    sharedSeed === undefined ||
+    !seedMatches(halfSize, firstSource, sharedSeed)
+  )
     return invalidBloomGraphInspection();
-  }
-  const levelDimensions = orderedHorizontal.flatMap((resource) => {
-    const size = resourceSize(resource);
-    return size === undefined ? [] : [size];
-  });
-  if (levelDimensions.length !== orderedHorizontal.length) {
+
+  const reducer = find('bloom-downsample');
+  const levelsMatch = (firstSource: string) => {
+    if (
+      reducer !== undefined &&
+      !hasPassAccesses(
+        reducer,
+        [
+          { resource: firstSource, usage: 'sampled-read' },
+          ...levelDimensions.slice(1).map((_, index) => ({
+            resource: `bloom-downsample-${index + 1}`,
+            usage: 'storage-write',
+          })),
+        ],
+        'compute',
+      )
+    )
+      return false;
+    const pair = (input: string, output: string) => [
+      { resource: input, usage: 'sampled-read' },
+      { resource: output, usage: 'color-attachment' },
+    ];
+    for (const [level, size] of levelDimensions.entries()) {
+      const source = level === 0 ? firstSource : `bloom-downsample-${level}`;
+      const horizontal = `bloom-horizontal-${level}`;
+      const vertical = `bloom-vertical-${level}`;
+      const coarser =
+        level + 1 < levelCount
+          ? [{ resource: `bloom-vertical-${level + 1}`, usage: 'sampled-read' }]
+          : [];
+      const prior = level === 1 ? firstSource : `bloom-downsample-${level - 1}`;
+      if (
+        !matchesSize(horizontal, size, filterFormat) ||
+        !matchesSize(vertical, size, filterFormat) ||
+        (level > 0 &&
+          (!matchesSize(source, size) ||
+            (reducer === undefined && !hasPassAccesses(find(source), pair(prior, source))))) ||
+        !hasPassAccesses(find(horizontal), pair(source, horizontal)) ||
+        !hasPassAccesses(find(vertical), [
+          { resource: horizontal, usage: 'sampled-read' },
+          ...coarser,
+          { resource: vertical, usage: 'color-attachment' },
+        ])
+      )
+        return false;
+    }
+    return true;
+  };
+  if (!levelsMatch(firstSource)) return invalidBloomGraphInspection();
+  const count =
+    3 * levelCount - 1 + Number(prefilter !== undefined) + Number(composited !== undefined);
+  if (
+    passes.length !== count - (reducer === undefined ? 0 : levelCount - 2) ||
+    targets.length !== count
+  )
     return invalidBloomGraphInspection();
-  }
-  const targetBytes = targets.reduce((bytes, resource) => bytes + (textureBytes(resource) ?? 0), 0);
   return {
     status: 'valid',
     targetCount: targets.length,
-    targetBytes,
+    targetBytes: targets.reduce((bytes, resource) => bytes + (textureBytes(resource) ?? 0), 0),
     passCount: passes.length,
-    levelCount: orderedHorizontal.length,
+    levelCount,
     levelDimensions,
-    horizontalPassCount: orderedHorizontal.length,
-    verticalPassCount: orderedVertical.length,
+    horizontalPassCount: levelCount,
+    verticalPassCount: levelCount,
   };
 }
 
@@ -484,6 +573,10 @@ export function contributeStandardSceneFeatures(
 }
 
 /** Output-route decisions derived once from the topology; every post stage reads the same facts. */
+type StandardPostContext = RenderPipelineBuildContext<RenderPipelineFrame> & {
+  readonly readOutputDither?: (frame: RenderPipelineFrame) => boolean;
+};
+
 interface StandardPostRoute {
   readonly clearOnly: boolean;
   readonly features: StandardOutputPlan['features'];
@@ -493,7 +586,8 @@ interface StandardPostRoute {
   readonly linearLdr: boolean;
   readonly rawOnly: boolean;
   readonly motionBlur: boolean;
-  readonly outputDither: boolean;
+  readonly outputDither: OutputDither;
+  readonly distanceOutlineFirstStep: number | undefined;
   readonly editorAssistance: boolean;
   readonly editorOutline: boolean;
   readonly preTemporalEffects: readonly string[];
@@ -511,7 +605,7 @@ type StandardFeatureTargets = Parameters<
 >[0]['targets'];
 
 function standardPostRoute(
-  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  context: StandardPostContext,
   topology: RenderPipelineTopology,
 ): StandardPostRoute {
   const clearOnly = topology.clearOnly === true;
@@ -535,7 +629,9 @@ function standardPostRoute(
     linearLdr: !clearOnly && !hdr,
     rawOnly,
     motionBlur: postProcessing && topology.temporal?.motionBlur === true,
-    outputDither: resolveOutputDither(topology.config),
+    outputDither: context.readOutputDither ?? resolveOutputDither(topology.config),
+    distanceOutlineFirstStep:
+      postProcessing && typeof camera.outline === 'object' ? camera.outline.firstStep : undefined,
     editorAssistance: !clearOnly && camera.editorAssistance === true,
     editorOutline: !clearOnly && camera.editorOutline === true,
     preTemporalEffects,
@@ -556,10 +652,7 @@ function standardOutputFeatures(
 ): StandardOutputPlan['features'] {
   const camera = topology.camera;
   const postProcessing = !clearOnly && camera.postProcessing !== false;
-  return createStandardOutputPlan({
-    ...(topology.config?.outputContract === undefined
-      ? {}
-      : { contract: topology.config.outputContract }),
+  return {
     temporal: postProcessing && isTemporalAntialias(camera.antialias),
     meter: postProcessing && topology.output?.autoExposure === true,
     bloom: postProcessing && standardBloomAdmitted(topology.camera),
@@ -569,12 +662,12 @@ function standardOutputFeatures(
     exposure: postProcessing && topology.output?.autoExposure === true,
     whiteBalance: postProcessing && topology.output?.whiteBalance === true,
     lut: postProcessing && topology.output?.colorLut === true,
-    outline: postProcessing && camera.outline === true,
+    outline: postProcessing && (camera.outline === true || typeof camera.outline === 'object'),
     barrelDistortion: postProcessing && camera.barrelDistortion === true,
     lensEffects: postProcessing && camera.lensEffects === true,
     fxaa: postProcessing && isFxaaAntialias(camera.antialias),
     smaa: postProcessing && camera.antialias === 'smaa',
-  }).features;
+  };
 }
 
 /** Standard stages whose feature plans consume named post-chain targets. */
@@ -594,7 +687,10 @@ function encodedPostEffects(
   preTemporalEffects: readonly string[],
 ): readonly string[] {
   return (topology.config?.postEffects ?? []).filter(
-    (identity) => !preTemporalEffects.includes(identity) && !isStandardNamedPostProcess(identity),
+    (identity) =>
+      !preTemporalEffects.includes(identity) &&
+      !topology.hdrOutputEffects?.includes(identity) &&
+      !isStandardNamedPostProcess(identity),
   );
 }
 
@@ -694,21 +790,21 @@ function addClearOnlyPresent(
   });
 }
 
-/**
- * Every Standard route terminates at the same encoded raw storage endpoint.
- * The raw-only profile has no alternate display view, so optional post
- * effects are kept in a graph-owned float target until the single Output
- * Transform performs the first 8-bit quantization.
- */
-function declareRawOnlyPostInput(
+/** Only bounded, display-encoded 8-bit destinations can quantize before FXAA. */
+function isUnorm8DisplayTarget(output: RenderPipelineTarget): boolean {
+  return output.format === 'rgba8unorm' || output.format === 'bgra8unorm';
+}
+
+/** Preserve the encoded color format at the first effect's sampling boundary. */
+function declareEncodedPostInput(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   route: StandardPostRoute,
+  output: RenderPipelineTarget,
 ): Result<RenderPipelineTarget | undefined, RenderGraphError> {
-  if (!route.rawOnly || route.postEffects.length === 0) return ok(undefined);
+  if (route.postEffects.length === 0) return ok(undefined);
   return target(context, 'standard-post-effects-input', {
-    format: 'rgba16float',
+    format: output.format as GPUTextureFormat,
     size: 'surface',
-    usage: GPU_TEXTURE_USAGE_COPY_SRC,
     domain: 'display-encoded',
   });
 }
@@ -725,6 +821,83 @@ function declareObservedOutput(
     format: topology.surface.storageFormat,
     size: 'surface',
     domain: 'display-encoded',
+  });
+}
+
+/** The final color writer feeds the view endpoint unless a consumer owns another boundary. */
+function declareStandardColorOutput(
+  context: StandardPostContext,
+  topology: RenderPipelineTopology,
+  route: StandardPostRoute,
+  surface: StandardPostSurface,
+) {
+  const observed = declareObservedOutput(context, topology, route);
+  if (!observed.ok) return observed;
+  const endpoint = observed.value ?? surface.storage;
+  const requirements = context.afterTonemapOutput;
+  const afterTonemap =
+    !route.clearOnly &&
+    topology.camera.postProcessing !== false &&
+    (requirements === undefined
+      ? context.hasFeatureWork?.(undefined, 'after-tonemap') === true
+      : requirements !== null);
+  const current =
+    afterTonemap && requirements?.needsIntermediate !== false
+      ? target(context, 'standard-current-output', {
+          format: 'rgba16float',
+          size: 'surface',
+          domain: 'display-encoded',
+        })
+      : ok(endpoint);
+  if (!current.ok) return current;
+  const effectsInput = declareEncodedPostInput(context, route, current.value);
+  if (!effectsInput.ok) return effectsInput;
+  return ok({
+    endpoint,
+    color: current.value,
+    effectInput: effectsInput.value,
+    observed: observed.value,
+    endpointFeatures: afterTonemap ? (requirements?.endpointFeatures ?? []) : undefined,
+    needsOutputDepth: afterTonemap && requirements?.needsOutputDepth === true,
+  });
+}
+
+function addAfterTonemapFeatures(
+  context: StandardPostContext,
+  color: RenderPipelineTarget,
+  endpoint: RenderPipelineTarget,
+  endpointFeatures: readonly string[],
+  depth: RenderPipelineTarget,
+  postProcessDepth: RenderPipelineTarget | undefined,
+  waterInfoTargets: WaterInfoGraphTargets | undefined,
+): Result<void, RenderPipelineBuildError> {
+  const request = {
+    placement: 'after-tonemap' as const,
+    waterInfoTargets,
+    targets: [
+      ...standardFeatureTargets(color, depth),
+      {
+        ...(postProcessDepth ?? depth),
+        kind: 'scene-depth' as const,
+        name: POST_PROCESS_OUTPUT_DEPTH,
+      },
+    ],
+    unjitteredDepth: postProcessDepth?.view,
+  };
+  const features = context.contributeFeatures({ ...request, exclude: endpointFeatures });
+  if (!features.ok) return features;
+  if (color !== endpoint) {
+    const copied = addTypedOutputTransformPass(context.graph, color, endpoint, {
+      name: 'standard-current-output-present',
+      fragmentEntryPoint: 'fs_present',
+    });
+    if (!copied.ok) return copied;
+  }
+  if (endpointFeatures.length === 0) return ok(undefined);
+  return context.contributeFeatures({
+    ...request,
+    targets: [...request.targets, { ...endpoint, kind: 'scene-color', name: 'swapchain' }],
+    include: endpointFeatures,
   });
 }
 
@@ -792,6 +965,8 @@ function addStandardTemporalResolve(
   coverage: RenderPipelineTarget | undefined,
   coverageDepth: RenderPipelineTarget | undefined,
   opaqueGuide: RenderPipelineTarget | undefined,
+  sceneVelocity: SceneVelocityInputs | undefined,
+  writeHalf?: RenderPipelineTarget,
 ): Result<
   NonNullable<RenderPipelineBuildContext<RenderPipelineFrame>['taaHistory']>,
   RenderPipelineBuildError
@@ -807,6 +982,7 @@ function addStandardTemporalResolve(
     scene,
     depth,
     currentTemporal: sceneTemporal,
+    ...(sceneVelocity === undefined ? {} : { sceneVelocity }),
     ...(coverage === undefined ? {} : { coverage }),
     ...(coverageDepth === undefined ? {} : { coverageDepth }),
     ...(secondaryReactivity === undefined ? {} : { secondaryReactivity }),
@@ -836,6 +1012,7 @@ function addStandardTemporalResolve(
             height: upper.height,
           },
           usesTsrCompute(topology.lane),
+          writeHalf,
         )
       : previousFlicker !== undefined && currentFlicker !== undefined
         ? addTypedTemporalResolvePass(context.graph, {
@@ -848,25 +1025,21 @@ function addStandardTemporalResolve(
   return ok(history);
 }
 
-/**
- * Meter the temporally resolved color before lens-domain filters. Motion
- * Blur and Bloom must consume a single exposure decision for this frame;
- * running the meter after either filter makes the measured luminance depend
- * on the authored streak radius and changes the exposure feedback loop.
- */
+/** Meter scene HDR after Motion Blur and before lens-domain filters. */
 function addExposureMeter(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   topology: RenderPipelineTopology,
   route: StandardPostRoute,
   source: RenderPipelineTarget,
   autoExposure: StandardAutoExposure | undefined,
+  halfResolution: boolean,
 ): Result<void, RenderPipelineBuildError> {
   if (!route.features.exposure || autoExposure === undefined) return ok(undefined);
   return addAutoExposureGraphPasses(context, {
     source,
     resources: autoExposure,
-    width: topology.surface.width,
-    height: topology.surface.height,
+    halfResolution,
+    ...postOutputExtent(topology),
   });
 }
 
@@ -905,13 +1078,23 @@ function addSceneFeatureStages(
   postInput: RenderPipelineTarget,
   postTemporal: RenderPipelineTarget | undefined,
   sceneTemporal: RenderPipelineTarget | undefined,
+  sceneVelocity: SceneVelocityInputs | undefined,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   if (route.clearOnly) return ok(postInput);
   if (route.motionBlur) {
-    return addMotionBlurStage(context, topology, route, featureTargets, postInput, postTemporal);
+    return addMotionBlurStage(
+      context,
+      topology,
+      route,
+      featureTargets,
+      postInput,
+      postTemporal,
+      sceneTemporal,
+      route.features.temporal && topology.opaque.lane === 'forward' ? undefined : sceneVelocity,
+    );
   }
   const boundTemporal =
-    sceneTemporal === undefined
+    sceneTemporal === undefined || sceneVelocity !== undefined
       ? undefined
       : bindStandardSceneDataTarget(sceneTemporal, topology, SCENE_DATA_TEMPORAL_V1_SCHEMA);
   const features = context.contributeFeatures({
@@ -932,8 +1115,10 @@ function addMotionBlurStage(
   featureTargets: StandardFeatureTargets,
   postInput: RenderPipelineTarget,
   postTemporal: RenderPipelineTarget | undefined,
+  sceneTemporal: RenderPipelineTarget | undefined,
+  sceneVelocity: SceneVelocityInputs | undefined,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
-  if (postTemporal === undefined) {
+  if (postTemporal === undefined && (sceneTemporal === undefined || sceneVelocity === undefined)) {
     return err(
       new Error('Motion Blur requires the Standard scene-data producer') as RenderGraphError,
     );
@@ -946,18 +1131,37 @@ function addMotionBlurStage(
   if (!blurred.ok) return blurred;
   const features = context.contributeFeatures({
     targets: featureTargets,
-    semanticTargets: [
-      bindStandardSceneDataTarget(postTemporal, topology, SCENE_DATA_TEMPORAL_V1_SCHEMA),
-    ],
+    semanticTargets:
+      sceneVelocity === undefined && postTemporal !== undefined
+        ? [bindStandardSceneDataTarget(postTemporal, topology, SCENE_DATA_TEMPORAL_V1_SCHEMA)]
+        : [],
     namedTargets: {
       'motion-input': postInput,
       'motion-output': blurred.value,
     },
     standardSurfaceAccesses: [],
-    exclude: [BARREL_DISTORTION_FEATURE_IDENTITY, EDITOR_ASSISTANCE_FEATURE_IDENTITY],
+    exclude: [
+      BARREL_DISTORTION_FEATURE_IDENTITY,
+      EDITOR_ASSISTANCE_FEATURE_IDENTITY,
+      ...(sceneVelocity === undefined ? [] : [MOTION_BLUR_FEATURE_IDENTITY]),
+    ],
   });
   if (!features.ok) return features;
-  if (context.hasFeature?.(MOTION_BLUR_FEATURE_IDENTITY) !== true) {
+
+  if (sceneVelocity !== undefined && sceneTemporal !== undefined) {
+    const native = addSceneVelocityMotionBlur(
+      context.graph,
+      postInput,
+      sceneTemporal,
+      sceneVelocity,
+      blurred.value,
+      topology.surface.width,
+      topology.surface.height,
+      topology.lane.compute && topology.lane.storageBuffer && topology.lane.storageTexture === true,
+    );
+    return native.ok ? ok(blurred.value) : native;
+  }
+  if (postTemporal !== undefined && context.hasFeature?.(MOTION_BLUR_FEATURE_IDENTITY) !== true) {
     const fallback = addMotionBlurPass(context.graph, postInput, postTemporal, blurred.value);
     if (!fallback.ok) return fallback;
   }
@@ -976,33 +1180,16 @@ function addSceneObservation(
   return addTypedFrameObservationPass(context.graph, scene);
 }
 
-/** Apply depth of field before scene post-processing and output. */
-function addDepthOfFieldStage(
-  context: RenderPipelineBuildContext<RenderPipelineFrame>,
-  topology: RenderPipelineTopology,
-  route: StandardPostRoute,
-  depth: RenderPipelineTarget,
-  input: RenderPipelineTarget,
-  postTemporal: RenderPipelineTarget | undefined,
-): Result<RenderPipelineTarget, RenderPipelineBuildError> {
-  if (route.features.dof) {
-    const taa = topology.temporal?.taa === true;
-    const dof = addDepthOfFieldPasses(
-      {
-        graph: context.graph,
-        camera: context.camera ?? {},
-        temporalTaa: taa,
-        msaaActive: depth.sampleCount === 4,
-        ...(topology.extent === undefined ? {} : { extent: topology.extent }),
-      },
-      input,
-      depth,
-      taa ? postTemporal : undefined,
-    );
-    if (!dof.ok) return dof;
-    return dof;
-  }
-  return ok(input);
+function postOutputExtent(topology: RenderPipelineTopology) {
+  return {
+    width: topology.extent?.outputWidth ?? topology.surface.width,
+    height: topology.extent?.outputHeight ?? topology.surface.height,
+  };
+}
+
+interface PortableHdrInput {
+  readonly color: RenderPipelineTarget;
+  readonly glare?: RenderPipelineTarget | undefined;
 }
 
 function addHdrLensStages(
@@ -1010,32 +1197,52 @@ function addHdrLensStages(
   topology: RenderPipelineTopology,
   route: StandardPostRoute,
   input: RenderPipelineTarget,
-): Result<RenderPipelineTarget, RenderPipelineBuildError> {
-  let postInput = input;
-  // UE fringes the scene color before Bloom is added and before tone mapping
-  // (PostProcessTonemap.usf:318-341, Bloom at :356-399 and :525-526).
-  if (route.features.chromaticAberration) {
-    const fringed = addChromaticAberrationStage(context, postInput);
-    if (!fringed.ok) return fringed;
-    postInput = fringed.value;
-  }
-  // Bloom requires linear HDR intermediates independently of the selected output curve.
-  if (route.hdr && route.features.bloom) {
-    const bloom = addStandardBloom(context, topology, postInput);
-    if (!bloom.ok) return bloom;
-    postInput = bloom.value;
-  }
-  // The threshold is authored in scene HDR units, so the flare shares Bloom's
-  // HDR-only admission and reads the Bloom-composited color.
+  halfScene?: RenderPipelineTarget,
+): Result<PortableHdrInput, RenderPipelineBuildError> {
+  const fringed = route.features.chromaticAberration
+    ? addChromaticAberrationStage(context, input)
+    : ok(input);
+  if (!fringed.ok) return fringed;
   if (route.hdr && route.features.lensFlare) {
-    const flare = addLensFlarePasses(context.graph, postInput, {
-      width: topology.extent?.outputWidth ?? topology.surface.width,
-      height: topology.extent?.outputHeight ?? topology.surface.height,
-    });
-    if (!flare.ok) return flare;
-    postInput = flare.value;
+    const glare = addLensFlareContribution(
+      context,
+      topology,
+      input,
+      halfScene,
+      route.features.bloom,
+    );
+    return glare.ok ? ok({ color: fringed.value, glare: glare.value }) : glare;
   }
-  return ok(postInput);
+  const colored = route.features.bloom
+    ? addStandardBloom(
+        context,
+        topology,
+        fringed.value,
+        route.features.chromaticAberration ? undefined : halfScene,
+      )
+    : fringed;
+  return colored.ok ? ok({ color: colored.value }) : colored;
+}
+
+/** Scene highlights and Bloom filters share the pre-fringe HDR downsample. */
+function addLensFlareContribution(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  topology: RenderPipelineTopology,
+  scene: RenderPipelineTarget,
+  halfScene: RenderPipelineTarget | undefined,
+  bloom: boolean,
+): Result<RenderPipelineTarget, RenderPipelineBuildError> {
+  const extent = postOutputExtent(topology);
+  const seed =
+    halfScene === undefined
+      ? addPostSceneColorHalf(context.graph, extent, scene, 'post-scene-color-half-lens')
+      : ok(halfScene);
+  if (!seed.ok) return seed;
+  const filtered = bloom
+    ? addStandardBloomFilters(context, topology, scene, seed.value)
+    : ok(undefined);
+  if (!filtered.ok) return filtered;
+  return addLensFlarePasses(context.graph, seed.value, extent, filtered.value);
 }
 
 function addChromaticAberrationStage(
@@ -1043,6 +1250,7 @@ function addChromaticAberrationStage(
   postInput: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   const fringed = target(context, 'standard-chromatic-aberration', {
+    lifetime: 'pass-local',
     format: 'rgba16float',
     size: 'surface',
     domain: postInput.domain ?? 'linear-hdr',
@@ -1062,13 +1270,17 @@ export function addStandardBloom(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   topology: RenderPipelineTopology,
   scene: RenderPipelineTarget,
+  halfScene?: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
-  const outputWidth = topology.extent?.outputWidth ?? topology.surface.width;
-  const outputHeight = topology.extent?.outputHeight ?? topology.surface.height;
-  const bloomSpecs = standardBloomTargetSpecs(outputWidth, outputHeight);
-  const composited = target(context, bloomSpecs.composited.label, bloomSpecs.composited);
+  const { width, height } = postOutputExtent(topology);
+  const { label, format } = STANDARD_BLOOM_TARGET_SPEC.composited;
+  const composited = target(context, label, {
+    format,
+    size: { width, height },
+    domain: 'linear-hdr',
+  });
   if (!composited.ok) return composited;
-  const filters = addStandardBloomFilters(context, topology, scene, composited.value);
+  const filters = addStandardBloomFilters(context, topology, scene, halfScene, composited.value);
   if (!filters.ok) return filters;
   return ok(composited.value);
 }
@@ -1077,25 +1289,44 @@ function addStandardBloomFilters(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   topology: RenderPipelineTopology,
   scene: RenderPipelineTarget,
+  halfScene?: RenderPipelineTarget,
   composited?: RenderPipelineTarget,
-): Result<readonly RenderPipelineTarget[], RenderPipelineBuildError> {
+): Result<RenderPipelineTarget, RenderPipelineBuildError> {
+  const extent = postOutputExtent(topology);
   const bloomSpecs = standardBloomTargetSpecs(
-    topology.extent?.outputWidth ?? topology.surface.width,
-    topology.extent?.outputHeight ?? topology.surface.height,
+    extent.width,
+    extent.height,
+    topology.camera.bloomQuality ?? BLOOM_QUALITY_HIGH,
+    bloomFilterFormat(context.capabilities),
   );
+  const seed =
+    halfScene === undefined
+      ? addPostSceneColorHalf(context.graph, extent, scene, 'post-scene-color-half-bloom')
+      : ok(halfScene);
+  if (!seed.ok) return seed;
+  const prefiltered =
+    topology.camera.bloomPrefilter === true
+      ? addBloomPrefilter(context.graph, extent, seed.value)
+      : seed;
+  if (!prefiltered.ok) return prefiltered;
+  const sources = addBloomDownsampleChain(
+    context.graph,
+    prefiltered.value,
+    bloomSpecs.levels,
+    topology.lane.compute && topology.lane.storageTexture === true,
+  );
+  if (!sources.ok) return sources;
   const horizontal = declareBloomLevels(context, bloomSpecs.horizontal);
   if (!horizontal.ok) return horizontal;
   const vertical = declareBloomLevels(context, bloomSpecs.vertical);
   if (!vertical.ok) return vertical;
-  const bloom = addTypedBloomPasses(context.graph, {
+  return addTypedBloomPasses(context.graph, {
     scene,
+    sources: sources.value,
     ...(composited === undefined ? {} : { composited }),
     horizontal: horizontal.value,
     vertical: vertical.value,
-    levelDimensions: bloomSpecs.levels,
   });
-  if (!bloom.ok) return bloom;
-  return ok(vertical.value);
 }
 
 function declareBloomLevels(
@@ -1115,34 +1346,37 @@ function addExposureWhiteBalance(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   topology: RenderPipelineTopology,
   route: StandardPostRoute,
-  postInput: RenderPipelineTarget,
+  source: PortableHdrInput,
   autoExposure: StandardAutoExposure | undefined,
-): Result<RenderPipelineTarget, RenderPipelineBuildError> {
-  if (!route.features.exposure && !route.features.whiteBalance) return ok(postInput);
+): Result<PortableHdrInput, RenderPipelineBuildError> {
+  if (!route.features.exposure && !route.features.whiteBalance) return ok(source);
   const exposureOutput = target(context, 'standard-exposure-white-balance', {
-    format: postInput.format === 'rgba32float' ? 'rgba32float' : 'rgba16float',
+    lifetime: 'pass-local',
+    format: source.color.format === 'rgba32float' ? 'rgba32float' : 'rgba16float',
     size: 'surface',
     domain: 'linear-hdr',
   });
   if (!exposureOutput.ok) return exposureOutput;
   const exposurePass = addAutoExposureExposurePass(
     context,
-    postInput,
+    source.color,
     exposureOutput.value,
     route.features.exposure ? autoExposure : undefined,
     {
       temperature: topology.output?.temperature ?? 6504,
       tint: topology.output?.tint ?? 0,
     },
+    source.glare,
   );
   if (!exposurePass.ok) return exposurePass;
-  return ok(exposureOutput.value);
+  return ok({ color: exposureOutput.value });
 }
 
 function addEditorAssistanceStages(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   route: StandardPostRoute,
   depth: RenderPipelineTarget,
+  internalSize: GraphTextureDescriptor['size'],
   featureTargets: StandardFeatureTargets,
   postInput: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
@@ -1150,7 +1384,7 @@ function addEditorAssistanceStages(
     route.editorAssistance &&
     context.hasFeatureRasterWork?.(EDITOR_ASSISTANCE_FEATURE_IDENTITY) === true;
   if (route.editorOutline && editorReady) {
-    const outlined = addOutlinePasses(context.graph, postInput, depth, {
+    const outlined = addOutlinePasses(context.graph, postInput, depth, internalSize, {
       prefix: 'editor-outline',
       programPrefix: 'forgeax.editor-outline',
       selection: (frame) => frame.editorAssistance?.source.outline,
@@ -1187,36 +1421,47 @@ function addLinearLdrStages(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   route: StandardPostRoute,
   depth: RenderPipelineTarget,
+  internalSize: GraphTextureDescriptor['size'],
   featureTargets: StandardFeatureTargets,
-  input: RenderPipelineTarget,
+  input: PortableHdrInput,
   finalPresent: RenderPipelineTarget,
   waterInfoTargets?: WaterInfoGraphTargets,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
-  const toned = addToneStage(context, route, input);
+  const toned = addToneStage(context, route, input.color, input.glare);
   if (!toned.ok) return toned;
   let postInput = toned.value;
   if (route.features.lut) {
-    const lut = addColorLutStage(context, route, postInput, finalPresent);
+    const lut = addColorLutStage(context, route, postInput, finalPresent, input.glare);
     if (!lut.ok) return lut;
     postInput = lut.value;
   }
-  return addLinearLdrExtensions(context, route, depth, featureTargets, postInput, waterInfoTargets);
+  return addLinearLdrExtensions(
+    context,
+    route,
+    depth,
+    internalSize,
+    featureTargets,
+    postInput,
+    waterInfoTargets,
+  );
 }
 
 function addLinearLdrExtensions(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   route: StandardPostRoute,
   depth: RenderPipelineTarget,
+  internalSize: GraphTextureDescriptor['size'],
   featureTargets: StandardFeatureTargets,
   input: RenderPipelineTarget,
   waterInfoTargets?: WaterInfoGraphTargets,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   let postInput = input;
-  if (route.features.outline) {
+  if (route.features.outline && route.distanceOutlineFirstStep === undefined) {
     const outlined = addOutlinePasses(
       context.graph,
       postInput,
       depth,
+      internalSize,
       route.editorAssistance
         ? {
             selection: (frame) => {
@@ -1233,7 +1478,14 @@ function addLinearLdrExtensions(
     if (!outlined.ok) return outlined;
     postInput = outlined.value;
   }
-  const assistance = addEditorAssistanceStages(context, route, depth, featureTargets, postInput);
+  const assistance = addEditorAssistanceStages(
+    context,
+    route,
+    depth,
+    internalSize,
+    featureTargets,
+    postInput,
+  );
   if (!assistance.ok) return assistance;
   postInput = assistance.value;
   // Debug geometry is world-space scene content. Insert it before the spatial
@@ -1243,17 +1495,39 @@ function addLinearLdrExtensions(
     const overlay = addTypedDebugOverlayPass(context.graph, postInput);
     if (!overlay.ok) return overlay;
   }
-  if (route.features.barrelDistortion) {
-    const barrel = addBarrelDistortionStage(context, featureTargets, postInput);
-    if (!barrel.ok) return barrel;
-    postInput = barrel.value;
-  }
-  if (route.features.smaa) {
-    const antialiased = addSmaaPasses(context.graph, postInput);
-    if (!antialiased.ok) return antialiased;
-    postInput = antialiased.value;
-  }
   return ok(postInput);
+}
+
+interface SpatialOutputInput {
+  readonly color: RenderPipelineTarget;
+  readonly smaaWeights?: RenderPipelineTarget;
+}
+
+/** Edges follow pre-Tonemap scene coordinates; the lens warp follows the blend. */
+function addSpatialOutputStages(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  route: StandardPostRoute,
+  featureTargets: StandardFeatureTargets,
+  preTone: RenderPipelineTarget,
+  postTone: RenderPipelineTarget,
+  retainLinear: boolean,
+): Result<SpatialOutputInput, RenderPipelineBuildError> {
+  let color = postTone;
+  if (route.features.smaa) {
+    const weights = addSmaaWeights(context.graph, preTone);
+    if (!weights.ok) return weights;
+    if (!retainLinear && !route.features.barrelDistortion)
+      return ok({ color, smaaWeights: weights.value });
+    const blended = addSmaaBlend(context.graph, color, weights.value);
+    if (!blended.ok) return blended;
+    color = blended.value;
+  }
+  if (route.features.barrelDistortion) {
+    const barrel = addBarrelDistortionStage(context, featureTargets, color);
+    if (!barrel.ok) return barrel;
+    color = barrel.value;
+  }
+  return ok({ color });
 }
 
 /**
@@ -1267,10 +1541,12 @@ function addToneStage(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   route: StandardPostRoute,
   postInput: RenderPipelineTarget,
+  glare?: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   const observesLinearLdr = context.observationCaptureDomains?.includes('linear-ldr') === true;
   if (route.fusedToneLut || !(route.splitOutput || observesLinearLdr)) return ok(postInput);
   const toneOutput = target(context, 'standard-tone-output', {
+    lifetime: 'pass-local',
     format: 'rgba16float',
     size: 'surface',
     domain: 'linear-ldr',
@@ -1280,6 +1556,7 @@ function addToneStage(
     dither: false,
     name: 'standard-tone',
     fragmentEntryPoint: 'fs_tone_only',
+    glare,
   });
   if (!transformed.ok) return transformed;
   if (route.splitOutput) return ok(toneOutput.value);
@@ -1293,6 +1570,7 @@ function addColorLutStage(
   route: StandardPostRoute,
   postInput: RenderPipelineTarget,
   finalPresent: RenderPipelineTarget,
+  glare?: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   const colorLut = context.standardOutput?.colorLut;
   if (colorLut === undefined) {
@@ -1312,11 +1590,13 @@ function addColorLutStage(
       finalPresent,
       colorLut,
       route.outputDither,
+      glare,
     );
     if (!fused.ok) return fused;
     return ok(finalPresent);
   }
   const lutOutput = target(context, 'standard-color-lut', {
+    lifetime: 'pass-local',
     format: 'rgba16float',
     size: 'surface',
     domain: 'linear-ldr',
@@ -1333,6 +1613,7 @@ function addBarrelDistortionStage(
   postInput: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   const barrelOutput = target(context, 'standard-barrel-distortion', {
+    lifetime: 'pass-local',
     format: 'rgba16float',
     size: 'surface',
     domain: 'linear-ldr',
@@ -1358,6 +1639,21 @@ function addBarrelDistortionStage(
   return ok(barrelOutput.value);
 }
 
+function declareEncodedFxaaInput(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  name: 'standard-grade-output' | 'standard-output-color',
+  compact: boolean,
+): Result<RenderPipelineTarget, RenderGraphError> {
+  return target(context, name, {
+    format: compact ? 'rgba8unorm' : 'rgba16float',
+    size: 'surface',
+    usage: GPU_TEXTURE_USAGE_COPY_SRC,
+    domain: 'display-encoded',
+  });
+}
+
+const FXAA_NO_DITHER_PARAMS = new Uint8Array(16);
+
 /**
  * Split output keeps FXAA in linear LDR; the combined route encodes first and
  * lets FXAA write the encoded endpoint.
@@ -1367,25 +1663,22 @@ function addFxaaStage(
   route: StandardPostRoute,
   postInput: RenderPipelineTarget,
   encodedOutput: RenderPipelineTarget,
+  glare?: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
+  const compact = !route.splitOutput && isUnorm8DisplayTarget(encodedOutput);
   const output = route.splitOutput
     ? target(context, 'standard-fxaa-output', {
         format: 'rgba16float',
         size: 'surface',
         domain: 'linear-ldr',
       })
-    : target(context, 'standard-output-color', {
-        format: 'rgba16float',
-        size: 'surface',
-        usage: GPU_TEXTURE_USAGE_COPY_SRC,
-        domain: 'display-encoded',
-      });
+    : declareEncodedFxaaInput(context, 'standard-output-color', compact);
   if (!output.ok) return output;
   if (!route.splitOutput) {
-    // FXAA samples this display-encoded intermediate; leave dither to the
-    // final FXAA writer so the same pixel is not dithered twice.
+    // Dither the first 8-bit write while sub-code precision is still available.
     const outputTransform = addTypedOutputTransformPass(context.graph, postInput, output.value, {
-      dither: false,
+      dither: compact ? route.outputDither : false,
+      glare,
     });
     if (!outputTransform.ok) return outputTransform;
   }
@@ -1394,9 +1687,9 @@ function addFxaaStage(
     shader: 'fxaa',
     input: route.splitOutput ? postInput : output.value,
     outputs: [route.splitOutput ? output.value : encodedOutput],
-    ...(route.splitOutput
+    ...(route.splitOutput || compact
       ? {
-          paramsTransform: (): Uint8Array => new Uint8Array(16),
+          paramsTransform: () => FXAA_NO_DITHER_PARAMS,
         }
       : {}),
   });
@@ -1409,19 +1702,17 @@ function addCombinedOutputTransform(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   route: StandardPostRoute,
   postInput: RenderPipelineTarget,
-  finalPresent: RenderPipelineTarget,
-  rawOnlyPostInput: RenderPipelineTarget | undefined,
+  encodedOutput: RenderPipelineTarget,
+  glare?: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   if (route.splitOutput) return ok(postInput);
-  const outputDither = route.outputDither;
-  const transformed =
-    rawOnlyPostInput !== undefined
-      ? addTypedOutputTransformPass(context.graph, postInput, rawOnlyPostInput, {
-          dither: outputDither && route.postEffects.length === 0,
-        })
-      : addTypedOutputTransformPass(context.graph, postInput, finalPresent, {
-          dither: outputDither,
-        });
+  const transformed = addTypedOutputTransformPass(context.graph, postInput, encodedOutput, {
+    dither:
+      route.rawOnly && route.postEffects.length > 0 && !isUnorm8DisplayTarget(encodedOutput)
+        ? false
+        : route.outputDither,
+    glare,
+  });
   if (!transformed.ok) return transformed;
   return ok(postInput);
 }
@@ -1431,6 +1722,7 @@ function addLensEffectsStage(
   postInput: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   const lensOutput = target(context, 'standard-lens-effects', {
+    lifetime: 'pass-local',
     format: 'rgba16float',
     size: 'surface',
     domain: 'linear-ldr',
@@ -1450,15 +1742,15 @@ function addLensEffectsStage(
 function addOutputEncodingStages(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   route: StandardPostRoute,
-  input: RenderPipelineTarget,
-  finalPresent: RenderPipelineTarget,
-  rawOnlyPostInput: RenderPipelineTarget | undefined,
+  input: SpatialOutputInput,
+  encodedOutput: RenderPipelineTarget,
+  glare?: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
-  let postInput = input;
+  let postInput = input.color;
   if (route.hdr || route.linearLdr || route.features.fxaa || route.rawOnly || route.motionBlur) {
     const transformed = route.features.fxaa
-      ? addFxaaStage(context, route, postInput, rawOnlyPostInput ?? finalPresent)
-      : addCombinedOutputTransform(context, route, postInput, finalPresent, rawOnlyPostInput);
+      ? addFxaaStage(context, route, postInput, encodedOutput, glare)
+      : addCombinedOutputTransform(context, route, postInput, encodedOutput, glare);
     if (!transformed.ok) return transformed;
     postInput = transformed.value;
   }
@@ -1468,11 +1760,11 @@ function addOutputEncodingStages(
     postInput = lens.value;
   }
   if (route.splitOutput && !route.fusedToneLut) {
-    const encodedOutput = rawOnlyPostInput ?? finalPresent;
     const outputTransform = addTypedOutputTransformPass(context.graph, postInput, encodedOutput, {
       dither: route.outputDither,
-      name: 'standard-output-encoding',
+      name: input.smaaWeights === undefined ? 'standard-output-encoding' : 'smaa-blend',
       fragmentEntryPoint: 'fs_encode_only',
+      smaaWeights: input.smaaWeights,
       observationCaptureDomains: context.observationCaptureDomains?.filter(
         (domain) => domain !== 'final-display',
       ),
@@ -1481,46 +1773,6 @@ function addOutputEncodingStages(
     postInput = encodedOutput;
   }
   return ok(postInput);
-}
-
-/**
- * Effects sample display-encoded values unchanged, so the copy source is the
- * raw storage view rather than the sRGB-decoding display view.
- */
-function addEncodedPostEffects(
-  context: RenderPipelineBuildContext<RenderPipelineFrame>,
-  topology: RenderPipelineTopology,
-  route: StandardPostRoute,
-  depth: RenderPipelineTarget,
-  postInputTarget: RenderPipelineTarget | undefined,
-  finalPresent: RenderPipelineTarget,
-): Result<void, RenderPipelineBuildError> {
-  if (route.postEffects.length === 0) return ok(undefined);
-  if (postInputTarget === undefined) {
-    return err(
-      new RenderGraphError({
-        code: 'resource-descriptor-invalid',
-        expected: 'raw-only post effects have a graph-owned encoded input target',
-        hint: 'retain the candidate LKG when the post-effect input target cannot be declared',
-        detail: {
-          resourceLabel: 'standard-post-effects-input',
-          field: 'descriptor',
-          expected: 'rgba16float display-encoded target',
-          actual: 'absent',
-        },
-      }),
-    );
-  }
-  const effects = addTypedCompositePostEffects(
-    context.graph,
-    route.postEffects,
-    postInputTarget,
-    finalPresent,
-    depth,
-    topology.surface,
-  );
-  if (!effects.ok) return effects;
-  return ok(undefined);
 }
 
 /** Screen-space overlay, final-display observation and the raw-only observed present. */
@@ -1551,19 +1803,27 @@ function addStandardPresentStages(
   return ok(undefined);
 }
 
-/** A real linear-LDR consumer retains its own seam; the ordinary core needs none. */
-function nativeOutputNeedsLinearLdr(
-  context: RenderPipelineBuildContext<RenderPipelineFrame>,
-  route: StandardPostRoute,
-): boolean {
-  return (
-    route.features.outline ||
-    route.editorAssistance ||
-    route.editorOutline ||
-    route.features.barrelDistortion ||
-    route.features.smaa ||
-    context.observationCaptureDomains?.includes('linear-ldr') === true
-  );
+/** Grade and Encode agree on the physical attachment and its dither boundary. */
+function declareNativeGradeTargets(
+  context: StandardPostContext,
+  features: StandardPostRoute['features'],
+  finalPresent: RenderPipelineTarget,
+  linearSeam: boolean,
+) {
+  // Grain consumes fractional encoded color after FXAA, as do float destinations.
+  const compact = features.fxaa && !features.lensEffects && isUnorm8DisplayTarget(finalPresent);
+  const encoded = features.fxaa
+    ? declareEncodedFxaaInput(context, 'standard-grade-output', compact)
+    : ok(finalPresent);
+  if (!encoded.ok) return encoded;
+  const grade = linearSeam
+    ? target(context, 'standard-grade-linear', {
+        format: 'rgba16float',
+        size: 'surface',
+        domain: 'linear-ldr',
+      })
+    : encoded;
+  return grade.ok ? ok({ grade: grade.value, encoded: encoded.value, compact }) : grade;
 }
 
 /** Fused default core, with explicitly selected spatial extensions in linear LDR. */
@@ -1577,18 +1837,15 @@ function addNativeStandardOutput(
   depth: RenderPipelineTarget,
   featureTargets: StandardFeatureTargets,
   waterInfoTargets?: WaterInfoGraphTargets,
+  halfScene?: RenderPipelineTarget,
 ): Result<void, RenderPipelineBuildError> {
-  // A flare samples the Bloom-composited HDR neighborhood. Retain that
-  // explicit producer and disable its already-applied Grade inputs.
-  const flareInput = route.features.lensFlare
-    ? addHdrLensStages(context, topology, route, input)
-    : ok(input);
-  if (!flareInput.ok) return flareInput;
-  const fusedBloom = route.features.bloom && !route.features.lensFlare;
-  const filters = fusedBloom
-    ? addStandardBloomFilters(context, topology, flareInput.value)
-    : ok(undefined);
-  if (!filters.ok) return filters;
+  const lensFlare = route.hdr && route.features.lensFlare;
+  const glare = lensFlare
+    ? addLensFlareContribution(context, topology, input, halfScene, route.features.bloom)
+    : route.features.bloom
+      ? addStandardBloomFilters(context, topology, input, halfScene)
+      : ok(undefined);
+  if (!glare.ok) return glare;
   const lut = context.standardOutput?.colorLut;
   if (route.features.lut && lut === undefined)
     return err(
@@ -1598,93 +1855,230 @@ function addNativeStandardOutput(
         hint: 'prepare the selected Camera color LUT before compiling its output graph',
       }),
     );
-  const linearSeam = nativeOutputNeedsLinearLdr(context, route);
+  const linearSeam = nativeGradeNeedsLinearImage(
+    topology.camera,
+    context.observationCaptureDomains?.includes('linear-ldr') === true,
+  );
+  const outputs = declareNativeGradeTargets(context, route.features, finalPresent, linearSeam);
+  if (!outputs.ok) return outputs;
+  const { grade, encoded, compact } = outputs.value;
   const parameters = addNativeOutputParameters(context.graph, {
-    bloom: fusedBloom,
-    lutStrength: route.features.lut ? (lut?.strength ?? 0) : 0,
+    bloomIntensity: lensFlare ? 1 : route.features.bloom ? 'camera' : 0,
+    lut: route.features.lut ? lut : undefined,
     sharpen: 0,
     dither: route.outputDither,
+    ditherAtEncoding: compact,
     finishInGrade: !route.features.fxaa,
     linearGrade: linearSeam,
-    chromaticAberration: !route.features.lensFlare,
   });
   if (!parameters.ok) return parameters;
-  const gradeOutput = linearSeam
-    ? target(context, 'standard-grade-linear', {
-        format: 'rgba16float',
-        size: 'surface',
-        domain: 'linear-ldr',
-      })
-    : route.features.fxaa
-      ? target(context, 'standard-grade-output', {
-          format: 'rgba16float',
-          size: 'surface',
-          usage: GPU_TEXTURE_USAGE_COPY_SRC,
-          domain: 'display-encoded',
-        })
-      : ok(finalPresent);
-  if (!gradeOutput.ok) return gradeOutput;
   const graded = addNativeOutputPass(
     context.graph,
     'standard-grade',
-    flareInput.value,
-    gradeOutput.value,
+    input,
+    grade,
     parameters.value,
     {
       kind: 'grade',
       exposure: route.features.exposure ? autoExposure?.candidate : undefined,
-      bloom: filters.value,
+      bloom: glare.value,
       lut: route.features.lut ? lut : undefined,
     },
   );
   if (!graded.ok) return graded;
-  const encodeLinearSeam = (): Result<RenderPipelineTarget, RenderPipelineBuildError> => {
-    if (!linearSeam) return ok(gradeOutput.value);
+  const encodeLinearSeam = (): Result<void, RenderPipelineBuildError> => {
+    if (!linearSeam) return ok(undefined);
     const extended = addLinearLdrExtensions(
       context,
       route,
       depth,
+      renderInternalSize(topology),
       featureTargets,
-      gradeOutput.value,
+      grade,
       waterInfoTargets,
     );
     if (!extended.ok) return extended;
-    if (context.observationCaptureDomains?.includes('linear-ldr')) {
-      const captured = addObservationCapturePass(context.graph, extended.value, 'linear-ldr');
+    const observeLinear = context.observationCaptureDomains?.includes('linear-ldr') === true;
+    const spatial = addSpatialOutputStages(
+      context,
+      route,
+      featureTargets,
+      input,
+      extended.value,
+      observeLinear,
+    );
+    if (!spatial.ok) return spatial;
+    const { color, smaaWeights } = spatial.value;
+    if (observeLinear) {
+      const captured = addObservationCapturePass(context.graph, color, 'linear-ldr');
       if (!captured.ok) return captured;
     }
-    const output = route.features.fxaa
-      ? target(context, 'standard-grade-output', {
-          format: 'rgba16float',
-          size: 'surface',
-          usage: GPU_TEXTURE_USAGE_COPY_SRC,
-          domain: 'display-encoded',
-        })
-      : ok(finalPresent);
-    if (!output.ok) return output;
-    const encode = addNativeOutputPass(
+    return addNativeOutputPass(
       context.graph,
-      'standard-encode',
-      extended.value,
-      output.value,
+      smaaWeights === undefined ? 'standard-encode' : 'smaa-blend',
+      color,
+      encoded,
       parameters.value,
-      { kind: 'encode' },
+      { kind: 'encode', smaaWeights },
     );
-    if (!encode.ok) return encode;
-    return ok(output.value);
   };
-  const encoded = encodeLinearSeam();
-  if (!encoded.ok) return encoded;
+  const encode = encodeLinearSeam();
+  if (!encode.ok) return encode;
   return route.features.fxaa
     ? addNativeOutputPass(
         context.graph,
         'standard-final',
-        encoded.value,
+        encoded,
         finalPresent,
         parameters.value,
         { kind: 'final', fxaa: true },
       )
     : ok(undefined);
+}
+
+interface StandardPostInputs {
+  readonly sceneTemporal?: RenderPipelineTarget | undefined;
+  /** Visible surface depth paired with scene color when it differs from opaque depth. */
+  readonly sceneColorDepth?: RenderPipelineTarget;
+  readonly secondaryReactivity?: TemporalSecondaryReactivity | undefined;
+  readonly coverage?: RenderPipelineTarget | undefined;
+  readonly coverageDepth?: RenderPipelineTarget | undefined;
+  readonly opaqueGuide?: RenderPipelineTarget | undefined;
+  readonly waterInfoTargets?: WaterInfoGraphTargets | undefined;
+  readonly gpuDriven?: RenderPipelineGpuDrivenProjection | undefined;
+  readonly waterFoamSimulation?: GraphTextureView | undefined;
+  readonly sceneVelocity?: SceneVelocityInputs | undefined;
+}
+
+const EMPTY_POST_INPUTS: StandardPostInputs = {};
+
+function preparePostHalfScene(
+  context: StandardPostContext,
+  topology: RenderPipelineTopology,
+  route: StandardPostRoute,
+) {
+  const extent = postOutputExtent(topology);
+  const meterHalf = route.features.exposure && topology.output?.autoExposureHalfRes === true;
+  const lensFlare = route.hdr && route.features.lensFlare;
+  const lensUsesUnfilteredScene =
+    route.distanceOutlineFirstStep === undefined &&
+    !topology.hdrOutputEffects?.length &&
+    (lensFlare || !route.features.chromaticAberration || usesNativeGrade(topology));
+  const needsHalf = meterHalf || ((lensFlare || route.features.bloom) && lensUsesUnfilteredScene);
+  const fusedHalf =
+    needsHalf &&
+    route.features.temporal &&
+    topology.camera.antialias === 'tsr' &&
+    usesTsrCompute(topology.lane) &&
+    !route.motionBlur &&
+    context.hasFeatureWork?.(undefined, 'post') === false
+      ? declarePostSceneColorHalf(context.graph, extent, 'post-scene-color-half')
+      : ok(undefined);
+  return fusedHalf.ok
+    ? ok({ extent, meterHalf, lensUsesUnfilteredScene, needsHalf, fusedHalf: fusedHalf.value })
+    : fusedHalf;
+}
+
+function addStandardPostTemporalInputs(
+  context: StandardPostContext,
+  topology: RenderPipelineTopology,
+  route: StandardPostRoute,
+  scene: RenderPipelineTarget,
+  depth: RenderPipelineTarget,
+  visibleDepth: RenderPipelineTarget,
+  needsOutputDepth: boolean,
+  inputs: StandardPostInputs,
+) {
+  const {
+    sceneTemporal,
+    secondaryReactivity,
+    coverage,
+    coverageDepth,
+    opaqueGuide,
+    waterInfoTargets,
+    gpuDriven,
+    waterFoamSimulation,
+    sceneVelocity,
+  } = inputs;
+  const preTemporal = addPreTemporalEffects(
+    context,
+    topology,
+    route.preTemporalEffects,
+    scene,
+    depth,
+  );
+  if (!preTemporal.ok) return preTemporal;
+  const focused = route.features.dof
+    ? addDepthOfFieldPasses(
+        context.graph,
+        context.camera?.depthOfField,
+        renderInternalCopySize(topology),
+        preTemporal.value,
+        visibleDepth,
+        context.capabilities?.rg16floatRenderable ? 'rg16float' : 'rgba16float',
+        topology.lane,
+      )
+    : preTemporal;
+  if (!focused.ok) return focused;
+  let preMotionColor = focused.value;
+  let postTemporal = sceneVelocity === undefined ? sceneTemporal : undefined;
+  const autoExposure = requireAutoExposure(context, route);
+  if (!autoExposure.ok) return autoExposure;
+  const halfPlan = preparePostHalfScene(context, topology, route);
+  if (!halfPlan.ok) return halfPlan;
+  const { fusedHalf } = halfPlan.value;
+  const prepareTemporalAndOutputDepth = () => {
+    if (route.features.temporal) {
+      const history = addStandardTemporalResolve(
+        context,
+        topology,
+        preMotionColor,
+        depth,
+        sceneTemporal,
+        secondaryReactivity,
+        coverage,
+        coverageDepth,
+        opaqueGuide,
+        sceneVelocity,
+        fusedHalf,
+      );
+      if (!history.ok) return history;
+      preMotionColor = history.value.currentColor;
+      postTemporal = history.value.currentTemporal;
+    }
+    return addStandardPostProcessDepth(context, topology, scene, {
+      requested: needsOutputDepth,
+      temporal: route.features.temporal,
+      visibleDepth,
+      gpuDriven,
+      waterInfoTargets,
+      waterFoamSimulation,
+    });
+  };
+  const exactDepth = prepareTemporalAndOutputDepth();
+  if (!exactDepth.ok) return exactDepth;
+  return ok({
+    preMotionColor,
+    postTemporal,
+    exactDepth: exactDepth.value,
+    autoExposure: autoExposure.value,
+    ...halfPlan.value,
+  });
+}
+
+function addStandardHdrOutputEffects(
+  context: StandardPostContext,
+  topology: RenderPipelineTopology,
+  route: StandardPostRoute,
+  input: RenderPipelineTarget,
+  depth: RenderPipelineTarget,
+): Result<RenderPipelineTarget, RenderPipelineBuildError> {
+  const outlined =
+    route.distanceOutlineFirstStep === undefined
+      ? ok(input)
+      : addDistanceOutlinePasses(context.graph, input, depth, route.distanceOutlineFirstStep);
+  if (!outlined.ok || route.clearOnly || topology.camera.postProcessing === false) return outlined;
+  return addHdrOutputEffects(context, topology, outlined.value);
 }
 
 /**
@@ -1694,266 +2088,183 @@ function addNativeStandardOutput(
  * horizontal/vertical Gaussian pyramid for the enabled path.
  */
 export function addStandardPost(
-  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  context: StandardPostContext,
   topology: RenderPipelineTopology,
   scene: RenderPipelineTarget,
   depth: RenderPipelineTarget,
   surface: StandardPostSurface,
-  sceneTemporal?: RenderPipelineTarget,
-  secondaryReactivity?: TemporalSecondaryReactivity,
-  coverage?: RenderPipelineTarget,
-  coverageDepth?: RenderPipelineTarget,
-  opaqueGuide?: RenderPipelineTarget,
-  waterInfoTargets?: WaterInfoGraphTargets,
-  gpuDriven?: RenderPipelineGpuDrivenProjection,
-  waterFoamSimulation?: GraphTextureView,
-  sceneAo?: SceneColorAo,
+  inputs: StandardPostInputs = EMPTY_POST_INPUTS,
 ): Result<void, RenderPipelineBuildError> {
+  const { sceneTemporal, sceneColorDepth, waterInfoTargets, sceneVelocity } = inputs;
   if (topology.clearOnly === true && surface.display === undefined) {
     return addClearOnlyPresent(context, scene, surface);
   }
   const route = standardPostRoute(context, topology);
   const capabilityFailure = lensCapabilityFailure(context, route.features);
   if (capabilityFailure !== undefined) return err(capabilityFailure);
-  const rawOnlyPostInput = declareRawOnlyPostInput(context, route);
-  if (!rawOnlyPostInput.ok) return rawOnlyPostInput;
-  const observedOutput = declareObservedOutput(context, topology, route);
-  if (!observedOutput.ok) return observedOutput;
-  const present = observedOutput.value ?? surface.storage;
-  const hasAfterTonemapWork = () => {
-    return (
-      !route.clearOnly &&
-      topology.camera.postProcessing !== false &&
-      context.hasFeatureWork?.(undefined, 'after-tonemap') === true
-    );
-  };
-  const afterTonemap = hasAfterTonemapWork();
-  const declareOutputColor = () => {
-    const outputColor = afterTonemap
-      ? target(context, 'standard-current-output', {
-          format: 'rgba16float',
-          size: 'surface',
-          domain: 'display-encoded',
-        })
-      : ok(present);
-    return outputColor;
-  };
-  const outputColor = declareOutputColor();
-  if (!outputColor.ok) return outputColor;
-  const finalPresent = outputColor.value;
-  const applySceneColorAo = (): Result<RenderPipelineTarget, RenderPipelineBuildError> => {
-    if (
-      !route.clearOnly &&
-      topology.config?.ssao?.enabled === true &&
-      topology.config.ssao.application === 'scene-color'
-    ) {
-      if (sceneAo === undefined)
-        return err(
-          new RenderGraphError({
-            code: 'resource-resolution-failed',
-            expected: 'filtered visibility and matching depth for scene-color AO',
-            hint: 'project the selected AO producer into Standard post',
-          }),
-        );
-      const composed = addSsaoSceneColorPass(
-        context.graph,
-        topology,
-        scene,
-        sceneAo,
-        route.features.exposure ? context.standardOutput?.autoExposure?.state : undefined,
-      );
-      if (!composed.ok) return composed;
-      return composed;
-    }
-    return ok(scene);
-  };
-  const hdrScene = applySceneColorAo();
-  if (!hdrScene.ok) return hdrScene;
-  const preTemporal = addPreTemporalEffects(
+  const output = declareStandardColorOutput(context, topology, route, surface);
+  if (!output.ok) return output;
+  const {
+    color,
+    effectInput,
+    endpoint,
+    endpointFeatures,
+    needsOutputDepth,
+    observed: observedOutput,
+  } = output.value;
+  const visibleDepth = sceneColorDepth ?? depth;
+  const encodedOutput = effectInput ?? color;
+  const hdr = addStandardPostTemporalInputs(
     context,
     topology,
-    route.preTemporalEffects,
-    hdrScene.value,
+    route,
+    scene,
     depth,
+    visibleDepth,
+    needsOutputDepth,
+    inputs,
   );
-  if (!preTemporal.ok) return preTemporal;
-  let postInput = preTemporal.value;
-  let postTemporal = sceneTemporal;
-  let postProcessDepth: RenderPipelineTarget | undefined;
-  const autoExposure = requireAutoExposure(context, route);
-  if (!autoExposure.ok) return autoExposure;
-  const prepareTemporalPostInput = () => {
-    if (route.features.temporal) {
-      const history = addStandardTemporalResolve(
-        context,
-        topology,
-        postInput,
-        depth,
-        sceneTemporal,
-        secondaryReactivity,
-        coverage,
-        coverageDepth,
-        opaqueGuide,
-      );
-      if (!history.ok) return history;
-      postInput = history.value.currentColor;
-      // Motion consumers use TAA's output-domain temporal metadata. Display
-      // depth consumers need real unjittered geometry instead of its dilation.
-      postTemporal = history.value.currentTemporal;
-      if (afterTonemap && context.hasFeatureWork?.(undefined, 'after-tonemap', 'depth') === true) {
-        const matchedDepth = addStandardPostProcessDepth(
-          context,
-          topology,
-          scene,
-          gpuDriven,
-          waterInfoTargets,
-          waterFoamSimulation,
-        );
-        if (!matchedDepth.ok) return matchedDepth;
-        postProcessDepth = matchedDepth.value;
-      }
-    }
-    return undefined;
-  };
-  const temporalFailure = prepareTemporalPostInput();
-  if (temporalFailure !== undefined) return temporalFailure;
-  const metered = addExposureMeter(context, topology, route, postInput, autoExposure.value);
-  if (!metered.ok) return metered;
-  const focused = addDepthOfFieldStage(context, topology, route, depth, postInput, postTemporal);
-  if (!focused.ok) return focused;
-  postInput = focused.value;
-  const captureSsrSceneColorHistory = () => {
-    if (context.ssrSceneColorOutput !== undefined) {
-      const snapshot = addTypedFullscreenPass(context.graph, {
-        name: 'ssr-scene-color-history',
-        shader: SSR_SCENE_COLOR_HISTORY_PROGRAM.name,
-        input: postInput,
-        outputs: [context.ssrSceneColorOutput],
-      });
-      if (!snapshot.ok) return snapshot;
-    }
-    return undefined;
-  };
-  const captureSsrSceneColorHistoryFailure = captureSsrSceneColorHistory();
-  if (captureSsrSceneColorHistoryFailure !== undefined) return captureSsrSceneColorHistoryFailure;
-  const featureTargets = standardFeatureTargets(postInput, depth);
+  if (!hdr.ok) return hdr;
+  const {
+    preMotionColor,
+    postTemporal,
+    exactDepth,
+    autoExposure,
+    extent,
+    meterHalf,
+    lensUsesUnfilteredScene,
+    needsHalf,
+    fusedHalf,
+  } = hdr.value;
+  // Forward SSR saves the resolved scene color before display filters.
+  if (context.ssrSceneColorOutput !== undefined) {
+    const snapshot = addTypedFullscreenPass(context.graph, {
+      name: 'ssr-scene-color-history',
+      shader: SSR_SCENE_COLOR_HISTORY_PROGRAM.name,
+      input: preMotionColor,
+      outputs: [context.ssrSceneColorOutput],
+    });
+    if (!snapshot.ok) return snapshot;
+  }
+  const featureTargets = standardFeatureTargets(preMotionColor, depth);
   const featured = addSceneFeatureStages(
     context,
     topology,
     route,
     featureTargets,
-    postInput,
+    preMotionColor,
     postTemporal,
     sceneTemporal,
+    sceneVelocity,
   );
   if (!featured.ok) return featured;
+  const halfScene =
+    needsHalf && fusedHalf === undefined
+      ? addPostSceneColorHalf(context.graph, extent, featured.value, 'post-scene-color-half')
+      : ok(fusedHalf);
+  if (!halfScene.ok) return halfScene;
+  const metered = addExposureMeter(
+    context,
+    topology,
+    route,
+    meterHalf ? (halfScene.value ?? featured.value) : featured.value,
+    autoExposure,
+    meterHalf,
+  );
+  if (!metered.ok) return metered;
   const observed = addSceneObservation(context, route, scene);
   if (!observed.ok) return observed;
-  let highlighted = featured.value;
-  if (route.features.outline) {
-    const outlined = addDistanceOutlinePasses(context.graph, highlighted, depth);
-    if (!outlined.ok) return outlined;
-    highlighted = outlined.value;
-  }
+  const highlighted = addStandardHdrOutputEffects(context, topology, route, featured.value, depth);
+  if (!highlighted.ok) return highlighted;
+  const hdrColor = highlighted.value;
   const publishStandardOutput = (selectedRoute: StandardPostRoute = route) => {
-    if (afterTonemap) {
-      const features = context.contributeFeatures({
-        placement: 'after-tonemap',
-        waterInfoTargets,
-        targets: standardFeatureTargets(finalPresent, postProcessDepth ?? depth),
-        ...(postProcessDepth === undefined ? {} : { postProcessView: 'unjittered' as const }),
-        semanticTargets: [],
-        namedTargets: {},
-        standardSurfaceAccesses: [],
-      });
-      if (!features.ok) return features;
-      const copied = addTypedOutputTransformPass(context.graph, finalPresent, present, {
-        name: 'standard-current-output-present',
-        fragmentEntryPoint: 'fs_present',
-      });
-      if (!copied.ok) return copied;
+    if (effectInput !== undefined) {
+      const effects = addTypedCompositePostEffects(
+        context.graph,
+        route.postEffects,
+        effectInput,
+        color,
+        depth,
+      );
+      if (!effects.ok) return effects;
     }
-    return addStandardPresentStages(context, selectedRoute, surface, present, observedOutput.value);
+    if (endpointFeatures !== undefined) {
+      const features = addAfterTonemapFeatures(
+        context,
+        color,
+        endpoint,
+        endpointFeatures,
+        visibleDepth,
+        exactDepth,
+        waterInfoTargets,
+      );
+      if (!features.ok) return features;
+    }
+    return addStandardPresentStages(context, selectedRoute, surface, endpoint, observedOutput);
   };
   const addSelectedColorOutput = () => {
-    const nativeOutput =
-      topology.config?.outputContract === 'standard-output-v2' &&
-      !route.rawOnly &&
-      !route.clearOnly;
-    if (nativeOutput) {
+    if (usesNativeGrade(topology)) {
       const native = addNativeStandardOutput(
         context,
         topology,
         route,
-        highlighted,
-        autoExposure.value,
-        finalPresent,
+        hdrColor,
+        autoExposure,
+        encodedOutput,
         depth,
         featureTargets,
         waterInfoTargets,
+        lensUsesUnfilteredScene ? halfScene.value : undefined,
       );
       if (!native.ok) return native;
-      const effects = addEncodedPostEffects(
-        context,
-        topology,
-        route,
-        depth,
-        surface.storage,
-        finalPresent,
-      );
-      if (!effects.ok) return effects;
       // V2's encoded debug overlay follows the shared feature/output publication.
       return publishStandardOutput({
         ...route,
-        debugOverlayBeforePost:
-          nativeOutputNeedsLinearLdr(context, route) && route.debugOverlayBeforePost,
+        debugOverlayBeforePost: nativeGradeOverlaysLinearImage(
+          topology.camera,
+          context.observationCaptureDomains?.includes('linear-ldr') === true,
+        ),
       });
     }
-    const lensed = addHdrLensStages(context, topology, route, highlighted);
-    if (!lensed.ok) return lensed;
-    const exposed = addExposureWhiteBalance(
+    const lensed = addHdrLensStages(
       context,
       topology,
       route,
-      lensed.value,
-      autoExposure.value,
+      hdrColor,
+      lensUsesUnfilteredScene ? halfScene.value : undefined,
     );
+    if (!lensed.ok) return lensed;
+    const exposed = addExposureWhiteBalance(context, topology, route, lensed.value, autoExposure);
     if (!exposed.ok) return exposed;
-    const addLinearAndEncodedPostStages = (
-      checkedExposure: Extract<typeof exposed, { ok: true }>,
-      checkedRawInput: Extract<typeof rawOnlyPostInput, { ok: true }>,
-    ) => {
-      const ldr = addLinearLdrStages(
-        context,
-        route,
-        depth,
-        featureTargets,
-        checkedExposure.value,
-        finalPresent,
-        waterInfoTargets,
-      );
-      if (!ldr.ok) return ldr;
-      const encoded = addOutputEncodingStages(
-        context,
-        route,
-        ldr.value,
-        finalPresent,
-        checkedRawInput.value,
-      );
-      if (!encoded.ok) return encoded;
-      const effects = addEncodedPostEffects(
-        context,
-        topology,
-        route,
-        depth,
-        route.rawOnly ? checkedRawInput.value : surface.storage,
-        finalPresent,
-      );
-      if (!effects.ok) return effects;
-      return undefined;
-    };
-    const encodedStagesFailure = addLinearAndEncodedPostStages(exposed, rawOnlyPostInput);
-    if (encodedStagesFailure !== undefined) return encodedStagesFailure;
+    const ldr = addLinearLdrStages(
+      context,
+      route,
+      depth,
+      renderInternalSize(topology),
+      featureTargets,
+      exposed.value,
+      encodedOutput,
+      waterInfoTargets,
+    );
+    if (!ldr.ok) return ldr;
+    const spatial = addSpatialOutputStages(
+      context,
+      route,
+      featureTargets,
+      lensed.value.color,
+      ldr.value,
+      route.features.lensEffects ||
+        context.observationCaptureDomains?.includes('linear-ldr') === true,
+    );
+    if (!spatial.ok) return spatial;
+    const encoded = addOutputEncodingStages(
+      context,
+      route,
+      spatial.value,
+      encodedOutput,
+      route.splitOutput ? undefined : exposed.value.glare,
+    );
+    if (!encoded.ok) return encoded;
     return publishStandardOutput();
   };
   return addSelectedColorOutput();

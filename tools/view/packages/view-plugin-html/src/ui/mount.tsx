@@ -227,7 +227,7 @@ function HtmlUiPreview({ state, client }: Props) {
 }
 
 function HtmlUiInspector({ state, client }: Props) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const view = useHtmlState(state);
   const [files, setFiles] = useState<SourceTab[]>([]);
   const [selectedPath, setSelectedPath] = useState('');
@@ -254,10 +254,10 @@ function HtmlUiInspector({ state, client }: Props) {
     return () => controller.abort();
   }, [client, view.file?.path, view.file?.projectId, view.revision]);
   return <div className="html-inspector" data-testid="html-ui-inspector">
-    <header className="html-source-header"><div className="html-source-file"><strong title={view.file?.path}>{view.file?.path?.split('/').at(-1) ?? t('view.html.file')}</strong><span>{view.size == null ? '' : `${(view.size / 1024).toFixed(1)} KB`} {view.mtime == null ? '' : new Date(view.mtime).toLocaleString()}</span></div></header>
+    <header className="html-source-header"><div className="html-source-file"><strong title={view.file?.path}>{view.file?.path?.split('/').at(-1) ?? t('view.html.file')}</strong><span>{view.size == null ? '' : `${(view.size / 1024).toFixed(1)} KB`} {view.mtime == null ? '' : new Date(view.mtime).toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US')}</span></div></header>
     <nav className="html-source-tabs" aria-label={t('view.html.sourceFiles')}>{files.map((file) => <button key={file.path} className={selected?.path === file.path ? 'is-selected' : ''} title={file.path} aria-current={selected?.path === file.path ? 'page' : undefined} onClick={() => setSelectedPath(file.path)}>{file.path.split('/').at(-1)}</button>)}</nav>
     <div className="html-source-reader" aria-label={t('view.html.preview')}><CodeHighlight content={selected?.file?.content || (selected ? t('view.html.emptySource') : '')} lang={selected ? selected.kind === 'style' ? 'css' : 'html' : null} name={selected?.path} wrap={false}/></div>
-    <footer className="html-source-footer">{loadError || view.issues.length ? <span className="html-status-error" role="alert">{loadError || t('view.html.issueCount', { count: view.issues.length })}</span> : null}{view.issues.length ? <ul className="html-issues">{view.issues.map((issue, index) => <li key={`${index}:${issue}`}>{issue}</li>)}</ul> : null}<span>{selected?.file ? new Date(selected.file.mtime).toLocaleString() : ''}</span></footer>
+    <footer className="html-source-footer">{loadError || view.issues.length ? <span className="html-status-error" role="alert">{loadError || t('view.html.issueCount', { count: view.issues.length })}</span> : null}{view.issues.length ? <ul className="html-issues">{view.issues.map((issue, index) => <li key={`${index}:${issue}`}>{issue}</li>)}</ul> : null}<span>{selected?.file ? new Date(selected.file.mtime).toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US') : ''}</span></footer>
   </div>;
 }
 

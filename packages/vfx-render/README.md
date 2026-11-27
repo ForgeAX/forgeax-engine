@@ -551,3 +551,25 @@ follow-up (see the engine PR). Post effects stay display-only.
 - Opt out per Feature: `createGpuParticleFeature({ capture: 'display-only' })`,
   or restrict faces: `capture: { faces: ['planar'] }`.
 - Multisampled faces record no Feature work.
+
+## Structured input publication
+
+`createStructuredInputProvider({ snapshot(generation, context) })` publishes a detached
+`storage-data` Uint8Array for `vfx:structured-input`. Register the provider with the
+World-scoped host; return `undefined` when its observation owner is absent or disposed.
+This interface has no default producer. Wrong size, alignment, type or generation
+blocks the consumer instead of substituting another scene interface or stale data.
+
+Source extraction captures complete bytes in the submitted source frame. Portable
+publication carries them across render realms; exact recovery retains those bytes with
+the original input frame and generation. Render declares a normal native storage buffer
+with initial data, using its existing upload, generation, submission and disposal owners.
+Callers never allocate GPU buffers. Multiple effects can select different records of
+one bank using ordinary scalar parameters.
+
+Structured-input compute programs use the compiler's complete entry-point binding
+reflection. Each selected entry gets its actual native layout and projected bindings;
+contiguous dispatch runs preserve author order, indirect arguments and temporal tags.
+The original WGSL and all stages remain intact, and the eight-storage portable device
+limit is enforced on each real layout. Programs without this input retain their existing
+union-layout path.

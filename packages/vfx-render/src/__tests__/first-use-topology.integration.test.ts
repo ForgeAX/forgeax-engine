@@ -121,6 +121,10 @@ async function createFixture(
     reflection: {
       ...compiled.reflection,
       entryPoints: [...compiled.reflection.entryPoints, ...additional],
+      entryPointBindings: [
+        ...(compiled.reflection.entryPointBindings ?? []),
+        ...additional.map((name) => ({ name, stage: 'compute' as const, bindings: [] })),
+      ],
     },
   };
   const reference = vfxTestEmitter(world, emitter as never, 'fixture');
@@ -384,6 +388,10 @@ it.each([
       ? ['forgeax_vfx_scan_compact_main', 'forgeax_vfx_update_compact_main']
       : []),
   ];
+  fixture.emitter.reflection.entryPointBindings =
+    fixture.emitter.reflection.entryPointBindings.filter((entry) =>
+      fixture.emitter.reflection.entryPoints.includes(entry.name),
+    );
   if (!stages) fixture.emitter.reflection.stages = [];
   fixture.commit();
   fixture.program();
@@ -410,6 +418,10 @@ it.each([
   fixture.emitter.reflection.entryPoints = fixture.emitter.reflection.entryPoints.filter(
     (entry) => !entry.endsWith('_compact_main') || entry === 'forgeax_vfx_compact_main',
   );
+  fixture.emitter.reflection.entryPointBindings =
+    fixture.emitter.reflection.entryPointBindings.filter((entry) =>
+      fixture.emitter.reflection.entryPoints.includes(entry.name),
+    );
   fixture.commit();
   const fallback = fixture.dispatchEntries();
   expect(fallback).toContain('forgeax_vfx_update_main');

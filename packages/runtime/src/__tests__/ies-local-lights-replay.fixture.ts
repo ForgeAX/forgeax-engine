@@ -9,6 +9,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { expect } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
+import { CLUSTER_LIGHT_VIEW_SLOT } from '../../../render/src/environment/bindings';
 import { luminanceRgba16f } from './contact-shadow.fixture';
 import { IES_TEST_SIZE, localIesProfile } from './ies-local-lights.fixture';
 
@@ -30,7 +31,9 @@ export async function verifyLocalIesReplay(
     ),
   );
   if (work === undefined) throw new Error('missing IES Standard lighting work');
-  const table = work.bindings.find((binding) => binding.groupIndex === 2 && binding.binding === 3);
+  const table = work.bindings.find(
+    (binding) => binding.groupIndex === 0 && binding.binding === CLUSTER_LIGHT_VIEW_SLOT,
+  );
   const ies = work.bindings.find((binding) => binding.groupIndex === 0 && binding.binding === 11);
   const output = work.attachments?.colorViewHandleIds[0];
   if (!table?.resourceId || !ies?.resourceId || !output)

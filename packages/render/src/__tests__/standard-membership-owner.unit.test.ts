@@ -1,11 +1,14 @@
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { describe, expect, it } from 'vitest';
 import { createClusterBinScratch } from '../cluster-binner';
+import { DEFAULT_CLUSTER_GRID } from '../pipeline/standard-lighting/layout';
 import { StandardClusterMembershipOwner } from '../pipeline/standard-lighting/membership-owner';
 import {
   prepareStandardLighting,
   type StandardLightFrame,
 } from '../pipeline/standard-lighting/prepare';
+import { standardLightingTopologySignature } from '../pipeline/standard-lighting/topology';
+import { selectTestStandardClusterTransport } from './cluster-test-abi';
 
 function frame(): StandardLightFrame {
   return {
@@ -22,6 +25,51 @@ function frame(): StandardLightFrame {
 }
 
 describe('stock view Cluster membership owner', () => {
+  it('keeps the stock physical light table independent of moving lights and publishes new ABI sizes', () => {
+    const owner = new StandardClusterMembershipOwner();
+    const light = vec3.create(0, 0, -4);
+    const source = {
+      ...frame(),
+      grid: DEFAULT_CLUSTER_GRID,
+      local: [{ kind: 'point' as const, position: light, range: 4, shadowed: false }],
+    };
+    function declaration(
+      slots: number,
+      compute: boolean,
+      grid: StandardLightFrame['grid'] = source.grid,
+    ) {
+      const prepared = prepareStandardLighting(
+        { ...source, grid },
+        slots,
+        undefined,
+        owner,
+      ).unwrap();
+      const transport = selectTestStandardClusterTransport(
+        { compute, storageBuffer: true, membershipPipelineReady: compute },
+        prepared,
+      ).unwrap();
+      const input = { kind: 'clustered' as const, prepared, transport };
+      const key = standardLightingTopologySignature(input, owner.graphLayout);
+      expect(key).toBe(standardLightingTopologySignature(input));
+      return { layout: prepared.layout, key };
+    }
+    const first = declaration(32, true);
+    for (let frameIndex = 0; frameIndex < 60; frameIndex++) {
+      light[0] = frameIndex / 8;
+      const moved = declaration(32, true);
+      expect(moved.layout).toBe(first.layout);
+      expect(moved.key).toBe(first.key);
+    }
+    expect(declaration(32, false).key).not.toBe(first.key);
+    expect(declaration(64, true).key).not.toBe(first.key);
+    const borrowed = { x: 2, y: 3, z: 4 };
+    const oldKey = declaration(64, true, borrowed).key;
+    borrowed.y++;
+    expect(declaration(64, true, borrowed).key).not.toBe(oldKey);
+    owner.clear();
+    expect(declaration(32, true).layout).not.toBe(first.layout);
+  });
+
   it('keeps only numerical membership while current light and path payloads change', () => {
     const owner = new StandardClusterMembershipOwner();
     const scratch = createClusterBinScratch();
@@ -45,7 +93,30 @@ describe('stock view Cluster membership owner', () => {
     expect(first.renderPath).toBe('forward');
   });
 
-  it('captures every camera matrix lane and leaves held old memberships independent', () => {
+  it('publishes the rotating GPU spot cone independently of its occupied cells', () => {
+    const owner = new StandardClusterMembershipOwner();
+    const input = frame();
+    const point = input.local[0];
+    if (!point) throw new Error('Expected one light');
+    const direction = vec3.create(0, 0, -1);
+    const cone = { apex: point.position, direction, cosOuter: 0.75, range: 12 };
+    const spot = { ...point, kind: 'spot' as const, cone };
+    const moving = { ...input, local: [spot] };
+    const first = prepareStandardLighting(moving, undefined, undefined, owner).unwrap();
+    const firstBytes = first.lightBounds.slice();
+    for (let i = 1; i <= 60; i++) {
+      direction[0] = Math.sin(i * 0.1);
+      direction[2] = -Math.cos(i * 0.1);
+      const current = prepareStandardLighting(moving, undefined, undefined, owner).unwrap();
+      const reference = prepareStandardLighting(moving).unwrap();
+      expect(current.lightBounds).toEqual(reference.lightBounds);
+      expect(current.clusterGrid).toBe(first.clusterGrid);
+      expect(current.lightIndexList).toBe(first.lightIndexList);
+      expect(first.lightBounds).toEqual(firstBytes);
+    }
+  });
+
+  it('projects every camera matrix lane and keeps the previously published GPU bytes independent', () => {
     const owner = new StandardClusterMembershipOwner();
     const scratch = createClusterBinScratch();
     const input = frame();
@@ -53,20 +124,21 @@ describe('stock view Cluster membership owner', () => {
     for (const matrix of [input.view, input.projection]) {
       for (let index = 0; index < 16; index++) {
         const oldGrid = previous.clusterGrid.slice();
+        const oldBounds = previous.lightBounds.slice();
         matrix[index] = (matrix[index] ?? 0) + 0.001;
         const next = prepareStandardLighting(input, undefined, scratch, owner).unwrap();
         const fresh = prepareStandardLighting(input).unwrap();
-        expect(next.clusterGrid).not.toBe(previous.clusterGrid);
         expect(next.clusterGrid).toEqual(fresh.clusterGrid);
         expect(next.lightIndexList).toEqual(fresh.lightIndexList);
         expect(next.lightBounds).toEqual(fresh.lightBounds);
         expect(previous.clusterGrid).toEqual(oldGrid);
+        expect(previous.lightBounds).toEqual(oldBounds);
         previous = next;
       }
     }
   });
 
-  it('invalidates near, far, all grid dimensions, ordered light values, count and scratch', () => {
+  it('resolves near, far, grid dimensions, reordered lights and independent scratch', () => {
     const owner = new StandardClusterMembershipOwner();
     const scratch = createClusterBinScratch();
     let input = frame();
@@ -101,7 +173,8 @@ describe('stock view Cluster membership owner', () => {
       input = change(input);
       const next = prepareStandardLighting(input, undefined, scratch, owner).unwrap();
       const fresh = prepareStandardLighting(input).unwrap();
-      expect(next.clusterGrid).not.toBe(previous.clusterGrid);
+      if (next.clusterGrid === previous.clusterGrid)
+        expect(next.lightIndexList).toEqual(previous.lightIndexList);
       expect(next.clusterGrid).toEqual(fresh.clusterGrid);
       expect(next.lightIndexList).toEqual(fresh.lightIndexList);
       expect(next.lightBounds).toEqual(fresh.lightBounds);

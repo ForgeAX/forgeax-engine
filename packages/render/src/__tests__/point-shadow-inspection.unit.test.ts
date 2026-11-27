@@ -107,6 +107,15 @@ describe('point-shadow shader lane', () => {
     expect(materialShadersSamplePointShadows([])).toBe(false);
   });
 
+  it('keeps a prepared Forward projection separate from the material sampling lane', () => {
+    const projection = {
+      ...entry([LANE_WGSL]),
+      identifier: 'forgeax::engine-forward-directional-shadow',
+    };
+    expect(materialShadersSamplePointShadows([projection])).toBe(false);
+    expect(materialShadersSamplePointShadows([projection, entry([LANE_WGSL])])).toBe(true);
+  });
+
   it('does not retain unselected sources when every loaded variant lacks the lane', async () => {
     const sources = ['fn primary() {}\n', 'fn variant() {}\n'];
     const digests = sources.map((source) => sourceDigest([source]));
@@ -183,7 +192,7 @@ describe('point-shadow shader lane', () => {
   it('never reports ready when no loaded shader samples point shadows', () => {
     const recorded = inspectPointShadow(snapshots(0), SHADOW_ATLAS_DEFAULT_LAYERS);
     expect(recorded.status).toBe('ready');
-    expect(projectPointShadowInspection(recorded, false)).toEqual({
+    expect(projectPointShadowInspection({ pointShadow: recorded }, [])).toEqual({
       status: 'unavailable',
       requested: 1,
       admitted: 0,
@@ -191,7 +200,9 @@ describe('point-shadow shader lane', () => {
       shadowAtlasOccupancy: 0,
       shadowAtlasCapacity: SHADOW_ATLAS_DEFAULT_LAYERS,
     });
-    expect(projectPointShadowInspection(undefined, false)?.status).toBe('unavailable');
-    expect(projectPointShadowInspection(recorded, true)).toBe(recorded);
+    expect(projectPointShadowInspection(undefined, [])?.status).toBe('unavailable');
+    expect(projectPointShadowInspection({ pointShadow: recorded }, [entry([LANE_WGSL])])).toBe(
+      recorded,
+    );
   });
 });

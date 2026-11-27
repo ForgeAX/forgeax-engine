@@ -242,10 +242,10 @@ test('ci-core prepares exact asset inputs for a clean checkout without submodule
   const job = workflow.split('\n  core-build:\n')[1].split(/\n(?= {2}[a-zA-Z0-9_-]+:\n)/)[0];
   const preparation = job.indexOf('node scripts/ci/prepare-assets-checkout.mjs');
   assert.ok(preparation > job.indexOf('./.github/actions/setup-node-pnpm'));
-  assert.ok(
-    preparation <
-      job.indexOf("pnpm --filter './packages/**' -r --workspace-concurrency=4 --if-present build"),
-  );
+  const build = job.indexOf('run: node scripts/build-packages.mjs');
+  const declarations = job.indexOf('Emit package declarations for prepared inputs');
+  const staging = job.indexOf('cp -a node_modules/.cache/forgeax-build/receipts/packages');
+  assert.ok(build > preparation && declarations > build && staging > declarations);
 
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'forgeax-core-asset-inputs-')));
   const env = { ...process.env, GIT_ALLOW_PROTOCOL: 'file', EXPECTED_PRODUCT_SHA: '' };

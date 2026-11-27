@@ -17,7 +17,10 @@ describe('standard Surface nested discard guard', () => {
     // (nested-discard-pixels.dawn.test.ts) shows it keeps clipped pixels.
     expect(surface).not.toMatch(/\bdiscard\b/);
     expect(surface).not.toMatch(/\balphaCoverage\b/);
-    expect(surface).toContain('alphaCoverageClipThreshold(');
+    expect(surface).toContain('resolveStandardCoverage(');
+    const coverage = code(read('material/standard-surface-maps.wgsl'));
+    expect(coverage).not.toMatch(/\bdiscard\b|\balphaCoverage\b/);
+    expect(coverage).toContain('alphaCoverageClipThreshold(');
   });
 
   it('keeps the non-discarding coverage helpers free of discard', () => {
@@ -77,7 +80,11 @@ const ALLOWED_NESTED_DISCARD: Readonly<Record<string, string>> = {
   'common.wgsl:applyLodCoverage': NOT_YET_PROBED,
   'oit.wgsl:oitAccumulate': NOT_YET_PROBED,
   'points-lines.wgsl:shadePointsLines': NOT_YET_PROBED,
-  'standard-deferred-lighting.wgsl:resolveStandardDeferred':
+  'standard-deferred-lighting.wgsl:loadDeferredCoverage':
+    'Deferred raster ownership filters invalid or unrelated pixels',
+  'standard-deferred-lighting.wgsl:resolveReflectionOverflow':
+    'Deferred overflow writes only matching pixels with a positive box weight',
+  'standard-deferred-lighting.wgsl:loadDeferredSurface':
     'deferred resolve helper; discard leaves the lighting target untouched by design',
 };
 

@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 2,
+  "purpose": "Frozen qualification workload; not Engine defaults or an existing support claim",
+  "target": {
+    "cpu": "Apple M4 Pro",
+    "os": "macOS 26.4.1",
+    "backends": ["chromium-webgpu", "dawn-metal"],
+    "frameRate": 60,
+    "drawingBuffer": [1280, 720],
+    "captureRuntimeBrowserAndAdapterIdentity": true
+  },
+  "cpuSubstrate": {
+    "entities": [1024, 10000],
+    "constantEntities": 64,
+    "hierarchyGroupSize": 32,
+    "warmupRounds": 3,
+    "measuredRounds": 31
+  },
+  "streetBlock": {
+    "meshEntities": 1024,
+    "meshAssets": 16,
+    "materialAssets": 16,
+    "textureAssets": 8,
+    "textureExtent": [512, 512],
+    "maskedEntities": 128,
+    "authorDisabledMeshes": 32,
+    "nestedInstances": 32,
+    "hierarchyDepth": 4,
+    "colliders": {
+      "cuboid": 192,
+      "sphere": 16,
+      "capsule": 16,
+      "trimesh": 32
+    },
+    "authorDisabledColliders": 8,
+    "trimeshMaxVertices": 256,
+    "residentInactiveCopies": [0, 1, 4],
+    "repeatCycles": 10,
+    "alternateInstancesCase": {
+      "groups": 16,
+      "instancesPerGroup": 64
+    }
+  },
+  "budgets": {
+    "preparationSliceMs": 2,
+    "presentationIntervalP95Ms": 20,
+    "presentationIntervalP99Ms": 33.34,
+    "maximumLifecycleAttributedPauseMs": 50,
+    "maximumSteadyFrameRegressionPercent": 10,
+    "maximumWarmOwnedMemoryGrowthPercent": 5,
+    "ownedMemoryAllowanceBytes": 1048576
+  },
+  "measurementRules": [
+    "Both execution tiers apply the target frame rate through the ordinary App frame pacer and measure actual ready completions",
+    "CPU substrate timings do not qualify Render, Physics, cold copying or real frames",
+    "Include acceptance and subsequent frame reconciliation, first native step and shadow work",
+    "No idle-frame dilution, skipped assertions or post-result budget relaxation",
+    "Measure all lifecycle windows; retain longest pauses and events above 33 and 50 ms",
+    "Freeze browser and adapter identity before each comparison; uncontrolled contention is reported",
+    "The preparation slice sets when to yield before the next item. Record actual item, acceptance, first update and slice costs as timing diagnostics",
+    "Missing runtime or backend evidence remains unverified"
+  ],
+  "memoryMeasurement": {
+    "perCohortWarmBaseline": "First fully retired target cycle at the same inactive-copy count; retained inactive Sources remain prepared",
+    "logicalOwnedBytes": "World arena committed + managed/owned pool committed and metadata + unique table/entity/archetype backing + Asset runtime bytes/snapshotBytes/adoptionBytes + live RHI buffer descriptor bytes and texture mip/block/sample logical bytes + retained GPU Scene CPU table bytes",
+    "heapBytes": "Independent post-collection populations: Node heapUsed, external, arrayBuffers; Chromium precise JS heap and measureUserAgentSpecificMemory agent bytes including external backing/WASM. Unavailable observation is unverified.",
+    "gate": "Each population independently <= its same-cohort warm baseline * 1.05 + 1048576; no offsetting growth between populations",
+    "limits": "Logical requested bytes are not physical driver VRAM. Overlapping host populations are gated independently rather than summed. Native Rapier body counts and Source custody counts are checked separately.",
+    "sampling": "After actual Source retirement and receipt completion, pause ordinary App scheduling for explicit host collection and cold memory inspection; retain that measurement pause separately and resume with an explicit interval boundary"
+  }
+}

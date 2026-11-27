@@ -1,4 +1,8 @@
-import type { RenderGraphBuilder, RenderGraphError } from '@forgeax/engine-render-graph';
+import type {
+  GraphTextureDescriptor,
+  RenderGraphBuilder,
+  RenderGraphError,
+} from '@forgeax/engine-render-graph';
 import { ok, type Result } from '@forgeax/engine-types';
 import type { OutlineSnapshot } from '../../components/outline';
 import type { WaterInfoGraphTargets } from '../../pipeline/standard-build-context';
@@ -21,11 +25,52 @@ function outlineParams(outline: OutlineSnapshot | undefined): Uint8Array {
   return new Uint8Array(values.buffer);
 }
 
+function addOutlineSelection(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  label: (name: string) => string,
+  size: GraphTextureDescriptor['size'],
+  sampleCount: 1 | 4,
+  selection: ((frame: RenderPipelineFrame) => OutlineSnapshot | undefined) | undefined,
+  waterInfoTargets?: WaterInfoGraphTargets,
+): Result<{ coverage: RenderPipelineTarget; depth: RenderPipelineTarget }, RenderGraphError> {
+  const coverage = createRenderPipelineTarget(graph, label('outline-coverage'), {
+    format: sampleCount === 4 ? 'r8unorm' : 'rgba16float',
+    size,
+    sampleCount,
+  });
+  if (!coverage.ok) return coverage;
+  const selectedDepth = createRenderPipelineTarget(graph, label('outline-depth'), {
+    format: 'depth32float-stencil8',
+    size,
+    sampleCount,
+  });
+  if (!selectedDepth.ok) return selectedDepth;
+  const selected = addTypedScenePass(graph, {
+    name: label('outline-selection'),
+    color: coverage.value,
+    depth: selectedDepth.value,
+    ...(waterInfoTargets === undefined || waterInfoTargets.size === 0 ? {} : { waterInfoTargets }),
+    selector: COLOR_PASS_SELECTOR,
+    passKind: 'temporal',
+    coverageOnly: true,
+    clearColor: [0, 0, 0, 0],
+    ...(selection === undefined
+      ? { selection: 'camera-outline' as const }
+      : {
+          selectEntities: (frame: RenderPipelineFrame) => ({
+            entities: selection(frame)?.entities ?? [],
+          }),
+        }),
+  });
+  return selected.ok ? ok({ coverage: coverage.value, depth: selectedDepth.value }) : selected;
+}
+
 /** Selected coverage reuses material deformation/cutout, then the shared scene depth. */
 export function addOutlinePasses(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: RenderPipelineTarget,
   depth: RenderPipelineTarget,
+  internalSize: GraphTextureDescriptor['size'],
   options: {
     readonly prefix?: string;
     readonly programPrefix?: string;
@@ -47,39 +92,28 @@ export function addOutlinePasses(
       format: 'rgba16float',
       size: 'surface',
     });
-  const coverage = make('outline-coverage');
-  if (!coverage.ok) return coverage;
-  const selectedDepth = createRenderPipelineTarget(graph, label('outline-depth'), {
-    format: 'depth32float-stencil8',
-    size: 'surface',
-  });
-  if (!selectedDepth.ok) return selectedDepth;
-  const selected = addTypedScenePass(graph, {
-    name: label('outline-selection'),
-    color: coverage.value,
-    depth: selectedDepth.value,
-    ...(waterInfoTargets === undefined || waterInfoTargets.size === 0 ? {} : { waterInfoTargets }),
-    selector: COLOR_PASS_SELECTOR,
-    passKind: 'temporal',
-    coverageOnly: true,
-    clearColor: [0, 0, 0, 0],
-    ...(options.selection === undefined
-      ? { selection: 'camera-outline' as const }
-      : {
-          selectEntities: (frame: RenderPipelineFrame) => ({
-            entities: selection(frame)?.entities ?? [],
-          }),
-        }),
-  });
+  const msaa = depth.sampleCount === 4;
+  const selectionSize = msaa ? internalSize : 'surface';
+  const selected = addOutlineSelection(
+    graph,
+    label,
+    selectionSize,
+    depth.sampleCount,
+    options.selection,
+    waterInfoTargets,
+  );
   if (!selected.ok) return selected;
-  const packed = make('outline-selected-depth');
+  const packed = createRenderPipelineTarget(graph, label('outline-selected-depth'), {
+    format: msaa ? 'rgba32float' : 'rgba16float',
+    size: selectionSize,
+  });
   if (!packed.ok) return packed;
   const packedPass = addTypedFullscreenPass(graph, {
     name: label('outline-depth-copy'),
-    shader: program('forgeax.outline.depth'),
-    input: coverage.value,
+    shader: program(msaa ? 'forgeax.outline.depth.msaa' : 'forgeax.outline.depth'),
+    input: msaa ? input : selected.value.coverage,
     outputs: [packed.value],
-    depth: selectedDepth.value,
+    depth: selected.value.depth,
     paramsTransform: params,
   });
   if (!packedPass.ok) return packedPass;
@@ -87,9 +121,7 @@ export function addOutlinePasses(
   if (!mask.ok) return mask;
   const classified = addTypedFullscreenPass(graph, {
     name: label('outline-classify'),
-    shader: program(
-      depth.sampleCount === 4 ? 'forgeax.outline.classify.msaa' : 'forgeax.outline.classify',
-    ),
+    shader: program(msaa ? 'forgeax.outline.classify.msaa' : 'forgeax.outline.classify'),
     input: packed.value,
     outputs: [mask.value],
     depth,

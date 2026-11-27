@@ -1,22 +1,20 @@
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { readShaderManifestPublication } from '@forgeax/engine-shader';
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import * as wgpu from '../../../rhi-wgpu/src/index';
 import { earthAtmosphere } from './atmosphere-fixture';
 import { runAtmosphereTables } from './atmosphere-tables-gpu';
-import type { SsrShaderManifest } from './ssr-gpu-dispatch';
+import { browserShaderEntries } from './browser-shader-entries.fixture';
 
 it('matches all physical sky LUT texels across WebGPU compute, raster and actual WebGL2', {
   timeout: 180000,
 }, async () => {
-  const response = await fetch('/shaders/manifest.json');
-  expect(response.ok).toBe(true);
-  const manifest = (await readShaderManifestPublication(
-    await response.json(),
-  )) as SsrShaderManifest;
+  const entries = await browserShaderEntries([
+    'forgeax_atmosphere::luts',
+    'forgeax_atmosphere::luts_fragment',
+  ]);
   const source = (entry: string) => {
-    const found = manifest.entries.find((row) => row.wgsl.includes(`fn ${entry}(`));
+    const found = entries.find((row) => row.wgsl.includes(`fn ${entry}(`));
     if (found === undefined) throw new Error(`missing published ${entry}`);
     return found.wgsl;
   };

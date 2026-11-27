@@ -4,7 +4,7 @@ import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { Camera, MeshFilter, MeshRenderer, type RenderError } from '@forgeax/engine-render';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { scenePlugin, Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { createServer } from 'vite';
 import { expect, it } from 'vitest';
 import {
@@ -19,7 +19,7 @@ import { renderValue } from './standard-gbuffer-replay.fixture';
 const SIZE = 64;
 const EPSILON = Math.round(0.05 * 255);
 const EVIDENCE = 'artifacts/pr-evidence/external-texture-video';
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 
 function halves(device: GPUDevice, top: number[], bottom: number[], usage = 0x04 | 0x02) {
   const texture = device.createTexture({
@@ -152,11 +152,15 @@ it('imports a caller GPUTexture on Dawn, binds it into texture_external, and rep
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
-    const draw = async (count: number) => {
+    const draw = async (count: number, expectPresented = true) => {
       for (let i = 0; i < count; i++) {
         world.update(1 / 60).unwrap();
         const receipt = renderValue(renderer.draw({ source: lease, geometryLane: 'direct' }));
         renderValue(await receipt.completed);
+        if (receipt.preparationCompleted !== undefined)
+          renderValue(await receipt.preparationCompleted);
+        if (i === count - 1 && expectPresented)
+          expect(receipt.presentation, receipt.presentationPendingReason?.code).toBe('ready');
       }
     };
     await draw(60);
@@ -201,7 +205,7 @@ it('imports a caller GPUTexture on Dawn, binds it into texture_external, and rep
     }
 
     renderValue(handle.release());
-    await draw(2);
+    await draw(2, false);
     expect(errors.map(details)).toEqual([
       { operation: 'bind', reason: 'released', generation: expect.any(Number) },
     ]);

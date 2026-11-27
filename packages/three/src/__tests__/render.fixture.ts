@@ -29,14 +29,25 @@ export function browserRendererFixture() {
     }
     renderers.clear();
   });
-  return (options: { readonly stencil?: boolean; readonly antialias?: boolean } = {}) => {
-    const key = JSON.stringify([options.stencil === true, options.antialias === true]);
+  return (
+    options: { readonly stencil?: boolean; readonly antialias?: boolean } = {},
+    material?: { readonly name: string; readonly programs: Promise<readonly string[]> },
+  ) => {
+    const key = JSON.stringify([
+      options.stencil === true,
+      options.antialias === true,
+      material?.name,
+    ]);
     let renderer = renderers.get(key);
     if (renderer === undefined) {
       const canvas = document.createElement('canvas');
       canvas.width = canvas.height = SIZE;
       document.body.append(canvas);
-      renderer = new THREE.WebGPURenderer({ canvas, ...options });
+      renderer = new THREE.WebGPURenderer({
+        canvas,
+        ...options,
+        ...(material === undefined ? {} : { forgeax: { materialPrograms: material.programs } }),
+      });
       renderers.set(key, renderer);
     }
     return renderer;
@@ -608,7 +619,7 @@ async function verifyMaterialMutations(
       const draw = frame.observation.draws?.draws.find(
         (entry) => entry.entityKey === source?.entityKey,
       );
-      expect(draw?.publication.materialGuid).toBe('forgeax-three-physical');
+      expect(draw?.publication.materialGuid).toBe('d870824b-928f-401a-8d77-a83a92ec0fe0');
       expect(draw?.program.specializationKey).toBeDefined();
       let disabled: Uint8Array | undefined;
       for (const clearcoat of [0, 0.9, 0.6]) {

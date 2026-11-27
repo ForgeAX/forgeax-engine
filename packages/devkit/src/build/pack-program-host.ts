@@ -18,12 +18,15 @@ export function createNodePackProgramHost(directory: string): PackProgramHost {
       );
       const base = pathToFileURL(`${root}/`).href;
       const linked = linkPackProgram(program, base, imports).unwrap();
+      const verifyPublished = async (message: string) => {
+        for (const file of linked.files)
+          if ((await readFile(fileURLToPath(file.url), 'utf8')) !== file.source)
+            throw new TypeError(message);
+      };
       try {
         const existing = await readFile(resolve(root, 'package.json'), 'utf8');
         if (existing === '{"type":"module"}') {
-          for (const file of linked.files)
-            if ((await readFile(fileURLToPath(file.url), 'utf8')) !== file.source)
-              throw new TypeError('persistent program content differs');
+          await verifyPublished('persistent program content differs');
           return linked.entryUrl;
         }
       } catch (cause) {
@@ -47,9 +50,7 @@ export function createNodePackProgramHost(directory: string): PackProgramHost {
             )
           )
             throw cause;
-          for (const file of linked.files)
-            if ((await readFile(fileURLToPath(file.url), 'utf8')) !== file.source)
-              throw new TypeError('concurrent program publication differs');
+          await verifyPublished('concurrent program publication differs');
         }
         return linked.entryUrl;
       } finally {

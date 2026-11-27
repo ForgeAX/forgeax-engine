@@ -9,6 +9,11 @@ This package is the concrete ForgeAX ↔ DeepSeek Harness federation connector. 
 - `./client` is an ordinary DSH Web client plugin. It contributes a panel through `shell.overlay`; unmounting the Fiber removes the panel, polling, listeners, and iframe.
 - `enginePreviewPlugin()` runs in an Engine `Context`. It exposes only versioned `postMessage` POD and never transfers `World`, `Renderer`, `Fiber`, or RHI handles.
 
+The Web client defaults to English. Its plugin configuration accepts
+`{ locale: 'zh-CN' }` for Simplified Chinese, and the panel language selector
+switches its labels without replacing the Engine iframe or bridge session.
+Protocol identifiers and numeric facts remain unchanged.
+
 ## Engine hosting an existing DSH installation
 
 Install this connector into the selected DSH profile explicitly through DSH's package authority, then mount the Engine plugin:

@@ -149,6 +149,15 @@ describe('ordinary managed force-field cooking', () => {
             .replaceAll(
               'particle: ptr<function, VfxParticle>',
               'particle: ptr<function, VfxParticle>, custom:ptr<function,VfxCustom>',
+            )
+            .replace(
+              'vfx_integrate(ctx, particle);',
+              `vfx_integrate(ctx, particle);
+  (*particle).color.x += f32(forgeax_vfx_alive_indices[0u]
+    + atomicLoad(&forgeax_vfx_counters.aliveCount)
+    + forgeax_vfx_indirect[0u].instanceCount + forgeax_vfx_scratch[0u])
+    + forgeax_vfx_billboard_instances[0u] + forgeax_vfx_event_buffer[0u].strength
+    + (*custom).heat;`,
             ),
         },
       },

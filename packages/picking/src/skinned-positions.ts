@@ -2,7 +2,7 @@ import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { EntityHandle, FrameArena, World } from '@forgeax/engine-ecs';
 import { copyMeshAttribute } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
-import { GlobalTransform } from '@forgeax/engine-scene';
+import { GlobalTransform, readPresentationWorldMatrix } from '@forgeax/engine-scene';
 import { Skin, skinVertexPosition } from '@forgeax/engine-skinning';
 import type { MeshAsset, SkeletonAsset } from '@forgeax/engine-types';
 
@@ -13,11 +13,21 @@ export function deformationStorage(count: number, arena?: FrameArena): Float32Ar
 
 /** Resolve both influence streams under one storage decision, without retaining them. */
 function meshSkinChannels(mesh: MeshAsset) {
-  if (mesh.attributeStorage !== 'interleaved') return mesh.attributes;
+  if (mesh.attributeStorage === undefined && mesh.attributes.skinWeight instanceof Float32Array)
+    return mesh.attributes;
   return {
     skinIndex: copyMeshAttribute(mesh, 'skinIndex'),
     skinWeight: copyMeshAttribute(mesh, 'skinWeight'),
   };
+}
+
+function hasCompletePalette(jointCount: number, joints: number, inverseLanes: number): boolean {
+  return (
+    Number.isInteger(jointCount) &&
+    jointCount > 0 &&
+    joints === jointCount &&
+    inverseLanes === jointCount * 16
+  );
 }
 
 /** Query-local world vertices: no retained pose, GPU readback or World mutation. */
@@ -39,10 +49,7 @@ export function skinnedPositions(
   const count = positions.length / 3;
   if (
     !Number.isInteger(count) ||
-    !Number.isInteger(jointCount) ||
-    jointCount <= 0 ||
-    joints.length !== jointCount ||
-    inverseBindMatrices.length !== jointCount * 16 ||
+    !hasCompletePalette(jointCount, joints.length, inverseBindMatrices.length) ||
     !(indices instanceof Uint16Array) ||
     !(weights instanceof Float32Array) ||
     indices.length !== count * 4 ||
@@ -65,16 +72,17 @@ export function skinnedPositions(
     palette.set(matrix, joint * 16);
   }
 
+  const meshWorld = skin.value.affinePoint ? readPresentationWorldMatrix(world, entity) : undefined;
+  if (skin.value.affinePoint && meshWorld === undefined) return undefined;
   const posed = out;
   const bounds = new Float32Array([Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]);
   const point = new Float64Array(4);
   for (let vertex = 0; vertex < count; vertex++) {
     const offset = vertex * 3;
-    if (!skinVertexPosition(point, positions, indices, weights, palette, vertex)) return undefined;
-    posed[offset] = point[0] as number;
-    posed[offset + 1] = point[1] as number;
-    posed[offset + 2] = point[2] as number;
+    if (!skinVertexPosition(point, positions, indices, weights, palette, vertex, meshWorld))
+      return undefined;
     for (let axis = 0; axis < 3; axis++) {
+      posed[offset + axis] = point[axis] as number;
       const value = posed[offset + axis] as number;
       if (!Number.isFinite(value)) return undefined;
       bounds[axis] = Math.min(bounds[axis] as number, value);

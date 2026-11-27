@@ -58,6 +58,8 @@ const ENGINE_SOURCES = [
   'surface_v1.wgsl',
   'surface-sampling.wgsl',
   'default_standard_surface.wgsl',
+  'material/standard-physical-inputs.wgsl',
+  'material/standard-surface-maps.wgsl',
   'material/standard-physical-layer.wgsl',
   'default-standard-pbr.wgsl',
   'default-standard-pbr-skin.wgsl',

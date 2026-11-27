@@ -1,9 +1,51 @@
 import { ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { findMaterialShaderEntry } from '../material/depth-entries';
 import * as programs from '../material/program';
 import { ShaderRegistry } from '../ShaderRegistry';
 
 describe('registry-owned material programs', () => {
+  it('resolves fixed entry publications and reads caller-owned reflection live', () => {
+    const vertex = { name: 'shared', stage: 'vertex' as const, bindings: [] };
+    const fragment = { name: 'shared', stage: 'fragment' as const, bindings: [] };
+    const reads = [vertex, fragment, { ...fragment, name: 'old' }];
+    const program = programs.withMaterialShaderEntryPoints(
+      programs.createMaterialShaderProgram('@fragment fn main() {}'),
+      reads,
+    );
+    const entries = program.entryPoints;
+    expect(findMaterialShaderEntry(entries, 'shared')).toBe(entries?.[0]);
+    expect(findMaterialShaderEntry(entries, 'shared', 'fragment')).toBe(entries?.[1]);
+    expect(findMaterialShaderEntry(entries, 'old', 'vertex')).toBeUndefined();
+    reads[2] = { ...fragment, name: 'new' };
+    expect(findMaterialShaderEntry(reads, 'new', 'fragment')).toBe(reads[2]);
+    expect(findMaterialShaderEntry(entries, 'new')).toBeUndefined();
+    expect(findMaterialShaderEntry(entries, 'old', 'fragment')).toBe(entries?.[2]);
+  });
+
+  it('publishes the name index once for all draws reading immutable reflection', () => {
+    const bindings = Object.freeze([]);
+    const source = Array.from({ length: 64 }, (_, i) =>
+      Object.freeze({ stage: 'fragment' as const, name: `fs_${i}`, bindings }),
+    );
+    let rowsRead = 0;
+    const reads = new Proxy(Object.freeze(source), {
+      get(target, key, receiver) {
+        if (typeof key === 'string' && /^\d+$/.test(key)) rowsRead++;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    const program = programs.createMaterialShaderProgram('', reads);
+    expect(program.entryPoints).toBe(reads);
+    rowsRead = 0;
+    for (const row of source) {
+      expect(findMaterialShaderEntry(program.entryPoints, row.name, 'fragment')).toBe(row);
+      expect(findMaterialShaderEntry(program.entryPoints, row.name, 'vertex')).toBeUndefined();
+    }
+    expect(findMaterialShaderEntry(program.entryPoints, 'absent')).toBeUndefined();
+    expect(rowsRead).toBe(0);
+  });
+
   it('owns entry effects and rejects contradictory facts for identical source', () => {
     const effects = {
       mayDiscard: false,
@@ -264,7 +306,7 @@ describe('registry-owned material programs', () => {
     }
   });
   it('shares one source analysis across registrations, variants, lookups and device replacement', () => {
-    const source = '@group(2) @binding(3) var<uniform> cluster: vec4f;';
+    const source = '@group(0) @binding(33) var<uniform> cluster_uniform: vec4f;';
     const registry = new ShaderRegistry({ manifestUrl: undefined });
     const analyze = vi.spyOn(programs, 'createMaterialShaderProgram');
     try {

@@ -147,6 +147,43 @@ function location(file: ts.SourceFile, node: ts.Node) {
   return { line: at.line + 1, column: at.character + 1 };
 }
 
+export function packAuthoringLiteral(
+  file: ts.SourceFile,
+  node: ts.Node,
+  path: readonly string[],
+  value: unknown,
+): PackAuthoringLiteral {
+  return { path, start: node.getStart(file), end: node.end, value, location: location(file, node) };
+}
+
+export function patchPackLiterals(
+  source: string,
+  edits: { readonly start: number; readonly end: number; readonly text: string }[],
+): string {
+  for (const edit of edits.sort((a, b) => b.start - a.start))
+    source = source.slice(0, edit.start) + edit.text + source.slice(edit.end);
+  return source;
+}
+
+export function patchPackLiteralValues(
+  sourcePath: string,
+  source: string,
+  literals: ReadonlyMap<string, PackAuthoringLiteral>,
+  changes: ReadonlyMap<string, unknown>,
+): Result<string, PackAuthoringError> {
+  const edits: { start: number; end: number; text: string }[] = [];
+  for (const [name, value] of changes) {
+    const literal = literals.get(name);
+    if (!literal)
+      return err(packSourceFailure(sourcePath, `field ${name} is not an editable literal`));
+    const text = JSON.stringify(value);
+    if (text === undefined)
+      return err(packSourceFailure(sourcePath, `field ${name} is not serializable`));
+    edits.push({ start: literal.start, end: literal.end, text });
+  }
+  return ok(patchPackLiterals(source, edits));
+}
+
 /** Parsing never imports or executes user code, including module initialization. */
 export function readPackAuthoringDeclaration(
   sourcePath: string,
@@ -221,13 +258,15 @@ export function readPackAuthoringDeclaration(
         const parameter = parameters.value[index];
         const value = property(descriptor, 'default')?.initializer;
         if (!parameter || !value) throw new TypeError('Parameter default is absent');
-        defaults.set(parameter.name, {
-          path: ['parameters', String(index), 'default'],
-          start: value.getStart(file),
-          end: value.end,
-          value: parameter.default,
-          location: location(file, value),
-        });
+        defaults.set(
+          parameter.name,
+          packAuthoringLiteral(
+            file,
+            value,
+            ['parameters', String(index), 'default'],
+            parameter.default,
+          ),
+        );
         if (typeof parameter.apply !== 'object') generationDescriptors.push(element.getText(file));
       }
     }
@@ -261,28 +300,4 @@ export function readPackAuthoringDeclaration(
       packSourceFailure(sourcePath, cause instanceof Error ? cause.message : String(cause)),
     );
   }
-}
-
-/** Replace exact literal spans, preserving surrounding code and comments. */
-export function writePackAuthoringDefaults(
-  declaration: PackAuthoringDeclaration,
-  changes: ReadonlyMap<string, unknown>,
-): Result<string, PackAuthoringError> {
-  const edits: { start: number; end: number; text: string }[] = [];
-  for (const [name, value] of changes) {
-    const target = declaration.defaults.get(name);
-    if (!target)
-      return err(packSourceFailure(declaration.sourcePath, `parameter ${name} no longer exists`));
-    const text = JSON.stringify(value);
-    if (text === undefined)
-      return err(
-        packSourceFailure(declaration.sourcePath, `parameter ${name} is not serializable`),
-      );
-    edits.push({ ...target, text });
-  }
-  let source = declaration.source;
-  for (const edit of edits.sort((a, b) => b.start - a.start))
-    source = source.slice(0, edit.start) + edit.text + source.slice(edit.end);
-  const checked = readPackAuthoringDeclaration(declaration.sourcePath, source);
-  return checked.ok ? ok(source) : checked;
 }

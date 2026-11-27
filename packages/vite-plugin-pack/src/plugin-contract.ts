@@ -1,13 +1,33 @@
 import type { ProducerReadiness } from '@forgeax/engine-import';
+import type { PackageFinalizePolicy } from '@forgeax/engine-pack/build';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import type { Importer, PackIndexEntry, RuntimeAssetBinding } from '@forgeax/engine-types';
 import type { Plugin } from 'vite';
+
+export const CATALOG_DELTA_EVENT = 'forgeax:catalog-delta';
 
 interface AssetHostRefreshServer {
   readonly ws?: { send(payload: { type: 'full-reload' }): void } | undefined;
 }
 
 export type AssetHostRefreshPolicy = (server: AssetHostRefreshServer) => void;
+
+export interface PluginPackSourceProgress {
+  readonly phase: 'cache' | 'cook' | 'persist' | 'ready' | 'import';
+  readonly sourcePath: string;
+  readonly completed: number;
+  readonly total: number;
+  readonly cache?: 'hit' | 'miss';
+}
+
+/** Observations only; observer failures never affect production. */
+export type PluginPackProgress = { readonly generation: number } & (
+  | {
+      readonly kind: 'stage';
+      readonly stage: 'inventory' | 'publish' | 'ready' | 'failed' | 'cancelled';
+    }
+  | { readonly kind: 'source'; readonly source: PluginPackSourceProgress }
+);
 
 /**
  * Vite Pack producer plus the host-control seam used by dynamic game hosts.
@@ -45,7 +65,10 @@ export type PluginPack = Plugin & {
 };
 
 /** Public plugin inputs; execution owners remain in engine-pack/import/ddc. */
-export interface PluginPackOptions {
+export interface PluginPackOptions extends Pick<PackageFinalizePolicy, 'materialProgramTransport'> {
+  readonly onProgress?: ((event: PluginPackProgress) => void) | undefined;
+  /** Explicit host-selected public Engine package root for isolated authored source execution. */
+  readonly enginePackageRoot?: string | undefined;
   readonly roots?: readonly string[] | undefined;
   /** Take the first inventory's captured bytes once; later generations read fresh disk. */
   readonly takeInitialSourceSnapshot?: () =>
@@ -69,10 +92,12 @@ export interface PluginPackOptions {
   readonly ddc?: PluginPackDdcOptions;
   /** Sealed build-program graph, including its resolved native import identities. */
   readonly producerIdentity?: string | undefined;
+  /** Target admission has selected offline generation for these authored package IDs. */
 }
 
 export interface PluginPackDdcOptions {
   readonly buildCacheRoot?: string | undefined;
+  readonly buildCacheSeedRoot?: string | undefined;
   readonly projectDdcRoot?: string | undefined;
   /**
    * Project root that build-cache keys spell source paths relative to, so an

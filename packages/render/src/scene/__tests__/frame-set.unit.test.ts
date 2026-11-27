@@ -14,6 +14,43 @@ test('paged membership answers has, size and ascending order across word and pag
   expect(FrameSet.from(KEYS).size).toBe(KEYS.length);
 });
 
+test('ordered visibility pages publish correct ranks across widely separated slots and later edits', () => {
+  const words = Array.from({ length: 257 }, (_, i) => i * 61 + (i % 7));
+  const issued = FrameSet.fromOrderedWords((write) => {
+    for (const word of words) write(word, 0x80000001);
+  });
+  const keys = words.flatMap((word) => [word * 32, word * 32 + 31]);
+  expect([...issued]).toEqual(keys);
+  for (let i = 0; i < keys.length; i++) {
+    expect(issued.at(i)).toBe(keys[i]);
+    expect(issued.indexOf(keys[i] as number)).toBe(i);
+  }
+  const prior = FrameSet.from(keys);
+  const successor = issued.without(31).with(32);
+  const edits: number[] = [];
+  successor.changesSince(prior, (key) => edits.push(key));
+  expect(edits.sort((a, b) => a - b)).toEqual([31, 32]);
+  expect(issued.at(1)).toBe(31);
+});
+
+test('the producer cannot mutate published membership or retain a failed writer', () => {
+  let write: ((key: number) => void) | undefined;
+  const first = FrameSet.collect((add) => {
+    write = add;
+    add(31);
+  });
+  expect(() => write?.(32)).toThrow('collection has ended');
+  expect(first.size).toBe(1);
+  expect(first.has(32)).toBe(false);
+  expect(() =>
+    FrameSet.collect((add) => {
+      write = add;
+      add(-1);
+    }),
+  ).toThrow(RangeError);
+  expect(() => write?.(31)).toThrow('collection has ended');
+});
+
 test('additions and removals keep earlier frames and report exactly the flipped keys', () => {
   const before = FrameSet.from(KEYS);
   const after = before.without(31).without(1024).with(5).with(2047).with(70_001);
@@ -43,6 +80,11 @@ test('ranked keys preserve ascending values through dense and sparse word bounda
   const after = before.without(31).with(4095);
   expect([...after].map((_, index) => after.at(index))).toEqual([...after]);
   expect(before.at(2)).toBe(31);
+  for (const frame of [before, after]) {
+    for (const [rank, key] of [...frame].entries()) expect(frame.indexOf(key)).toBe(rank);
+    for (const missing of [2, 1022, -1, NaN, 1.5]) expect(frame.indexOf(missing)).toBeUndefined();
+  }
+  expect(after.indexOf(31)).toBeUndefined();
 });
 
 test('borrowed key walks keep fixed membership, independent cursors and ordinary result lifetime', () => {

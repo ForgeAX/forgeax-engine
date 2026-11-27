@@ -167,6 +167,7 @@ interface DepthOfFieldFrameValues {
   readonly sensorHeight: number;
   readonly focalLength: number;
   readonly maxRadiusPixels: number;
+  readonly outputWidth: number;
   readonly outputHeight: number;
   readonly near: number;
   readonly far: number;
@@ -176,10 +177,10 @@ interface DepthOfFieldFrameValues {
 function resolveDepthOfFieldFrameValues(
   params: DepthOfFieldParams,
   input: {
+    readonly outputWidth: number;
     readonly outputHeight: number;
     readonly near: number;
     readonly far: number;
-    readonly useTemporalDepth: boolean;
   },
 ): Result<DepthOfFieldFrameValues, DepthOfFieldValidationError> {
   const focusDistance = quantizeF32(params.focusDistance);
@@ -187,6 +188,7 @@ function resolveDepthOfFieldFrameValues(
   const sensorHeight = quantizeF32(params.sensorHeight);
   const focal = quantizeF32(params.focalLength);
   const maxRadiusPixels = quantizeF32(params.maxRadiusPixels);
+  const outputWidth = quantizeF32(input.outputWidth);
   const outputHeight = quantizeF32(input.outputHeight);
   const near = quantizeF32(input.near);
   const far = quantizeF32(input.far);
@@ -196,6 +198,7 @@ function resolveDepthOfFieldFrameValues(
     ['focalLength', focal, params.focalLength],
     ['near', near, input.near],
     ['far', far, input.far],
+    ['outputWidth', outputWidth, input.outputWidth],
   ];
   for (const [field, value, raw] of finitePositiveFields) {
     if (!Number.isFinite(value) || value <= 0) {
@@ -287,6 +290,7 @@ function resolveDepthOfFieldFrameValues(
     sensorHeight,
     focalLength: focal,
     maxRadiusPixels,
+    outputWidth,
     outputHeight,
     near,
     far,
@@ -303,10 +307,10 @@ function resolveDepthOfFieldFrameValues(
 export function validateDepthOfFieldFrameParams(
   params: DepthOfFieldParams,
   input: {
+    readonly outputWidth: number;
     readonly outputHeight: number;
     readonly near: number;
     readonly far: number;
-    readonly useTemporalDepth: boolean;
   },
 ): Result<void, DepthOfFieldValidationError> {
   const resolved = resolveDepthOfFieldFrameValues(params, input);
@@ -507,10 +511,10 @@ export function signedDepthOfFieldCoC(
 export function packDepthOfFieldParams(
   params: DepthOfFieldParams,
   input: {
+    readonly outputWidth: number;
     readonly outputHeight: number;
     readonly near: number;
     readonly far: number;
-    readonly useTemporalDepth: boolean;
   },
 ): Uint8Array {
   const frameValues = resolveDepthOfFieldFrameValues(params, input);
@@ -520,6 +524,7 @@ export function packDepthOfFieldParams(
     fStop,
     sensorHeight,
     focalLength: focal,
+    outputWidth,
     outputHeight,
     maxRadiusPixels,
     near,
@@ -540,7 +545,7 @@ export function packDepthOfFieldParams(
     depthOfFieldQualityCode(params.quality),
     near,
     far,
-    input.useTemporalDepth ? 1 : 0,
+    outputWidth, // row2.z
     0, // row2.w reserved
     cocCoefficient, // row3.x / WGSL reserved.x
     0,

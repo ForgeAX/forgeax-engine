@@ -65,14 +65,14 @@ export async function createStorageDecodeProbe(
       await compile(device, {
         label: 'sdf.decode-probe',
         code: `
-@group(0) @binding(0) var<storage,read> instances: array<Instance>;
+@group(0) @binding(0) var<storage,read> instances: array<RawInstance>;
 @group(0) @binding(1) var<storage,read> fields: array<u32>;
 @group(0) @binding(2) var<storage,read> refs: array<vec4u>;
 @group(0) @binding(3) var<storage,read_write> pairs: array<vec2f>;
 ${SDF_SAMPLE_WGSL}
 @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3u) {
   if(gid.x>=arrayLength(&refs)){return;}
-  let r=refs[gid.x]; let m=instances[r.x]; let i=r.y;
+  let r=refs[gid.x]; let m=sdfInstanceAt(r.x); let i=r.y;
   let c=vec3u(i%m.field.y,(i/m.field.y)%m.field.z,i/(m.field.y*m.field.z));
   var reference=bitcast<f32>(r.z);
   if(m.error.w>0.5){reference=unpack2x16snorm(r.z).x*m.extent.w;}

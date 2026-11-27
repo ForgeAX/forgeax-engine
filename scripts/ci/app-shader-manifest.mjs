@@ -4,6 +4,8 @@ import { existsSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import {
   admitShaderTemplateManifest,
+  expandShaderManifestPublication,
+  SHADER_PROJECT_MANIFEST_VERSION,
   SHADER_TEMPLATE_MANIFEST_VERSION,
 } from '@forgeax/engine-shader';
 import { isShaderEntryPointReads } from '@forgeax/engine-types';
@@ -298,12 +300,27 @@ export function readSharedShaderManifest(root, requestedManifest) {
  * runtime manifest before any smoke or browser process starts.
  */
 export function projectAppShaderManifest(appManifest, sharedManifest, sourcePath = 'app manifest') {
-  // Native source publications already share their module library. A compiled
-  // Core profile cannot be the base of their different source representation.
-  if (appManifest?.schemaVersion === SHADER_TEMPLATE_MANIFEST_VERSION) {
-    const admitted = admitShaderTemplateManifest(appManifest);
+  // Source-based app publications are self-contained. Each app retains
+  // its project selection and its cooked material rows across transfer.
+  const mixed = appManifest?.schemaVersion === SHADER_PROJECT_MANIFEST_VERSION;
+  if (mixed || appManifest?.schemaVersion === SHADER_TEMPLATE_MANIFEST_VERSION) {
+    const admitted = admitShaderTemplateManifest(mixed ? appManifest.templates : appManifest);
     if (!admitted.ok)
       fail(`invalid source shader publication: ${sourcePath}: ${admitted.error.message}`);
+    if (mixed) {
+      if (appManifest.cooked?.schemaVersion !== SHADER_MANIFEST_PUBLICATION_VERSION)
+        fail(`invalid cooked shader publication: ${sourcePath}`);
+      expandShaderManifestPublication(appManifest.cooked);
+    }
+    return appManifest;
+  }
+  if (sharedManifest?.schemaVersion === SHADER_TEMPLATE_MANIFEST_VERSION) {
+    if (appManifest?.schemaVersion === SHADER_MANIFEST_PUBLICATION_VERSION)
+      expandShaderManifestPublication(appManifest);
+    else {
+      manifestRows(appManifest, sourcePath, 'entries');
+      manifestRows(appManifest, sourcePath, 'materialShaders');
+    }
     return appManifest;
   }
   const compact = compactPair(appManifest, sharedManifest, sourcePath);

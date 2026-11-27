@@ -1,5 +1,43 @@
 {
   "view": {
+    "projectPhase": {
+      "preparing": "Preparing",
+      "starting": "Starting",
+      "running": "Running",
+      "failed": "Failed"
+    },
+    "preparation": {
+      "project": "Preparing project inputs",
+      "vite": "Preparing project server",
+      "shader": "Preparing shaders",
+      "waiting": "Waiting for the backend preparation status",
+      "variants": "{{completed}} / {{total}} variants compiled for this source",
+      "operation": {
+        "project-config": "Reading project configuration and preparing its host",
+        "source-inventory": "Collecting project and asset library sources",
+        "plugin-programs": "Discovering project plugins and their input files",
+        "project-cookers": "Loading project cookers and build settings",
+        "host-files": "Generating project document and runtime entries",
+        "vite-server": "Creating Vite and starting its producer plugins",
+        "shader-inputs": "Checking shader source inputs and precompiled publications",
+        "scene-connection": "Waiting for the scene document to connect"
+      },
+      "label": "Project preparation",
+      "preparing": "Preparing project",
+      "inventory": "Scanning asset sources",
+      "produce": "Preparing assets",
+      "publish": "Publishing asset catalog",
+      "connecting": "Assets ready, connecting to scene",
+      "failed": "Project preparation failed",
+      "offline": "Host offline, progress paused",
+      "elapsed": "{{seconds}}s",
+      "active": "{{count}} sources in progress",
+      "expand": "Show preparation details",
+      "collapse": "Hide preparation details",
+      "cached": "Cached",
+      "task": { "cache": "Checking cache", "cook": "Cooking", "persist": "Writing", "import": "Importing", "shader": "Compiling shader" }
+    },
+    "dismissClipboardError": "Dismiss clipboard error",
     "resourceOpening": "Opening asset…",
     "resourceFailed": "Asset preview unavailable",
     "appTitle": "ForgeaX View",
@@ -85,6 +123,9 @@
     },
     "pages": {
       "scene": "Scene",
+      "profiler": "CPU Profiler",
+      "modeling": "Modeling",
+      "rhiDebug": "RHI Debug",
       "display": "Runtime observation",
       "plugins": "Plugins",
       "material": "Material",

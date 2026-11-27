@@ -82,7 +82,7 @@ describe('post shader color-domain contract', () => {
     expect(functionBody(code, 'encodeFinal')).toContain('ditherUnorm8(encoded.rgb, position.xy)');
     expect(code.indexOf('fn fs_tone_only')).toBeLessThan(code.indexOf('fn fs_encode_only'));
     // Display LUT: sRGB index at texel centres (UE PostProcessCombineLUTs.usf:200-202).
-    expect(functionBody(code, 'fs_tone_lut_encode')).toContain('sampleOutputLut(toned.rgb)');
+    expect(functionBody(code, 'toneLutEncode')).toContain('sampleOutputLut(toned.rgb)');
     expect(functionBody(code, 'sampleOutputLut')).toContain('linearToSrgbOetf(');
     expect(functionBody(code, 'sampleOutputLut')).toContain('(size - 1.0) / size');
   });
@@ -94,7 +94,7 @@ describe('post shader color-domain contract', () => {
     expect(functionBody(codeOnly(toneMapping), 'mapTone')).not.toContain('quantizeToF16');
     expect(functionBody(code, 'encodeFinal')).not.toContain('quantizeToF16');
     // Fused tone/LUT work retains the two physical binary16 store boundaries.
-    expect(functionBody(code, 'fs_tone_lut_encode').match(/quantizeToF16/g)).toHaveLength(2);
+    expect(functionBody(code, 'toneLutEncode').match(/quantizeToF16/g)).toHaveLength(2);
     expect(tonemap).not.toContain('Float16');
   });
 
@@ -121,29 +121,13 @@ describe('post shader color-domain contract', () => {
     expect(`${tonemap}\n${bloom}\n${fxaa}`).not.toContain('encodedDestinationBlend');
   });
 
-  it('follows Unreal PostProcessDownsample HIGH and BloomSetup ordering in the bloom input', () => {
-    const code = codeOnly(bloomHorizontal);
-    const down = functionBody(code, 'downsample4x4');
-    // Four bilinear taps at (+-1, +-1) source texels, averaged: a 4x4 filter.
-    expect(down.match(/sampleSource\(/g)).toHaveLength(4);
-    for (const dx of ['-1.0', '1.0']) {
-      for (const dy of ['-1.0', '1.0']) {
-        expect(down).toContain(`vec2<f32>(${dx}, ${dy})`);
-      }
-    }
-    expect(down).toContain('* 0.25');
-    expect(down).toContain('textureDimensions(src)');
-    const input = functionBody(code, 'bloomInput');
-    // Every level filters first; the threshold only ever sees the filtered colour.
-    expect(input.indexOf('downsample4x4(uv)')).toBeGreaterThanOrEqual(0);
-    expect(input.indexOf('downsample4x4(uv)')).toBeLessThan(input.indexOf('smoothstep'));
-    expect(input).toContain('params.threshold < 0.0');
-    // The old unfiltered half-texel clamp + single bilinear tap is gone.
-    expect(code).not.toContain('halfTexel');
+  it('pairs neighboring Gaussian weights and normalizes the truncated filter', () => {
+    const code = codeOnly(readFileSync(resolve(shaderRoot, 'bloom-filter.wgsl'), 'utf8'));
+    const filter = functionBody(code, 'bloomGaussian');
+    expect(bloomHorizontal).toContain('bloomGaussian');
+    expect(filter).toContain('f32(i) + b / weight');
+    expect(filter).toContain('return color / total');
   });
-
-  // Bloom's spatial response, threshold and gain are verified on real GPU output
-  // against the pinned Three node by apps/parity/color-lighting/verify-render-defaults.
 
   it('returns display-encoded RGB from both FXAA exits through the dither gate', () => {
     const body = functionBody(codeOnly(fxaa), 'fs_main');

@@ -68,6 +68,22 @@ function profileRequiresDeferred(
   );
 }
 
+function shouldSelectDeferredForSsr(
+  camera: CameraStandardDemand,
+  lane: CameraStandardLane,
+  multisample: boolean,
+  singleLayerWater: boolean,
+  requestedPath: RenderProfile['renderPath'] | undefined,
+): boolean {
+  return (
+    !singleLayerWater &&
+    requestedPath !== 'forward' &&
+    camera.screenSpaceReflection !== undefined &&
+    !multisample &&
+    supportsStandardDeferred(lane, lane.maxColorAttachmentBytesPerSample)
+  );
+}
+
 /** Camera effects and selected material work share one immutable view configuration. */
 export function deriveCameraStandardConfiguration(
   profile: StandardProfile | undefined,
@@ -75,7 +91,7 @@ export function deriveCameraStandardConfiguration(
   camera: CameraStandardDemand | undefined,
   lane: CameraStandardLane,
   singleLayerWater = false,
-  requestedPath: RenderProfile['renderPath'] | undefined = profile?.renderPath,
+  requestedPath?: RenderProfile['renderPath'],
 ): Result<
   {
     readonly profile: StandardProfile | undefined;
@@ -85,40 +101,40 @@ export function deriveCameraStandardConfiguration(
 > {
   if (profile === undefined || camera === undefined) return ok({ profile, config });
   const multisample = isMultisampleAntialias(camera.antialias);
-  if (multisample && profileRequiresDeferred(profile, requestedPath)) {
+  if (multisample && profileRequiresDeferred(profile, requestedPath ?? profile.renderPath)) {
     const failure = standardDeferredAntialiasError(camera.antialias);
     if (failure !== undefined) return err(failure);
   }
-  const waterMsaa = singleLayerWater && multisample;
   if (singleLayerWater) {
     const failure = singleLayerWaterFailure(lane);
     if (failure !== undefined) return err(failure);
   }
   const aoRequested = camera.ambientOcclusion !== undefined;
-  const deferredEligible = supportsStandardDeferred(lane, lane.maxColorAttachmentBytesPerSample);
-  let selectedProfile = singleLayerWater
-    ? { ...profile, renderPath: waterMsaa ? ('forward' as const) : ('deferred' as const) }
-    : multisample && profile.renderPath !== 'forward'
+  let selectedProfile =
+    multisample && profile.renderPath !== 'forward'
       ? { ...profile, renderPath: 'forward' as const }
       : profile;
   if (!aoRequested && camera.screenSpaceReflection === undefined)
     return ok({ profile: selectedProfile, config });
   let selectedConfig = config;
   if (aoRequested) {
-    const parameters = ambientOcclusionParameters(camera.ambientOcclusion);
-    if (!parameters.ok) return err(parameters.error);
-    // AO is a view-local lighting input and does not require the Deferred
-    // GBuffer. Its own SceneData producer admits Forward on no-storage lanes.
-    const effective = applyAmbientOcclusionQuality(
-      parameters.value,
-      profile.quality?.ambientOcclusion,
-    );
-    selectedProfile = { ...selectedProfile, ssao: effective };
-    selectedConfig = { ...selectedConfig, ssao: { enabled: true, ...effective } };
+    const defaults = config?.ambientOcclusion ?? profile.ambientOcclusion;
+    let ambientOcclusion = { ...defaults, enabled: false };
+    if (camera.ambientOcclusion.enabled) {
+      const parameters = ambientOcclusionParameters(camera.ambientOcclusion);
+      if (!parameters.ok) return err(parameters.error);
+      const effective = applyAmbientOcclusionQuality(
+        { ...defaults, ...parameters.value },
+        profile.quality?.ambientOcclusion,
+      );
+      ambientOcclusion = { ...effective, enabled: true };
+    }
+    selectedProfile = { ...selectedProfile, ambientOcclusion };
+    selectedConfig = { ...selectedConfig, ambientOcclusion };
   }
-  // SSR retains its independent storage/MRT admission policy. When AO is also
-  // requested on an ineligible device, keep Forward and still honor AO.
-  if (camera.screenSpaceReflection !== undefined && deferredEligible && !multisample)
+  // A Water view uses the selected renderer. The ordinary SSR auto-selection
+  // policy still applies to views without Water.
+  if (shouldSelectDeferredForSsr(camera, lane, multisample, singleLayerWater, requestedPath))
     selectedProfile = { ...selectedProfile, renderPath: 'deferred' };
   return ok({ profile: selectedProfile, config: selectedConfig });
 }

@@ -4,30 +4,33 @@ import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
 import {
   createIrradianceFieldHarness,
+  expectFieldTopologyRebuild,
   type FieldImage,
+  fieldInspection,
   irradianceFieldGi,
 } from './renderer-irradiance-field.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
-const manifest = shaderManifestUrl(await buildEngineShaderManifest());
+const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 const directory = 'artifacts/irradiance-field/dawn';
 mkdirSync(directory, { recursive: true });
 
-const meanAbs = (a: FieldImage, b: FieldImage) =>
+type Energy = Pick<FieldImage, 'red'>;
+const meanAbs = (a: Energy, b: Energy) =>
   a.red.reduce((sum, value, i) => sum + Math.abs(value - (b.red[i] ?? NaN)), 0) / a.red.length;
-const max = (image: FieldImage) => image.red.reduce((m, value) => Math.max(m, value), 0);
-const average = (images: readonly FieldImage[]): FieldImage => {
+const max = (image: Energy) => image.red.reduce((m, value) => Math.max(m, value), 0);
+const average = (images: readonly FieldImage[]) => {
   const red = new Float32Array(images[0]?.red.length ?? 0);
   for (const image of images)
     for (let i = 0; i < red.length; i++)
       red[i] = (red[i] ?? 0) + (image.red[i] ?? 0) / images.length;
   const mean = red.reduce((sum, v) => sum + v, 0) / red.length;
-  return { bytes: new Uint8Array(), red, mean, center: Number.NaN };
+  return { red, mean };
 };
 /** Probe updates leave per-frame noise; compare 8-frame temporal means. */
 const WINDOW = 8;
@@ -37,7 +40,11 @@ const GRID_VOXELS = 17 ** 3;
 const B = [-2, -1, 0.5] as const;
 
 /** Frames until the trailing `WINDOW` mean first lies within `tolerance` of the reference. */
-function convergence(series: readonly FieldImage[], reference: FieldImage, tolerance: number) {
+function convergence(
+  series: readonly FieldImage[],
+  reference: Energy & { readonly mean: number },
+  tolerance: number,
+) {
   const errors: number[] = [];
   let frames: number | undefined;
   for (let end = WINDOW; end <= series.length; end++) {
@@ -62,7 +69,31 @@ async function timedDraw(h: Harness) {
   return cpuMs;
 }
 
-it('adds and rematerializes field sources in place: only their Cards, their SDF box and nearby probes update', {
+/** Bound addition by its original 60 frames and explicit rebuild by its
+ * original 120 seconds. Completion belongs to a new, submitted generation. */
+async function measureRebuild(h: Harness, generation: number, frameLimit = Infinity) {
+  const started = performance.now();
+  let frames = 0;
+  let cpuMs = 0;
+  for (;;) {
+    cpuMs += await timedDraw(h);
+    frames++;
+    const state = fieldInspection(h);
+    if (state.state === 'failed') throw new Error(JSON.stringify({ state, errors: h.errors }));
+    if (
+      state.state === 'ready' &&
+      state.generation > generation &&
+      state.submittedFrames > 0 &&
+      state.acceleration?.settled !== false
+    )
+      return { frames, cpuMs, wallMs: performance.now() - started, state };
+    if (frames >= frameLimit || performance.now() - started > 120_000)
+      throw new Error(`rebuild did not settle: ${JSON.stringify({ state, frames, frameLimit })}`);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+it('rebuilds added field sources and rematerializes only their Cards in place', {
   timeout: 900_000,
 }, async () => {
   const recorder = attachRecorder(webgpu).unwrap();
@@ -85,40 +116,30 @@ it('adds and rematerializes field sources in place: only their Cards, their SDF 
     h.spawn(h.floorMesh, h.white, [0, -1.5, -2]);
     await h.settle(0);
     const dark = await h.image();
-    const start = h.inspection();
+    const start = fieldInspection(h);
     const baseTiles = start.cards?.tiles ?? 0;
     expect(baseTiles).toBeGreaterThan(0);
-    // (a) Add an emitter after settle. Its mesh digest and Card program admit
-    // asynchronously; the add applies in place on the frame admission completes.
+    // (a) A new identity replaces the canonical pool before any row is published.
+    // Preserve the original 60-frame admission bound and record the full rebuild.
     const slab = await h.slab(1.5, 1.5, 0.25);
-    const addStarted = performance.now();
     const emitter = h.spawn(slab, h.emissive, [...B]);
-    let addFrames = 0;
-    let addCpuMs = Number.NaN;
-    for (; addFrames < 60; ) {
-      const cpu = await timedDraw(h);
-      addFrames++;
-      if ((h.inspection().edits?.applied ?? 0) > 0) {
-        addCpuMs = cpu;
-        break;
-      }
-    }
-    const addWallMs = performance.now() - addStarted;
-    const added = h.inspection();
-    expect(added.generation).toBe(start.generation);
+    const addition = await measureRebuild(h, start.generation, 60);
+    const added = addition.state;
+    expectFieldTopologyRebuild(start, added, 1, 1);
     const addEdits = added.edits;
-    assert(addEdits, `add never applied: ${JSON.stringify(added)}`);
+    assert(addEdits, `add never rebuilt: ${JSON.stringify(added)}`);
     const emitterTiles = (added.cards?.tiles ?? 0) - baseTiles;
     expect(emitterTiles).toBeGreaterThan(0);
     expect(addEdits).toMatchObject({
-      applied: 1,
-      addedInstances: 1,
+      applied: 0,
+      addedInstances: 0,
       movedInstances: 0,
       removedInstances: 0,
       rematerializedInstances: 0,
-      recapturedTiles: emitterTiles,
+      recapturedTiles: 0,
     });
-    // Ray Query: the new slab mesh builds its one BLAS and the TLAS rebuilds once.
+    // The new pool owns every Mesh/BLAS, including the added slab. Counters are
+    // generation-local: no old BLAS/TLAS cost may masquerade as an in-place add.
     const rayQuery = start.traversal === 'ray-query';
     const accelerationStart = start.acceleration;
     const accelerationAdded = added.acceleration;
@@ -127,21 +148,19 @@ it('adds and rematerializes field sources in place: only their Cards, their SDF 
       expect(accelerationAdded).toMatchObject({
         instances: accelerationStart.instances + 1,
         geometries: accelerationStart.geometries + 1,
-        blasBuilt: accelerationStart.blasBuilt + 1,
-        tlasBuilt: accelerationStart.tlasBuilt + 1,
+        blasBuilt: accelerationAdded.geometries,
+        tlasBuilt: 1,
       });
     }
-    expect(addEdits.composedVoxels).toBeGreaterThan(0);
-    expect(addEdits.composedVoxels).toBeLessThan(GRID_VOXELS / 4);
-    expect(addEdits.priorityProbes).toBeGreaterThan(0);
-    expect(addEdits.priorityProbes).toBeLessThan(start.probes?.count ?? 0);
+    expect(addEdits.composedVoxels).toBe(0);
+    expect(addEdits.priorityProbes).toBe(0);
     const addSeries: FieldImage[] = [];
     for (let i = 0; i < 64; i++) {
       if (i !== 63) {
         addSeries.push(await h.image());
         continue;
       }
-      // Preserve the actual final edit frame before a forced rebuild replaces
+      // Preserve the actual final added scene before a forced rebuild replaces
       // its field. A failed convergence assertion must retain that GPU state.
       const capture = recorder.captureFrame();
       (await recorder.frameBoundary()).unwrap();
@@ -157,13 +176,13 @@ it('adds and rematerializes field sources in place: only their Cards, their SDF 
       );
       result.addFrame = {
         digest: tape.digest,
-        inspection: h.inspection(),
+        inspection: fieldInspection(h),
         width: h.canvas.width,
         height: h.canvas.height,
       };
     }
-    expect(h.inspection()).toMatchObject({
-      generation: start.generation,
+    expect(fieldInspection(h)).toMatchObject({
+      generation: added.generation,
       edits: { pendingTiles: 0, pendingPriorityUpdates: 0 },
     });
 
@@ -177,22 +196,9 @@ it('adds and rematerializes field sources in place: only their Cards, their SDF 
       },
     } as typeof gi;
     h.setGi(rebuildGi);
-    const rebuildStarted = performance.now();
-    let rebuildFrames = 0;
-    let rebuildCpuMs = 0;
-    for (;;) {
-      rebuildCpuMs += await timedDraw(h);
-      rebuildFrames++;
-      const state = h.inspection();
-      if (state.state === 'failed') throw new Error(JSON.stringify({ state, errors: h.errors }));
-      if (state.state === 'ready' && state.submittedFrames > 0) break;
-      if (performance.now() - rebuildStarted > 120_000)
-        throw new Error(`rebuild did not settle: ${JSON.stringify(state)}`);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    const rebuildWallMs = performance.now() - rebuildStarted;
-    const rebuilt = h.inspection();
-    expect(rebuilt.generation).toBeGreaterThan(start.generation);
+    const explicitRebuild = await measureRebuild(h, added.generation);
+    const rebuilt = explicitRebuild.state;
+    expectFieldTopologyRebuild(added, rebuilt, 0, 0);
     const rebuildSeries: FieldImage[] = [];
     for (let i = 0; i < 96; i++) rebuildSeries.push(await h.image());
     const reference = average(rebuildSeries.slice(-WINDOW));
@@ -217,39 +223,43 @@ it('adds and rematerializes field sources in place: only their Cards, their SDF 
       `add never converged: ${JSON.stringify({ noise, errors: addConvergence.errors })}`,
     );
     expect(addConvergence.errors.at(-1)).toBeLessThan(tolerance);
-    // The add starts from a settled field; it reaches the reference no later than a rebuild.
+    // Both paths rebuild the same added scene at the original quality and bounds.
     assert(rebuildConvergence.frames !== undefined);
-    expect(addConvergence.frames).toBeLessThanOrEqual(rebuildFrames + rebuildConvergence.frames);
+    expect(addConvergence.frames).toBeLessThanOrEqual(
+      explicitRebuild.frames + rebuildConvergence.frames,
+    );
     const rebuildTiles = rebuilt.cards?.tiles ?? 0;
     expect(rebuildTiles).toBe(baseTiles + emitterTiles);
     const rebuildProbes = rebuilt.probes?.count ?? 0;
+    // Nominal complete-pool capacities and actual Native acceleration counters,
+    // not measured voxel dispatches, pass timing or an in-place speedup claim.
     const cost = {
-      edit: {
-        tiles: addEdits.recapturedTiles,
-        voxels: addEdits.composedVoxels,
-        probes: addEdits.priorityProbes,
-        cpuMs: addCpuMs,
-        framesToApply: addFrames,
-        wallMsToApply: addWallMs,
+      additionRebuild: {
+        atlasTiles: added.cards?.tiles ?? 0,
+        voxelCapacity: GRID_VOXELS,
+        probeCount: added.probes?.count ?? 0,
+        cpuMs: addition.cpuMs,
+        framesToReady: addition.frames,
+        wallMsToReady: addition.wallMs,
         framesToConverge: addConvergence.frames,
-        accelerationBytes:
-          (accelerationAdded?.bytesBuilt ?? 0) - (accelerationStart?.bytesBuilt ?? 0),
+        accelerationBytes: accelerationAdded?.bytesBuilt ?? 0,
       },
       rebuild: {
-        tiles: rebuildTiles,
-        voxels: GRID_VOXELS,
-        probes: rebuildProbes,
-        cpuMs: rebuildCpuMs,
-        framesToReady: rebuildFrames,
-        wallMsToReady: rebuildWallMs,
-        framesToConverge: rebuildFrames + rebuildConvergence.frames,
+        atlasTiles: rebuildTiles,
+        voxelCapacity: GRID_VOXELS,
+        probeCount: rebuildProbes,
+        cpuMs: explicitRebuild.cpuMs,
+        framesToReady: explicitRebuild.frames,
+        wallMsToReady: explicitRebuild.wallMs,
+        framesToConverge: explicitRebuild.frames + rebuildConvergence.frames,
         accelerationBytes: rebuilt.acceleration?.bytesBuilt ?? 0,
       },
     };
-    expect(cost.edit.tiles).toBeLessThan(cost.rebuild.tiles);
-    expect(cost.edit.voxels).toBeLessThan(cost.rebuild.voxels);
-    expect(cost.edit.probes).toBeLessThan(cost.rebuild.probes);
-    if (rayQuery) expect(cost.edit.accelerationBytes).toBeLessThan(cost.rebuild.accelerationBytes);
+    expect(cost.additionRebuild.atlasTiles).toBe(cost.rebuild.atlasTiles);
+    expect(cost.additionRebuild.voxelCapacity).toBe(cost.rebuild.voxelCapacity);
+    expect(cost.additionRebuild.probeCount).toBe(cost.rebuild.probeCount);
+    if (rayQuery)
+      expect(cost.additionRebuild.accelerationBytes).toBe(cost.rebuild.accelerationBytes);
     result.add = {
       edits: addEdits,
       emitterTiles,
@@ -267,7 +277,7 @@ it('adds and rematerializes field sources in place: only their Cards, their SDF 
     (await recorder.frameBoundary()).unwrap();
     const materialCpuMs = await timedDraw(h);
     (await recorder.frameBoundary()).unwrap();
-    const repainted = h.inspection();
+    const repainted = fieldInspection(h);
     expect(repainted.generation).toBe(rebuilt.generation);
     const materialEdits = repainted.edits;
     assert(materialEdits);
@@ -339,7 +349,7 @@ it('adds and rematerializes field sources in place: only their Cards, their SDF 
     const unlit = await h.image();
     (await recorder.frameBoundary()).unwrap();
     const ghostTape = (await ghostCapture).unwrap();
-    expect(h.inspection()).toMatchObject({
+    expect(fieldInspection(h)).toMatchObject({
       generation: rebuilt.generation,
       edits: { pendingTiles: 0, pendingPriorityUpdates: 0 },
     });
@@ -374,12 +384,12 @@ it('removes a field source in place while Card capture is still progressive', {
     const emitter = h.spawn(await h.slab(1.5, 1.5, 0.25), h.emissive, [...B]);
     h.setGi(irradianceFieldGi({ hysteresis: 0.8, maxDistance: 0.5, cardBudget: 4 }));
     await h.settle(0);
-    const start = h.inspection();
+    const start = fieldInspection(h);
     const tiles = start.cards?.tiles ?? 0;
     expect(start.cards?.captured).toBeLessThan(tiles);
     h.world.despawn(emitter).unwrap();
     await h.draw();
-    const removed = h.inspection();
+    const removed = fieldInspection(h);
     expect(removed.generation).toBe(start.generation);
     expect(removed.edits).toMatchObject({ applied: 1, removedInstances: 1 });
     if (start.traversal === 'ray-query') {
@@ -394,7 +404,7 @@ it('removes a field source in place while Card capture is still progressive', {
     expect(removed.cards?.tiles).toBe(tiles);
     for (let i = 0; i < 40; i++) await h.draw();
     const dark = await h.image();
-    expect(h.inspection()).toMatchObject({
+    expect(fieldInspection(h)).toMatchObject({
       generation: start.generation,
       cards: { captured: tiles },
       edits: { pendingTiles: 0, pendingPriorityUpdates: 0 },
@@ -405,10 +415,9 @@ it('removes a field source in place while Card capture is still progressive', {
     h.spawn(await h.slab(1.5, 1.5, 0.25), h.emissive, [...B]);
     for (let i = 0; i < 60; i++) await h.draw();
     const relit = await h.image();
-    expect(h.inspection()).toMatchObject({
-      generation: start.generation,
-      edits: { applied: 2, addedInstances: 1 },
-    });
+    // The tombstone belongs to the old pool. Re-entry is a cold pool with the
+    // original three active sources, not reuse of a retired row's identity.
+    expectFieldTopologyRebuild(start, fieldInspection(h), 0, 0);
     expect(max(relit)).toBeGreaterThan(0.05);
     expect(max(dark)).toBeLessThan(1e-3 * max(relit));
     writeFileSync(

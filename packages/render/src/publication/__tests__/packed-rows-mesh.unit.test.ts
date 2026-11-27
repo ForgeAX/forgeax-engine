@@ -3,11 +3,13 @@ import { copyAssetData } from '@forgeax/engine-assets-runtime/internal';
 import {
   createBoxGeometry,
   deriveVertexLayoutProjection,
+  interleavedMesh,
+  prepareStaticMeshVertexStreams,
   type VertexLayoutProjection,
 } from '@forgeax/engine-geometry';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
-import { prepareAssetPatch } from '../asset-patch';
+import { prepareAssetPatch, publishAssetPatch } from '../asset-patch';
 import { samePublishedMesh } from '../mesh';
 import {
   attributeChannelBytes,
@@ -83,7 +85,7 @@ it('rejects malformed packed-rows payloads explicitly', () => {
       ...packed,
       attributes: { ...packed.attributes, position: new Float32Array(3) },
     }),
-  ).toMatch(/interleaved position requires an empty canonical layout declaration/);
+  ).toBe('packed position requires an empty canonical layout declaration');
   expect(packedRowsMeshError({ ...packed, vertices: packed.vertices.subarray(0, 5) })).toMatch(
     /vertexCount|vertices.byteLength/,
   );
@@ -106,6 +108,37 @@ it('compares a packed-rows mesh with its full form by the rebuilt channel bytes'
   expect(samePublishedMesh(packed, { ...full, attributes: fewer })).toBe(false);
 });
 
+it('checks the full channel and packed bytes when a revision crosses static stream layouts', () => {
+  const identity = { source: 'stream-layout', epoch: 1, meshHandle: 7 as never, revision: 1 };
+  const receiver = new RenderPublicationReceiver(identity);
+  try {
+    const full = box();
+    const rows = trimToPackedRows(full, copyAssetData);
+    const streams = prepareStaticMeshVertexStreams(rows.vertices, layout(rows));
+    if (streams === undefined) throw new Error('missing static streams');
+    const split = {
+      ...rows,
+      attributeStorage: 'static-streams' as const,
+      vertices: new Float32Array(streams.pack().buffer),
+    };
+    receiver.prepareMesh({ ...identity, mesh: split }).unwrap();
+    for (const mesh of [rows, full]) {
+      expect(receiver.prepareMesh({ ...identity, mesh }).ok).toBe(true);
+      expect(samePublishedMesh(mesh, split)).toBe(true);
+    }
+    const inconsistent = copyAssetData(full);
+    (inconsistent.attributes.uv as Float32Array)[0] = 0.25;
+    expect(receiver.prepareMesh({ ...identity, mesh: inconsistent }).ok).toBe(false);
+    expect(samePublishedMesh(inconsistent, split)).toBe(false);
+    const changed = copyAssetData(rows);
+    changed.vertices[changed.vertices.length - 1] = 7;
+    expect(samePublishedMesh(split, changed)).toBe(false);
+    expect(receiver.prepareMesh({ ...identity, mesh: rows }).ok).toBe(true);
+  } finally {
+    receiver.dispose();
+  }
+});
+
 it('validates packed-rows payloads at the Render receiver and conflicts by content', () => {
   const identity = { source: 'packed-rows', epoch: 1 };
   const receiver = new RenderPublicationReceiver(identity);
@@ -122,7 +155,9 @@ it('validates packed-rows payloads at the Render receiver and conflicts by conte
     mesh: malformed,
   });
   expect(rejected.ok).toBe(false);
-  expect(String(rejected.ok ? '' : rejected.error.message)).toMatch(/interleaved/);
+  expect(String(rejected.ok ? '' : rejected.error.message)).toContain(
+    'packed normal requires an empty canonical layout declaration',
+  );
   const prepared = receiver
     .prepareMesh({ ...identity, meshHandle: 7 as never, revision: 1, mesh: packed })
     .unwrap();
@@ -183,6 +218,58 @@ it('applies paired row/channel patches from rows and rejects channel-only patche
   const fullPositions = (fullPatch.value as MeshAsset).attributes.position;
   if (!(fullPositions instanceof Float32Array)) throw new Error('Expected float32 positions');
   expect(Array.from(fullPositions.subarray(0, 3))).toEqual([9, 8, 7]);
+});
+
+it.each([
+  false,
+  true,
+])('transports canonical edits into static stream ranges (retained=%s)', (retained) => {
+  const rows = interleavedMesh(box());
+  const projection = layout(rows),
+    stride = projection.arrayStride;
+  const plan = prepareStaticMeshVertexStreams(rows.vertices, projection);
+  if (!plan) throw new Error('missing test streams');
+  const current = {
+    ...rows,
+    attributeStorage: 'static-streams' as const,
+    vertices: new Float32Array(plan.pack().buffer),
+  };
+  const expected = structuredClone(rows);
+  const bytes = new Uint8Array(expected.vertices.buffer);
+  const ranges = [
+    { byteOffset: stride, rowBytes: 12, byteStride: stride, count: 5 },
+    { byteOffset: stride - 2, rowBytes: 3 * stride + 6, byteStride: 3 * stride + 6, count: 1 },
+    { byteOffset: 9, rowBytes: 6, byteStride: stride + 3, count: 4 },
+  ].map(({ byteOffset, rowBytes, byteStride, count }, k) => {
+    for (let i = 0; i < count; i++)
+      bytes.fill(31 + k, byteOffset + i * byteStride, byteOffset + i * byteStride + rowBytes);
+    return {
+      path: ['vertices'],
+      byteOffset,
+      rowBytes,
+      byteStride,
+      byteLength: (count - 1) * byteStride + rowBytes,
+    };
+  });
+  const change = {
+    handle: 7 as never,
+    stableKind: 'mesh' as const,
+    removed: false,
+    revision: 2,
+    fields: [],
+    ranges,
+  };
+  const patch = publishAssetPatch(expected, change, 1);
+  if (!patch) throw new Error('missing test patch');
+  const prepared = prepareAssetPatch(current, patch, retained);
+  for (const range of patch.ranges) range.bytes.fill(0);
+  expect(interleavedMesh(current).vertices).toEqual(rows.vertices);
+  prepared.commit();
+  const accepted = prepared.value as MeshAsset;
+  expect(accepted.attributeStorage).toBe('static-streams');
+  expect(new Uint8Array(interleavedMesh(accepted).vertices.buffer)).toEqual(bytes);
+  expect(publishAssetPatch(accepted, change, 1)).toEqual(publishAssetPatch(expected, change, 1));
+  if (retained) expect(interleavedMesh(current).vertices).toEqual(rows.vertices);
 });
 
 it('uses the same validated canonical rows in World and Render asset stores', () => {

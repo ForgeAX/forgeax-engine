@@ -14,8 +14,11 @@ import {
 import common from '../../../shader/src/common.wgsl?raw';
 import fxaa from '../../../shader/src/fxaa.wgsl?raw';
 import outputEncoding from '../../../shader/src/output-encoding.wgsl?raw';
+import smaaBlend from '../../../shader/src/smaa-blend.wgsl?raw';
 import toneMapping from '../../../shader/src/tone-mapping.wgsl?raw';
 import tonemap from '../../../shader/src/tonemap.wgsl?raw';
+import { createPostProcessParamsOwner } from '../assembly/post-process-params';
+import { RhiErrorListenerRegistry } from '../lifecycle';
 import { createRenderPipelineTarget, type RenderPipelineFrame } from '../render-pipeline';
 import { addTypedOutputTransformPass } from '../typed-render-graph-primitives';
 
@@ -39,6 +42,7 @@ async function shader(device: RhiDevice, source: string): Promise<ShaderModule> 
     {
       'forgeax_view::common': common,
       'forgeax_view::output_encoding': outputEncoding,
+      'forgeax_view::smaa_blend': smaaBlend,
       'forgeax_view::tone_mapping': toneMapping,
     },
     {
@@ -250,9 +254,17 @@ it('Output Transform preserves the backend pixel grid and scaled/mip attachment 
             } else data.set([x % 256, y, 73, 255], (y * iw + x) * 4);
           }
         const input = device.createTexture({ size: [iw, ih], format, usage: 0x06 }).unwrap();
-        const params = device.createBuffer({ size: 32, usage: 0x48 }).unwrap();
+        const owner = createPostProcessParamsOwner(
+          { device, errorRegistry: new RhiErrorListenerRegistry() },
+          () => {},
+        );
+        const id = 'forgeax::standard::output-transform';
         const bytes = new Uint8Array(32);
         new DataView(bytes.buffer).setFloat32(0, 1, true);
+        owner.registerBuiltinPostProcess(id, {
+          source: 'output',
+          params: { byteSize: 32, defaultValue: bytes },
+        });
         device.queue
           .writeTexture({ texture: input }, data, { bytesPerRow: iw * bytesPerPixel }, [iw, ih, 1])
           .unwrap();
@@ -283,13 +295,26 @@ it('Output Transform preserves the backend pixel grid and scaled/mip attachment 
         addTypedOutputTransformPass(graph, inputTarget, output, {
           fragmentEntryPoint: 'fs_present',
         }).unwrap();
-        // Declare readback through the same graph, so COPY_SRC is derived.
+        const thumbnail = createRenderPipelineTarget(graph, 'thumbnail', {
+          size: { width: 1, height: 1 },
+          format,
+        }).unwrap();
+        addTypedOutputTransformPass(graph, inputTarget, thumbnail, {
+          name: 'present-thumbnail',
+          fragmentEntryPoint: 'fs_present',
+        }).unwrap();
+        let thumbTexture: import('@forgeax/engine-rhi').Texture | undefined;
+        // Both draws read one shader with distinct extents in a single native submit.
         let outputTexture: import('@forgeax/engine-rhi').Texture | undefined;
         graph
           .addCopyPass('readback-access', {
-            accesses: [{ resource: output.view, usage: 'copy-src' }],
+            accesses: [
+              { resource: output.view, usage: 'copy-src' },
+              { resource: thumbnail.view, usage: 'copy-src' },
+            ],
             encode: ({ resources }) => {
               outputTexture = resources.texture(output.texture).unwrap();
+              thumbTexture = resources.texture(thumbnail.texture).unwrap();
             },
           })
           .unwrap();
@@ -302,7 +327,7 @@ it('Output Transform preserves the backend pixel grid and scaled/mip attachment 
           encoder,
           targetW: 911,
           targetH: 503,
-          postProcessParams: new Map([['forgeax::standard::output-transform', bytes]]),
+          postProcessParams: new Map([[id, bytes]]),
           runtime: {
             device,
             errorRegistry: {
@@ -310,11 +335,8 @@ it('Output Transform preserves the backend pixel grid and scaled/mip attachment 
                 throw error;
               },
             },
-            lookupPostProcess: () => ({
-              source: 'test',
-              params: { byteSize: 32, defaultValue: bytes },
-            }),
-            getPostProcessParamsBuffer: () => params,
+            lookupPostProcess: owner.lookup,
+            getPostProcessParamsBuffer: owner.getBuffer,
             getPostProcessPipeline: (_id: string, layout: BindGroupLayout) =>
               device
                 .createRenderPipeline({
@@ -344,11 +366,17 @@ it('Output Transform preserves the backend pixel grid and scaled/mip attachment 
           return pass;
         };
         try {
+          owner.beginRecording();
           compiled.execute(frame).unwrap();
           expect(boundGroups).toContain(0);
           expect(boundGroups).toContain(1);
           device.queue.submit([encoder.finish().unwrap()]).unwrap();
           if (outputTexture === undefined) throw new Error('declared output was not resolved');
+          owner.finishRecording();
+          if (thumbTexture === undefined)
+            throw new Error('missing thumbnail for second output transform');
+          if (!half)
+            expect(Array.from(await read(device, thumbTexture, 1, 1))).toEqual([128, 96, 73, 255]);
           const result = await read(device, outputTexture, w, h, mip, bytesPerPixel);
           if (half) {
             // Equal grids retain exact source texels, including every binary16 bit.
@@ -381,7 +409,7 @@ it('Output Transform preserves the backend pixel grid and scaled/mip attachment 
         } finally {
           await compiled.retire();
           device.destroyTexture(input).unwrap();
-          device.destroyBuffer(params).unwrap();
+          owner.dispose();
         }
       }
     } finally {

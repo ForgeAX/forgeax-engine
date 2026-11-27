@@ -1,6 +1,6 @@
 #define_import_path forgeax_material::water_underwater
 #import forgeax_view::common::{view, view_atmosphere_light_direction}
-#import forgeax_scene_temporal::{sceneViewZ}
+#import forgeax_scene_temporal::{sceneTemporalDepthTexel, sceneTemporalRasterUv, sceneViewZ}
 #import forgeax_material::water_waves::{waterBodyData, waterMaterialDrawData, waterBodyHeightDepth, waterBodyVelocity, waterBodyPhaseAtWorldPosition, evaluateWaterWavesForward}
 
 @group(0) @binding(1) var underwaterSceneColor: texture_2d<f32>;
@@ -17,10 +17,10 @@ struct UnderwaterSelection { surfaceYM: f32, immersionM: f32, blendWeight: f32, 
   let pixel = vec2<i32>(position.xy);
   let size = vec2<f32>(textureDimensions(underwaterSceneColor));
   let uv = position.xy / size;
-  let depthSize = textureDimensions(underwaterSceneDepth);
-  let depthPixel = clamp(vec2<i32>(uv * vec2<f32>(depthSize)), vec2<i32>(0), vec2<i32>(depthSize) - vec2<i32>(1));
+  let rasterUv = sceneTemporalRasterUv(uv, view.worldViewProj, view.temporalCurrentViewProj);
+  let depthPixel = sceneTemporalDepthTexel(rasterUv, textureDimensions(underwaterSceneDepth));
   let rawDepth = textureLoad(underwaterSceneDepth, depthPixel, 0);
-  let h = view.inverseViewProj * vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), max(rawDepth, 0.00001), 1.0);
+  let h = view.inverseViewProj * vec4<f32>(rasterUv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), max(rawDepth, 0.00001), 1.0);
   let scenePosition = h.xyz / h.w;
   let viewRight = vec3<f32>(view.temporalCurrentViewProj[0].x, view.temporalCurrentViewProj[1].x, view.temporalCurrentViewProj[2].x);
   let viewUp = vec3<f32>(view.temporalCurrentViewProj[0].y, view.temporalCurrentViewProj[1].y, view.temporalCurrentViewProj[2].y);

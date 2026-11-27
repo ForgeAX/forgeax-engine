@@ -4,7 +4,7 @@ import type { RenderFrameState } from '../frame-snapshot';
 import { resolveShadowMapSize } from '../frame-targets';
 
 type Installed = RenderFrameState['compiledFrameGraph'];
-const installed = (count?: number): Installed =>
+const installed = (count?: number | 'current'): Installed =>
   ({ ...(count === undefined ? {} : { directionalShadowViewCount: count }) }) as Installed;
 
 describe('directional shadow graph demand', () => {
@@ -16,6 +16,18 @@ describe('directional shadow graph demand', () => {
     expect(directionalShadowPreparationLimit(2, installed(1), installed(3))).toBe(3);
   });
 
+  it('fits a physical shadow writer to each frame while a declared older writer still owns its slices', () => {
+    for (const count of [1, 2, 3, 4, 2, 1]) {
+      expect(directionalShadowPreparationLimit(count, installed('current'), undefined)).toBe(count);
+      expect(
+        directionalShadowPreparationLimit(count, installed('current'), installed('current')),
+      ).toBe(count);
+      expect(directionalShadowPreparationLimit(count, installed('current'), installed(3))).toBe(
+        Math.max(3, count),
+      );
+    }
+  });
+
   it('retains the full original capacity for unknown, legacy, pending, or absent owners', () => {
     expect(directionalShadowPreparationLimit(undefined, installed(3), undefined)).toBeUndefined();
     expect(directionalShadowPreparationLimit(3, null, undefined)).toBeUndefined();
@@ -25,13 +37,19 @@ describe('directional shadow graph demand', () => {
   });
 
   it('rejects invalid counts instead of accidentally dropping a requested cascade', () => {
-    for (const invalid of [0, -1, 5, 2.5, NaN, Infinity]) {
+    expect(directionalShadowPreparationLimit(0, installed(3), undefined)).toBeUndefined();
+    for (const invalid of [-1, 5, 2.5, NaN, Infinity]) {
       expect(directionalShadowPreparationLimit(invalid, installed(3), undefined)).toBeUndefined();
       expect(directionalShadowPreparationLimit(3, installed(invalid), undefined)).toBeUndefined();
       expect(
         directionalShadowPreparationLimit(3, installed(3), installed(invalid)),
       ).toBeUndefined();
     }
+  });
+
+  it('prepares the first directional light for a graph with no existing shadow views', () => {
+    expect(directionalShadowPreparationLimit(3, installed(0), undefined)).toBe(3);
+    expect(directionalShadowPreparationLimit(3, installed(3), installed(0))).toBe(3);
   });
 
   it('releases old graph demand only when that graph has actually retired', () => {

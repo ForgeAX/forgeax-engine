@@ -315,13 +315,13 @@ export function fieldFor(bounds: GiBounds, options: GiFieldOptions = {}): Standa
   };
 }
 
-/** Screen Probe settings used by the `screen-probe` mode (downsample 8, BRDF importance). */
+/** Fixed comparison settings for the explicit reference tools and procedural scenes. */
 export const GI_SCREEN_PROBES = {
-  downsample: 8,
+  downsample: 16,
   adaptiveFraction: 0.5,
   importance: 'brdf',
-  screenTrace: { maxSteps: 32, thickness: 0.02 },
-  filterPasses: 2,
+  screenTrace: { maxSteps: 50, thickness: 0.02 },
+  filterPasses: 3,
   shortRangeAo: 0,
   maxFrames: 10,
 } as const;
@@ -386,6 +386,7 @@ export function tierSceneFor(
     region: field.region,
     probeSpacing: field.probeSpacing,
     maxCaptureBytes: field.cards.maxCaptureBytes,
+    ...('bounds' in scene ? { cardResolution: field.cards.resolution } : {}),
   };
 }
 

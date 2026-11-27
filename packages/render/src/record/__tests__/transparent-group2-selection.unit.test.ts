@@ -32,7 +32,7 @@ describe('transparent material group 2 selection', () => {
     ).toBe('skin');
     expect(
       createMaterialShaderProgram(
-        '@group(2) @binding(0) var<storage> mesh: array<u32>; @group(2) @binding(1) var<storage> palette: array<u32>; @group(2) @binding(4) var<storage> lights: array<u32>;',
+        '@group(2) @binding(0) var<storage> mesh: array<u32>; @group(2) @binding(1) var<storage> palette: array<u32>; @group(0) @binding(30) var<storage, read> light_data: array<u32>;',
       ).group2,
     ).toBe('skin-cluster');
   });
@@ -60,11 +60,10 @@ describe('transparent material group 2 selection', () => {
           ...state,
           probeInstancesBindGroupLayout: probes,
         },
-        false,
         true,
       ),
     ).toEqual({ meshLayout: cluster, instancesLayout: probes });
-    expect(resolveMaterialPipelineBindGroups('hdrp-pbr', state, false, true)).toBeNull();
+    expect(resolveMaterialPipelineBindGroups('hdrp-pbr', state, true)).toBeNull();
     expect(
       resolveMaterialPipelineBindGroups('hdrp-pbr', {
         ...state,

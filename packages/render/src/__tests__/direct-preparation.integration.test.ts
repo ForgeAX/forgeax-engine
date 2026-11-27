@@ -1,6 +1,5 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
-import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { err, RhiError } from '@forgeax/engine-rhi';
 import {
   RhiNullDevice,
@@ -10,8 +9,8 @@ import {
 } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it, vi } from 'vitest';
-import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
-import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
+import { prepareRuntimeMaterialTemplate } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
+import { prepareShaderProgramCompiler } from '../../../shader-compiler/src/program';
 import { createRenderer } from '../assembly/factory';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../components';
 import { FilteredPlanContributionOwner } from '../gpu-driven/filtered-plan-contributions';
@@ -24,14 +23,7 @@ import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 it('prepares only consumed direct resources and retires prior GPU shadows after a successful submit', async () => {
   const guid = '019f0000-0000-7000-8000-0000000008c0';
   const source = Materials.standard({ baseColor: [0.8, 0.2, 0.1, 1] });
-  // Direct and scene-index use the same storage-capable device here.
-  const cooked = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook({
-    guid,
-    source,
-  });
-  const record = validateCookedMaterialRecord(
-    (cooked.payload as { cooked: unknown }).cooked,
-  ).unwrap();
+  const installMaterial = await prepareRuntimeMaterialTemplate(guid, source);
   let loseDevice!: (value: { reason: 'unknown'; message: string }) => void;
   const loss = new Promise<{ reason: 'unknown'; message: string }>((resolve) => {
     loseDevice = resolve;
@@ -40,7 +32,7 @@ it('prepares only consumed direct resources and retires prior GPU shadows after 
   const renderer = await createRenderer(
     { width: 32, height: 32, getContext: () => null },
     undefined,
-    { shaderManifestUrl: renderLifecycleManifestUrl() },
+    { shaderManifestUrl: renderLifecycleManifestUrl(), prepareShaderProgramCompiler },
     {
       rhi,
       createShaderModule: rhi.createShaderModule,
@@ -55,6 +47,7 @@ it('prepares only consumed direct resources and retires prior GPU shadows after 
   const prepare = vi.spyOn(GpuDrivenProduction.prototype, 'prepare');
   const filter = vi.spyOn(FilteredPlanContributionOwner.prototype, 'update');
   const viewCreate = vi.spyOn(GpuDrivenView, 'create');
+  const selectView = vi.spyOn(GpuDrivenView.prototype, 'recordViewSelection');
   const viewUpdate = vi.spyOn(GpuDrivenView.prototype, 'update');
   const rasterCreate = vi.spyOn(MaterialAbiRasterAdapter, 'create');
   const disposeView = vi.spyOn(GpuDrivenView.prototype, 'dispose');
@@ -63,6 +56,7 @@ it('prepares only consumed direct resources and retires prior GPU shadows after 
   const clearWork = () => {
     filter.mockClear();
     viewCreate.mockClear();
+    selectView.mockClear();
     viewUpdate.mockClear();
     rasterCreate.mockClear();
     directDraw.mockClear();
@@ -74,8 +68,7 @@ it('prepares only consumed direct resources and retires prior GPU shadows after 
     const attached = renderer.attach(world);
     if (!attached.ok) throw attached.error;
     const lease = attached.value;
-    const payload = { ...source, cooked: record };
-    publishRuntimeAssets(assets, [{ guid, asset: payload }]);
+    installMaterial(assets);
     const material = (await assets.load(guid, 'material')).unwrap();
     registerPropagateTransforms(world);
     world
@@ -115,6 +108,7 @@ it('prepares only consumed direct resources and retires prior GPU shadows after 
     const assertDirect = () => {
       expect(filter).not.toHaveBeenCalled();
       expect(viewCreate).not.toHaveBeenCalled();
+      expect(selectView).not.toHaveBeenCalled();
       expect(viewUpdate).not.toHaveBeenCalled();
       expect(rasterCreate).not.toHaveBeenCalled();
       expect(indirectDraw).not.toHaveBeenCalled();
@@ -151,6 +145,7 @@ it('prepares only consumed direct resources and retires prior GPU shadows after 
     assertDirect();
     expect(draw('automatic').ok, JSON.stringify(errors)).toBe(true);
     expect(indirectDraw).toHaveBeenCalled();
+    expect(selectView).toHaveBeenCalled();
     const pool = preparedFrame().shadowViewPool;
     expect(pool?.inspect().length).toBeGreaterThan(0);
     clearWork();

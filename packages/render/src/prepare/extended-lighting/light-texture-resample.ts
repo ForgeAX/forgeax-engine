@@ -819,7 +819,7 @@ function fragmentFloatReadbackLayout(
 export interface PreparedLightTextureResample {
   readonly execution: 'compute' | 'fragment';
   readonly graph: CompiledRenderGraph<RenderGraphFrame>;
-  execute(encoder: RhiCommandEncoder): Result<void, RhiError>;
+  execute(encoder: RhiCommandEncoder, nativePassNames?: string[]): Result<void, RhiError>;
   submitted(
     completion: Promise<unknown>,
     reportRetirementFailure?: (error: RhiError) => void,
@@ -1470,7 +1470,7 @@ export function prepareLightTextureSliceResample(
     return ok({
       execution,
       graph: compiled,
-      execute(encoder: RhiCommandEncoder): Result<void, RhiError> {
+      execute(encoder: RhiCommandEncoder, nativePassNames?: string[]): Result<void, RhiError> {
         if (retired) {
           return err(
             new RhiError({
@@ -1481,7 +1481,7 @@ export function prepareLightTextureSliceResample(
           );
         }
         if (encoded) return ok(undefined);
-        const executed = compiled?.execute({ encoder });
+        const executed = compiled?.execute({ encoder, nativePassNames });
         const result =
           executed === undefined
             ? err(

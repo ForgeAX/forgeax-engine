@@ -23,13 +23,17 @@ export function subsurfaceDemand(demand: SubsurfaceDemand): boolean {
       expected: 'opaque Deferred Standard subsurface surface',
       hint: 'use an opaque Standard root with a Deferred pass',
     });
-  if (demand > 16)
+  if (demand !== 0 && demand.length > 16)
     throw new RhiError({
       code: 'rhi-descriptor-invalid',
       expected: 'at most 16 active subsurface RGB profiles per view',
       hint: 'reduce the distinct radius tuples in the ordinary material roster',
     });
-  return demand > 0;
+  return demand !== 0;
+}
+
+export interface SubsurfaceView extends NonNullable<RenderPipelineTopology['subsurface']> {
+  readonly compactProfiles?: readonly number[];
 }
 
 /** Admit one view's diffusion lane before allocating its graph resources. */
@@ -38,29 +42,38 @@ export function subsurfaceTopology(
   profile: StandardProfile | undefined,
   device: RhiDevice,
   unsupportedView: boolean,
-): RenderPipelineTopology['subsurface'] {
-  if (!subsurfaceDemand(demand)) return undefined;
-  if (profile?.renderPath !== 'deferred' || profile.diffuseGi !== undefined || unsupportedView) {
+): SubsurfaceView | undefined {
+  if (!subsurfaceDemand(demand) || typeof demand !== 'object') return undefined;
+  if (
+    profile?.renderPath !== 'deferred' ||
+    (profile.gbufferFormat !== 'default' && profile.diffuseGi !== undefined) ||
+    unsupportedView
+  ) {
     throw new RhiError({
       code: 'rhi-descriptor-invalid',
       expected:
-        'single-sample Deferred subsurface display/target view without GI or cube/planar captures',
+        'single-sample Deferred subsurface display/target view (GI requires the Default GBuffer)',
       hint: 'select the supported Standard profile and remove the unsupported combination',
     });
   }
   if (
     !device.caps.compute ||
     !device.caps.storageTexture ||
-    !device.caps.float32Filterable ||
-    !device.features.has('float32-blendable') ||
-    (device.limits.maxComputeWorkgroupStorageSize ?? 0) < 32768
+    !device.caps.storageBuffer ||
+    !device.caps.indirectDrawing ||
+    device.caps.rgba16floatStorage !== true ||
+    (device.limits.maxStorageTexturesPerShaderStage ?? 0) < 3 ||
+    (device.limits.maxStorageBuffersPerShaderStage ?? 0) < 3
   ) {
     throw new RhiError({
       code: 'rhi-not-available',
       expected:
-        'subsurface diffusion: compute/storage textures, float32 HDR sampling/blending and 32768-byte workgroup storage',
-      hint: 'select a device that supports the bounded precise HDR diffusion lane',
+        'subsurface diffusion: RGBA16F storage targets, GPU indirect execution and three compute storage textures and buffers',
+      hint: 'select a device that supports the tiled HDR diffusion lane',
     });
   }
-  return { quality: profile.subsurfaceQuality ?? 'high' };
+  return {
+    quality: profile.subsurfaceQuality ?? 'high',
+    ...(profile.gbufferFormat === 'default' ? { compactProfiles: demand } : {}),
+  };
 }

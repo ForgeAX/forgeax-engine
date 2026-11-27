@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, extname, relative, resolve, sep } from 'node:path';
+import { sha256 } from '@forgeax/engine-types';
 import ts from 'typescript';
 import { isFilesystemPathWithin } from '../filesystem-path.js';
 import type { DevKitAppOptions } from '../plugin-build.js';
@@ -117,7 +117,7 @@ export function renderFeatureSourceInputs(
   const visit = (file: string): void => {
     if (seen.has(file)) return;
     const bytes = readFileSync(file);
-    seen.set(file, `sha256:${createHash('sha256').update(bytes).digest('hex')}`);
+    seen.set(file, `sha256:${sha256(bytes)}`);
     if (!/\.[cm]?[jt]sx?$/.test(file)) return;
     const source = ts.createSourceFile(file, bytes.toString('utf8'), ts.ScriptTarget.Latest, true);
     const add = (specifier: string): void => {

@@ -1,31 +1,67 @@
 import type {
   CookedMaterialRecord,
   MaterialCookProgramContext,
+  MaterialRasterSourcePublication,
+  MaterialTemplatePublication,
+  MaterialTemplateSources,
+  SourceCookedMaterialRecord,
 } from '@forgeax/engine-pack/material-cook';
-import { materialProgramContextKey } from '@forgeax/engine-pack/material-cook';
+import {
+  createMaterialArtifactDigest,
+  materialProgramContextKey,
+  materialRasterSourceSelection,
+} from '@forgeax/engine-pack/material-cook';
 import {
   type MaterialArtifactConflictError,
   type MaterialArtifactRegistry,
   type MaterialRuntimeArtifact,
+  type MaterialShaderSelectionResult,
+  type MaterialShaderSourceEntry,
+  type MaterialShaderTemplateProgram,
   type MaterialShaderVariantReference,
   materialArtifactConflict,
+  type PreparedMaterialShaderTemplate,
   retainMaterialRuntimeArtifact,
+  type ShaderError,
   type ShaderRegistry,
+  STANDARD_SURFACE_DISCARD_CLIPPING_AXIS,
+  STANDARD_SURFACE_DISCARD_LOD_AXIS,
 } from '@forgeax/engine-shader';
 import type {
   MaterialParameter,
+  MaterialPass,
   MaterialProgramAbi,
   MaterialProgramAddress,
+  MaterialRasterSourceInputs,
+  MaterialRasterSourceRecipe,
   MaterialStaticSwitches,
   MaterialSurfaceDeclaration,
   MaterialValue,
   ParamSchemaEntry,
+  Result,
 } from '@forgeax/engine-types';
-import { createMaterialError, projectMaterialParameterSchema } from '@forgeax/engine-types';
-import type { MaterialLoadError, MaterialReady } from './loader';
+import {
+  canonicalJson,
+  createMaterialError,
+  projectMaterialParameterSchema,
+} from '@forgeax/engine-types';
+import type { MaterialLoadError, MaterialReady, SourceMaterialPayload } from './loader';
+
+export type PrepareMaterialSourceProgram = (
+  recipe: MaterialRasterSourceRecipe,
+) => Promise<Result<Uint8Array, ShaderError>>;
+
+interface SourceMaterialReady {
+  readonly record: SourceMaterialPayload['cooked'];
+  readonly publication: MaterialRasterSourcePublication;
+  readonly inputs: MaterialRasterSourceInputs;
+  readonly prepareSource: PrepareMaterialSourceProgram;
+}
 
 export interface MaterialRenderPassProjection {
   readonly name: string;
+  /** Alternate raster state using a declared source-template pass. */
+  readonly templatePass?: string;
   readonly module: string;
   readonly outputs?: import('@forgeax/engine-types').MaterialPass['outputs'];
   readonly vertexEntry?: string;
@@ -52,7 +88,32 @@ export interface MaterialRenderProjection {
   /** Root-published Surface model; Render owns preparation and admission. */
   readonly surface?: MaterialSurfaceDeclaration;
   readonly staticSelection: readonly string[];
+  readonly sourceTemplate?: DecodedMaterialTemplate;
 }
+
+export interface DecodedMaterialTemplate {
+  readonly publication: MaterialTemplatePublication;
+  readonly sources: MaterialTemplateSources;
+}
+
+type ProgramSelection = MaterialRenderPassProjection['programs'][number];
+type ResolveTemplate = (
+  pass: string,
+  context: MaterialCookProgramContext,
+  address: MaterialProgramAddress,
+  vertexColorAvailable: boolean,
+) => ProgramSelection | undefined;
+const materialTemplateResolvers = new WeakMap<
+  MaterialRenderProjection,
+  {
+    readonly select: ResolveTemplate;
+    readonly owns: (pass: string, key: string) => boolean;
+  }
+>();
+const materialTemplatePrograms = new WeakMap<
+  MaterialArtifactRegistry,
+  Map<string, ProgramSelection | null>
+>();
 
 /** Static author choices require their exact admitted publication, including children. */
 export function assertMaterialStaticSelection(
@@ -153,6 +214,23 @@ export function selectMaterialPassProgram(
   return selected;
 }
 
+/** Prove the accepted pass owns the selected program, without compiling a program. */
+export function materialPassOwnsProgram(
+  projection: MaterialRenderProjection,
+  passName: string,
+  key: string,
+): boolean {
+  const template = materialTemplateResolvers.get(projection);
+  return (
+    template?.owns(passName, key) ??
+    projection.passes.some(
+      (pass) =>
+        pass.name === passName &&
+        pass.programs.some((program) => program.specializationKey === key),
+    )
+  );
+}
+
 /** Optional exact lookup. Ambiguous publications retain the strict selection error. */
 export function findMaterialPassProgram(
   projection: MaterialRenderProjection,
@@ -161,6 +239,9 @@ export function findMaterialPassProgram(
   address: MaterialProgramAddress = 'direct',
   vertexColorAvailable = false,
 ): MaterialRenderPassProjection['programs'][number] | undefined {
+  const template = materialTemplateResolvers.get(projection);
+  if (template !== undefined)
+    return template.select(passName, context, address, vertexColorAvailable);
   const modernPublication = projection.passes.some((pass) =>
     pass.programs.some(
       (program) =>
@@ -276,22 +357,30 @@ export function runtimeMaterialShaderId(
   }
 }
 
-export function projectMaterialRecord(record: CookedMaterialRecord): MaterialRenderProjection {
+function projectMaterialPass(pass: MaterialPass): Omit<MaterialRenderPassProjection, 'programs'> {
+  return {
+    name: pass.name,
+    module: pass.program.module,
+    ...(pass.outputs === undefined ? {} : { outputs: pass.outputs }),
+    ...(pass.program.vertexEntry === undefined ? {} : { vertexEntry: pass.program.vertexEntry }),
+    ...(pass.program.fragmentEntry === undefined
+      ? {}
+      : { fragmentEntry: pass.program.fragmentEntry }),
+    ...(pass.program.moduleSlots === undefined ? {} : { moduleSlots: pass.program.moduleSlots }),
+    ...(pass.renderState === undefined ? {} : { renderState: pass.renderState }),
+  };
+}
+
+export function projectMaterialRecord(
+  record: CookedMaterialRecord | SourceCookedMaterialRecord,
+): MaterialRenderProjection {
   return {
     materialGuid: record.materialGuid ?? record.guid,
     publicationGeneration: record.publicationGeneration ?? record.receipt.identity.cookGeneration,
     specializationKey: record.specializationKey ?? record.receipt.identity.artifactDigest,
     artifactHash: record.receipt.identity.artifactDigest,
     passes: record.resolved.passes.map((pass) => ({
-      name: pass.name,
-      module: pass.program.module,
-      ...(pass.outputs === undefined ? {} : { outputs: pass.outputs }),
-      ...(pass.program.vertexEntry === undefined ? {} : { vertexEntry: pass.program.vertexEntry }),
-      ...(pass.program.fragmentEntry === undefined
-        ? {}
-        : { fragmentEntry: pass.program.fragmentEntry }),
-      ...(pass.program.moduleSlots === undefined ? {} : { moduleSlots: pass.program.moduleSlots }),
-      ...(pass.renderState === undefined ? {} : { renderState: pass.renderState }),
+      ...projectMaterialPass(pass),
       programs: record.programs.flatMap((program) =>
         program.selections
           .filter((selection) => selection.pass === pass.name)
@@ -313,13 +402,213 @@ export function projectMaterialRecord(record: CookedMaterialRecord): MaterialRen
   };
 }
 
+/** Admit a template without constructing any target programs. */
+export function projectMaterialTemplate(
+  sourceTemplate: DecodedMaterialTemplate,
+  generation: number,
+  prepared: PreparedMaterialShaderTemplate,
+  shaderRegistry: ShaderRegistry,
+  artifactRegistry: MaterialArtifactRegistry,
+): MaterialRenderProjection {
+  const { publication: template } = sourceTemplate;
+  const material = template.resolved;
+  const { values, ...contract } = material;
+  const identity = createMaterialArtifactDigest(
+    new TextEncoder().encode(canonicalJson([template.sourceArtifact.digest, contract])),
+  );
+  const passes = (material.passes ?? []).map((pass) => ({
+    ...projectMaterialPass(pass),
+    programs: [],
+  }));
+  const projection: MaterialRenderProjection = {
+    materialGuid: template.guid,
+    publicationGeneration: generation,
+    specializationKey: identity,
+    artifactHash: template.sourceArtifact.digest,
+    passes,
+    runtimeValues: values ?? {},
+    sourceTemplate,
+    ...(material.surface === undefined ? {} : { surface: material.surface }),
+    staticSelection: Object.entries(material.staticSwitches ?? {})
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, enabled]) => `static-switch:${name}=${enabled}`),
+  };
+  bindMaterialTemplateProjection(projection, prepared, shaderRegistry, artifactRegistry);
+  return projection;
+}
+
+function bindTemplateRasterCoverage(
+  shaderRegistry: ShaderRegistry,
+  program: ProgramSelection,
+  coverage: MaterialShaderSelectionResult['rasterCoverage'],
+  select: (context: MaterialCookProgramContext) => ProgramSelection | undefined,
+): void {
+  const context = program.context;
+  if (
+    coverage === undefined ||
+    context.pipeline === 'ray' ||
+    context.viewClipping === true ||
+    context.lodCoverage === true
+  )
+    return;
+  const lod = coverage === 'clipping-and-lod';
+  const masks = lod ? [0, 1, 2, 3] : [0, 2];
+  shaderRegistry.installMaterialTemplateVariants(
+    program.specializationKey,
+    masks.map((mask) => {
+      const viewClipping = (mask & 2) !== 0;
+      const lodCoverage = (mask & 1) !== 0;
+      return {
+        defines: {
+          [STANDARD_SURFACE_DISCARD_CLIPPING_AXIS]: viewClipping,
+          ...(lod ? { [STANDARD_SURFACE_DISCARD_LOD_AXIS]: lodCoverage } : {}),
+        },
+        select: () => {
+          if (mask === 0) return program.specializationKey;
+          const selected = select({
+            ...context,
+            ...(viewClipping ? { viewClipping: true } : {}),
+            ...(lodCoverage ? { lodCoverage: true } : {}),
+          });
+          if (selected === undefined) throw new Error('Material coverage program unavailable');
+          return selected.specializationKey;
+        },
+      };
+    }),
+  );
+}
+
+/** The transported metadata is immutable while each realm owns its selected programs. */
+export function bindMaterialTemplateProjection(
+  projection: MaterialRenderProjection,
+  initial: PreparedMaterialShaderTemplate | undefined,
+  shaderRegistry: ShaderRegistry,
+  artifactRegistry: MaterialArtifactRegistry,
+): void {
+  if (materialTemplateResolvers.has(projection)) return;
+  const template = projection.sourceTemplate;
+  if (template === undefined) return;
+  const { guid, resolved: material } = template.publication;
+  const { passes, specializationKey: identity } = projection;
+  let prepared = initial;
+  const schema = materialParametersToParamSchema(material.parameters ?? [], guid).map((entry) => {
+    if (!('default' in entry)) return entry;
+    const { default: _, ...parameter } = entry;
+    return parameter;
+  });
+  let accepted = materialTemplatePrograms.get(artifactRegistry);
+  if (accepted === undefined) {
+    accepted = new Map();
+    materialTemplatePrograms.set(artifactRegistry, accepted);
+  }
+  const install = (
+    pass: MaterialRenderPassProjection,
+    context: MaterialCookProgramContext,
+    address: MaterialProgramAddress,
+    program: MaterialShaderTemplateProgram,
+  ): ProgramSelection => {
+    const bytes = new TextEncoder().encode(program.wgsl);
+    const digest = createMaterialArtifactDigest(bytes);
+    const key = createMaterialArtifactDigest(
+      new TextEncoder().encode(
+        canonicalJson([
+          identity,
+          pass.templatePass ?? pass.name,
+          pass.module,
+          materialProgramContextKey(context),
+          address,
+          digest,
+          program.abi,
+        ]),
+      ),
+    );
+    const metadata = {
+      module: pass.module,
+      templateIdentity: identity,
+      templatePass: pass.templatePass ?? pass.name,
+      paramSchema: schema,
+      ...(program.abi === undefined ? {} : { abi: program.abi, receipt: program.abi }),
+    };
+    const artifact =
+      artifactRegistry.get(key) ??
+      artifactRegistry
+        .register(retainMaterialRuntimeArtifact({ key, bytes, digest, metadata }))
+        .unwrap();
+    if (shaderRegistry.materialArtifactDeclaration(key) === undefined)
+      shaderRegistry.installMaterialArtifactBytes(key, {
+        bytes: artifact.bytes,
+        digest,
+        paramSchema: schema,
+        ...(program.abi === undefined ? {} : { receipt: program.abi }),
+      });
+    return {
+      context,
+      specializationKey: key,
+      artifactHash: digest,
+      address,
+      ...(program.entry === undefined ? {} : { entry: program.entry }),
+      ...(program.abi === undefined ? {} : { abi: program.abi }),
+    };
+  };
+  const select: ResolveTemplate = (passName, context, address, vertexColorAvailable) => {
+    const pass = passes.find(({ name }) => name === passName);
+    if (pass === undefined) return undefined;
+    const templatePass = pass.templatePass ?? passName;
+    const selection = JSON.stringify([
+      identity,
+      templatePass,
+      materialProgramContextKey(context),
+      vertexColorAvailable,
+      address,
+    ]);
+    let known = accepted.get(selection);
+    if (known === undefined) {
+      prepared ??= shaderRegistry
+        .prepareMaterialTemplateFromInitializedCompiler({
+          guid,
+          material,
+          sources: template.sources,
+        })
+        .unwrap();
+      const request = { pass: templatePass, context, vertexColorAvailable };
+      const legacy =
+        prepared.selectAddress === undefined ? prepared.select(request).unwrap() : undefined;
+      const selected = prepared.selectAddress?.(request, address).unwrap();
+      const compiled =
+        selected?.program ?? (address === 'direct' ? legacy?.direct : legacy?.sceneIndex);
+      known = compiled === undefined ? null : install(pass, context, address, compiled);
+      accepted.set(selection, known);
+      if (known !== null)
+        bindTemplateRasterCoverage(
+          shaderRegistry,
+          known,
+          selected?.rasterCoverage ?? legacy?.rasterCoverage,
+          (next) => select(passName, next, address, vertexColorAvailable),
+        );
+    }
+    return known ?? undefined;
+  };
+  materialTemplateResolvers.set(projection, {
+    select,
+    owns(pass, key) {
+      const metadata = artifactRegistry.get(key)?.metadata;
+      const declared = passes.find(({ name }) => name === pass);
+      return (
+        declared !== undefined &&
+        metadata?.templateIdentity === identity &&
+        metadata.templatePass === (declared.templatePass ?? declared.name)
+      );
+    },
+  });
+}
+
 function conflictError(error: MaterialArtifactConflictError): Error {
   return Object.assign(new Error(`${error.code}: ${error.detail.key}`), error);
 }
 
 /** Group coverage contexts with identical pass, output, address and vertex-color ABI. */
 function materialSurfaceCoverageFamilies(
-  record: CookedMaterialRecord,
+  record: CookedMaterialRecord | SourceCookedMaterialRecord,
 ): ReadonlyMap<string, readonly MaterialShaderVariantReference[]> {
   const groups = new Map<string, Map<number, string>>();
   for (const program of record.programs)
@@ -370,7 +659,7 @@ function materialSurfaceCoverageFamilies(
 /** Preflight the complete set before mutating either runtime registry. */
 export function installMaterialReadyShaders(
   shaderRegistry: ShaderRegistry,
-  readiness: MaterialReady,
+  readiness: MaterialReady | SourceMaterialReady,
   artifactRegistry: MaterialArtifactRegistry,
 ): MaterialRenderProjection {
   // Defaults belong to the root value contract, not an immutable shared program.
@@ -392,8 +681,6 @@ export function installMaterialReadyShaders(
   );
   const families = materialSurfaceCoverageFamilies(readiness.record);
   const admissions = programs.map((program) => {
-    if (program.artifact.bytes.byteLength === 0)
-      throw new Error(`MaterialReady ${readiness.record.guid} contains an empty shader program`);
     const pass = readiness.record.resolved.passes.find((pass) =>
       program.selections.some((selection) => selection.pass === pass.name),
     );
@@ -405,6 +692,38 @@ export function installMaterialReadyShaders(
     });
     const key = program.specializationKey;
     const digest = program.artifact.digest;
+    const variantReferences = families.get(key);
+    const publication = {
+      ...(variantReferences === undefined ? {} : { variantReferences }),
+      digest,
+      paramSchema,
+      ...(abi === undefined ? {} : { receipt: abi }),
+    };
+    if ('backing' in program.artifact) {
+      if (!('prepareSource' in readiness))
+        throw new Error('Source-backed material requires its preparation owner');
+      const selection = materialRasterSourceSelection(
+        readiness.record.guid,
+        readiness.publication,
+        program,
+      );
+      if (selection === undefined) throw new Error(`Missing raster source selection for '${key}'`);
+      const recipe: MaterialRasterSourceRecipe = Object.freeze({
+        inputs: readiness.inputs,
+        selection: Object.freeze(selection),
+      });
+      const { prepareSource } = readiness;
+      const input: MaterialShaderSourceEntry = {
+        ...publication,
+        recipe,
+        prepare: () => prepareSource(recipe),
+      };
+      const accepted = shaderRegistry.validateMaterialArtifactSource(key, input);
+      if (!accepted.ok) throw conflictError(accepted.error);
+      return { kind: 'source' as const, key, input, newProgram: !accepted.value };
+    }
+    if (program.artifact.bytes.byteLength === 0)
+      throw new Error(`MaterialReady ${readiness.record.guid} contains an empty shader program`);
     const previous = pending.get(key) ?? artifactRegistry.get(key);
     const candidate = { key, bytes: program.artifact.bytes, digest, metadata };
     if (previous !== undefined) {
@@ -415,21 +734,26 @@ export function installMaterialReadyShaders(
     const artifact: MaterialRuntimeArtifact =
       previous === undefined ? retainMaterialRuntimeArtifact(candidate) : previous;
     if (previous === undefined) pending.set(key, artifact);
-    const variantReferences = families.get(key);
-    const input = {
-      ...(variantReferences === undefined ? {} : { variantReferences }),
-      bytes: artifact.bytes,
-      digest,
-      paramSchema,
-      ...(abi === undefined ? {} : { receipt: abi }),
-    };
+    const input = { ...publication, bytes: artifact.bytes };
     const accepted = shaderRegistry.validateMaterialArtifactBytes(key, input);
     if (!accepted.ok) throw conflictError(accepted.error);
-    return { artifact, input, newArtifact: previous === undefined, newProgram: !accepted.value };
+    return {
+      kind: 'bytes' as const,
+      artifact,
+      input,
+      newArtifact: previous === undefined,
+      newProgram: !accepted.value,
+    };
   });
-  for (const { artifact, input, newArtifact, newProgram } of admissions) {
-    if (newArtifact) artifactRegistry.register(artifact).unwrap();
-    if (newProgram) shaderRegistry.installMaterialArtifactBytes(artifact.key, input);
+  for (const admission of admissions) {
+    if (admission.kind === 'source') {
+      if (admission.newProgram)
+        shaderRegistry.installMaterialArtifactSource(admission.key, admission.input);
+    } else {
+      if (admission.newArtifact) artifactRegistry.register(admission.artifact).unwrap();
+      if (admission.newProgram)
+        shaderRegistry.installMaterialArtifactBytes(admission.artifact.key, admission.input);
+    }
   }
   return projectMaterialRecord(readiness.record);
 }

@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -27,24 +28,35 @@ function findNativeProvider(from: string): string | undefined {
   }
 }
 
+function resolveProjectDawn(projectRoot: string): string | undefined {
+  try {
+    return createRequire(resolve(projectRoot, 'package.json')).resolve('upstream-webgpu');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'MODULE_NOT_FOUND') throw error;
+    return undefined;
+  }
+}
+
 /**
  * The Node WebGPU `GPU` for DevKit's offscreen work (RHI replay, `model.render`):
  * Dawn by default, or the contributor-only native wgpu device when
  * `FORGEAX_WEBGPU_NODE=wgpu-native`. Dawn also installs its spec globals
  * (`GPUBufferUsage`, ...), which offscreen callers use.
  */
-export async function nodeGpu(): Promise<
+export async function nodeGpu(
+  projectRoot = process.cwd(),
+): Promise<
   | { readonly ok: true; readonly value: GPU }
   | { readonly ok: false; readonly error: NodeGpuUnavailable }
 > {
   if (instance !== undefined) return { ok: true, value: instance };
   if (process.env.FORGEAX_WEBGPU_NODE === 'wgpu-native') {
-    const entry = findNativeProvider(process.cwd());
+    const entry = findNativeProvider(projectRoot);
     if (entry === undefined)
       return unavailable(
         'the contributor-only @forgeax/engine-rhi-wgpu-native package with its built addon',
         'Run from an Engine contributor checkout after `pnpm --filter @forgeax/engine-rhi-wgpu-native build:native` and its `build`.',
-        `no rhi-wgpu-native dist/index.mjs above ${process.cwd()}`,
+        `no rhi-wgpu-native dist/index.mjs above ${projectRoot}`,
       );
     try {
       const provider = (await import(pathToFileURL(entry).href)) as {
@@ -70,7 +82,11 @@ export async function nodeGpu(): Promise<
     }
   }
   try {
-    const dawn = await import('@forgeax/engine-dawn-node');
+    const projectEntry = resolveProjectDawn(projectRoot);
+    const dawn: typeof import('@forgeax/engine-dawn-node') =
+      projectEntry === undefined
+        ? await import('@forgeax/engine-dawn-node')
+        : await import(pathToFileURL(projectEntry).href);
     Object.assign(globalThis, dawn.globals as Record<string, unknown>);
     // Dawn rounds timestamp queries to 2^16 ticks (65.5 us on Metal) by default;
     // replay timing needs the raw ticks.
@@ -83,38 +99,10 @@ export async function nodeGpu(): Promise<
   }
 }
 
-const WITHOUT_REPLAY =
-  'For RHI tapes without replay: `forgeax rhi summary --artifact PATH --passes` (per-pass labels, targets, work and pipeline counts), `--label REGEX`, and `rhi inspect` with the default pipeline/bindings fields. Replay-only reads (`pixels`, `outputs`, `rhi read`, `rhi timing`) need live evidence instead: `dev capture`, `dev eval`, debug draw.';
-
-/** True when the Dawn carrier loaded but its host native library was never prepared. */
-function isMissingDawnBinary(cause: string): boolean {
-  return /dawn\.node|dist\/native|Cannot find module|ERR_MODULE_NOT_FOUND/i.test(cause);
-}
-
-/**
- * Failure for a Dawn carrier that cannot load. macOS and Windows ship no prebuilt
- * `dawn.node` by design (the npm package carries sources and the patch, never the
- * binary), so the absent file is the expected state of a game install, not a wrong
- * platform key. Say that, name the one build command, and list what still works.
- */
-export function dawnUnavailable(
-  cause: string,
-  platform: NodeJS.Platform = process.platform,
-  arch: string = process.arch,
-): { readonly ok: false; readonly error: NodeGpuUnavailable } {
-  const source = platform === 'darwin' || platform === 'win32';
-  const missing = isMissingDawnBinary(cause);
-  const key = `${platform}-${arch}`;
-  const reason =
-    source && missing
-      ? `No prebuilt dawn.node exists for ${key}: @forgeax/engine-dawn-node builds it from source on macOS and Windows and never ships the binary, so it is absent unless someone built it on this host.`
-      : 'The Dawn provider failed to load.';
-  const build = source
-    ? 'To enable replay, build it once from an Engine source checkout (needs CMake, Ninja, Go, Python 3; heavy, tens of minutes): `pnpm --filter @forgeax/engine-dawn-node build:native`.'
-    : 'On Linux the upstream prebuild needs a Vulkan driver (lavapipe works headless).';
+export function dawnUnavailable(cause: string) {
   return unavailable(
-    `the Dawn WebGPU provider to load (${key})`,
-    `${reason} ${build} ${WITHOUT_REPLAY} Ray Query tapes use FORGEAX_WEBGPU_NODE=wgpu-native with its native addon built. Do not retry replay on this host.`,
+    'the optional upstream Dawn Node WebGPU provider to load',
+    'For Node GPU tools, run `pnpm add -D --save-exact upstream-webgpu@npm:webgpu@0.6.2` in the game before rerunning this command. For structural tape reads, use `forgeax rhi summary` or `rhi inspect` with pipeline and bindings fields.',
     cause,
   );
 }

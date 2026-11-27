@@ -26,11 +26,16 @@ import { OUTPUT_GAMUT_CODE } from '../../output-color-space';
 import type { _InternalRenderPipelineContext } from '../../record/render-context';
 import { registerScenePipelinePreparation } from '../../record/scene-pipeline-preparation';
 import { STANDARD_OUTPUT_V2_FEATURE_ID } from '../../render-contract';
-import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
+import {
+  frameOutputDither,
+  type OutputDither,
+  type RenderPipelineFrame,
+  type RenderPipelineTarget,
+} from '../../render-pipeline';
 import { markPipelinePreparationPending } from '../../render-system-presentation';
 import { recordContext } from '../../world/view-record-context';
 import type { StandardLutGraphProjection } from './lut-gpu';
-import { createStandardOutputV2ParameterWriter } from './native-params';
+import { createStandardOutputV2ParameterWriter, type GradeParameters } from './native-params';
 import { ensureStandardOutputParameters } from './resources';
 
 interface NativeOutputProgram {
@@ -52,7 +57,7 @@ interface NativeOutputBindings {
   readonly input: TextureView;
   readonly parameters: Buffer;
   readonly exposure: Buffer;
-  readonly bloom: readonly TextureView[];
+  readonly secondary: TextureView | undefined;
   readonly group: BindGroup;
 }
 
@@ -62,19 +67,15 @@ function nativeOutputBindingsChanged(
   input: TextureView,
   parameters: Buffer,
   exposure: Buffer,
-  bloom: readonly TextureView[],
+  secondary: TextureView | undefined,
 ): boolean {
-  if (
+  return (
     retained?.program !== program ||
     retained.input !== input ||
     retained.parameters !== parameters ||
     retained.exposure !== exposure ||
-    retained.bloom.length !== bloom.length
-  )
-    return true;
-  for (let level = 0; level < bloom.length; level++)
-    if (bloom[level] !== retained.bloom[level]) return true;
-  return false;
+    retained.secondary !== secondary
+  );
 }
 
 const programsByScope = new WeakMap<DeviceScope, NativeOutputProgram[]>();
@@ -97,20 +98,15 @@ export type NativeOutputStage =
   | {
       readonly kind: 'grade';
       readonly exposure?: GraphBuffer | undefined;
-      readonly bloom?: readonly RenderPipelineTarget[] | undefined;
+      readonly bloom?: RenderPipelineTarget | undefined;
       readonly lut?: StandardLutGraphProjection | undefined;
     }
   | { readonly kind: 'final'; readonly fxaa: boolean }
-  | { readonly kind: 'encode' };
+  | { readonly kind: 'encode'; readonly smaaWeights?: RenderPipelineTarget | undefined };
 
-export interface NativeOutputParameterPolicy {
-  readonly bloom: boolean;
-  readonly lutStrength: number;
-  readonly sharpen: number;
-  readonly dither: boolean;
-  readonly finishInGrade: boolean;
-  readonly linearGrade?: boolean | undefined;
-  readonly chromaticAberration?: boolean | undefined;
+export interface NativeOutputParameterPolicy extends GradeParameters {
+  readonly lut?: StandardLutGraphProjection | undefined;
+  readonly dither: OutputDither;
 }
 
 /** One upload node per graph imports its view-owned Grade/Final parameter buffer. */
@@ -130,35 +126,32 @@ export function addNativeOutputParameters(
     },
   );
   if (!parameters.ok) return parameters;
-  const write = createStandardOutputV2ParameterWriter();
+  const write = createStandardOutputV2ParameterWriter(policy);
   const uploaded = graph.addCopyPass('standard-output-prepare', {
     accesses: [{ resource: parameters.value, usage: 'copy-dst' }],
     encodeDirect: (_encoder, frame, resources) => {
       const c = frame as _InternalRenderPipelineContext;
-      const output = c.camera.output;
-      const bytes = write({
-        camera: c.camera,
-        outputGamut:
-          OUTPUT_GAMUT_CODE[recordContext(c.runtime).outputColorSpace?.report.effective ?? 'srgb'],
-        lens: c.camera.lensEffects,
-        whiteBalance: { temperature: output?.temperature ?? 6504, tint: output?.tint ?? 0 },
-        bloom: policy.bloom
-          ? { intensity: c.camera.bloomIntensity, radius: c.camera.bloomRadius }
-          : undefined,
-        lutStrength: policy.lutStrength,
-        sharpen: policy.sharpen,
-        elapsedSeconds: c.camera.temporal?.sampleTimeSeconds ?? 0,
-        dither: policy.dither,
-        finishInGrade: policy.finishInGrade,
-        linearGrade: policy.linearGrade,
-        chromaticAberration: policy.chromaticAberration,
-      });
+      const bytes = write(
+        c.camera,
+        OUTPUT_GAMUT_CODE[recordContext(c.runtime).outputColorSpace?.report.effective ?? 'srgb'],
+        policy.lut?.bind(frame).strength ?? policy.lut?.strength ?? 0,
+        frameOutputDither(policy.dither, frame),
+      );
       c.runtime.device.queue
         .writeBuffer(resources.buffer(parameters.value).unwrap(), 0, bytes)
         .unwrap();
     },
   });
   return uploaded.ok ? parameters : uploaded;
+}
+
+function nativeOutputFragment(stage: NativeOutputStage): string {
+  if (stage.kind === 'encode')
+    return stage.smaaWeights === undefined ? 'fs_encode' : 'fs_smaa_encode';
+  if (stage.kind === 'final') return stage.fxaa ? 'fs_final_fxaa' : 'fs_final';
+  if (stage.lut !== undefined)
+    return stage.bloom === undefined ? 'fs_grade_lut' : 'fs_grade_lut_bloom';
+  return stage.bloom === undefined ? 'fs_grade' : 'fs_grade_bloom';
 }
 
 /** Record the native core using one input group and an optional LUT group. */
@@ -172,42 +165,32 @@ export function addNativeOutputPass(
 ): Result<void, RenderGraphError> {
   const grade = stage.kind === 'grade';
   const bloom = stage.kind === 'grade' ? stage.bloom : undefined;
+  const smaaWeights = stage.kind === 'encode' ? stage.smaaWeights : undefined;
+  const secondary = bloom ?? smaaWeights;
   const lut = stage.kind === 'grade' ? stage.lut : undefined;
   const exposure = stage.kind === 'grade' ? stage.exposure : undefined;
   if (
     input.sampleCount !== 1 ||
     output.sampleCount !== 1 ||
-    (bloom !== undefined &&
-      (bloom.length !== 5 || bloom.some((target) => target.sampleCount !== 1)))
+    (secondary !== undefined && secondary.sampleCount !== 1)
   ) {
     return err(
       new RenderGraphError({
         code: 'resource-descriptor-invalid',
         expected:
-          'single-sampled native output targets and exactly five single-sampled Bloom levels when enabled',
-        hint: 'resolve scene MSAA before Grade and pass the five declared Bloom filter outputs',
+          'single-sampled native output targets and a single-sampled accumulated Bloom when enabled',
+        hint: 'resolve scene MSAA before Grade and pass the accumulated Bloom target',
       }),
     );
   }
-  const fragment =
-    stage.kind === 'encode'
-      ? 'fs_encode'
-      : stage.kind === 'final'
-        ? stage.fxaa
-          ? 'fs_final_fxaa'
-          : 'fs_final'
-        : lut === undefined
-          ? bloom === undefined
-            ? 'fs_grade'
-            : 'fs_grade_bloom'
-          : bloom === undefined
-            ? 'fs_grade_lut'
-            : 'fs_grade_lut_bloom';
+  const fragment = nativeOutputFragment(stage);
   const accesses: GraphAccess[] = [
     { resource: input.view, usage: 'sampled-read' },
     { resource: parameters, usage: 'uniform-read' },
     ...(exposure === undefined ? [] : [{ resource: exposure, usage: 'uniform-read' as const }]),
-    ...(bloom ?? []).map((target) => ({ resource: target.view, usage: 'sampled-read' as const })),
+    ...(secondary === undefined
+      ? []
+      : [{ resource: secondary.view, usage: 'sampled-read' as const }]),
     ...(lut === undefined ? [] : [{ resource: lut.view, usage: 'sampled-read' as const }]),
     { resource: output.view, usage: 'color-attachment' },
   ];
@@ -254,13 +237,12 @@ export function addNativeOutputPass(
         visibility: 2,
         buffer: { type: 'uniform', minBindingSize: 16 },
       });
-    if (bloom !== undefined)
-      for (let level = 0; level < 5; level++)
-        entries.push({
-          binding: level + 4,
-          visibility: 2,
-          texture: { sampleType: 'float', viewDimension: '2d' },
-        });
+    if (secondary !== undefined)
+      entries.push({
+        binding: 4,
+        visibility: 2,
+        texture: { sampleType: 'float', viewDimension: '2d' },
+      });
     const layout = device.createBindGroupLayout({ entries }).unwrap();
     const pipelineLayout = device
       .createPipelineLayout({
@@ -304,7 +286,6 @@ export function addNativeOutputPass(
     'utility',
   );
   // Resolver identities may change after resize or history rotation; reuse the comparison scratch.
-  const levelViews: TextureView[] = [];
   let retained: NativeOutputBindings | undefined;
   const added = graph.addRasterPass(name, {
     accesses,
@@ -352,14 +333,11 @@ export function addNativeOutputPass(
       const source = resources.textureView(input.view).unwrap();
       const buffer = resources.buffer(parameters).unwrap();
       const candidate = exposure === undefined ? buffer : resources.buffer(exposure).unwrap();
-      levelViews.length = bloom?.length ?? 0;
-      for (let level = 0; level < (bloom?.length ?? 0); level++) {
-        const target = bloom?.[level];
-        if (target !== undefined) levelViews[level] = resources.textureView(target.view).unwrap();
-      }
+      const auxiliaryView =
+        secondary === undefined ? undefined : resources.textureView(secondary.view).unwrap();
       if (
         retained === undefined ||
-        nativeOutputBindingsChanged(retained, program, source, buffer, candidate, levelViews)
+        nativeOutputBindingsChanged(retained, program, source, buffer, candidate, auxiliaryView)
       ) {
         const entries: BindGroupEntry[] = [
           { binding: 0, resource: { kind: 'textureView', value: source } },
@@ -371,15 +349,14 @@ export function addNativeOutputPass(
             binding: 3,
             resource: { kind: 'buffer', value: { buffer: candidate, size: 16 } },
           });
-        levelViews.forEach((view, level) => {
-          entries.push({ binding: level + 4, resource: { kind: 'textureView', value: view } });
-        });
+        if (auxiliaryView !== undefined)
+          entries.push({ binding: 4, resource: { kind: 'textureView', value: auxiliaryView } });
         retained = {
           program,
           input: source,
           parameters: buffer,
           exposure: candidate,
-          bloom: levelViews.slice(),
+          secondary: auxiliaryView,
           group: device.createBindGroup({ layout: program.layout, entries }).unwrap(),
         };
       }

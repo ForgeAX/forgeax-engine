@@ -155,7 +155,7 @@ export interface AssetEvidenceError {
 
 export const ASSET_EVIDENCE_ERROR_HINTS = {
   'asset-evidence-capability-missing':
-    'provide the missing evidence capability, then rerun asset lookup or verify',
+    'provide the missing evidence capability, then rerun asset inspect with the Catalog',
   'asset-evidence-source-conflict':
     'keep one source declaration per GUID and rerun the offline evidence projection',
   'asset-evidence-locator-conflict':

@@ -1,10 +1,12 @@
 import type { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RenderPipelineFrame } from '../render-pipeline';
-import type { GlobalSdfCompositionInputs } from './global-sdf';
+import { GLOBAL_SDF_SETTINGS_BYTES, type GlobalSdfCompositionInputs } from './global-sdf';
 import { addProbeCardPasses, probeCardGraphShape } from './probe-card-graph';
 import { PROBE_ORIGIN_SUPPORT_STRIDE } from './probe-origin-support';
 import type { ProbePlacementGraphBuffers } from './probe-placement-graph';
 import type { PreparedProbePlacement } from './renderer-probe-placement';
+
+const regionNames = ['instances', 'fields', 'bounds', 'settings', 'voxels'] as const;
 
 /** A composition shape change rebuilds topology; replacing equal-sized buffers
  * only changes this frame's imported allocations. A composed region has no writer. */
@@ -14,10 +16,11 @@ export function probeGlobalGraphShape(frame: PreparedProbePlacement) {
     ? undefined
     : [
         global.rayCount,
+        global.resolution,
         global.composeRequired,
         global.region.voxelCount,
         probeCardGraphShape(global),
-        ...Object.values(global.region.input).map((range) => range.size),
+        ...regionNames.map((name) => global.region.input[name].size),
       ];
 }
 
@@ -29,20 +32,36 @@ export function addProbeGlobalPasses(
 ) {
   const expected = shape.global;
   if (expected === undefined) throw new Error('Global probe graph requires a prepared query');
-  const shapeKey = JSON.stringify(probeGlobalGraphShape(shape));
+  const { count } = shape;
+  const { rayCount, resolution, composeRequired } = expected;
+  const { voxelCount } = expected.region;
+  const inputSizes = regionNames.map((name) => expected.region.input[name].size);
+  const voxelBytes = expected.region.input.voxels.size;
+  const cardShape = JSON.stringify(probeCardGraphShape(expected));
   const current = (frame: RenderPipelineFrame) => {
     const value = frame.probePlacement;
     if (
       value === undefined ||
       value.global === undefined ||
-      value.count !== shape.count ||
+      value.count !== count ||
       value.fence.currentGeneration() !== value.generation ||
-      JSON.stringify(probeGlobalGraphShape(value)) !== shapeKey
+      value.global.rayCount !== rayCount ||
+      value.global.resolution !== resolution ||
+      value.global.composeRequired !== composeRequired ||
+      value.global.region.voxelCount !== voxelCount ||
+      (value.global.cards === undefined
+        ? cardShape !== undefined
+        : JSON.stringify(probeCardGraphShape(value.global)) !== cardShape)
     )
       throw new Error('stale Global probe graph: prepare the current complete chain');
+    for (let i = 0; i < regionNames.length; i++)
+      if (
+        value.global.region.input[regionNames[i] as (typeof regionNames)[number]].size !==
+        inputSizes[i]
+      )
+        throw new Error('stale Global probe graph: region input extent changed');
     return value.global;
   };
-  const regionNames = ['instances', 'fields', 'bounds', 'settings', 'voxels'] as const;
   const region = Object.fromEntries(
     regionNames.map((name) => [
       name,
@@ -67,13 +86,13 @@ export function addProbeGlobalPasses(
         (frame) => current(frame)[name],
       )
       .unwrap();
-  const rays = output('rays', expected.rayCount * 48),
-    hits = output('hits', expected.rayCount * 64);
-  const emission = output('emission', shape.count * 16),
-    diagnostics = output('diagnostics', shape.count * PROBE_ORIGIN_SUPPORT_STRIDE);
+  const rays = output('rays', rayCount * 48),
+    hits = output('hits', rayCount * 64);
+  const emission = output('emission', count * 16),
+    diagnostics = output('diagnostics', count * PROBE_ORIGIN_SUPPORT_STRIDE);
   const raySettings = output('raySettings', 16, true),
     querySettings = output('querySettings', 16, true);
-  if (expected.composeRequired) {
+  if (composeRequired) {
     const composed = graph.addComputePass('probe-global.compose', {
       accesses: [
         ...[region.instances, region.fields, region.bounds].map((resource) => ({
@@ -113,17 +132,17 @@ export function addProbeGlobalPasses(
         .emit(
           pass,
           {
-            probes: { buffer: resources.buffer(placement.probes).unwrap(), size: shape.count * 32 },
+            probes: { buffer: resources.buffer(placement.probes).unwrap(), size: count * 32 },
             candidate: {
               buffer: resources.buffer(placement.candidate).unwrap(),
-              size: shape.count * 32,
+              size: count * 32,
             },
             settings: { buffer: resources.buffer(raySettings).unwrap(), size: 16 },
-            rays: { buffer: resources.buffer(rays).unwrap(), size: expected.rayCount * 48 },
-            diagnostics: { buffer: resources.buffer(emission).unwrap(), size: shape.count * 16 },
+            rays: { buffer: resources.buffer(rays).unwrap(), size: rayCount * 48 },
+            diagnostics: { buffer: resources.buffer(emission).unwrap(), size: count * 16 },
           },
-          shape.count,
-          expected.resolution,
+          count,
+          resolution,
         )
         .unwrap(),
   });
@@ -144,14 +163,17 @@ export function addProbeGlobalPasses(
           {
             voxels: {
               buffer: resources.buffer(region.voxels).unwrap(),
-              size: expected.region.input.voxels.size,
+              size: voxelBytes,
             },
-            grid: { buffer: resources.buffer(region.settings).unwrap(), size: 48 },
-            rays: { buffer: resources.buffer(rays).unwrap(), size: expected.rayCount * 48 },
-            hits: { buffer: resources.buffer(hits).unwrap(), size: expected.rayCount * 64 },
+            grid: {
+              buffer: resources.buffer(region.settings).unwrap(),
+              size: GLOBAL_SDF_SETTINGS_BYTES,
+            },
+            rays: { buffer: resources.buffer(rays).unwrap(), size: rayCount * 48 },
+            hits: { buffer: resources.buffer(hits).unwrap(), size: rayCount * 64 },
             settings: { buffer: resources.buffer(querySettings).unwrap(), size: 16 },
           },
-          expected.rayCount,
+          rayCount,
         )
         .unwrap(),
   });
@@ -170,25 +192,28 @@ export function addProbeGlobalPasses(
         .support(
           pass,
           {
-            probes: { buffer: resources.buffer(placement.probes).unwrap(), size: shape.count * 32 },
+            probes: { buffer: resources.buffer(placement.probes).unwrap(), size: count * 32 },
             candidate: {
               buffer: resources.buffer(placement.candidate).unwrap(),
-              size: shape.count * 32,
+              size: count * 32,
             },
-            emission: { buffer: resources.buffer(emission).unwrap(), size: shape.count * 16 },
-            hits: { buffer: resources.buffer(hits).unwrap(), size: expected.rayCount * 64 },
+            emission: { buffer: resources.buffer(emission).unwrap(), size: count * 16 },
+            hits: { buffer: resources.buffer(hits).unwrap(), size: rayCount * 64 },
             voxels: {
               buffer: resources.buffer(region.voxels).unwrap(),
-              size: expected.region.input.voxels.size,
+              size: voxelBytes,
             },
-            grid: { buffer: resources.buffer(region.settings).unwrap(), size: 48 },
+            grid: {
+              buffer: resources.buffer(region.settings).unwrap(),
+              size: GLOBAL_SDF_SETTINGS_BYTES,
+            },
             diagnostics: {
               buffer: resources.buffer(diagnostics).unwrap(),
-              size: shape.count * PROBE_ORIGIN_SUPPORT_STRIDE,
+              size: count * PROBE_ORIGIN_SUPPORT_STRIDE,
             },
           },
-          shape.count,
-          expected.rayCount,
+          count,
+          rayCount,
         )
         .unwrap(),
   });

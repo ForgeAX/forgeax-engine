@@ -83,14 +83,14 @@ describe('DevKit shader build options', () => {
 
   it('keeps explicit precompiled publication available', async () => {
     const options = await configFor({ shaderPublication: 'compiled' });
-    expect(options).not.toHaveProperty('publication');
-    expect(options).not.toHaveProperty('publishAuthoredMaterialShaders');
+    expect(options?.publication).toBe('compiled');
+    expect(options?.publishAuthoredMaterialShaders).toBe(true);
   }, 60_000);
 
   it('publishes tool-owned texture programs for resource previews with source-default projects', async () => {
     const options = await configFor({}, true);
-    expect(options).not.toHaveProperty('publication');
-    expect(options).not.toHaveProperty('publishAuthoredMaterialShaders');
+    expect(options?.publication).toBe('source');
+    expect(options?.publishAuthoredMaterialShaders).toBe(true);
     expect(options).toHaveProperty(
       'materialPackages',
       expect.arrayContaining([

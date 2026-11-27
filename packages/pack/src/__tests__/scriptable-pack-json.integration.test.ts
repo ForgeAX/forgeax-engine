@@ -2,7 +2,7 @@ import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, it } from 'vitest';
+import { expect, it, onTestFinished } from 'vitest';
 import {
   createScriptablePackModuleExecutorPool,
   createScriptablePackSourceSnapshot,
@@ -12,40 +12,37 @@ import {
 
 it('loads JSON as data in the isolated Worker and inventories the original bytes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'pack-json-'));
-  try {
-    const source = join(root, 'owner.pack.ts');
-    const json = '{"__proto__":{"safe":true},"name":"fixture","list":[1,null,false]}';
-    await writeFile(join(root, 'data.json'), json);
-    await writeFile(
-      source,
-      `import config from './data.json';
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
+  const source = join(root, 'owner.pack.ts');
+  const json = '{"__proto__":{"safe":true},"name":"fixture","list":[1,null,false]}';
+  await writeFile(join(root, 'data.json'), json);
+  await writeFile(
+    source,
+    `import config from './data.json';
       export default { schemaVersion: '2.0.0', plugins: true, packageId: new Uint8Array(16).fill(1),
         build: () => ({ ok: true, value: { 'plugin/test': {
           kind: 'plugin', module: { specifier: './unused.ts' }, config
         } } }) };`,
-    );
-    const loaded = await loadScriptablePack(source);
-    if (!loaded.ok) throw loaded.error;
-    const output = await loaded.value.build({
-      packageId: loaded.value.packageId,
-      values: {},
-      readByGuid: async () => {
-        throw new Error('unexpected read');
-      },
-    });
-    if (!output.ok) throw output.error;
-    expect(output.value['plugin/test']).toMatchObject({ config: JSON.parse(json) });
-    const inventory = await inventoryScriptablePackSource(source);
-    const before = inventory.find((item) => item.path.endsWith('data.json'));
-    expect(before?.digest).toBeTruthy();
-    await writeFile(join(root, 'data.json'), '{"changed":true}');
-    const after = (await inventoryScriptablePackSource(source)).find((item) =>
-      item.path.endsWith('data.json'),
-    );
-    expect(after?.digest).not.toEqual(before?.digest);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  );
+  const loaded = await loadScriptablePack(source);
+  if (!loaded.ok) throw loaded.error;
+  const output = await loaded.value.build({
+    packageId: loaded.value.packageId,
+    values: {},
+    readByGuid: async () => {
+      throw new Error('unexpected read');
+    },
+  });
+  if (!output.ok) throw output.error;
+  expect(output.value['plugin/test']).toMatchObject({ config: JSON.parse(json) });
+  const inventory = await inventoryScriptablePackSource(source);
+  const before = inventory.find((item) => item.path.endsWith('data.json'));
+  expect(before?.digest).toBeTruthy();
+  await writeFile(join(root, 'data.json'), '{"changed":true}');
+  const after = (await inventoryScriptablePackSource(source)).find((item) =>
+    item.path.endsWith('data.json'),
+  );
+  expect(after?.digest).not.toEqual(before?.digest);
 });
 
 it.each([

@@ -1,19 +1,87 @@
 import { resolve } from 'node:path';
 import {
   type EngineWorkspaceAsset,
-  type EngineWorkspaceProjectHandle,
   type EngineWorkspaceRuntime,
   projectEngineWorkspaceAssets,
 } from '@forgeax/engine-app';
+import { DdcEntryStore, ddcOutputDigest, withDdcLock } from '@forgeax/engine-ddc';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
-import { previewThumbnailInput } from '@forgeax/engine-preview';
+import { previewThumbnailInput, THUMBNAIL_PREVIEW } from '@forgeax/engine-preview';
 import { defineTool, toolJsonSchema } from '@forgeax/engine-tool-runtime';
-import { type CatalogEntry, readCatalogRows } from '@forgeax/engine-types';
-import {
-  createWorkspacePreviewBatch,
-  type PreviewImageCapture,
-} from './workspace-preview-batch.js';
-import { createThumbnailCache, thumbnailKey } from './workspace-thumbnail-cache.js';
+import type { CatalogEntry } from '@forgeax/engine-types';
+import { sha256 } from '@forgeax/engine-types';
+import type { Browser, Page } from 'playwright';
+import { browserLaunchArgs, resolveBrowserExecutable } from './browser-capture.js';
+import { launchChromiumBrowser } from './chromium-sandbox.js';
+import { decodeArtifactDataUri, PNG_DATA_URI } from './tools/evidence-image.js';
+import { rejectCommand } from './types.js';
+import { runningWorkspaceTarget } from './workspace-preparation.js';
+
+export function thumbnailKey(input: string, producer: string): string {
+  return sha256(JSON.stringify([THUMBNAIL_PREVIEW, producer, input]));
+}
+
+function assertThumbnailPng(bytes: Buffer): void {
+  if (
+    bytes.length < 24 ||
+    bytes.length > 1024 * 1024 ||
+    !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
+    bytes.toString('ascii', 12, 16) !== 'IHDR' ||
+    bytes.readUInt32BE(16) !== THUMBNAIL_PREVIEW.size ||
+    bytes.readUInt32BE(20) !== THUMBNAIL_PREVIEW.size
+  )
+    throw new Error('Preview returned an invalid thumbnail PNG');
+}
+
+export function thumbnailPng(dataUrl: string): Uint8Array {
+  if (!dataUrl.startsWith(PNG_DATA_URI)) throw new Error('Preview returned no PNG');
+  const bytes = decodeArtifactDataUri(dataUrl);
+  assertThumbnailPng(bytes);
+  return bytes;
+}
+
+export function createThumbnailCache(root: string) {
+  const store = new DdcEntryStore(root);
+  return {
+    async read(key: string): Promise<string | undefined> {
+      const entry = await store.read(key);
+      const image = entry?.artifacts['preview.png'];
+      if (!image || image.mediaType !== 'image/png') return undefined;
+      const bytes = Buffer.from(image.bytes);
+      try {
+        assertThumbnailPng(bytes);
+        return PNG_DATA_URI + bytes.toString('base64');
+      } catch {
+        return undefined;
+      }
+    },
+    async write(key: string, guid: string, producer: string, dataUrl: string): Promise<void> {
+      const body = {
+        guid,
+        payload: THUMBNAIL_PREVIEW,
+        refs: [],
+        artifacts: { 'preview.png': { mediaType: 'image/png', bytes: thumbnailPng(dataUrl) } },
+      };
+      await withDdcLock(root, key, async () => {
+        const existing = await store.readChecked(key);
+        if (!existing.ok) await store.remove(key);
+        if (existing.ok && existing.value) return;
+        const published = await store.write({
+          ...body,
+          key,
+          receipt: {
+            guid,
+            key,
+            producer,
+            inputFingerprint: key,
+            outputDigest: ddcOutputDigest(body),
+          },
+        });
+        if (published.result === 'conflict') throw new Error('Preview cache content conflict');
+      });
+    },
+  };
+}
 
 export interface WorkspaceThumbnail {
   readonly guid: string;
@@ -31,10 +99,6 @@ interface Job {
   readonly key: string;
   row: WorkspaceThumbnail;
   checked: boolean;
-}
-function projectTarget(project: EngineWorkspaceProjectHandle | undefined) {
-  const status = project?.status;
-  return status?.phase === 'running' ? status.target : undefined;
 }
 interface Inputs {
   readonly producer: string;
@@ -54,9 +118,7 @@ export async function readPreviewInputs(url: string, signal: AbortSignal): Promi
     throw new Error('Preview producer identity missing');
   const decoded = decodeCatalogWire(source.catalog);
   if (!decoded.ok) throw decoded.error;
-  const entries = readCatalogRows(decoded.value);
-  if (!entries) throw new Error('Preview Catalog rows missing');
-  return { producer: source.producer, entries: entries as readonly CatalogEntry[] };
+  return { producer: source.producer, entries: decoded.value };
 }
 function failure(cause: unknown): NonNullable<WorkspaceThumbnail['error']> {
   return {
@@ -109,7 +171,7 @@ export function createWorkspaceThumbnails(
     try {
       for (;;) {
         const job = [...jobs.values()].find((candidate) => candidate.row.state === 'queued');
-        const url = projectTarget(project)?.url;
+        const url = runningWorkspaceTarget(project)?.url;
         if (!job?.checked || !url || !cache || signal.aborted) break;
         job.row = { guid: job.asset.guid, state: 'cooking' };
         notify();
@@ -142,7 +204,7 @@ export function createWorkspaceThumbnails(
       draining = false;
       if (
         !closed &&
-        projectTarget(project)?.url &&
+        runningWorkspaceTarget(project)?.url &&
         cache &&
         [...jobs.values()].find((job) => job.row.state === 'queued')?.checked
       )
@@ -168,7 +230,7 @@ export function createWorkspaceThumbnails(
     }
     const current = ++revision;
     const signal = controller.signal;
-    const url = projectTarget(project)?.url;
+    const url = runningWorkspaceTarget(project)?.url;
     error = undefined;
     scanning = false;
     if (!url || !cache) {
@@ -275,7 +337,7 @@ export function createWorkspaceThumbnails(
       targetId: {
         type: 'string',
         minLength: 1,
-        description: 'Exact project target when addressing another admitted workspace session.',
+        description: 'Published target identity for an explicitly addressed workspace request.',
       },
       guids: {
         type: 'array',
@@ -349,14 +411,11 @@ export function createWorkspaceThumbnails(
     async (value) => {
       const args = value as { projectId: string; guids: string[] };
       if (!runtime.project || args.projectId !== runtime.project.project.id)
-        return {
-          ok: false,
-          error: {
-            code: 'engine-workspace-project-mismatch',
-            expected: 'The current project',
-            hint: 'Open the project first.',
-          },
-        };
+        return rejectCommand({
+          code: 'engine-workspace-project-mismatch',
+          expected: 'The current project',
+          hint: 'Open the project first.',
+        });
       return read(args.guids);
     },
   );
@@ -372,5 +431,120 @@ export function createWorkspaceThumbnails(
       await closeBatch();
       jobs.clear();
     },
+  };
+}
+
+export interface PreviewImageCapture {
+  readonly dataUrl: string;
+  readonly preparedMs: number;
+  readonly totalMs: number;
+  readonly submitted: number;
+  readonly ready: number;
+}
+interface PreviewBatchPage {
+  ready: boolean;
+  error?: { code: string; expected: string; hint: string };
+  capture(input: {
+    asset: { guid: string; kind: string };
+    input: string;
+  }): Promise<PreviewImageCapture>;
+  dispose(): Promise<void>;
+}
+
+/** Lazy browser carrier; one page retains GPU, pipelines and assets across image leases. */
+export function createWorkspacePreviewBatch(url: string) {
+  let browser: Browser | undefined;
+  let page: Page | undefined;
+  let closed = false;
+  let opening: Promise<Page> | undefined;
+  async function open(): Promise<Page> {
+    const channel = process.env.FORGEAX_CHROME_CHANNEL;
+    const executablePath = channel ? undefined : await resolveBrowserExecutable(undefined);
+    browser = await launchChromiumBrowser({
+      headless: true,
+      ...(channel ? { channel } : {}),
+      ...(executablePath ? { executablePath } : {}),
+      args: browserLaunchArgs(
+        process.env.FORGEAX_THUMBNAIL_BACKEND === 'software' ? 'software' : 'hardware',
+        'development',
+        false,
+      ),
+    });
+    if (closed) {
+      await browser.close();
+      throw new Error('Preview batch retired');
+    }
+    page = await browser.newPage({
+      viewport: { width: THUMBNAIL_PREVIEW.size, height: THUMBNAIL_PREVIEW.size },
+    });
+    page.setDefaultTimeout(45_000);
+    await page.goto(new URL('/preview-batch.html', url).href, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(
+      () =>
+        (globalThis as typeof globalThis & { __forgeaxPreviewBatch?: PreviewBatchPage })
+          .__forgeaxPreviewBatch?.ready,
+    );
+    const error = await page.evaluate(
+      () =>
+        (globalThis as typeof globalThis & { __forgeaxPreviewBatch: PreviewBatchPage })
+          .__forgeaxPreviewBatch.error,
+    );
+    if (error) throw Object.assign(new Error(error.hint), error);
+    return page;
+  }
+  const close = async (): Promise<void> => {
+    closed = true;
+    // Retiring the process also cancels stalled page evaluation and asset loading.
+    await browser?.close();
+  };
+  return {
+    async capture(
+      asset: { guid: string; kind: string },
+      input: string,
+      signal: AbortSignal,
+    ): Promise<PreviewImageCapture> {
+      signal.throwIfAborted();
+      if (closed) throw new Error('Preview batch retired');
+      const retire = () => {
+        void close();
+      };
+      const deadline = setTimeout(retire, 90_000);
+      signal.addEventListener('abort', retire, { once: true });
+      try {
+        opening ??= open();
+        const active = await opening;
+        signal.throwIfAborted();
+        const captured = await active.evaluate(
+          async (request) => {
+            try {
+              return {
+                ok: true as const,
+                value: await (
+                  globalThis as typeof globalThis & { __forgeaxPreviewBatch: PreviewBatchPage }
+                ).__forgeaxPreviewBatch.capture(request),
+              };
+            } catch (cause) {
+              return {
+                ok: false as const,
+                error:
+                  JSON.stringify(cause, (_key, value) =>
+                    value instanceof Error
+                      ? { ...value, name: value.name, message: value.message }
+                      : value,
+                  ) || String(cause),
+              };
+            }
+          },
+          { asset, input },
+        );
+        signal.throwIfAborted();
+        if (!captured.ok) throw new Error(captured.error);
+        return captured.value;
+      } finally {
+        clearTimeout(deadline);
+        signal.removeEventListener('abort', retire);
+      }
+    },
+    close,
   };
 }

@@ -2,7 +2,12 @@ import { readFile } from 'node:fs/promises';
 import { AnimationTargetId, animationClipContribution } from '@forgeax/engine-animation';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import { ImporterRegistry, type RunImportMeta, runImport } from '@forgeax/engine-import';
+import {
+  ImporterRegistry,
+  projectImportPack,
+  type RunImportMeta,
+  runImport,
+} from '@forgeax/engine-import';
 import { MeshFilter, MeshRenderer, materialContribution } from '@forgeax/engine-render';
 import {
   ChildOf,
@@ -59,7 +64,7 @@ async function importFixture() {
   const result = await runImport(meta(), registry, fs);
   if (!result.ok) throw new Error(`glTF import failed: ${JSON.stringify(result.error)}`);
   if ('skipped' in result.value) throw new Error('expected glTF DDC pack');
-  return result.value.pack;
+  return projectImportPack(result.value.product);
 }
 
 describe('real glTF morph import through Pack and AssetRegistry', () => {

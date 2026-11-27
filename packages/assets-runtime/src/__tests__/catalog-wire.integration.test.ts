@@ -6,7 +6,7 @@ import {
   createStandaloneRuntimeAssetBinding,
   type RuntimeCatalogSnapshot,
 } from '@forgeax/engine-types';
-import { assert, expect, it, vi } from 'vitest';
+import { assert, expect, it, onTestFinished, vi } from 'vitest';
 import { AssetRegistry } from '../asset-registry.js';
 import { createCatalogSource } from '../catalog-source.js';
 import { parseCatalog } from '../registry/catalog.js';
@@ -76,30 +76,29 @@ it.each([
   if (scoped) registry.configureRuntimeBinding(binding);
   registry.configurePackIndex(indexUrl);
   registry.setCatalogSource(source, fetcher);
-  try {
-    for (const guid of guids) {
-      const loaded = await registry.load(guid, 'sampler');
-      if (!loaded.ok) throw loaded.error;
-      expect(registry.read(loaded.value).unwrap().kind).toBe('sampler');
-    }
-    const catalog = (await source.enumerate()).unwrap();
-    expect(catalog.map((row) => row.publication)).toEqual(rows.map((row) => row.publication));
-    expect(catalog.map((row) => row.projection)).toEqual(rows.map((row) => row.projection));
-    expect(catalog[0]?.projection).toBe(catalog[1]?.projection);
-    // Only in-flight reads coalesce; each sequential sibling load reads its package document once.
-    expect(fetcher.mock.calls.filter(([url]) => String(url) === packageUrl)).toHaveLength(
-      guids.length,
-    );
-  } finally {
-    registry.dispose();
+  onTestFinished(() => registry.dispose());
+  for (const guid of guids) {
+    const loaded = await registry.load(guid, 'sampler');
+    if (!loaded.ok) throw loaded.error;
+    expect(registry.read(loaded.value).unwrap().kind).toBe('sampler');
   }
+  const catalog = (await source.enumerate()).unwrap();
+  expect(catalog.map((row) => row.publication)).toEqual(rows.map((row) => row.publication));
+  expect(catalog.map((row) => row.projection)).toEqual(rows.map((row) => row.projection));
+  expect(catalog[0]?.projection).toBe(catalog[1]?.projection);
+  // Only in-flight reads coalesce; each sequential sibling load reads its package document once.
+  expect(fetcher.mock.calls.filter(([url]) => String(url) === packageUrl)).toHaveLength(
+    guids.length,
+  );
 });
 
 it('checks scoped identity and authority before admitting compact rows', () => {
   const wire = JSON.parse(JSON.stringify(encodeCatalogWire(snapshot)));
   const admitted = parseCatalog(wire, undefined, undefined, binding).unwrap();
-  expect([...admitted.keys()]).toEqual(guids);
-  expect(admitted.get(guids[0] ?? '')?.publication).toEqual(published.publication);
+  expect(admitted.map((row) => row.guid)).toEqual(guids);
+  expect(admitted.find((row) => row.guid === (guids[0] ?? ''))?.publication).toEqual(
+    published.publication,
+  );
   for (const change of [
     { scopeId: 'foreign' },
     { generation: binding.generation + 1 },
@@ -151,31 +150,28 @@ it('binds an unconfigured URL source to its verified snapshot scope before loadi
   const registry = new AssetRegistry();
   registry.installDecoder(samplerContribution.kind, samplerContribution.decoder);
   registry.setCatalogSource(source);
-  try {
-    const guid = guids[0];
-    assert(guid !== undefined);
-    const handle = (await registry.load(guid, 'sampler')).unwrap();
-    expect(registry.read(handle).unwrap()).toMatchObject({ kind: 'sampler', magFilter: 'linear' });
-    expect(source.expectedScope).toEqual({
-      scopeId: snapshot.scopeId,
-      generation: snapshot.generation,
-    });
-    current = { ...snapshot, scopeId: 'foreign' };
-    expect(await source.enumerate()).toMatchObject({
-      ok: false,
-      error: { code: 'asset-parse-failed' },
-    });
-    expect(registry.read(handle).unwrap().kind).toBe('sampler');
-    current = { ...snapshot, generation: snapshot.generation + 1 };
-    expect(await source.enumerate()).toMatchObject({
-      ok: false,
-      error: { code: 'asset-parse-failed' },
-    });
-    expect(source.expectedScope).toEqual({
-      scopeId: snapshot.scopeId,
-      generation: snapshot.generation,
-    });
-  } finally {
-    registry.dispose();
-  }
+  onTestFinished(() => registry.dispose());
+  const guid = guids[0];
+  assert(guid !== undefined);
+  const handle = (await registry.load(guid, 'sampler')).unwrap();
+  expect(registry.read(handle).unwrap()).toMatchObject({ kind: 'sampler', magFilter: 'linear' });
+  expect(source.expectedScope).toEqual({
+    scopeId: snapshot.scopeId,
+    generation: snapshot.generation,
+  });
+  current = { ...snapshot, scopeId: 'foreign' };
+  expect(await source.enumerate()).toMatchObject({
+    ok: false,
+    error: { code: 'asset-parse-failed' },
+  });
+  expect(registry.read(handle).unwrap().kind).toBe('sampler');
+  current = { ...snapshot, generation: snapshot.generation + 1 };
+  expect(await source.enumerate()).toMatchObject({
+    ok: false,
+    error: { code: 'asset-parse-failed' },
+  });
+  expect(source.expectedScope).toEqual({
+    scopeId: snapshot.scopeId,
+    generation: snapshot.generation,
+  });
 });

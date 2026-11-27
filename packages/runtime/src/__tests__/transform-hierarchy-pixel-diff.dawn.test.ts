@@ -42,8 +42,8 @@ const TOTAL_PIXELS = WIDTH * HEIGHT;
 const DIFF_THRESHOLD = Math.floor(TOTAL_PIXELS * 0.001);
 
 const ENGINE_MANIFEST = await (async () => {
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-  return buildEngineShaderManifest();
+  const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  return buildEngineShaderTemplateManifest();
 })();
 const ENGINE_MANIFEST_URL = shaderManifestUrl(ENGINE_MANIFEST);
 

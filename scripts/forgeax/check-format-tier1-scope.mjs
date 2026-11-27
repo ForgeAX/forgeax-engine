@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import {
   auditMigration,
   CANDIDATE_BRANCH,
@@ -222,23 +223,50 @@ function argumentValue(args, name, fallback) {
   return index >= 0 ? (args[index + 1] ?? fallback) : fallback;
 }
 
+async function cohesionReport(args) {
+  const beforePath = argumentValue(args, '--before', '');
+  const before = beforePath
+    ? JSON.parse(await readFile(beforePath, 'utf8'))
+    : { schemaVersion: 1, metrics: M0_COHESION_BASELINE };
+  const after = collectM0CohesionSnapshot();
+  const comparison = compareM0CohesionSnapshots(before, after);
+  const gates = args.includes('--run-gates')
+    ? ['test:layout', 'lint:internal'].map((gate) => {
+        const command = `pnpm ${gate}`;
+        try {
+          execFileSync('pnpm', [gate], { stdio: 'pipe', encoding: 'utf8' });
+          return { command, status: 'pass' };
+        } catch (error) {
+          return { command, status: 'fail', output: String(error) };
+        }
+      })
+    : [];
+  if (comparison.status !== 'pass' || gates.some((gate) => gate.status === 'fail'))
+    process.exitCode = 1;
+  return { schemaVersion: 1, milestone: 'M0', before, after, comparison, gates };
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
   const outputPath = argumentValue(args, '--output', '');
-  const result = await checkFormatTier1Scope({
-    featureId: argumentValue(args, '--feature-id', FEATURE_ID),
-    candidateBranch: argumentValue(args, '--candidate', CANDIDATE_BRANCH),
-  }).catch((error) => ({
-    schemaVersion: 'format-tier1-scope-check/1',
-    criterionId: 'M1-format-tier1-scope-traceability',
-    featureId: argumentValue(args, '--feature-id', FEATURE_ID),
-    status: 'blocked',
-    failures: ['scope-check-runner-failed'],
-    error: error instanceof Error ? error.message : String(error),
-  }));
-  if (outputPath)
-    await writeFile(resolve(process.cwd(), outputPath), `${JSON.stringify(result, null, 2)}\n`);
+  const result = args.includes('--cohesion')
+    ? await cohesionReport(args)
+    : await checkFormatTier1Scope({
+        featureId: argumentValue(args, '--feature-id', FEATURE_ID),
+        candidateBranch: argumentValue(args, '--candidate', CANDIDATE_BRANCH),
+      }).catch((error) => ({
+        schemaVersion: 'format-tier1-scope-check/1',
+        criterionId: 'M1-format-tier1-scope-traceability',
+        featureId: argumentValue(args, '--feature-id', FEATURE_ID),
+        status: 'blocked',
+        failures: ['scope-check-runner-failed'],
+        error: error instanceof Error ? error.message : String(error),
+      }));
+  if (outputPath) {
+    await mkdir(dirname(resolve(outputPath)), { recursive: true });
+    await writeFile(outputPath, `${JSON.stringify(result, null, 2)}\n`);
+  }
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-  if (result.status === 'blocked' || (args.includes('--strict') && result.warnings.length > 0))
+  if (result.status === 'blocked' || (args.includes('--strict') && result.warnings?.length > 0))
     process.exitCode = 1;
 }

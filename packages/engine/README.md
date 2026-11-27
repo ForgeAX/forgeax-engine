@@ -2,8 +2,7 @@
 
 `@forgeax/engine` is the one package a game author installs. Its root is the
 runtime entry, its focused subpaths expose every Engine capability, and its
-`forgeax` binary owns project creation, validation, development, build, preview,
-and SDK installation.
+`forgeax` binary owns project creation, validation, development, build, and preview.
 
 ```bash
 pnpm add @forgeax/engine
@@ -24,41 +23,26 @@ import { Transform } from '@forgeax/engine/scene';
 
 ## Open View
 
+The Engine authoring archive includes View. From the game root, run:
+
 ```sh
-# From the game root, using its installed Engine:
-node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
-# From another directory:
-node /absolute/game/node_modules/@forgeax/engine/tools/view/start.mjs --project /absolute/game
+forgeax project view --json
 ```
 
-View is optional and owns this startup file. Agent guidance lives beside it at
-`tools/view/skills/forgeax-view-start/SKILL.md` in the installed package.
-No global SDK, separate View package or Engine build is required. View resolves
-its matching Engine and Host Pack from
-its own installation. Complete npm Engine and SDK installations include the file
-at `tools/view/start.mjs`; source checkouts use the same location. It calls Engine's
-public backend API directly. Default startup reuses one shared
-backend workspace under the system temporary directory per installation.
-`--new-instance` allocates an independent temporary workspace; `--root H` can
-select an explicit instance. The returned H addresses subsequent instance
-controls with an explicit `--root H`. Omitting `--project` opens project selection or adopts the existing
-project. Keep the foreground terminal open while using its returned URL.
-The URL establishes Shell availability; project and renderer readiness are
-reported separately in the page. Ctrl+C closes this presentation; Backend keeps
-its independent lifetime. Missing View does not prevent ordinary Engine CLI work.
+Open the returned URL and verify the selected project and renderer readiness.
+Use `forgeax backend stop` from the game root to stop the local service.
 
 ## Game authoring workflow
 
 For every new or resumed game task, read the game project's `AGENTS.md` before editing.
 Its **Run, test, build, and release** section selects the requested delivery scope
 and stop condition, defaulting to a local playable handoff.
-Continue through project-local `skills/forgeax-engine-sdk/SKILL.md` for capability
+Continue through project-local `skills/forgeax-engine-authoring/SKILL.md` for capability
 selection and `skills/forgeax-engine-cli/SKILL.md` for commands. These installed
 documents remain the entrypoints after bootstrap.
 
-For a new project, use the SDK installation below and read its `AGENTS.md` before
-creation; `project new` installs the game guide and local skills and reports their
-paths in `value.onboarding.read`.
+Follow the installation below for a new project. `project new` installs the game
+guide and local skills and reports their paths in `value.onboarding.read`.
 
 ## Import model
 
@@ -89,23 +73,26 @@ changed file by atomic rename. Existing imports remain readable during a rebuild
 obsolete paths retire afterward. This is a per-file publication guarantee, not an
 atomic rebuild of the physical Engine packages behind those forwarding modules.
 
-## SDK
+## Create a project
 
-The ordinary npm package is the connected, incremental development path. The
-full SDK adds offline templates, Engine skills, a pnpm store, and the complete
-public Engine source snapshot:
+With Node.js and pnpm available, install Engine from the development channel,
+which includes the authoring resources.
 
 ```bash
-pnpm dlx @forgeax/engine sdk install ~/ForgeAX/sdk
-cat ~/ForgeAX/sdk/AGENTS.md
-node ~/ForgeAX/sdk/bin/forgeax.mjs project init
-node ~/ForgeAX/sdk/bin/forgeax.mjs project new ~/Games/my-game --template empty
-cat ~/Games/my-game/AGENTS.md
+npm install -g @forgeax/engine@next
+forgeax project new ~/Games/my-game --template game-3d
+cd ~/Games/my-game
+forgeax project build
 ```
 
-The SDK is fetched on demand from the public npm registry at the exact same
-version. A private GitHub Release is an internal archive, not a user download
-dependency.
+The Engine archive supplies game templates, authoring skills, View, and a shared
+build cache. The generated game records its exact Engine version and resolves
+dependencies through the configured registry.
+
+From a contributor checkout, `pnpm engine:pack --output <directory>` writes one
+Engine npm archive and its checksum receipt. Register a local development archive
+with your configured npm registry when testing project creation by version. See
+the [release procedure](RELEASING.md) for publication status.
 
 ## Asset-backed LOD recipe
 

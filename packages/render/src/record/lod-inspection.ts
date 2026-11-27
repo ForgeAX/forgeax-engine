@@ -11,9 +11,16 @@ type LodSampleSlotLookup = (
   entity: number,
 ) => { readonly slot: number; readonly generation: number } | undefined;
 
-import { type FrameList, lodCandidateCountOf, RetainedFrameProjection } from '../scene/frame-list';
+import {
+  type FrameList,
+  FrameProjection,
+  lodCandidateCountOf,
+  RetainedFrameProjection,
+} from '../scene/frame-list';
 import type { PersistentRenderScene } from '../scene/render-scene';
+import { sceneDrawContentOf } from '../scene/render-scene-view';
 import { SceneSlotFrame } from '../scene/scene-slots';
+import { SelectedSceneDrawRows } from '../scene/selected-draw-rows';
 import { inspectLodOcclusion } from '../scene/visibility/inspection';
 import type { SurfaceSubmissionObservationOwner } from '../surface/submission-observation';
 import { recordContext } from '../world/view-record-context';
@@ -46,7 +53,9 @@ function sampledSlotLookup(
 function capturedSlotRoot(renderables: FrameList<RenderableSnapshot>): SceneSlotFrame | undefined {
   return renderables instanceof RetainedFrameProjection &&
     renderables.facts !== undefined &&
-    renderables.source instanceof SceneSlotFrame
+    FrameProjection.hasNativeIteration(renderables) &&
+    renderables.source instanceof SceneSlotFrame &&
+    SceneSlotFrame.hasNativeIteration(renderables.source)
     ? renderables.source
     : undefined;
 }
@@ -104,37 +113,10 @@ function captureSampleSlots(
  */
 export class LodInspectionOwner {
   cell: LodOcclusionInspectionCell | undefined;
-  private filtered:
-    | {
-        readonly submissionRenderables: FrameList<RenderableSnapshot>;
-        readonly lodCandidateCount: number;
-        readonly values: FrameList<RenderableSnapshot>;
-      }
-    | undefined;
-
   constructor(
     private readonly internals: RenderSystemInternals,
     private readonly scene: PersistentRenderScene,
   ) {}
-
-  private inspectionRenderablesOf(
-    submissionRenderables: FrameList<RenderableSnapshot>,
-    lodCandidateCount: number,
-  ): FrameList<RenderableSnapshot> {
-    const owned =
-      submissionRenderables instanceof RetainedFrameProjection &&
-      submissionRenderables.facts !== undefined;
-    const cached = owned ? this.filtered : undefined;
-    if (
-      cached?.submissionRenderables === submissionRenderables &&
-      cached.lodCandidateCount === lodCandidateCount
-    )
-      return cached.values;
-    const values =
-      lodCandidateCount > 0 ? submissionRenderables.filter(hasLod) : submissionRenderables;
-    this.filtered = owned ? { submissionRenderables, lodCandidateCount, values } : undefined;
-    return values;
-  }
 
   /**
    * Publish the CPU-side LOD/occlusion inspection bound to the caller's frame
@@ -156,45 +138,63 @@ export class LodInspectionOwner {
     const internals = this.internals;
     const renderables = frame.renderables;
     const submissionRenderables = visibility.projection.renderables;
-    const root = capturedSlotRoot(renderables);
+    const subset = SelectedSceneDrawRows.native(renderables) ? renderables : undefined;
+    const columns = subset === undefined ? sceneDrawContentOf(renderables) : undefined;
+
+    const cpuLane = selectGpuLodLane(internals.device.caps) === 'cpu';
+    const nativeEntities =
+      (columns !== undefined || subset !== undefined) && renderables === submissionRenderables;
+    let levels: Map<RenderableSnapshot | number, number> | undefined;
+    // Capture residency-dependent CPU levels at submit time, projecting only actual native LOD rows.
+    const captureLevel = cpuLane
+      ? (row: RenderableSnapshot): void => {
+          levels ??= new Map();
+          levels.set(
+            nativeEntities ? row.entityKey : row,
+            cpuLodLevel(
+              row,
+              internals.gpuStore.getMeshGpuHandles(
+                row.assetHandle as AssetHandle<'mesh'>,
+                sourceScope,
+              ),
+              camera,
+            ),
+          );
+        }
+      : undefined;
     let lodCandidateCount: number;
     let sampleSlots: LodSampleSlotLookup;
-    if (root !== undefined) {
-      lodCandidateCount = lodCandidateCountOf(renderables);
-      sampleSlots = root.lookup;
+    if (subset !== undefined) {
+      lodCandidateCount = subset.visitLodCandidates(captureLevel);
+      sampleSlots = (entity) => subset.lookupMember(entity);
+    } else if (columns !== undefined) {
+      lodCandidateCount = columns.visitLodCandidates(captureLevel);
+      sampleSlots = columns.source.lookup;
     } else {
-      const sampled = captureSampleSlots(
-        renderables,
-        renderables instanceof RetainedFrameProjection
-          ? renderables.facts?.lodCandidateCount
-          : undefined,
-        this.scene,
-      );
-      lodCandidateCount = sampled.candidateCount;
-      sampleSlots = sampled.lookup;
-    }
-    const cpuLodLane = selectGpuLodLane(internals.device.caps) === 'cpu';
-    // CPU-lane levels read current GPU residency, so fix them at submit time.
-    // Only LOD candidates can select a non-zero level.
-    let levelOf = ZERO_LOD_LEVEL;
-    if (cpuLodLane && lodCandidateCount > 0) {
-      const cpuLevels = new Map<RenderableSnapshot, number>();
-      for (const renderable of renderables) {
-        if (!hasLod(renderable)) continue;
-        cpuLevels.set(
-          renderable,
-          cpuLodLevel(
-            renderable,
-            internals.gpuStore.getMeshGpuHandles(
-              renderable.assetHandle as AssetHandle<'mesh'>,
-              sourceScope,
-            ),
-            camera,
-          ),
+      const root = capturedSlotRoot(renderables);
+      if (root !== undefined) {
+        lodCandidateCount = lodCandidateCountOf(renderables);
+        sampleSlots = root.lookup;
+      } else {
+        const sampled = captureSampleSlots(
+          renderables,
+          renderables instanceof RetainedFrameProjection &&
+            FrameProjection.hasNativeIteration(renderables)
+            ? renderables.facts?.lodCandidateCount
+            : undefined,
+          this.scene,
         );
+        lodCandidateCount = sampled.candidateCount;
+        sampleSlots = sampled.lookup;
       }
-      levelOf = (renderable: RenderableSnapshot): number => cpuLevels.get(renderable) ?? 0;
+      if (captureLevel !== undefined && lodCandidateCount > 0)
+        for (const row of renderables) if (hasLod(row)) captureLevel(row);
     }
+    const levelOf =
+      levels === undefined
+        ? ZERO_LOD_LEVEL
+        : (row: RenderableSnapshot): number =>
+            levels?.get(nativeEntities ? row.entityKey : row) ?? 0;
     const view = {
       attachmentId: sourceScope?.identity ?? 'none',
       cameraEntity: camera.entityKey ?? 0,
@@ -211,10 +211,8 @@ export class LodInspectionOwner {
     // frustum test of GPU-culled rows; only an explicit inspection pays it.
     let body: LodOcclusionInspection | undefined;
     const build = (): LodOcclusionInspection => {
-      const inspectionRenderables = this.inspectionRenderablesOf(
-        submissionRenderables,
-        lodCandidateCount,
-      );
+      const inspectionRenderables =
+        lodCandidateCount > 0 ? submissionRenderables.filter(hasLod) : submissionRenderables;
       const inspectionLevels = inspectionRenderables.map(levelOf);
       const firstRenderable = renderables.at(0);
       const firstSample = inspectionRenderables.at(0);

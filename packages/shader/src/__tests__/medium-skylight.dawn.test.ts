@@ -16,6 +16,7 @@ const imports = Object.fromEntries(
     'ibl-sampling',
     'ibl-pmrem',
     'ibl-shared',
+    'sky-sh-polynomial',
     'lighting-attenuation',
     'lighting-directional',
     'lighting-ies-profile',
@@ -25,6 +26,7 @@ const imports = Object.fromEntries(
     'lighting-spot-modifiers',
     'lighting-spot-projector',
     'shadow-pcf',
+    'standard-gbuffer',
     'standard-lighting',
     'standard-cluster',
     'view-atmosphere',
@@ -54,13 +56,14 @@ const normals = [
   [0, -1, 0],
   [1, 0, 0],
 ] as const;
-const faceValues = [16, 48, 80, 112, 160, 224];
+
 const cases = [
   { intensity: 2, ground: false, ambient: false },
   { intensity: 2, ground: true, ambient: false },
   { intensity: 2, ground: true, ambient: true },
   { intensity: -2, ground: false, ambient: true },
   { intensity: -2, ground: true, ambient: true },
+  { intensity: -1, ground: true, ambient: true },
 ] as const;
 
 it.each([
@@ -115,17 +118,15 @@ fn capture(normal: vec3<f32>, toCamera: vec3<f32>, roughness: f32, worldPosition
   );
   const compiled = await compiler.compileShader(
     `${standardImport}
-#import forgeax_pbr::ibl_sampling::{sampleIblDiffuse}
+#import forgeax_pbr::sky_sh_polynomial::{SkyShPolynomial}
 #import forgeax_pbr::ibl_sampling::{environmentReflectionDirection}
 #import forgeax_pbr::ibl_shared::{inverseRotateEnvironment}
 #import forgeax_pbr::pmrem::{samplePmrem}
 ${declaration}
 @group(0) @binding(101) var<uniform> mediumSkylight: ${type};
-@group(0) @binding(102) var mediumIrradianceMap: texture_cube<f32>;
-@group(0) @binding(103) var mediumIrradianceSampler: sampler;
+@group(0) @binding(102) var<uniform> mediumSkySh: SkyShPolynomial;
 @group(0) @binding(104) var<storage, read_write> result: array<vec4<f32>>;
 @group(0) @binding(105) var mediumPrefilterMap: texture_2d<f32>;
-@group(0) @binding(106) var skylightPrefilterMap: texture_2d<f32>;
 @group(0) @binding(107) var mediumPrefilterSampler: sampler;
 ${body}
 ${capture}
@@ -144,7 +145,7 @@ ${capture}
         CLUSTER_FORWARD_AVAILABLE: false,
         PROBE_BLEND_AVAILABLE: false,
         WATER_USE_REFLECTIONS: true,
-        WATER_USE_SSR: true,
+        WATER_USE_SSR: false,
       },
     },
   );
@@ -166,21 +167,15 @@ ${capture}
     size: 96,
     usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
   });
-  const cube = device.createTexture({
-    size: [1, 1, 6],
-    format: 'rgba8unorm',
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  const view = device.createBuffer({ size: 1392, usage: GPUBufferUsage.UNIFORM });
+  const skySh = device.createBuffer({
+    size: 112,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
-  device.queue.writeTexture(
-    { texture: cube },
-    new Uint8Array(faceValues.flatMap((value) => [value, value, value, 255])),
-    { bytesPerRow: 4, rowsPerImage: 1 },
-    [1, 1, 6],
-  );
-  const reflectionMaps = [
-    [204, 102, 51, 255],
-    [51, 102, 204, 255],
-  ].map((color) => {
+  const coefficients = new Float32Array(28);
+  for (let channel = 0; channel < 3; channel++) coefficients.set([0.1, 0.15, 0, 0.4], channel * 4);
+  device.queue.writeBuffer(skySh, 0, coefficients);
+  const reflectionMaps = [[204, 102, 51, 255]].map((color) => {
     const texture = device.createTexture({
       size: [1, 1],
       format: 'rgba8unorm',
@@ -193,20 +188,23 @@ ${capture}
     const module = device.createShaderModule({ code: compiled.value.wgsl });
     const layout = device.createBindGroupLayout({
       entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
         {
           binding: 101,
           visibility: GPUShaderStage.COMPUTE,
           buffer: { type: 'uniform', minBindingSize: 96 },
         },
-        { binding: 102, visibility: GPUShaderStage.COMPUTE, texture: { viewDimension: 'cube' } },
-        { binding: 103, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
+        {
+          binding: 102,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: 'uniform', minBindingSize: 112 },
+        },
         {
           binding: 104,
           visibility: GPUShaderStage.COMPUTE,
           buffer: { type: 'storage', minBindingSize: 96 },
         },
         { binding: 105, visibility: GPUShaderStage.COMPUTE, texture: { viewDimension: '2d' } },
-        { binding: 106, visibility: GPUShaderStage.COMPUTE, texture: { viewDimension: '2d' } },
         { binding: 107, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
       ],
     });
@@ -217,12 +215,11 @@ ${capture}
     const group = device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
       entries: [
+        { binding: 0, resource: { buffer: view } },
         { binding: 101, resource: { buffer: uniform } },
-        { binding: 102, resource: cube.createView({ dimension: 'cube' }) },
-        { binding: 103, resource: device.createSampler() },
+        { binding: 102, resource: { buffer: skySh } },
         { binding: 104, resource: { buffer: output } },
         { binding: 105, resource: reflectionMaps[0]?.createView() as GPUTextureView },
-        { binding: 106, resource: reflectionMaps[1]?.createView() as GPUTextureView },
         { binding: 107, resource: device.createSampler() },
       ],
     });
@@ -264,10 +261,10 @@ ${capture}
       expect(errors).toEqual([]);
       const assertMediumSkylightChannels = () => {
         for (const [index, normal] of normals.entries()) {
-          // Cube lookups negate Y. The ordinary 180-degree sky rotation flips X;
-          // a probe sentinel uses the independent identity diffuse rotation.
-          const face = index < 2 ? (index === 0 ? 3 : 2) : entry.intensity < 0 ? 0 : 1;
-          const irradiance = (faceValues[face] ?? 0) / 255;
+          // The ordinary 180-degree sky rotation flips X. A reflection probe
+          // uses the independent identity rotation for diffuse sky lighting.
+          const localX = entry.intensity < 0 ? normal[0] : -normal[0];
+          const irradiance = 0.4 + 0.1 * localX + 0.15 * normal[1];
           for (let channel = 0; channel < 3; channel++) {
             const skyScale =
               entry.intensity < 0
@@ -283,11 +280,9 @@ ${capture}
               JSON.stringify({ name, entry, index, channel }),
             ).toBeCloseTo(expected, 5);
             const local = [0.8, 0.4, 0.2][channel] ?? 0;
-            const global = ([0.2, 0.4, 0.8][channel] ?? 0) * (probeScale[channel] ?? 0);
-            const weight = [1, 0, 0.5][index] ?? 0;
             const radiance =
               entry.intensity < 0
-                ? local * weight + global * (1 - weight)
+                ? local * (-entry.intensity - 1)
                 : local * (tint[channel] ?? 0) * entry.intensity;
             expect(
               actual[index * 8 + 4 + channel],
@@ -300,7 +295,8 @@ ${capture}
     }
     expect(errors).toEqual([]);
   } finally {
-    cube.destroy();
+    view.destroy();
+    skySh.destroy();
     for (const texture of reflectionMaps) texture.destroy();
     uniform.destroy();
     output.destroy();

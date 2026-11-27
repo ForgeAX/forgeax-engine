@@ -8,6 +8,8 @@ description: >-
 
 # forgeax-engine-modeling
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 `@forgeax/engine/modeling` is a deterministic, editable n-gon mesh kernel in pure TypeScript.
 A `.pack.ts` build calls it as ordinary functions and returns `{ 'mesh/<key>': MeshAsset }`
 (plus a scene and clip for rigs) to the existing Pack, Catalog and Renderer owners.
@@ -15,6 +17,11 @@ A `.pack.ts` build calls it as ordinary functions and returns `{ 'mesh/<key>': M
 It is **not** an editor (no viewport to click in; you see your work only through
 `forgeax model render`), not a CAD B-rep kernel (curves and surfaces tessellate
 into the mesh), and not a runtime compiler (players load the exported mesh).
+
+For indexed triangle batches whose topology is already decided, use
+[Geometry MeshBuilder sections](../../packages/geometry/README.md#independent-triangle-sections).
+Choose a modeling session when the task needs editable faces, selections or
+topology operations.
 
 Contract SSOT: [`packages/modeling/README.md`](../../packages/modeling/README.md): data model, selection, session
 contract and a reference map. Each consideration below links one `reference/*.md` file; open

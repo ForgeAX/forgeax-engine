@@ -28,6 +28,7 @@ import {
   type PipelineState,
   type RenderSystemInternals,
 } from './render-context';
+import { surfaceTextureView } from './surface-views';
 import { hasShadowPipelineDemand } from './view-pipeline-demand';
 
 /** The stable Render owner dimension for a compiled graph: a view entity or the primary owner. */
@@ -39,14 +40,17 @@ export function graphExecutionProfileOwner(internals: RenderSystemInternals): st
 /** Exact CPU phase key matching one executable graph pass and its GPU timing identity. */
 export function graphExecutionProfilePhase(input: {
   readonly owner: string;
-  readonly pass: Pick<RenderGraphPassExecution, 'name' | 'kind'>;
+  readonly pass: Pick<RenderGraphPassExecution, 'name' | 'kind' | 'profileName'>;
 }): RenderGraphPassProfilePhase {
-  return `record/graph-execute/pass/${input.owner}/${input.pass.kind}/${JSON.stringify(input.pass.name)}`;
+  return `record/graph-execute/pass/${input.owner}/${input.pass.kind}/${JSON.stringify(input.pass.profileName ?? input.pass.name)}`;
 }
 
 type GraphPassRoster = {
   readonly passes: readonly (Pick<RenderGraphPassExecution, 'name' | 'kind'> & {
     readonly rasterBatch?: readonly string[] | undefined;
+    readonly nativeProfilePasses?:
+      | readonly Pick<RenderGraphPassExecution, 'name' | 'kind' | 'profileName'>[]
+      | undefined;
   })[];
 };
 type PassPhaseNames = Map<string, Map<string, RenderGraphPassProfilePhase>>;
@@ -128,7 +132,11 @@ export function graphExecutionProfilePhases(
   }
   const names = new Set<RenderGraphPassProfilePhase>();
   for (const pass of passes) {
-    if (pass.kind === 'subgraph') continue;
+    if (pass.kind === 'subgraph') {
+      for (const native of pass.nativeProfilePasses ?? [])
+        names.add(graphExecutionProfilePhase({ owner, pass: native }));
+      continue;
+    }
     const physical =
       pass.rasterBatch === undefined
         ? pass
@@ -182,12 +190,19 @@ function cachedGraphPassPhase(
 }
 
 /** One graph pass boundary binds the CPU profile phase to its actual GPU timing identity. */
-export function createRenderGraphPassInstrumentation<Frame extends RenderGraphFrame>(input: {
-  readonly internals: RenderSystemInternals;
-  readonly graph: CompiledRenderGraph<Frame>;
-  readonly owner?: string;
-  readonly viewId?: number;
-}): RenderGraphPassInstrumentation<Frame> | undefined {
+export function createRenderGraphPassInstrumentation<Frame extends RenderGraphFrame>(
+  input: {
+    readonly internals: RenderSystemInternals;
+    readonly viewId?: number;
+  } & (
+    | { readonly graph: CompiledRenderGraph<Frame>; readonly owner?: string }
+    | {
+        readonly graph?: undefined;
+        readonly owner: 'shared' | 'composition' | 'capture';
+        readonly generation: number;
+      }
+  ),
+): RenderGraphPassInstrumentation<Frame> | undefined {
   const { internals, graph } = input;
   const context = recordContext(internals);
   const recordProfile = recordProfileContext(internals);
@@ -216,15 +231,25 @@ export function createRenderGraphPassInstrumentation<Frame extends RenderGraphFr
     const owner = input.owner ?? graphExecutionProfileOwner(internals);
     // Precompute from this immutable graph so the hot pass callback only performs
     // a bounded map lookup for its phase name.
-    graphExecutionProfilePhases(graph, owner);
+    if (graph !== undefined) graphExecutionProfilePhases(graph, owner);
     const deviceGeneration = context.deviceScope?.generation ?? 0;
-    const graphGeneration = compiledRenderGraphGeneration(graph);
+    // Direct physical pass owners carry their own identity into the same frame receipt.
+    const graphGeneration =
+      graph === undefined ? input.generation : compiledRenderGraphGeneration(graph);
     if (input.owner === 'capture' && input.viewId === undefined) identityCapture.complete = false;
     cpuScope = (pass, gpuIdentity, gpuIdentityStatus) => {
       if (pass.kind === 'subgraph') return undefined;
       let opened = false;
       try {
-        const phase = cachedGraphPassPhase(graph, owner, pass);
+        const phase =
+          graph === undefined
+            ? graphExecutionProfilePhase({ owner, pass })
+            : (graphPassPhaseNames
+                .get(graph)
+                ?.get(owner)
+                ?.get(pass.kind)
+                ?.get(pass.profileName ?? pass.name) ??
+              graphExecutionProfilePhase({ owner, pass }));
         opened = profileSession.beginPhase('render', phase).ok;
         if (!opened) {
           // Receipt completeness means every identity row has a retained CPU
@@ -288,7 +313,6 @@ export function createRenderGraphPassInstrumentation<Frame extends RenderGraphFr
 
 function reflectionExecutionPhase(passName: string): RenderGraphExecutionPhase | undefined {
   if (passName === 'ssr-trace') return 'record/graph-execute/ssr-trace';
-  if (passName === 'ssr-temporal') return 'record/graph-execute/ssr-temporal';
   if (passName.startsWith('ssr-reflection-mip-')) {
     return 'record/graph-execute/ssr-reflection-mip';
   }
@@ -300,7 +324,7 @@ export function graphExecutionPhase(passName: string): RenderGraphExecutionPhase
   if (passName.startsWith('shadowCascade')) return 'record/graph-execute/shadow';
   if (passName.startsWith('point-shadow')) return 'record/graph-execute/point-shadow';
   if (passName.startsWith('spot-shadow')) return 'record/graph-execute/spot-shadow';
-  if (passName === 'depth-pyramid-seed' || passName.startsWith('depth-pyramid-reduce-')) {
+  if (passName === 'hzb-seed' || passName.startsWith('hzb-reduce-')) {
     return 'record/graph-execute/depth-pyramid';
   }
   const reflection = reflectionExecutionPhase(passName);
@@ -432,31 +456,17 @@ export function acquireSwapChainTarget(
   };
 }
 
-// A surface that hands back the same texture again (native hosts, headless
-// carriers) reuses its view; a browser's per-frame texture misses and is
-// released with that texture.
-const swapChainViews = new WeakMap<
-  Texture,
-  { readonly format: GPUTextureFormat | undefined; readonly view: TextureView }
->();
-
 function swapChainView(
   internals: RenderSystemInternals,
   texture: Texture,
   format: GPUTextureFormat | undefined,
 ): TextureView | null {
-  const cached = swapChainViews.get(texture);
-  if (cached !== undefined && cached.format === format) return cached.view;
-  const viewResult = internals.device.createTextureView(
-    texture,
-    format === undefined ? {} : { format },
-  );
-  if (!viewResult.ok) {
-    internals.errorRegistry.fire(viewResult.error);
+  const result = surfaceTextureView(internals, texture, format);
+  if (!result.ok) {
+    internals.errorRegistry.fire(result.error);
     return null;
   }
-  swapChainViews.set(texture, { format, view: viewResult.value });
-  return viewResult.value;
+  return result.value;
 }
 
 /** Preparation reads dimensions without acquiring the canvas's next texture. */

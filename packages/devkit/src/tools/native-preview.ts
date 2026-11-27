@@ -8,6 +8,7 @@ import {
   startNativePlugin,
 } from '@forgeax/engine-plugin';
 import {
+  bindPreviewHost,
   createPreviewHost,
   type PreviewHostMechanisms,
   type PreviewRenderRuntime,
@@ -23,17 +24,19 @@ import type {
   ToolTerminal,
 } from '@forgeax/engine-tool-runtime';
 import { domainFailureError } from '@forgeax/engine-tool-runtime';
-import { readCatalogRows } from '@forgeax/engine-types';
-import { assetInspectCommand, decodeCatalogDocument } from '../assets.js';
+import { assetInspectCommand, readProjectCatalog } from '../assets.js';
 import { readProjectFacts } from '../project.js';
+import { beforeDeadline } from '../startup-budget.js';
 import type { CaptureBackend } from '../types.js';
+import { failToolRun } from '../types.js';
 import {
   type BrowserHostResult,
   publishPreviewArtifacts,
   type ResourcePreviewReportInput,
   runBrowserResourcePreviewHost,
 } from './browser-host.js';
-import { createNativePreviewPlugin, nativePreviewPlugins } from './preview-catalog.js';
+import { previewArtifactRef } from './evidence-image.js';
+import { nativePreviewOwner } from './preview-catalog.js';
 import type { PreviewHostResult } from './preview-host.js';
 
 const DEFAULT_NATIVE_PREVIEW_TIMEOUT_MS = 120_000;
@@ -71,43 +74,9 @@ type PreviewCatalogLookup =
   | { readonly ok: false; readonly code: string; readonly detail: Record<string, unknown> };
 
 async function readPreviewCatalogRow(root: string, guid: string): Promise<PreviewCatalogLookup> {
-  const indexPath = resolve(root, 'dist', 'pack-index.json');
-  let raw: Uint8Array;
-  try {
-    raw = await readFile(indexPath);
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { ok: true, row: undefined };
-    }
-    return {
-      ok: false,
-      code: 'asset-index-unreadable',
-      detail: { indexPath, reason: cause instanceof Error ? cause.message : String(cause) },
-    };
-  }
-  let parsed: unknown;
-  try {
-    const decoded = await decodeCatalogDocument(raw);
-    if (!decoded.ok) {
-      return {
-        ok: false,
-        code: 'asset-index-invalid',
-        detail: { indexPath, code: decoded.error.code, detail: decoded.error.detail },
-      };
-    }
-    parsed = decoded.value;
-  } catch (cause) {
-    return {
-      ok: false,
-      code: 'asset-index-invalid',
-      detail: { indexPath, reason: cause instanceof Error ? cause.message : String(cause) },
-    };
-  }
-  const rows = readCatalogRows(parsed);
-  if (rows === undefined) {
-    return { ok: false, code: 'asset-index-invalid', detail: { indexPath, actual: typeof parsed } };
-  }
-  const row = rows.find(
+  const decoded = await readProjectCatalog(root);
+  if (!decoded.ok) return { ok: false, code: decoded.error.code, detail: decoded.error.detail };
+  const row = decoded.value.find(
     (candidate): candidate is NativePreviewCatalogRow =>
       isRecord(candidate) &&
       typeof candidate.guid === 'string' &&
@@ -156,22 +125,19 @@ function failed(
   },
   artifacts: readonly ArtifactRef[] = [],
 ): ToolTerminal<never> {
-  return {
-    outcome: 'failed',
-    failure: {
-      code: 'tool-domain-failed',
-      expected: failure.expected ?? 'the asset preview to complete',
-      hint: failure.hint ?? 'Inspect the preview owner failure and retry.',
-      detail: {
-        code: failure.code,
-        ...(failure.detail === undefined ? {} : { payload: failure.detail as JsonValue }),
-      },
-    },
+  return failToolRun(
+    domainFailureError(
+      failure.code,
+      failure.expected,
+      failure.hint,
+      failure.detail as JsonValue | undefined,
+    ),
     artifacts,
-  };
+  );
 }
 
-type NativePreviewKind = 'material' | 'mesh' | 'texture' | 'vfx';
+type NativePreviewOwner = NonNullable<ReturnType<typeof nativePreviewOwner>>;
+type NativePreviewKind = NativePreviewOwner[0];
 type NativePreviewResource = NonNullable<PreviewHostResult['resource']>;
 
 /** One native preview run: its operation, subject and the identity its artifacts carry. */
@@ -192,14 +158,6 @@ interface NativePreviewCapture {
   readonly resource: NativePreviewResource;
   readonly asset: Record<string, unknown>;
   readonly backendFallbackReason: string | undefined;
-}
-
-function nativePreviewKind(operationId: string): NativePreviewKind {
-  const kind = operationId.split('.')[1];
-  if (kind !== 'material' && kind !== 'mesh' && kind !== 'texture' && kind !== 'vfx') {
-    throw new Error(`unsupported native preview operation ${operationId}`);
-  }
-  return kind;
 }
 
 function isPositiveExtent(width: number, height: number): boolean {
@@ -260,16 +218,6 @@ async function inspectedOutputAdmission(
   return undefined;
 }
 
-function selectedNativePreviewPlugin(operationId: string): string {
-  const selectedPreviewPlugin = nativePreviewPlugins.find(
-    ([, , tool]) => tool.descriptor.id === operationId,
-  );
-  if (selectedPreviewPlugin === undefined) {
-    throw new Error(`native preview plugin does not export ${operationId}`);
-  }
-  return selectedPreviewPlugin[0];
-}
-
 /** Forward a caller abort into the preview-owned controller; the result unlinks it. */
 function linkParentAbort(
   parentSignal: AbortSignal | undefined,
@@ -311,22 +259,12 @@ async function runWithSoftwareFallback(
   };
 }
 
-async function raceDeadline<T>(
-  work: Promise<T>,
-  timeoutMs: number,
-): Promise<{ readonly timedOut: false; readonly value: T } | { readonly timedOut: true }> {
-  let timeout: ReturnType<typeof setTimeout> | number | undefined;
-  const timeoutPromise = new Promise<undefined>((resolve) => {
-    timeout = setTimeout(resolve, timeoutMs);
-  });
-  try {
-    return await Promise.race([
-      work.then((value) => ({ timedOut: false as const, value })),
-      timeoutPromise.then(() => ({ timedOut: true as const })),
-    ]);
-  } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
-  }
+function raceDeadline<T>(work: Promise<T>, timeoutMs: number) {
+  return beforeDeadline(
+    work.then((value) => ({ timedOut: false as const, value })),
+    timeoutMs,
+    () => ({ timedOut: true as const }),
+  );
 }
 
 async function timedOutPreview(
@@ -374,9 +312,8 @@ function browserBootstrapFailure(browser: BrowserHostResult): ToolTerminal<never
         detail: { phase: 'resource-owner' },
       }
     : browser.error;
-  return {
-    outcome: 'failed',
-    failure: {
+  return failToolRun(
+    {
       code: 'tool-domain-failed',
       expected: failure.expected ?? 'the Browser resource bootstrap to succeed',
       hint: failure.hint ?? 'Inspect the Browser resource bootstrap failure and retry.',
@@ -385,8 +322,8 @@ function browserBootstrapFailure(browser: BrowserHostResult): ToolTerminal<never
         ...(failure.detail === undefined ? {} : { payload: failure.detail }),
       },
     },
-    artifacts: browser.ok ? [] : (browser.artifacts ?? []),
-  };
+    browser.ok ? [] : (browser.artifacts ?? []),
+  );
 }
 
 async function copyReplayOutput(
@@ -499,19 +436,21 @@ export async function runNativePreviewTool(
   projectRoot: string,
   previewOptions: NativePreviewOptions = {},
 ): Promise<ToolTerminal<unknown>> {
-  const kind = nativePreviewKind(contribution.descriptor.id);
+  const operationId = contribution.descriptor.id;
+  const owner = nativePreviewOwner(operationId);
+  if (owner === undefined) throw new Error(`unsupported native preview operation ${operationId}`);
+  const [kind, plugin] = owner;
   const parsed = contribution.descriptor.argsSchema.parse(args);
   if (!parsed.ok) {
-    return {
-      outcome: 'failed',
-      failure: {
+    return failToolRun(
+      {
         code: 'tool-invalid-args',
         expected: 'preview arguments to match the operation argsSchema',
         hint: 'Pass { guid } and an optional power-of-two size from AssetRegistry catalog identity.',
         detail: { message: parsed.error, value: null },
       },
-      artifacts: [],
-    };
+      [],
+    );
   }
   const request = parsed.value as { readonly guid: string; readonly size?: number };
   const { guid, size = RESOURCE_PREVIEW_DEFAULT_SIZE } = request;
@@ -527,9 +466,8 @@ export async function runNativePreviewTool(
   }
   const admissionFailure = await previewCatalogAdmission(projectRoot, guid);
   if (admissionFailure !== undefined) return admissionFailure;
-  const selectedPluginName = selectedNativePreviewPlugin(contribution.descriptor.id);
   const run: NativePreviewRun = {
-    operationId: contribution.descriptor.id,
+    operationId,
     kind,
     guid,
     projectRoot,
@@ -577,50 +515,35 @@ export async function runNativePreviewTool(
     return timedOutPreview(previewController, browserPromise, guid, timeoutMs);
   const capture = admittedCapture(browserRace.value);
   if (capture === undefined) return browserBootstrapFailure(browserRace.value.value);
-  return executeNativePreview(run, capture, selectedPluginName, args, options);
+  return executeNativePreview(run, capture, plugin, args, options);
 }
 
 /** Run the selected native preview executor over the captured resource and publish its report. */
 async function executeNativePreview(
   run: NativePreviewRun,
   capture: NativePreviewCapture,
-  selectedPluginName: string,
+  plugin: NativePreviewOwner[1],
   args: unknown,
   options: ToolRunOptions,
 ): Promise<ToolTerminal<unknown>> {
   const browser = capture.result;
-  if (browser.capabilityFailure !== undefined) {
-    const capabilityFailure = browser.capabilityFailure;
-    return {
-      outcome: 'failed',
-      failure: domainFailureError(
-        capabilityFailure.code,
-        capabilityFailure.expected,
-        capabilityFailure.hint,
-        capabilityFailure.detail,
-      ),
-      artifacts: await publishFailureEvidence(run, capture),
-    };
-  }
+  if (browser.capabilityFailure !== undefined)
+    return failed(browser.capabilityFailure, await publishFailureEvidence(run, capture));
   // A capability-limited subject may still produce a complete capture. Keep
   // that capture so the caller can inspect the evidence while returning the
   // original owner failure. There is no successful domain report for this
   // branch, so publication intentionally contains only capture artifacts.
   if (!toolPreviewSubjectDrawn(run.kind, browser.drawCalls)) {
-    return {
-      outcome: 'failed',
-      failure: {
-        code: 'tool-domain-failed',
+    return failed(
+      {
+        code: 'tool-preview-subject-not-rendered',
         expected:
           'the captured resource frame to contain a subject draw in addition to canonical presentation passes',
         hint: 'Inspect material readiness and the RHI tape before retrying the same GUID preview.',
-        detail: {
-          code: 'tool-preview-subject-not-rendered',
-          payload: { kind: run.kind, drawCalls: browser.drawCalls },
-        },
+        detail: { kind: run.kind, drawCalls: browser.drawCalls },
       },
-      artifacts: await publishFailureEvidence(run, capture),
-    };
+      await publishFailureEvidence(run, capture),
+    );
   }
   const ctx = new Context();
   try {
@@ -637,10 +560,7 @@ async function executeNativePreview(
       renderer: previewRendererFacts(run.kind, browser, capture.resource),
       artifacts: browser.artifacts,
     });
-    const installed = await startNativePlugin(
-      ctx,
-      createNativePreviewPlugin(host, selectedPluginName),
-    );
+    const installed = await startNativePlugin(ctx, bindPreviewHost(plugin, host));
     if (!installed.ok) throw installed.error;
     const provider = api
       .list()
@@ -651,16 +571,14 @@ async function executeNativePreview(
           record.providerState === 'active',
       );
     if (provider === undefined) {
-      return {
-        outcome: 'failed',
-        failure: {
-          code: 'tool-domain-failed',
+      return failed(
+        {
+          code: 'tool-preview-provider-unavailable',
           expected: `the native preview provider for ${run.operationId} to activate`,
           hint: 'Inspect the preview plugin Fiber and retry after it reports Callable.',
-          detail: { code: 'tool-preview-provider-unavailable' },
         },
-        artifacts: await publishFailureEvidence(run, capture),
-      };
+        await publishFailureEvidence(run, capture),
+      );
     }
     const terminal = await api.run(run.operationId, args, {
       ...options,
@@ -702,9 +620,8 @@ async function publishSucceededPreview(
       oracle: domainResult.oracle,
     });
   } catch (cause) {
-    return {
-      outcome: 'failed',
-      failure: {
+    return failToolRun(
+      {
         code: 'tool-domain-failed',
         expected: 'the preview report and all capture artifacts to publish atomically',
         hint: 'Inspect the artifact manifest identity or digest failure and retry the same ToolRun.',
@@ -713,8 +630,8 @@ async function publishSucceededPreview(
           payload: cause instanceof Error ? cause.message : String(cause),
         },
       },
-      artifacts: [],
-    };
+      [],
+    );
   }
   const report = published.manifest.artifacts.find((artifact) => artifact.role === 'report');
   if (report === undefined) {
@@ -726,13 +643,7 @@ async function publishSucceededPreview(
     result: {
       ...(terminal.result as Record<string, unknown>),
       ...browserLaneResultFields(capture.result, capture.backendFallbackReason, run.outputPath),
-      report: {
-        kind: 'tool-result' as const,
-        digest: report.digest,
-        uri: report.uri,
-        mediaType: report.mediaType,
-        sizeBytes: report.byteLength,
-      },
+      report: previewArtifactRef(report),
       artifacts: published.artifacts,
     },
     artifacts: published.artifacts,

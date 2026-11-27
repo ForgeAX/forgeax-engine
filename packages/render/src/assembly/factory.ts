@@ -7,7 +7,7 @@ import { assertTextureMipSkip } from '../device/texture-mip-skip';
 
 import type { RendererOptions } from '../render-contract';
 import { EngineEnvironmentError, loadRhiPack, type RhiBackendPack } from './backend-contract';
-import type { BundlerOptions } from './bundler-contract';
+import type { RendererHostBundlerOptions } from './bundler-contract';
 import type { RendererAssemblyImplementation } from './host-contract';
 import { toError } from './renderer-facade';
 import { tryCreateRendererFromBackend } from './webgpu-renderer';
@@ -114,7 +114,7 @@ export function classifyEnvErrorReason(
 export async function createRenderer(
   canvas: unknown,
   options?: RendererOptions,
-  bundler?: BundlerOptions,
+  bundler?: RendererHostBundlerOptions,
   backend?: RhiBackendPack,
 ): Promise<RendererAssemblyImplementation> {
   assertRenderShortSide(options?.maxRenderShortSide ?? 0);

@@ -49,7 +49,7 @@ import {
 } from './render-world';
 import { viewStandardLightingOf } from './standard-lighting-systems';
 
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import { stagedViewInputs, ViewFrame, type ViewFrameState } from './view-frame-systems';
 
 import type { ViewSettlementOwner as TemporalOwner } from './view-settlement';
@@ -282,10 +282,8 @@ function stageOutcomeOf<T>(
   entity: EntityHandle | undefined,
   component: StageComponent,
 ): T | undefined {
-  if (entity === undefined || !world.hasComponent(entity, component)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewStageState<T>>(requireViewField(world, entity, component, 'state'))
-    .unwrap();
+  const state = readViewState<ViewStageState<T>>(world, entity, component);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.outcome : undefined;
 }
 

@@ -60,10 +60,13 @@ export const RAY_INPUT_STRIDE = 48;
 export const RAY_HIT_STRIDE = 32;
 
 /** Owned f32 world-space snapshot; rebuilding replaces all geometry, masks and identities atomically. */
-export interface RayReferenceScene {
+export interface RayRasterTriangles {
   readonly triangles: Uint8Array;
-  readonly nodes: Uint8Array;
   readonly triangleCount: number;
+}
+
+export interface RayReferenceScene extends RayRasterTriangles {
+  readonly nodes: Uint8Array;
 }
 
 export function rayReferenceFailure(
@@ -83,10 +86,9 @@ const uint = (value: number, max = 0xffffffff) =>
   Number.isInteger(value) && value >= 0 && value <= max;
 const finite32 = (value: number) => Number.isFinite(value) && Number.isFinite(Math.fround(value));
 
-/** Builds a deterministic binned-SAH BVH in depth-first order. Never borrows caller arrays. */
-export function buildRayReferenceScene(
+function rayTriangleRows(
   instances: readonly RayMeshInstance[],
-): Result<RayReferenceScene, RayReferenceError> {
+): Result<number[][], RayReferenceError> {
   if (instances.length > 1024) return rayReferenceFailure('instance limit exceeded', true);
   const rows: number[][] = [];
   const ids = new Set<number>();
@@ -172,17 +174,38 @@ export function buildRayReferenceScene(
       rows.push([...row, instanceId, geometryId, primitive, materialId, activeMask, 0, 0, 0]);
     }
   }
-  const { nodes, order } = buildBinnedBvh(rows);
-  const ordered = Array.from(order, (index) => item(rows, index));
+  return ok(rows);
+}
+
+function packRayTriangles(rows: readonly number[][], order?: Uint32Array): RayRasterTriangles {
   // One unreachable dummy element keeps WebGPU runtime arrays bindable for an empty scene.
   const triangles = new Uint8Array(Math.max(1, rows.length) * RAY_TRIANGLE_STRIDE);
   const tv = new DataView(triangles.buffer);
-  ordered.forEach((row, i) => {
+  for (let i = 0; i < rows.length; i++) {
+    const row = item(rows, order === undefined ? i : item(order, i));
     row.forEach((v, j) => {
       if (j < 12) tv.setFloat32(i * 80 + j * 4, v, true);
       else tv.setUint32(i * 80 + j * 4, v, true);
     });
-  });
+  }
+  return { triangles, triangleCount: rows.length };
+}
+
+/** Raster submissions keep author primitive order, including the first winner at equal depth. */
+export function buildRayRasterTriangles(
+  instance: RayMeshInstance,
+): Result<RayRasterTriangles, RayReferenceError> {
+  const rows = rayTriangleRows([instance]);
+  return rows.ok ? ok(packRayTriangles(rows.value)) : rows;
+}
+
+/** Builds a deterministic binned-SAH BVH in depth-first order. Never borrows caller arrays. */
+export function buildRayReferenceScene(
+  instances: readonly RayMeshInstance[],
+): Result<RayReferenceScene, RayReferenceError> {
+  const result = rayTriangleRows(instances);
+  if (!result.ok) return result;
+  const { nodes, order } = buildBinnedBvh(result.value);
   const nodeBytes = new Uint8Array(Math.max(1, nodes.length) * RAY_NODE_STRIDE);
   const nv = new DataView(nodeBytes.buffer);
   nodes.forEach((n, i) => {
@@ -196,7 +219,7 @@ export function buildRayReferenceScene(
     nv.setUint32(i * 48 + 36, n.right, true);
     nv.setUint32(i * 48 + 40, n.axis, true);
   });
-  return ok({ triangles, nodes: nodeBytes, triangleCount: rows.length });
+  return ok({ ...packRayTriangles(result.value, order), nodes: nodeBytes });
 }
 
 export function packReferenceRays(

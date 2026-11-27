@@ -1,11 +1,7 @@
 import { createHash } from 'node:crypto';
 import { err, RhiError } from '@forgeax/engine-rhi';
 import { RhiNullAdapter } from '@forgeax/engine-rhi-null';
-import {
-  directDfgLutBytes,
-  ShaderRegistry,
-  STANDARD_DIRECT_DFG_LUT_BINDING,
-} from '@forgeax/engine-shader';
+import { directDfgLutBytes, ShaderRegistry } from '@forgeax/engine-shader';
 import {
   type ParamSchemaEntry,
   ParamSchemaProjectionOwner,
@@ -15,13 +11,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMaterialLayoutCache } from '../assembly/material/layout-cache';
 import { DeviceScope } from '../device/device-scope';
 import { getOrCreateDirectDfgLut, materialUsesDirectDfgLut } from '../device/direct-dfg-lut';
+import { DIRECT_DFG_VIEW_SLOT, projectViewLayout } from '../environment/bindings';
 import { MaterialSampledTextureBudgetExceededError } from '../errors/render';
 import { Materials } from '../materials';
-import { buildBindGroupLayoutDescriptor, type PipelineSpec } from '../pipeline-spec';
+import { buildPbrPipelineLayouts } from '../pbr-pipeline';
 
 afterEach(() => vi.restoreAllMocks());
 
-describe('material-owned direct DFG texture', () => {
+describe('direct DFG texture ownership', () => {
   it('preserves the independent Three.js r184 RG16F bytes', () => {
     const bytes = directDfgLutBytes();
     expect(bytes.byteLength).toBe(1024);
@@ -73,28 +70,23 @@ describe('material-owned direct DFG texture', () => {
     expect(observations).toBe(2);
   });
 
-  it('adds exactly one filtered texture to actual Standard material layouts only on request', () => {
-    const spec: PipelineSpec = {
-      shader: { id: 'forgeax::default-standard-pbr', passKind: 'forward', variantSet: undefined },
-      attachments: { colorFormats: [], depthFormat: undefined, sampleCount: 1 },
-      geometry: { topology: 'triangle-list', vertexLayout: {} },
-      renderState: undefined,
-    };
-    const layout = (mode: 'fit' | 'lut') =>
-      Array.from(
-        buildBindGroupLayoutDescriptor(spec, {
-          kind: 'pbr-material-merged',
-          materialParamSchema: Materials.standard({
-            baseColor: [1, 1, 1, 1],
-            directMultiscattering: mode,
-          }).parameters as never,
-          caps: { storageBuffer: true, transmissionBackdrop: false },
-        }).entries,
-      );
-    const fit = layout('fit');
-    const lut = layout('lut');
-    expect(lut.filter((entry) => entry.binding !== STANDARD_DIRECT_DFG_LUT_BINDING)).toEqual(fit);
-    expect(lut.find((entry) => entry.binding === STANDARD_DIRECT_DFG_LUT_BINDING)).toMatchObject({
+  it('adds one filtered View texture for Standard direct DFG only when read', async () => {
+    const device = (await new RhiNullAdapter().requestDevice()).unwrap();
+    const make = vi.spyOn(device, 'createBindGroupLayout');
+    const view = buildPbrPipelineLayouts(device, { storageBuffer: true }).viewBgl;
+    projectViewLayout(device, view, new Map([[0, 3]]));
+    const fit = make.mock.lastCall?.[0].entries;
+    projectViewLayout(
+      device,
+      view,
+      new Map([
+        [0, 3],
+        [DIRECT_DFG_VIEW_SLOT, 2],
+      ]),
+    );
+    const lut = make.mock.lastCall?.[0].entries;
+    expect(lut?.filter((entry) => entry.binding !== DIRECT_DFG_VIEW_SLOT)).toEqual(fit);
+    expect(lut?.find((entry) => entry.binding === DIRECT_DFG_VIEW_SLOT)).toMatchObject({
       texture: { sampleType: 'float', viewDimension: '2d' },
     });
   });

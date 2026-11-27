@@ -7,6 +7,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = resolve(here, '..', '..', '..');
 
 export default defineConfig({
+  // Resolve emitted WASM beside the bundle in both the browser and Dawn.
+  base: './',
   plugins: [forgeaxShader({ engineEntries: { pointShadows: true } }) as never],
   // The Dawn smoke runs this production bundle, so the opt-in PERF_RHI_CAPTURE
   // tape needs the recorder branch kept at build time.
@@ -20,5 +22,7 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
+    // The native Dawn host reads the emitted WASM and its provenance as files.
+    assetsInlineLimit: 0,
   },
 });

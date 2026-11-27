@@ -12,6 +12,9 @@
  */
 
 const LONG_DECIMAL_F32_RE = /^[1-9][0-9]{19,}f$/;
+const F32_MAX_INTEGER = '340282346638528859811704183484516925440';
+const F32_OVERFLOW_MIDPOINT = '340282356779733661637539395458142568448';
+const EXACT_F32_MAX = '3.4028234663852885981170418348451692544e38f';
 
 /**
  * Single post-Naga portability facade used by the shader compiler.
@@ -21,7 +24,7 @@ const LONG_DECIMAL_F32_RE = /^[1-9][0-9]{19,}f$/;
  * other numeric token families remain byte-identical.
  */
 export function canonicalizePortableWgsl(source: string): string {
-  if (!/(?:^|[^A-Za-z0-9_.])[1-9][0-9]{19,}f/.test(source)) return source;
+  if (!source.includes('f')) return source;
   let result = '';
   let index = 0;
 
@@ -38,8 +41,7 @@ export function canonicalizePortableWgsl(source: string): string {
     }
 
     if (current === '/' && next === '*') {
-      const end = source.indexOf('*/', index + 2);
-      const commentEnd = end < 0 ? source.length : end + 2;
+      const commentEnd = scanBlockComment(source, index);
       result += source.slice(index, commentEnd);
       index = commentEnd;
       continue;
@@ -55,7 +57,7 @@ export function canonicalizePortableWgsl(source: string): string {
     if (isDecimalDigit(current) || (current === '.' && isDecimalDigit(next))) {
       const end = scanNumericToken(source, index);
       const token = source.slice(index, end);
-      result += canRewriteNumericToken(source, end, token) ? rewriteLongDecimal(token) : token;
+      result += rewriteNumericToken(source, end, token);
       index = end;
       continue;
     }
@@ -67,9 +69,52 @@ export function canonicalizePortableWgsl(source: string): string {
   return result;
 }
 
-function canRewriteNumericToken(source: string, end: number, token: string): boolean {
+function rewriteNumericToken(source: string, end: number, token: string): string {
   const following = source[end] ?? '';
-  return LONG_DECIMAL_F32_RE.test(token) && !isIdentifierContinue(following) && following !== '.';
+  if (isIdentifierContinue(following) || following === '.') return token;
+  const finite = rewriteFiniteMaximum(token);
+  if (finite !== token) return finite;
+  return LONG_DECIMAL_F32_RE.test(token) ? rewriteLongDecimal(token) : token;
+}
+
+/** Naga's shortest decimal can lie above the finite maximum while still rounding
+ * to that f32. Some consumers reject that decimal before rounding. Only the
+ * open interval (MAX, overflow midpoint) has this same finite bit pattern.
+ * Compare exact decimal digits, never a JavaScript floating-point approximation. */
+function rewriteFiniteMaximum(token: string): string {
+  const match = /^([0-9]*)(?:\.([0-9]*))?(?:[eE]([+-]?[0-9]+))?f$/.exec(token);
+  if (!match) return token;
+  const fraction = match[2] ?? '';
+  const digits = `${match[1] ?? ''}${fraction}`.replace(/^0+/, '');
+  if (digits.length === 0) return token;
+  const exponent = canonicalExponent(match[3] ?? '0');
+  if (exponent !== String(39 + fraction.length - digits.length)) return token;
+  const integer = digits.slice(0, 39).padEnd(39, '0');
+  const above =
+    integer > F32_MAX_INTEGER || (integer === F32_MAX_INTEGER && /[1-9]/.test(digits.slice(39)));
+  return above && integer < F32_OVERFLOW_MIDPOINT ? EXACT_F32_MAX : token;
+}
+
+function canonicalExponent(value: string): string {
+  const digits = value.replace(/^[+-]?0*/, '');
+  if (digits.length === 0) return '0';
+  return value[0] === '-' ? `-${digits}` : digits;
+}
+
+function scanBlockComment(source: string, start: number): number {
+  let index = start + 2,
+    depth = 1;
+  while (index < source.length && depth > 0) {
+    const pair = source.slice(index, index + 2);
+    if (pair === '/*') {
+      depth++;
+      index += 2;
+    } else if (pair === '*/') {
+      depth--;
+      index += 2;
+    } else index++;
+  }
+  return index;
 }
 
 function rewriteLongDecimal(token: string): string {

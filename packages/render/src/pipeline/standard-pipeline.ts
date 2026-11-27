@@ -1,5 +1,10 @@
 import { RenderGraphError } from '@forgeax/engine-render-graph';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import {
+  PRODUCER_BOUNDS_HEADER_WORDS,
+  PRODUCER_BOUNDS_STRIDE_WORDS,
+  PRODUCER_RESERVATION_END_WORD,
+} from '../cluster-binner';
 import { StandardProfileInvalidError } from '../errors/render';
 import type {
   RenderPipeline,
@@ -21,6 +26,7 @@ import {
   STANDARD_MAX_LIGHT_COUNT,
   STANDARD_PIPELINE_ID,
   type StandardProfile,
+  standardTopology,
 } from './standard-profile';
 
 /** WGSL owner for the Standard clustered membership producer. */
@@ -43,10 +49,11 @@ struct ClusterUniform {
 // Producer payload, see encodeProducerBounds (cluster-binner.ts).
 @group(0) @binding(3) var<storage, read> light_bounds : array<i32>;
 
-const HEADER_WORDS : u32 = 8u;
-const STRIDE_WORDS : u32 = 20u;
+const HEADER_WORDS : u32 = ${PRODUCER_BOUNDS_HEADER_WORDS}u;
+const STRIDE_WORDS : u32 = ${PRODUCER_BOUNDS_STRIDE_WORDS}u;
 const FLAG_UNBOUNDED : u32 = 1u;
 const FLAG_CONE : u32 = 2u;
+const FLAG_RECT : u32 = 4u;
 
 fn bound_f32(word : u32) -> f32 {
   return bitcast<f32>(light_bounds[word]);
@@ -115,20 +122,30 @@ fn froxel_keeps(froxel : Froxel, at : u32) -> bool {
   if (dot(d, d) > radius * radius) {
     return false;
   }
-  if ((flags & FLAG_CONE) == 0u) {
+  if ((flags & (FLAG_CONE | FLAG_RECT)) == 0u) {
     return true;
   }
   let apex = bound_vec3(at + 12u);
-  let range = bound_f32(at + 15u);
   let axis = bound_vec3(at + 16u);
-  let cos_outer = bound_f32(at + 19u);
   let mid = (froxel.lo + froxel.hi) * 0.5;
-  let rr = 0.5 * length(froxel.hi - froxel.lo);
+  let extent = (froxel.hi - froxel.lo) * 0.5;
   let v = mid - apex;
-  let along = dot(v, axis);
-  let sin_outer = sqrt(max(0.0, 1.0 - cos_outer * cos_outer));
-  let closest = cos_outer * sqrt(max(0.0, dot(v, v) - along * along)) - along * sin_outer;
-  return !(closest > rr || along > rr + range || along < -rr);
+  var normal = -axis;
+  if ((flags & FLAG_CONE) != 0u) {
+    let range = bound_f32(at + 15u);
+    let range_delta = max(max(froxel.lo - apex, vec3<f32>(0.0)), apex - froxel.hi);
+    if (dot(range_delta, range_delta) > range * range) {
+      return false;
+    }
+    let radial = v - dot(v, axis) * axis;
+    let radial_length = length(radial);
+    let cos_outer = bound_f32(at + 19u);
+    let sin_outer = sqrt(max(0.0, 1.0 - cos_outer * cos_outer));
+    if (radial_length > 1e-6) {
+      normal = radial * (cos_outer / radial_length) - axis * sin_outer;
+    }
+  }
+  return dot(v, normal) <= dot(extent, abs(normal));
 }
 
 @compute @workgroup_size(64)
@@ -149,7 +166,15 @@ fn cs_cluster_membership(@builtin(global_invocation_id) global_id : vec3<u32>) {
   let grid_offset = cluster_index * cluster_uniform.cluster_layout.x;
   let count_offset = grid_offset + cluster_uniform.cluster_layout.y;
   let output_offset = cluster_grid[grid_offset];
-  let output_count = cluster_grid[count_offset];
+  // Starts and the terminal end are immutable inputs. The count word is a GPU output.
+  var output_end = u32(light_bounds[${PRODUCER_RESERVATION_END_WORD}u]);
+  if (cluster_index + 1u < cluster_count) {
+    output_end = cluster_grid[grid_offset + cluster_uniform.cluster_layout.x];
+  }
+  if (output_offset >= output_end) {
+    cluster_grid[count_offset] = 0u;
+    return;
+  }
   let cluster_x_i = i32(cluster_x);
   let cluster_y_i = i32(cluster_y);
   let cluster_z_i = i32(cluster_z);
@@ -159,7 +184,7 @@ fn cs_cluster_membership(@builtin(global_invocation_id) global_id : vec3<u32>) {
 
   var light_index = 0u;
   loop {
-    if (light_index >= cluster_uniform.grid.w || light_index >= ${STANDARD_MAX_LIGHT_COUNT}u) {
+    if (output_index >= output_end || light_index >= cluster_uniform.grid.w || light_index >= ${STANDARD_MAX_LIGHT_COUNT}u) {
       break;
     }
     let bounds_offset = HEADER_WORDS + light_index * STRIDE_WORDS;
@@ -176,10 +201,8 @@ fn cs_cluster_membership(@builtin(global_invocation_id) global_id : vec3<u32>) {
         cluster_z_i >= min_z && cluster_z_i <= max_z &&
         (!exact || froxel_keeps(froxel, bounds_offset))
       ) {
-        if (output_index < output_offset + output_count) {
-          light_index_list[output_index] = light_index;
-          output_index += 1u;
-        }
+        light_index_list[output_index] = light_index;
+        output_index += 1u;
       }
     }
     light_index += 1u;
@@ -254,26 +277,6 @@ function resolveStandardTopologyInput(
       },
     }),
   );
-}
-
-function standardTopology(
-  topology: RenderPipelineTopology,
-  profile: StandardProfile,
-): RenderPipelineTopology {
-  const config = {
-    ...(topology.config ?? {}),
-    ssao: {
-      ...(topology.config?.ssao ?? {}),
-      ...(typeof profile.ssao === 'object' ? profile.ssao : {}),
-      enabled: profile.ssao !== false,
-    },
-  };
-  return {
-    ...topology,
-    pipelineId: STANDARD_PIPELINE_ID,
-    standardProfile: profile,
-    config,
-  };
 }
 
 /**

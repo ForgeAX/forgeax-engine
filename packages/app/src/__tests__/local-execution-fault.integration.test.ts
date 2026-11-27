@@ -6,6 +6,7 @@ import { buildApp } from '../app-assembly';
 import { createApp as createBrowserApp } from '../browser';
 import { createApp } from '../create-app';
 import { type ExecutionReport, isExecutionReport } from '../execution';
+import { stageLocalAppLevels } from '../levels/local-app-levels';
 import { testPlatform } from './platform-fixture';
 
 const constructRuntimeRendererHost = vi.hoisted(() => vi.fn());
@@ -45,6 +46,7 @@ async function localApp(entry: 'assemble' | 'builder' | 'browser') {
   const pluginContext = await createWorldContext(world, []);
   return (
     await buildApp({
+      localLevels: stageLocalAppLevels(world, undefined, renderer),
       platform,
       renderer,
       world,

@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { type DdcEntry, DdcEntryStore, type StagedDdcEntry } from './entry-store.js';
+import {
+  type DdcEntry,
+  type DdcEntryInput,
+  DdcEntryStore,
+  type StagedDdcEntry,
+} from './entry-store.js';
 import { DdcStoreError } from './errors.js';
 import { canonicalDdcJson } from './key.js';
 
@@ -78,6 +83,12 @@ export interface DdcBeginResult {
   readonly previousHead: DdcRollbackSnapshot;
 }
 
+export interface DdcPublicationAttempt extends DdcBeginResult {
+  commit(): Promise<DdcCommitResult>;
+  discard(): Promise<void>;
+  restore(): Promise<DdcRestoreResult>;
+}
+
 interface HeadRecord {
   readonly guid: string;
   readonly desiredKey: string;
@@ -86,7 +97,6 @@ interface HeadRecord {
   readonly lastKnownGoodKey?: string;
   readonly generation?: number;
   readonly active?: DdcLease;
-  readonly supersededAttempts?: readonly string[];
   readonly stale?: boolean;
   readonly empty?: boolean;
   readonly failure?: {
@@ -161,12 +171,6 @@ function isHeadRecord(value: unknown): value is HeadRecord {
     return false;
   }
   if (value.active !== undefined && !isLeaseRecord(value.active)) return false;
-  if (
-    value.supersededAttempts !== undefined &&
-    (!Array.isArray(value.supersededAttempts) || !value.supersededAttempts.every(isString))
-  ) {
-    return false;
-  }
   if (value.stale !== undefined && typeof value.stale !== 'boolean') return false;
   if (value.empty !== undefined && typeof value.empty !== 'boolean') return false;
   if (value.failure !== undefined) {
@@ -317,6 +321,100 @@ export class DdcLifecycle {
     );
   }
 
+  /** Stage one immutable entry while keeping its publication lease alive. */
+  public async stagePublication(entry: DdcEntryInput): Promise<DdcPublicationAttempt> {
+    const { lease: initialLease, previousHead } = await this.beginWithSnapshot(
+      entry.guid,
+      entry.key,
+    );
+    let lease = initialLease;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let fence: DdcRestoreFence | undefined;
+    let committing: Promise<DdcCommitResult> | undefined;
+    const stop = () => {
+      active = false;
+      clearTimeout(timer);
+    };
+    const heartbeat = () => {
+      timer = setTimeout(
+        () => {
+          if (!active) return;
+          void this.heartbeat(lease)
+            .then((updated) => {
+              if (!active) return;
+              lease = updated;
+              heartbeat();
+            })
+            .catch(() => {});
+        },
+        Math.max(1, Math.floor((lease.expiresAt - Date.now()) / 2)),
+      );
+      timer.unref?.();
+    };
+    const fail = (code: string, cause: unknown) =>
+      this.fail(lease, { code, detail: cause instanceof Error ? cause.message : String(cause) });
+    heartbeat();
+    let staged: StagedDdcEntry;
+    try {
+      staged = await this.entries.stage(entry);
+    } catch (cause) {
+      stop();
+      await fail('ddc-entry-stage-failed', cause);
+      throw cause;
+    }
+    const discardStaging = () => this.entries.discard(staged);
+    return {
+      get lease() {
+        return lease;
+      },
+      previousHead,
+      commit: async () => {
+        if (committing !== undefined || !active)
+          throw new Error('DDC publication attempt is closed');
+        committing = (async () => {
+          try {
+            const result = await this.commit(lease, entry.key, staged);
+            if (result.result === 'current' || result.result === 'invalid')
+              fence = result.restoreFence;
+            return result;
+          } catch (cause) {
+            stop();
+            try {
+              fence = await fail('ddc-entry-publish-failed', cause);
+            } finally {
+              await discardStaging().catch(() => {});
+            }
+            throw cause;
+          } finally {
+            stop();
+          }
+        })();
+        return committing;
+      },
+      discard: async () => {
+        if (!active) return;
+        stop();
+        try {
+          await this.discard(lease);
+        } finally {
+          // Let an in-flight immutable write finish before removing its staging.
+          if (committing !== undefined) await committing.catch(() => {});
+          await discardStaging();
+        }
+      },
+      restore: async () => {
+        stop();
+        if (committing !== undefined) await committing.catch(() => {});
+        try {
+          return await this.restoreIfCurrent(previousHead, lease, fence);
+        } finally {
+          await discardStaging().catch(() => {});
+        }
+      },
+    };
+  }
+
   /** Begin a lease and capture the accepted rollback snapshot under one head lock. */
   public async beginWithSnapshot(guid: string, desiredKey: string): Promise<DdcBeginResult> {
     return withDdcLock(this.root, `head-${guid}`, async () => {
@@ -336,10 +434,6 @@ export class DdcLifecycle {
         previous?.currentKey !== undefined && previous.currentKey !== desiredKey
           ? previous.currentKey
           : previous?.lastKnownGoodKey;
-      const supersededAttempts = [
-        ...(previous?.supersededAttempts ?? []),
-        ...(previous?.active === undefined ? [] : [previous.active.attempt]),
-      ];
       await this.write({
         guid,
         desiredKey,
@@ -347,7 +441,6 @@ export class DdcLifecycle {
         generation,
         active: lease,
         ...(previous?.currentKey === undefined ? {} : { currentKey: previous.currentKey }),
-        ...(supersededAttempts.length === 0 ? {} : { supersededAttempts }),
         ...(lastKnownGoodKey === undefined ? {} : { lastKnownGoodKey }),
       });
       return { lease, previousHead };
@@ -373,14 +466,10 @@ export class DdcLifecycle {
       const current = await this.read(lease.guid);
       const active = current?.active;
       if (current === null || active === undefined || active.attempt !== lease.attempt) {
-        if (current?.supersededAttempts?.includes(lease.attempt)) {
-          await this.write({ ...current, stale: true });
-          return { result: 'stale', key: validatedKey, revision: current.revision };
-        }
         return { result: 'lease-lost', key: validatedKey, revision: current?.revision ?? 0 };
       }
       // The persisted active lease is the authority. The caller may still hold
-      // an older token while a session heartbeat has already refreshed the
+      // an older token while a publication heartbeat has already refreshed the
       // same attempt in the head.
       if (Date.now() > active.expiresAt) {
         throw new DdcStoreError({
@@ -404,40 +493,15 @@ export class DdcLifecycle {
         return { result: 'stale', key: validatedKey, revision: current.revision };
       }
       if (entry === null || entry.guid !== lease.guid || entry.receipt.key !== validatedKey) {
-        const nextRevision = current.revision + 1;
-        const failure = {
-          desiredKey: lease.desiredKey,
+        const restoreFence = await this.writeFailureHead(lease, current, 'invalid', {
           code: 'entry-invalid',
           detail: 'validated DDC key has no readable entry for this asset',
-        };
-        await this.write({
-          guid: lease.guid,
-          desiredKey: lease.desiredKey,
-          revision: nextRevision,
-          generation: lease.generation,
-          ...(current.lastKnownGoodKey === undefined
-            ? {}
-            : { lastKnownGoodKey: current.lastKnownGoodKey }),
-          ...(current.supersededAttempts === undefined
-            ? {}
-            : { supersededAttempts: current.supersededAttempts }),
-          failure,
         });
         return {
           result: 'invalid',
           key: validatedKey,
-          revision: nextRevision,
-          restoreFence: {
-            attempt: lease.attempt,
-            generation: lease.generation,
-            revision: nextRevision,
-            desiredKey: lease.desiredKey,
-            outcome: 'invalid',
-            ...(current.lastKnownGoodKey === undefined
-              ? {}
-              : { lastKnownGoodKey: current.lastKnownGoodKey }),
-            failure: { code: failure.code, detail: failure.detail },
-          },
+          revision: restoreFence.revision,
+          restoreFence,
         };
       }
       const lastKnownGoodKey =
@@ -452,9 +516,6 @@ export class DdcLifecycle {
         generation: lease.generation,
         currentKey: validatedKey,
         stale: false,
-        ...(current.supersededAttempts === undefined
-          ? {}
-          : { supersededAttempts: current.supersededAttempts }),
         ...(lastKnownGoodKey === undefined ? {} : { lastKnownGoodKey }),
       } satisfies HeadRecord;
       await this.write(accepted);
@@ -490,34 +551,30 @@ export class DdcLifecycle {
     return withDdcLock(this.root, `head-${lease.guid}`, async () => {
       const current = await this.read(lease.guid);
       if (current?.active?.attempt !== lease.attempt) return;
-      const nextRevision = current.revision + 1;
-      await this.write({
-        guid: lease.guid,
-        desiredKey: lease.desiredKey,
-        revision: nextRevision,
-        generation: lease.generation,
-        ...(current.currentKey === undefined ? {} : { currentKey: current.currentKey }),
-        ...(current.lastKnownGoodKey === undefined
-          ? {}
-          : { lastKnownGoodKey: current.lastKnownGoodKey }),
-        ...(current.supersededAttempts === undefined
-          ? {}
-          : { supersededAttempts: current.supersededAttempts }),
-        failure: { desiredKey: lease.desiredKey, ...failure },
-      });
-      return {
-        attempt: lease.attempt,
-        generation: lease.generation,
-        revision: nextRevision,
-        desiredKey: lease.desiredKey,
-        outcome: 'failed' as const,
-        ...(current.currentKey === undefined ? {} : { currentKey: current.currentKey }),
-        ...(current.lastKnownGoodKey === undefined
-          ? {}
-          : { lastKnownGoodKey: current.lastKnownGoodKey }),
-        failure,
-      };
+      return this.writeFailureHead(lease, current, 'failed', failure);
     });
+  }
+
+  private async writeFailureHead(
+    lease: DdcLease,
+    current: HeadRecord,
+    outcome: 'invalid' | 'failed',
+    failure: { readonly code: string; readonly detail: string },
+  ): Promise<DdcRestoreFence> {
+    const { guid, attempt, desiredKey, generation } = lease;
+    const locator = {
+      desiredKey,
+      generation,
+      revision: current.revision + 1,
+      ...(outcome === 'failed' && current.currentKey !== undefined
+        ? { currentKey: current.currentKey }
+        : {}),
+      ...(current.lastKnownGoodKey === undefined
+        ? {}
+        : { lastKnownGoodKey: current.lastKnownGoodKey }),
+    };
+    await this.write({ guid, ...locator, failure: { desiredKey, ...failure } });
+    return { attempt, ...locator, outcome, failure };
   }
 
   public async heartbeat(lease: DdcLease): Promise<DdcLease> {
@@ -545,19 +602,6 @@ export class DdcLifecycle {
     });
   }
 
-  public async close(lease: DdcLease): Promise<void> {
-    await withDdcLock(this.root, `head-${lease.guid}`, async () => {
-      const current = await this.read(lease.guid);
-      if (current?.active?.instanceId !== lease.instanceId) return;
-      const { active: _active, ...withoutActive } = current;
-      await this.write({
-        ...withoutActive,
-        revision: current.revision + 1,
-        stale: current.currentKey === undefined,
-      });
-    });
-  }
-
   public async discard(lease: DdcLease): Promise<void> {
     await withDdcLock(this.root, `head-${lease.guid}`, async () => {
       const current = await this.read(lease.guid);
@@ -572,29 +616,7 @@ export class DdcLifecycle {
     });
   }
 
-  /**
-   * Restore accepted content only when this lease still owns the mutable head.
-   * A newer active or terminal mutation makes rollback a deliberate no-op.
-   */
-  public async restore(
-    head: DdcHead | DdcRollbackSnapshot,
-    lease?: DdcLease,
-    fence?: DdcRestoreFence,
-  ): Promise<DdcRestoreResult> {
-    const inferredLease =
-      lease ??
-      ('activeLease' in head && head.activeLease !== undefined ? head.activeLease : undefined);
-    if (inferredLease === undefined) {
-      return {
-        result: 'not-owner',
-        revision: head.revision ?? 0,
-        ...(head.generation === undefined ? {} : { generation: head.generation }),
-      };
-    }
-    const snapshot = this.rollbackSnapshot(head);
-    return this.restoreIfCurrent(snapshot, inferredLease, fence);
-  }
-
+  /** Restore only when this exact attempt still owns the mutable head. */
   public async restoreIfCurrent(
     snapshot: DdcRollbackSnapshot,
     lease: DdcLease,
@@ -628,7 +650,6 @@ export class DdcLifecycle {
         lease.generation,
         snapshot.generation ?? 0,
       );
-      const supersededAttempts = current.supersededAttempts;
       const restored: HeadRecord = {
         guid: snapshot.guid,
         desiredKey: snapshot.desiredKey,
@@ -638,7 +659,6 @@ export class DdcLifecycle {
         ...(snapshot.lastKnownGoodKey === undefined
           ? {}
           : { lastKnownGoodKey: snapshot.lastKnownGoodKey }),
-        ...(supersededAttempts === undefined ? {} : { supersededAttempts }),
         ...(snapshot.state === 'missing' ? { empty: true } : {}),
         ...(snapshot.state === 'stale' ? { stale: true } : {}),
         ...(snapshot.failure === undefined
@@ -648,48 +668,6 @@ export class DdcLifecycle {
       await this.write(restored);
       return { result: 'restored', revision: nextRevision, generation };
     });
-  }
-
-  public async revoke(lease: DdcLease): Promise<void> {
-    await this.fail(lease, {
-      code: 'lease-lost',
-      detail: 'cook lease was revoked before validation',
-    });
-  }
-
-  public async recover(guid: string, desiredKey: string): Promise<DdcHead> {
-    return withDdcLock(this.root, `head-${guid}`, async () => {
-      const current = await this.read(guid);
-      if (current?.active?.desiredKey === desiredKey) {
-        await this.write({
-          guid,
-          desiredKey,
-          revision: current.revision + 1,
-          ...(current.generation === undefined ? {} : { generation: current.generation }),
-          ...(current.supersededAttempts === undefined
-            ? {}
-            : { supersededAttempts: current.supersededAttempts }),
-          ...(current.lastKnownGoodKey === undefined
-            ? {}
-            : { lastKnownGoodKey: current.lastKnownGoodKey }),
-          failure: {
-            desiredKey,
-            code: 'writer-crashed',
-            detail: 'active cook attempt was recovered after process interruption',
-          },
-        });
-      }
-      return this.inspect(guid, desiredKey);
-    });
-  }
-
-  private rollbackSnapshot(head: DdcHead | DdcRollbackSnapshot): DdcRollbackSnapshot {
-    const { activeLease: _activeLease, ...snapshot } = head as DdcHead;
-    if (snapshot.state !== 'cooking') return snapshot;
-    return {
-      ...snapshot,
-      state: snapshot.currentKey === undefined ? 'missing' : 'stale',
-    };
   }
 
   private matchesRestoreFence(

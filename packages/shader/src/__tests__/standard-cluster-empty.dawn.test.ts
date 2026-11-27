@@ -15,8 +15,9 @@ async function storageLightDataBytes(code: string): Promise<number> {
   const module = (await validate((await parse(code)).unwrap())).unwrap();
   try {
     const reflection = parseReflectionWire((await emit_reflection(module, '{}')).unwrap());
-    const bytes = reflection.boundGlobals.find(({ group, binding }) => group === 2 && binding === 3)
-      ?.typeDescriptor?.byteSize;
+    const bytes = reflection.boundGlobals.find(
+      ({ group, binding }) => group === 0 && binding === 30,
+    )?.typeDescriptor?.byteSize;
     if (bytes === undefined) throw new Error('Missing reflected storage light-data size');
     return bytes;
   } finally {
@@ -176,14 +177,6 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
       format: 'depth32float',
       usage: GPUTextureUsage.TEXTURE_BINDING,
     });
-    const shadows = device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: depth.createView({ dimension: '2d-array' }) },
-        { binding: 1, resource: device.createSampler({ compare: 'greater' }) },
-      ],
-    });
-    const empty = device.createBindGroup({ layout: pipeline.getBindGroupLayout(1), entries: [] });
     const actual = texture({
       size: [16, 4],
       format: 'rgba32float',
@@ -207,7 +200,11 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
       lightWords.set([0, 0xffffffff, 0xffffffff, 0xffffffff, 1 << i, 0, 0, 0], i * 24 + 16);
     }
     const indices = new Uint32Array([0, 1, 0, 1]);
-    const entries: GPUBindGroupEntry[] = [{ binding: 6, resource: { buffer: uniform } }];
+    const entries: GPUBindGroupEntry[] = [
+      { binding: 0, resource: depth.createView({ dimension: '2d-array' }) },
+      { binding: 1, resource: device.createSampler({ compare: 'greater' }) },
+      { binding: 33, resource: { buffer: uniform } },
+    ];
     let gridBuffer: GPUBuffer | undefined;
     let dataTexture: GPUTexture | undefined;
     if (storage) {
@@ -220,9 +217,9 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
       device.queue.writeBuffer(lights, 0, lightData);
       device.queue.writeBuffer(indexList, 0, indices);
       entries.push(
-        { binding: 3, resource: { buffer: lights } },
-        { binding: 4, resource: { buffer: gridBuffer } },
-        { binding: 5, resource: { buffer: indexList } },
+        { binding: 30, resource: { buffer: lights } },
+        { binding: 31, resource: { buffer: gridBuffer } },
+        { binding: 32, resource: { buffer: indexList } },
       );
     } else {
       dataTexture = texture({
@@ -230,9 +227,9 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
         format: 'rgba32uint',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
-      entries.push({ binding: 3, resource: dataTexture.createView() });
+      entries.push({ binding: 30, resource: dataTexture.createView() });
     }
-    const clusters = device.createBindGroup({ layout: pipeline.getBindGroupLayout(2), entries });
+    const clusters = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries });
     const calls: number[][] = [];
     for (const lightCount of [0, 2, 0]) {
       const payload = new ArrayBuffer(96);
@@ -268,9 +265,7 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
         })),
       });
       pass.setPipeline(pipeline);
-      pass.setBindGroup(0, shadows);
-      pass.setBindGroup(1, empty);
-      pass.setBindGroup(2, clusters);
+      pass.setBindGroup(0, clusters);
       pass.draw(3);
       pass.end();
       encoder.copyTextureToBuffer(

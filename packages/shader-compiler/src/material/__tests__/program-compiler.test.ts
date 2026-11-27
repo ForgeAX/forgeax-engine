@@ -15,7 +15,30 @@ const options = {
   },
   renderEntries: { vertex: 'vs_main', fragment: 'fs_main' },
 };
+// Keep the cache payload size while letting the WGSL scanner skip padding in one step.
+const cacheBudgetPadding = `//  ${'x'.repeat(4 * 1024 * 1024)}`;
+
 afterEach(() => vi.restoreAllMocks());
+
+it('separates legacy reflection and requested typed member capability in the result cache', async () => {
+  const validate = vi.spyOn(compiler, 'compileShaderProgram');
+  const compile = createShaderProgramCompiler();
+  const legacy = (await compile(source, options)).unwrap();
+  expect(legacy.reflection.entryPoints?.every((entry) => entry.valueReads === undefined)).toBe(
+    true,
+  );
+  const selected = { ...options, valueMemberReads: 'shader-value-member-reads/1' as const };
+  const complete = (await compile(source, selected)).unwrap();
+  expect(
+    complete.reflection.entryPoints?.every(
+      (entry) => entry.valueReads?.schemaVersion === 'shader-value-member-reads/1',
+    ),
+  ).toBe(true);
+  expect(validate).toHaveBeenCalledTimes(2);
+  expect((await compile(source, options)).unwrap()).toEqual(legacy);
+  expect((await compile(source, selected)).unwrap()).toEqual(complete);
+  expect(validate).toHaveBeenCalledTimes(2);
+});
 
 it('does not collapse an explicit undefined selector into an admitted empty selector map', async () => {
   const admission = vi.spyOn(compiler, 'compileShaderWithComposition');
@@ -79,10 +102,9 @@ it('refreshes hot composition recency and evicts validation beyond its aggregate
   const baseline = (
     await compiler.compileShader('@compute @workgroup_size(1) fn main() {}')
   ).unwrap();
-  const padding = `/*${'x'.repeat(4 * 1024 * 1024)}*/`;
   const compose = vi
     .spyOn(naga, 'composeShader')
-    .mockImplementation(async (source) => `${source}\n${padding}`);
+    .mockImplementation(async (source) => `${source}\n${cacheBudgetPadding}`);
   const validation = vi
     .spyOn(compiler, 'compileShaderProgram')
     .mockImplementation(async (wgsl) =>
@@ -442,10 +464,9 @@ it('retires cold compositions before discarding the current validation working s
   const baseline = (
     await compiler.compileShader('@compute @workgroup_size(1) fn main() {}')
   ).unwrap();
-  const padding = `/*${'x'.repeat(4 * 1024 * 1024)}*/`;
   const compose = vi
     .spyOn(naga, 'composeShader')
-    .mockImplementation(async (source) => `${source}\n${padding}`);
+    .mockImplementation(async (source) => `${source}\n${cacheBudgetPadding}`);
   const validation = vi
     .spyOn(compiler, 'compileShaderProgram')
     .mockImplementation(async (wgsl) =>

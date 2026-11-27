@@ -131,14 +131,6 @@ const controls: Record<string, readonly Control[]> = {
       step: 0.01,
       slider: true,
     },
-    {
-      source: '屏幕空间反射',
-      field: 'waterTemporal',
-      label: '水面倒影稳定方式',
-      choices: ['0', '1', '2'],
-      choiceLabels: { '0': '自动', '1': '总是累积', '2': '关闭累积' },
-      help: '真实数值枚举，控制水面 SSR 历史。',
-    },
   ],
   waves: [
     {

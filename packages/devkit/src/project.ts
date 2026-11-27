@@ -3,15 +3,7 @@ import { resolve } from 'node:path';
 import { GameProjectSchema } from '@forgeax/engine-project';
 import { resolveAssetLibraries } from './asset-libraries.js';
 import type { CommandError, CommandResult, ProjectFacts } from './types.js';
-
-function projectError(
-  code: string,
-  expected: string,
-  hint: string,
-  detail: Readonly<Record<string, unknown>>,
-): CommandResult<never> {
-  return { ok: false, error: { code, expected, hint, detail } };
-}
+import { completeCommand, failCommand } from './types.js';
 
 async function readJson(path: string): Promise<unknown> {
   return JSON.parse(await readFile(path, 'utf8')) as unknown;
@@ -27,19 +19,21 @@ export function isValidStartupTimeoutMs(value: unknown): value is number | null 
   );
 }
 
+function forgeaxConfig(packageJson: Record<string, unknown>) {
+  const config = packageJson.forgeax;
+  return config !== null && typeof config === 'object' && !Array.isArray(config)
+    ? (config as Record<string, unknown>)
+    : undefined;
+}
+
 function timeoutFromPackage(
   root: string,
   packageJson: Record<string, unknown>,
   key: 'startupTimeoutMs' | 'frameTimeoutMs' = 'startupTimeoutMs',
 ): CommandResult<ProjectFacts['startupTimeoutMs']> {
-  const forgeax = packageJson.forgeax;
-  const forgeaxConfig =
-    forgeax !== null && typeof forgeax === 'object' && !Array.isArray(forgeax)
-      ? (forgeax as Record<string, unknown>)
-      : undefined;
-  const timeoutMs = forgeaxConfig?.[key];
+  const timeoutMs = forgeaxConfig(packageJson)?.[key];
   if (timeoutMs !== undefined && !isValidStartupTimeoutMs(timeoutMs)) {
-    return projectError(
+    return failCommand(
       'package-manifest-invalid',
       `package.json#forgeax.${key} to be a positive timer-safe integer or null`,
       `Set a positive millisecond value or null to disable ${key} deadlines.`,
@@ -62,37 +56,28 @@ function shaderOptionsFromPackage(
   root: string,
   packageJson: Record<string, unknown>,
 ): CommandResult<Pick<ProjectFacts, 'pointShadows' | 'shaderPublication'>> {
-  const forgeax = packageJson.forgeax;
-  const value =
-    forgeax !== null && typeof forgeax === 'object' && !Array.isArray(forgeax)
-      ? (forgeax as Record<string, unknown>).pointShadows
-      : undefined;
+  const config = forgeaxConfig(packageJson);
+  const value = config?.pointShadows;
   if (value !== undefined && typeof value !== 'boolean') {
-    return projectError(
+    return failCommand(
       'package-manifest-invalid',
       'package.json#forgeax.pointShadows to be a boolean',
       'Set true to build point-light shadow shaders, or remove the field.',
       { root, pointShadows: value },
     );
   }
-  const publication =
-    forgeax !== null && typeof forgeax === 'object' && !Array.isArray(forgeax)
-      ? (forgeax as Record<string, unknown>).shaderPublication
-      : undefined;
+  const publication = config?.shaderPublication;
   if (publication !== undefined && publication !== 'compiled' && publication !== 'source')
-    return projectError(
+    return failCommand(
       'package-manifest-invalid',
       'package.json#forgeax.shaderPublication to be compiled or source',
       'Select a supported shader publication format or remove the field.',
       { root, shaderPublication: publication },
     );
-  return {
-    ok: true,
-    value: {
-      ...(value === true ? { pointShadows: true } : {}),
-      ...(publication === undefined ? {} : { shaderPublication: publication }),
-    },
-  };
+  return completeCommand({
+    ...(value === true ? { pointShadows: true } : {}),
+    ...(publication === undefined ? {} : { shaderPublication: publication }),
+  });
 }
 
 /** Read the shared project startup policy without requiring a forge.json project. */
@@ -105,7 +90,7 @@ export async function readProjectStartupTimeoutMs(
     packageValue = await readJson(resolve(root, 'package.json'));
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, value: undefined };
-    return projectError(
+    return failCommand(
       'package-manifest-unreadable',
       'readable package.json',
       'Repair package.json before starting the Engine backend.',
@@ -113,7 +98,7 @@ export async function readProjectStartupTimeoutMs(
     );
   }
   if (packageValue === null || typeof packageValue !== 'object' || Array.isArray(packageValue)) {
-    return projectError(
+    return failCommand(
       'package-manifest-invalid',
       'package.json to contain an object',
       'Repair package.json before starting the Engine backend.',
@@ -146,7 +131,7 @@ export async function readProjectFacts(
       readJson(resolve(root, 'package.json')),
     ]);
   } catch (cause) {
-    return projectError(
+    return failCommand(
       'project-manifest-unreadable',
       'readable forge.json and package.json files',
       'Run the command from a ForgeAX game root or pass its directory.',
@@ -154,7 +139,7 @@ export async function readProjectFacts(
     );
   }
   if (forgeValue === null || typeof forgeValue !== 'object') {
-    return projectError(
+    return failCommand(
       'project-manifest-invalid',
       'forge.json to contain an object',
       'Repair forge.json before running DevKit.',
@@ -162,7 +147,7 @@ export async function readProjectFacts(
     );
   }
   if (packageValue === null || typeof packageValue !== 'object') {
-    return projectError(
+    return failCommand(
       'package-manifest-invalid',
       'package.json to contain an object',
       'Repair package.json before running DevKit.',
@@ -171,7 +156,7 @@ export async function readProjectFacts(
   }
   const parsedForge = GameProjectSchema.safeParse(forgeValue);
   if (!parsedForge.success) {
-    return projectError(
+    return failCommand(
       'project-manifest-invalid',
       'forge.json to satisfy @forgeax/engine-project GameProjectSchema',
       'Repair the fields reported by the authoritative project schema.',
@@ -180,7 +165,7 @@ export async function readProjectFacts(
   }
   const forge = parsedForge.data;
   if (forge.id.length === 0 || forge.name.length === 0) {
-    return projectError(
+    return failCommand(
       'project-manifest-invalid',
       'forge.json to declare id and name',
       'Restore the project identity in the authoritative project manifest.',
@@ -196,21 +181,18 @@ export async function readProjectFacts(
   if (!shaders.ok) return shaders;
   const assetLibraries = await resolveAssetLibraries(root, forge.assetLibraries);
   if (!assetLibraries.ok) return assetLibraries;
-  return {
-    ok: true,
-    value: {
-      root,
-      id: forge.id,
-      name: forge.name,
-      roots: forge.roots,
-      ...(startup.value === undefined ? {} : { startupTimeoutMs: startup.value }),
-      ...(frame.value === undefined ? {} : { frameTimeoutMs: frame.value }),
-      ...shaders.value,
-      assetRoots: forge.assetRoots,
-      assetLibraries: assetLibraries.value,
-      packageJson,
-    },
-  };
+  return completeCommand({
+    root,
+    id: forge.id,
+    name: forge.name,
+    roots: forge.roots,
+    ...(startup.value === undefined ? {} : { startupTimeoutMs: startup.value }),
+    ...(frame.value === undefined ? {} : { frameTimeoutMs: frame.value }),
+    ...shaders.value,
+    assetRoots: forge.assetRoots,
+    assetLibraries: assetLibraries.value,
+    packageJson,
+  });
 }
 
 /** Follow structured native error envelopes; never recover fields from message text. */

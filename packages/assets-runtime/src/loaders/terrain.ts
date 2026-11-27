@@ -25,6 +25,7 @@ function readTerrain(
   if (!validateTerrain(terrain).ok || !terrainDerivedLayoutValid(terrain)) return undefined;
   const dependencies = [
     ...terrain.grids,
+    ...(terrain.weightDetail === undefined ? [] : [terrain.weightDetail.texture]),
     ...terrain.layers.flatMap((l) =>
       l.blend === 'height' ? [l.material, l.height] : [l.material],
     ),

@@ -90,7 +90,7 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     ]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const batches = topology.query(topology.sourcePlan(), undefined).batches;
+    const batches = topology.query(topology.sourcePlan(), undefined).active.batches;
     // The LOD pair shares a chain, so it shares a batch; the level is a GPU
     // choice and never splits membership. The chain-less member stays apart.
     expect(batches).toHaveLength(2);
@@ -145,7 +145,7 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('bitcast<f32>(sceneInputs[materialAddress + 1u])');
     expect(GPU_DRIVEN_VIEW_WGSL).not.toContain('primitives[materialAddress]');
     expect(GPU_DRIVEN_VIEW_WGSL).not.toContain('submitAdmission');
-    expect(GPU_DRIVEN_VIEW_WGSL).toContain('if (isSuppressed(candidate.sourceSlot))');
+    expect(GPU_DRIVEN_VIEW_WGSL).toContain('if (isSuppressed(candidate.primitiveIndex))');
     expect(GPU_DRIVEN_VIEW_WGSL).not.toContain('instance.customDataStart');
     expect(GPU_DRIVEN_VIEW_WGSL).not.toContain('0x80000000u');
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('visibleIndices[segmentBase + slot] = item');
@@ -210,8 +210,8 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
     expect(topology.inspect()).toMatchObject({ batchCount: 2, candidateCount: 3, rebuilds: 1 });
-    expect(topology.query(topology.sourcePlan(), undefined)).toBe(
-      topology.query(topology.sourcePlan(), undefined),
+    expect(topology.query(topology.sourcePlan(), undefined).active).toBe(
+      topology.query(topology.sourcePlan(), undefined).active,
     );
 
     const transformOnly = projection.apply([
@@ -222,8 +222,8 @@ describe('GPU-driven batch topology and CPU oracle', () => {
       },
     ]);
     expect(topology.apply(transformOnly)).toBe(false);
-    expect(topology.query(topology.sourcePlan(), undefined)).toBe(
-      topology.query(topology.sourcePlan(), undefined),
+    expect(topology.query(topology.sourcePlan(), undefined).active).toBe(
+      topology.query(topology.sourcePlan(), undefined).active,
     );
     expect(topology.inspect().patches).toBe(0);
 
@@ -239,7 +239,7 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     topology.rebuild(projection.slotsSnapshot());
     const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
     const result = classifyGpuDrivenView(
-      topology.query(topology.sourcePlan(), undefined),
+      topology.query(topology.sourcePlan(), undefined).active,
       projection.slotsSnapshot(),
       planes,
     );
@@ -278,7 +278,7 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     ]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const plan = topology.query(topology.sourcePlan(), undefined);
+    const plan = topology.query(topology.sourcePlan(), undefined).active;
     expect(plan.candidateCount).toBe(2);
     expect(plan.batches.length).toBe(2);
     const result = classifyGpuDrivenView(
@@ -331,9 +331,11 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     expect(
       topology
         .query(topology.sourcePlan(), undefined)
-        .batches.map((batch) => batch.binding?.drawItemIndex),
+        .active.batches.map((batch) => batch.binding?.drawItemIndex),
     ).toEqual([10, 20]);
-    expect(topology.query(topology.sourcePlan(), undefined).batches.at(1)?.key).toMatchObject({
+    expect(
+      topology.query(topology.sourcePlan(), undefined).active.batches.at(1)?.key,
+    ).toMatchObject({
       first: 9,
       count: 12,
     });
@@ -369,12 +371,12 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     expect(
       topology
         .query(topology.sourcePlan(), undefined)
-        .batches.find((batch) => batch.key.first === 9)?.binding?.drawItemIndex,
+        .active.batches.find((batch) => batch.key.first === 9)?.binding?.drawItemIndex,
     ).toBe(10);
     expect(
       topology
         .query(topology.sourcePlan(), undefined)
-        .batches.find((batch) => batch.key.first === 3)?.binding?.drawItemIndex,
+        .active.batches.find((batch) => batch.key.first === 3)?.binding?.drawItemIndex,
     ).toBe(20);
   });
 
@@ -412,7 +414,7 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     const describe = (topology: BatchTopology) =>
       topology
         .query(topology.sourcePlan(), undefined)
-        .batches.map((batch) => [
+        .active.batches.map((batch) => [
           batch.key.materialSlot,
           batch.key.first,
           batch.key.count,
@@ -442,7 +444,7 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     topology.rebuild(projection.slotsSnapshot());
     expect(topology.inspect()).toMatchObject({ candidateCount: 2, ineligible: 0 });
     const result = classifyGpuDrivenView(
-      topology.query(topology.sourcePlan(), undefined),
+      topology.query(topology.sourcePlan(), undefined).active,
       projection.slotsSnapshot(),
       frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
     );
@@ -457,7 +459,7 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     projection.apply([updateSnapshot(snapshot(1, 0)), updateSnapshot(snapshot(2, 0.5))]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const plan = topology.query(topology.sourcePlan(), undefined);
+    const plan = topology.query(topology.sourcePlan(), undefined).active;
     const batch = plan.batches.at(0);
     expect(batch).toBeDefined();
     if (batch === undefined) return;
@@ -532,7 +534,7 @@ it('captures native batch keys without admitting borrowed mutable or frozen copi
   const topology = new BatchTopology();
   topology.rebuild(scene.slotsSnapshot());
   const meshes = new MeshFrame().with(7, createBoxGeometry(0.5, 0.5, 0.5).unwrap(), [material]);
-  const batch = topology.query(topology.sourcePlan(), meshes).batches.at(0);
+  const batch = topology.query(topology.sourcePlan(), meshes).active.batches.at(0);
   const key = batch?.key;
   expect(key).toBeDefined();
   if (key === undefined || batch === undefined) return;

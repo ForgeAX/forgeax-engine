@@ -32,54 +32,39 @@ export function addAtmosphereComposition(
     (frame) => frame.pipelineState.viewUniformBuffer,
   );
   if (!view.ok) return view;
+  const fast = atmosphere.fastAerialPerspective === true;
+  const packed = atmosphere.execution === 'fragment-cluster';
+  const needsSampler = !packed || !fast;
+  const texture2d = (
+    binding: number,
+    view: GraphTextureView,
+    sampleType: 'depth' | 'float' | 'uint' = 'float',
+  ) => ({ binding, view, sampleType, viewDimension: '2d' as const });
+  const texture3d = (binding: number, view: GraphTextureView) => ({
+    binding,
+    view,
+    sampleType: 'float' as const,
+    viewDimension: '3d' as const,
+  });
   const textures = [
-    { binding: 1, view: depth, sampleType: 'depth' as const, viewDimension: '2d' as const },
-    {
-      binding: 2,
-      view: atmosphere.transmittance,
-      sampleType: 'float' as const,
-      viewDimension: '2d' as const,
-    },
-    {
-      binding: 3,
-      view: atmosphere.multipleScattering,
-      sampleType: 'float' as const,
-      viewDimension: '2d' as const,
-    },
-    {
-      binding: 6,
-      view: atmosphere.distantSkyLight,
-      sampleType: 'float' as const,
-      viewDimension: '2d' as const,
-    },
-    ...(atmosphere.execution === 'compute-volume'
-      ? [
-          {
-            binding: 4,
-            view: atmosphere.aerialPerspective,
-            sampleType: 'float' as const,
-            viewDimension: '3d' as const,
-          },
-          {
-            binding: 5,
-            view: atmosphere.aerialTransmittance,
-            sampleType: 'float' as const,
-            viewDimension: '3d' as const,
-          },
-        ]
+    texture2d(1, depth, 'depth'),
+    ...(!fast
+      ? [texture2d(2, atmosphere.transmittance), texture2d(3, atmosphere.multipleScattering)]
+      : []),
+    texture2d(6, atmosphere.distantSkyLight),
+    ...(packed
+      ? [texture2d(8, atmosphere.packed, 'uint')]
       : [
-          {
-            binding: 8,
-            view: atmosphere.packed,
-            sampleType: 'uint' as const,
-            viewDimension: '2d' as const,
-          },
+          texture3d(4, atmosphere.aerialPerspective),
+          ...(atmosphere.aerialTransmittance === undefined
+            ? []
+            : [texture3d(5, atmosphere.aerialTransmittance)]),
         ]),
   ];
   let state: { layout: BindGroupLayout; pipelines: RenderPipeline[]; sampler: Sampler } | undefined;
   const added = graph.addRasterPass(SkyPass.atmosphereComposition, {
     accesses: [
-      ...atmosphereVisibilityAccesses(atmosphere.visibility),
+      ...(!fast ? atmosphereVisibilityAccesses(atmosphere.visibility) : []),
       { resource: view.value, usage: 'uniform-read' },
       ...textures.map(({ view: resource }) => ({ resource, usage: 'sampled-read' as const })),
       { resource: color.view, usage: 'color-attachment' },
@@ -112,14 +97,18 @@ export function addAtmosphereComposition(
                 visibility: 2,
                 texture: { sampleType, viewDimension },
               })),
-              { binding: 7, visibility: 2, sampler: { type: 'filtering' } },
+              ...(needsSampler
+                ? [{ binding: 7, visibility: 2, sampler: { type: 'filtering' as const } }]
+                : []),
             ],
           })
           .unwrap();
         const pipelineLayout = device
-          .createPipelineLayout({ bindGroupLayouts: [layout, atmosphereVisibilityLayout(device)] })
+          .createPipelineLayout({
+            bindGroupLayouts: fast ? [layout] : [layout, atmosphereVisibilityLayout(device)],
+          })
           .unwrap();
-        const pipelines = ['extinction', 'inscatter'].map((stage) =>
+        const pipelines = (fast ? ['fast'] : ['extinction', 'inscatter']).map((stage) =>
           device
             .createRenderPipeline({
               label: `atmosphere-${stage}`,
@@ -127,7 +116,7 @@ export function addAtmosphereComposition(
               vertex: { module, entryPoint: 'atmosphere_compose_vs', buffers: [] },
               fragment: {
                 module,
-                entryPoint: `atmosphere_${atmosphere.execution === 'fragment-cluster' ? 'packed_' : ''}${stage}_fs`,
+                entryPoint: `atmosphere_${packed ? 'packed_' : ''}${stage}_fs`,
                 targets: [
                   {
                     format: color.format,
@@ -135,7 +124,7 @@ export function addAtmosphereComposition(
                       color: {
                         operation: 'add',
                         srcFactor: stage === 'extinction' ? 'zero' : 'one',
-                        dstFactor: stage === 'extinction' ? 'src' : 'one',
+                        dstFactor: fast ? 'src-alpha' : stage === 'extinction' ? 'src' : 'one',
                       },
                       alpha: { operation: 'add', srcFactor: 'zero', dstFactor: 'one' },
                     },
@@ -170,27 +159,30 @@ export function addAtmosphereComposition(
                 value: resources.textureView(texture).unwrap(),
               },
             })),
-            { binding: 7, resource: { kind: 'sampler', value: state.sampler } },
+            ...(needsSampler
+              ? [{ binding: 7, resource: { kind: 'sampler' as const, value: state.sampler } }]
+              : []),
           ],
         })
         .unwrap();
       for (const pipeline of state.pipelines) {
         pass.setPipeline(pipeline);
         pass.setBindGroup(0, bindings);
-        pass.setBindGroup(
-          1,
-          atmosphereVisibilityGroup(
-            frame,
-            resources.buffer(view.value).unwrap(),
-            0,
-            atmosphere.visibility.directional === undefined
-              ? undefined
-              : resources.textureView(atmosphere.visibility.directional).unwrap(),
-            atmosphere.visibility.cloud === undefined
-              ? undefined
-              : resources.textureView(atmosphere.visibility.cloud).unwrap(),
-          ),
-        );
+        if (!fast)
+          pass.setBindGroup(
+            1,
+            atmosphereVisibilityGroup(
+              frame,
+              resources.buffer(view.value).unwrap(),
+              0,
+              atmosphere.visibility.directional === undefined
+                ? undefined
+                : resources.textureView(atmosphere.visibility.directional).unwrap(),
+              atmosphere.visibility.cloud === undefined
+                ? undefined
+                : resources.textureView(atmosphere.visibility.cloud).unwrap(),
+            ),
+          );
         pass.draw(3);
       }
     },

@@ -1,7 +1,9 @@
 /**
  * Blend one four-influence vertex into homogeneous world coordinates (XYZW).
  * Palette entries are jointWorld × inverseBindMatrix. Weights are never
- * normalized and zero-weight lanes still require valid joint indices.
+ * normalized and zero-weight lanes still require valid joint indices. When
+ * given the mesh world transform, the affine palette includes this transform
+ * and the weighted translation is replaced with a single application.
  * Callers admit complete streams and a four-double output buffer once, before
  * the vertex loop. The kernel validates the current position/influences; callers
  * own output finiteness, rounding and projection.
@@ -13,6 +15,7 @@ export function skinVertexPosition(
   weights: Float32Array,
   palette: Float32Array,
   vertex: number,
+  meshWorld?: ArrayLike<number>,
 ): boolean {
   const jointCount = palette.length / 16;
   const x = positions[vertex * 3] as number;
@@ -54,6 +57,13 @@ export function skinVertexPosition(
         (palette[base + 6] as number) * y +
         (palette[base + 10] as number) * z +
         (palette[base + 14] as number));
+  }
+  if (meshWorld !== undefined) {
+    const correction = 1 - homogeneousWeight;
+    pointX += correction * (meshWorld[12] as number);
+    pointY += correction * (meshWorld[13] as number);
+    pointZ += correction * (meshWorld[14] as number);
+    homogeneousWeight = 1;
   }
   out[0] = pointX;
   out[1] = pointY;

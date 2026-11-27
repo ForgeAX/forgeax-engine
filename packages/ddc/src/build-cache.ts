@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { DdcStoreError } from './errors.js';
 import { semanticDdcKey as ownerSemanticDdcKey } from './key.js';
 
 export interface BuildDdcInput {
@@ -38,6 +40,27 @@ export function resolveDdcRoot(cwd: string): string {
     if (parent === current) return join(resolve(cwd), 'node_modules/.cache/forgeax-ddc');
     current = parent;
   }
+}
+
+/** Keep existing lowercase names; use a reserved namespace for other scope IDs. */
+export function resolveRuntimeDdcRoot(
+  projectDdcRoot: string,
+  binding?: { readonly scopeId: string; readonly generation: number },
+): string {
+  if (binding === undefined) return resolve(projectDdcRoot, 'runtime', 'unbound');
+  const { scopeId, generation } = binding;
+  if (scopeId.length === 0)
+    throw new DdcStoreError({
+      code: 'ddc-scope-mismatch',
+      detail: 'runtime scope id must not be empty',
+      expected: 'a non-empty original scope id',
+      actual: scopeId,
+      rootKind: 'project-ddc',
+    });
+  const name = /^[a-z0-9._-]{1,200}$/.test(scopeId)
+    ? scopeId
+    : `~${createHash('sha256').update(JSON.stringify(scopeId)).digest('hex')}`;
+  return resolve(projectDdcRoot, 'runtime', `${name}-${generation}`);
 }
 
 /** Derive the build key while keeping publish URLs out of the semantic identity. */

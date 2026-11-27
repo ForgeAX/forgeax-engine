@@ -7,7 +7,7 @@ import type {
 } from '@forgeax/engine-rhi';
 import { ok, type RhiError } from '@forgeax/engine-rhi';
 import type { MaterialShaderManifestEntry, ShaderRegistry } from '@forgeax/engine-shader';
-import { materialShaderSource } from '@forgeax/engine-shader';
+import { isShaderTemplateManifestRow, materialShaderSource } from '@forgeax/engine-shader';
 import type { ManifestEntry, ShaderSource } from '@forgeax/engine-types';
 import { atmosphereAvailable } from '../environment/capability';
 import { type GpuDrivenPbrProgram, standardPbrProgramKey } from '../gpu-driven/pbr-program';
@@ -16,6 +16,7 @@ import {
   buildGpuDrivenPbrInstancesBindGroupLayout,
   buildGpuDrivenPbrPipelineLayout,
   buildGpuDrivenPbrSkinPipelineLayout,
+  buildGpuDrivenPrimitiveBindGroupLayout,
   buildPbrSkinLayouts,
   buildSceneDirectInstancesBindGroupLayout,
   buildSceneDirectPipelineLayout,
@@ -57,6 +58,8 @@ interface GpuDrivenPbrReadyLayouts {
   readonly pbrSkinProbePipelineLayout: PipelineLayout | null;
   readonly pbrSkinMeshBindGroupLayout: BindGroupLayout | null;
   readonly gpuDrivenInstancesBindGroupLayout: BindGroupLayout | null;
+  readonly gpuDrivenPrimitiveBindGroupLayout: BindGroupLayout | null;
+  readonly gpuDrivenSkinPrimitiveBindGroupLayout: BindGroupLayout | null;
   readonly gpuDrivenPbrPipelineLayout: PipelineLayout | null;
   readonly gpuDrivenPbrSkinPipelineLayout: PipelineLayout | null;
   readonly surfaceDirectInstancesBindGroupLayout: BindGroupLayout | null;
@@ -179,9 +182,20 @@ export async function buildGpuDrivenPbrReadyModules(
       }
     }
   }
-  // Synchronous module backends prepare optional material lanes at first use.
-  // Async-only backends prewarm admitted lanes before publishing readiness.
-  if (input.immediateCreateShaderModule === undefined) {
+  await prewarmLegacySkinModules(input, pbrSkinModule);
+  return { gpuDrivenPbrPrograms };
+}
+
+async function prewarmLegacySkinModules(
+  input: GpuDrivenPbrModuleInput,
+  pbrSkinModule: ShaderModule | null,
+): Promise<void> {
+  // Source templates and synchronous backends prepare optional lanes at first use.
+  if (
+    input.immediateCreateShaderModule === undefined &&
+    input.pbrSkinManifestEntry !== undefined &&
+    !isShaderTemplateManifestRow(input.pbrSkinManifestEntry)
+  ) {
     // Device capabilities are fixed for this ready generation. Keep both scene
     // topology/color/reflection lanes and every supported material lane warm;
     // compiling unreachable capability combinations delays even an unlit boot.
@@ -221,7 +235,6 @@ export async function buildGpuDrivenPbrReadyModules(
       input.admitsVariant,
     );
   }
-  return { gpuDrivenPbrPrograms };
 }
 
 export function buildGpuDrivenPbrReadyLayouts(
@@ -233,6 +246,8 @@ export function buildGpuDrivenPbrReadyLayouts(
   let pbrSkinProbePipelineLayout: PipelineLayout | null = null;
   let pbrSkinMeshBindGroupLayout: BindGroupLayout | null = null;
   let gpuDrivenInstancesBindGroupLayout: BindGroupLayout | null = null;
+  let gpuDrivenPrimitiveBindGroupLayout: BindGroupLayout | null = null;
+  let gpuDrivenSkinPrimitiveBindGroupLayout: BindGroupLayout | null = null;
   let gpuDrivenPbrPipelineLayout: PipelineLayout | null = null;
   let gpuDrivenPbrSkinPipelineLayout: PipelineLayout | null = null;
   let surfaceDirectInstancesBindGroupLayout: BindGroupLayout | null = null;
@@ -258,16 +273,22 @@ export function buildGpuDrivenPbrReadyLayouts(
         const surfaceDirect = buildSurfaceDirectInstancesBindGroupLayout(device, {
           storageBuffer: true,
         });
-        const rigid = buildGpuDrivenPbrPipelineLayout(device, pbrLayouts, instances);
+        const primitive = buildGpuDrivenPrimitiveBindGroupLayout(device, false);
+        const skinPrimitive = buildGpuDrivenPrimitiveBindGroupLayout(device, true);
+        const rigid = buildGpuDrivenPbrPipelineLayout(
+          device,
+          { ...pbrLayouts, meshArrayBgl: primitive },
+          instances,
+        );
         const skin =
           pbrSkinMeshBindGroupLayout === null
             ? null
             : buildGpuDrivenPbrSkinPipelineLayout(
                 device,
-                { ...pbrLayouts, meshArrayBgl: pbrSkinMeshBindGroupLayout },
+                { ...pbrLayouts, meshArrayBgl: skinPrimitive },
                 instances,
               );
-        return ok({ instances, rigid, skin, surfaceDirect });
+        return ok({ instances, rigid, skin, surfaceDirect, primitive, skinPrimitive });
       },
       'webgpu-runtime-error',
       'build GPU-driven PBR pipeline layouts succeeded',
@@ -275,6 +296,8 @@ export function buildGpuDrivenPbrReadyLayouts(
     );
     if (layoutResult.ok) {
       gpuDrivenInstancesBindGroupLayout = layoutResult.value.instances;
+      gpuDrivenPrimitiveBindGroupLayout = layoutResult.value.primitive;
+      gpuDrivenSkinPrimitiveBindGroupLayout = layoutResult.value.skinPrimitive;
       gpuDrivenPbrPipelineLayout = layoutResult.value.rigid;
       gpuDrivenPbrSkinPipelineLayout = layoutResult.value.skin;
       surfaceDirectInstancesBindGroupLayout = layoutResult.value.surfaceDirect;
@@ -344,6 +367,8 @@ export function buildGpuDrivenPbrReadyLayouts(
     pbrSkinProbePipelineLayout,
     pbrSkinMeshBindGroupLayout,
     gpuDrivenInstancesBindGroupLayout,
+    gpuDrivenPrimitiveBindGroupLayout,
+    gpuDrivenSkinPrimitiveBindGroupLayout,
     gpuDrivenPbrPipelineLayout,
     gpuDrivenPbrSkinPipelineLayout,
     surfaceDirectInstancesBindGroupLayout,

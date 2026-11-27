@@ -39,7 +39,6 @@ function admittedAdmission() {
       near: 0.1,
       far: 100,
       screenSpaceReflection: {
-        waterTemporal: 0,
         maxDistance: 40,
         thickness: 0.2,
         maxRoughness: 0.6,
@@ -82,7 +81,66 @@ function createDevice(queue: RecordingNullQueue): RhiNullDevice {
   );
 }
 
-it('prepares the declared SSR trace and temporal programs before either compute encode', async () => {
+it.each([
+  false,
+  true,
+])('binds opaque surface validation separately from the Water receiver (color history: %s)', (history) => {
+  const graph = new RenderGraphBuilder<Frame>();
+  const passes = vi.spyOn(graph, 'addComputePass');
+  const depth = input(graph, 'opaque-depth', 'r32float');
+  const motion = input(graph, 'opaque-motion', 'rgba16float');
+  const normal = input(graph, 'opaque-normal', 'r32uint');
+  const fallback = input(graph, 'opaque-coverage', 'rgba16float');
+  const scene = input(graph, 'scene-color', 'rgba16float');
+  const previousColor = input(graph, 'previous-color', 'rgba16float');
+  const pyramid = addDepthPyramidPasses(graph, {
+    depth,
+    width: WIDTH,
+    height: HEIGHT,
+    reduction: 'furthest',
+  }).unwrap();
+  const origin = {
+    depth: input(graph, 'water-depth', 'r32float'),
+    normal: input(graph, 'water-normal', 'r32uint'),
+    coverage: input(graph, 'water-coverage', 'r32float'),
+    temporal: input(graph, 'water-motion', 'rgba16float'),
+    ...(history ? { sceneColorHistory: previousColor } : {}),
+  };
+  addSsrSpatialPasses(graph, {
+    admission: admittedAdmission(),
+    label: 'water-ssr',
+    width: WIDTH,
+    height: HEIGHT,
+    scene,
+    depth,
+    normal,
+    fallback,
+    currentTemporal: motion,
+    origin,
+    depthPyramid: pyramid.pyramid,
+  }).unwrap();
+  const sampled = passes.mock.calls
+    .find(([name]) => name === 'water-ssr-trace')?.[1]
+    .accesses.filter(({ usage }) => usage === 'sampled-read')
+    .map(({ resource }) => resource);
+  expect(sampled).toHaveLength(10);
+  expect(sampled?.at(-1)).toEqual(history ? previousColor : scene);
+  expect(sampled).toEqual(
+    expect.arrayContaining([
+      scene,
+      pyramid.pyramid.pyramid,
+      origin.depth,
+      origin.normal,
+      origin.coverage,
+      depth,
+      normal,
+      fallback,
+      motion,
+    ]),
+  );
+});
+
+it('prepares the declared SSR trace program before compute encode', async () => {
   const graph = new RenderGraphBuilder<Frame>();
   const passes = vi.spyOn(graph, 'addComputePass');
   const depth = input(graph, 'depth', 'r32float');
@@ -101,14 +159,6 @@ it('prepares the declared SSR trace and temporal programs before either compute 
     currentTemporal: scene,
     depthPyramid: pyramid.pyramid,
     view: params,
-    temporal: {
-      profile: 'opaque',
-      previousHistory: scene,
-      outputHistory: scene,
-      previousSurface: scene,
-      outputSurface: scene,
-      params,
-    },
   }).unwrap();
   const queue = new RecordingNullQueue();
   const device = createDevice(queue);
@@ -124,7 +174,7 @@ it('prepares the declared SSR trace and temporal programs before either compute 
   const frame = {
     frameState: {},
     bindGroupCounts: { createBindGroup: 0, keys: [] as string[] },
-    ssrShaders: { trace: 'trace-source', temporal: 'temporal-source' },
+    ssrShaders: { trace: 'trace-source' },
     runtime: {
       device,
       shaderModuleFactory: {
@@ -142,8 +192,6 @@ it('prepares the declared SSR trace and temporal programs before either compute 
   prepare();
   expect(create.mock.calls.map(([descriptor]) => descriptor.compute.entryPoint)).toEqual([
     'ssr_trace',
-    'ssr_temporal',
-    'ssr_reflection_mip',
   ]);
   expect(sync).not.toHaveBeenCalled();
   expect(frame.frameState).toMatchObject({ pipelinePreparationPending: true });
@@ -176,9 +224,9 @@ it('prepares the declared SSR trace and temporal programs before either compute 
     }
   };
   execute();
-  expect(pass.setPipeline).toHaveBeenCalledTimes(3);
-  expect(pass.dispatchWorkgroups).toHaveBeenCalledTimes(4);
-  expect(create).toHaveBeenCalledTimes(3);
+  expect(pass.setPipeline).toHaveBeenCalledTimes(1);
+  expect(pass.dispatchWorkgroups).toHaveBeenCalledTimes(1);
+  expect(create).toHaveBeenCalledTimes(1);
   expect(sync).not.toHaveBeenCalled();
   expect(queue.submitCount).toBe(0);
   device.destroyBuffer(buffer).unwrap();
@@ -343,13 +391,13 @@ describe('SSR spatial RhiNull integration', () => {
     expect(queue.submitted).toHaveLength(1);
     expect(device.framePassNames).toEqual([
       'seed-inputs',
-      'depth-pyramid-seed',
-      'depth-pyramid-reduce-chain',
+      'hzb-seed',
+      'hzb-reduce-chain',
       'ssr-trace',
     ]);
     expect(compiled.value.inspect().resources).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ label: 'depth-pyramid', format: 'r32float' }),
+        expect.objectContaining({ label: 'hzb', format: 'r32float' }),
         expect.objectContaining({ label: 'ssr-trace', format: 'rgba16float' }),
       ]),
     );

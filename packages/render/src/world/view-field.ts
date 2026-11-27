@@ -33,6 +33,17 @@ export function readViewField<C extends Component, F extends ScalarField<C>>(
   >[F];
 }
 
+/** Resolve an optional view product with one component lookup. Invalid managed handles keep the ECS error. */
+export function readViewState<T>(
+  world: World,
+  entity: EntityHandle | undefined,
+  component: Component<string, { readonly state: `unique<${string}>` }>,
+): T | undefined {
+  if (entity === undefined) return undefined;
+  const handle = readViewField(world, entity, component, 'state');
+  return handle === undefined ? undefined : world.resolveUniqueRef<T>(handle).unwrap();
+}
+
 /** Required query fields preserve an owning ECS error when their component is absent. */
 export function requireViewField<C extends Component, F extends ScalarField<C>>(
   world: World,

@@ -34,15 +34,13 @@ interface ReadyPerPassResourceInputs {
   readonly ssaoCalcPipeline: PerPassResources['ssaoCalcPipeline'];
   readonly ssaoBlurPipeline: PerPassResources['ssaoBlurPipeline'];
   readonly ssaoBgl: PerPassResources['ssaoBgl'];
-  readonly ssaoClusterPackPipeline: PerPassResources['ssaoClusterPackPipeline'];
-  readonly ssaoClusterPackBgl: PerPassResources['ssaoClusterPackBgl'];
   readonly gtaoComputePipeline?: PerPassResources['gtaoComputePipeline'];
   readonly gtaoComputeBgl?: PerPassResources['gtaoComputeBgl'];
   readonly ssaoDepthCalcPipeline?: PerPassResources['ssaoDepthCalcPipeline'];
   readonly ssaoDepthBlurPipeline?: PerPassResources['ssaoDepthBlurPipeline'];
   readonly ssaoDepthBgl?: PerPassResources['ssaoDepthBgl'];
-  readonly ssaoSpiralPipelines?: PerPassResources['ssaoSpiralPipelines'];
-  readonly ssaoScenePipeline?: PerPassResources['ssaoScenePipeline'];
+  readonly gtaoScreenComputePipeline?: PerPassResources['gtaoScreenComputePipeline'];
+  readonly ssaoScreenPipeline?: PerPassResources['ssaoScreenPipeline'];
 }
 
 /** Creates the mutable per-pass slots owned by one prepared device generation. */
@@ -85,8 +83,6 @@ export function createReadyPerPassResources(input: ReadyPerPassResourceInputs): 
     ssaoCalcPipeline: input.ssaoCalcPipeline,
     ssaoBlurPipeline: input.ssaoBlurPipeline,
     ssaoBgl: input.ssaoBgl,
-    ssaoClusterPackPipeline: input.ssaoClusterPackPipeline,
-    ssaoClusterPackBgl: input.ssaoClusterPackBgl,
     ...(input.gtaoComputePipeline === undefined
       ? {}
       : { gtaoComputePipeline: input.gtaoComputePipeline }),
@@ -94,8 +90,8 @@ export function createReadyPerPassResources(input: ReadyPerPassResourceInputs): 
     ssaoDepthCalcPipeline: input.ssaoDepthCalcPipeline ?? null,
     ssaoDepthBlurPipeline: input.ssaoDepthBlurPipeline ?? null,
     ssaoDepthBgl: input.ssaoDepthBgl ?? null,
-    ssaoSpiralPipelines: input.ssaoSpiralPipelines,
-    ssaoScenePipeline: input.ssaoScenePipeline,
+    gtaoScreenComputePipeline: input.gtaoScreenComputePipeline,
+    ssaoScreenPipeline: input.ssaoScreenPipeline,
     ssaoFilteringSampler: null,
     ssaoDepthSampler: null,
     ssaoFallbackRawView: null,

@@ -335,7 +335,7 @@ export async function fullAtmosphereCases(backend: 'webgpu' | 'wgpu-webgl2') {
       world
         .addComponent(camera, {
           component: AmbientOcclusion,
-          data: { radius: 500, thickness: 300 },
+          data: { radius: 500, intensity: 0.75 },
         })
         .unwrap();
       const ao = await sample('ambient-occlusion');
@@ -489,10 +489,29 @@ export async function fullAtmosphereCases(backend: 'webgpu' | 'wgpu-webgl2') {
         expect(lossErrors).toBe(1);
         expect(atmosphereImageError(day, await sample('recovered')).max).toBe(0);
       }
+      const originalProfile = renderer.inspect().profile;
+      renderValue(
+        renderer.setProfile({
+          ...originalProfile,
+          atmosphere: { aerialPerspectiveQuality: 'fast' },
+        }),
+      );
+      const fastFrame = await capture('fast-frame');
+      const fastEntry = backend === 'webgpu' ? 'atmosphere_fast_fs' : 'atmosphere_packed_fast_fs';
+      expect(
+        fastFrame.works.filter((work) =>
+          work.pipeline.shaders.some(({ entryPoint }) => entryPoint === fastEntry),
+        ),
+      ).toHaveLength(1);
+      const fast = await sample('fast-day');
+      world.set(atmosphere, Atmosphere, { aerialPerspectiveDistanceScale: 0 }).unwrap();
+      const fastWithoutAP = await sample('fast-no-aerial');
+      assertAerialRois(backend, fast, fastWithoutAP);
+      renderValue(renderer.setProfile(originalProfile));
       world.despawn(atmosphere).unwrap();
       expect(atmosphereImageError(off, await sample('removed')).max).toBe(0);
       expect(errors).toEqual([]);
-      return { day, noAerial, sunset, high, cube, vacuum, fog, ao, planar };
+      return { day, noAerial, sunset, high, cube, vacuum, fog, ao, planar, fast, fastWithoutAP };
     } finally {
       unsubscribe();
       lease.dispose();

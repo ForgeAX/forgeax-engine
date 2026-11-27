@@ -10,6 +10,7 @@ export {
   projectEngineStartup,
 } from './configuration-host';
 export { createEngineConfigurationStore } from './configuration-store';
+export { renderStartupCover, STARTUP_COVER_STYLES } from './startup-cover';
 export type {
   PackDraftField,
   PackDraftReply,
@@ -168,6 +169,26 @@ export type {
   GameReadDef,
 } from './game-context';
 export { gameHostPlugin } from './game-context';
+export {
+  createBrowserGameSaves,
+  createGameSaves,
+  createRecordGameSaves,
+  type GameSave,
+  type GameSaveFailure,
+  type GameSaveStorage,
+  type GameSaves,
+} from './game-saves';
+export {
+  type Level,
+  LevelError,
+  type LevelErrorCode,
+  type LevelPhase,
+  type LevelRequest,
+  type LevelService,
+  type LevelStatus,
+  type LevelTarget,
+  type LevelVisualExchange,
+} from './levels/level-service';
 export { type AppObservation, createAppObservation } from './observation';
 export { inputPlugin } from './plugin-factories';
 export type {
@@ -205,6 +226,7 @@ export type {
   EngineWorkspaceProjectFailure,
   EngineWorkspaceProjectHandle,
   EngineWorkspaceProjectLifecycle,
+  EngineWorkspaceProjectPreparation,
   EngineWorkspaceProjectReference,
   EngineWorkspaceProjectSession,
   EngineWorkspaceProjectSessionFactory,
@@ -283,10 +305,26 @@ export type {
   LoadGameErrorDetailFor,
 } from './load-game-errors';
 export {
+  type AuthoredRuntimePack,
   assembleRuntimePacks,
   type RuntimePackAssembly,
   type RuntimePackOptions,
 } from './runtime-packs.js';
+export type { StreamingScenePlacement, StreamingSceneSource } from './streaming/streaming-scene';
+export {
+  type StreamingBounds,
+  type StreamingCell,
+  type StreamingGrid,
+  WorldStreamingError,
+  type WorldStreamingErrorCode,
+} from './streaming/world-index';
+export {
+  createWorldStreaming,
+  type StreamingEntryStatus,
+  type StreamingSource,
+  type WorldStreaming,
+  type WorldStreamingOptions,
+} from './streaming/world-streaming';
 export { createTextureWorkspacePreview } from './texture-preview';
 export {
   createToolPreviewHost,

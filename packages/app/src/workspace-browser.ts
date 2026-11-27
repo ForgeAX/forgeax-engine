@@ -616,6 +616,7 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
         'world',
         'renderer',
         'assets',
+        'levels',
         'pluginPrograms',
         'runtimePacks',
         'input',
@@ -811,6 +812,7 @@ const workspaceBrowserCommandsPlugin: Plugin.Object<EngineWorkspaceBrowserOption
           : { deviceGeneration: input.deviceGeneration }),
         ...(input.viewIdentity === undefined ? {} : { viewIdentity: input.viewIdentity }),
         ...(input.granularity === undefined ? {} : { granularity: input.granularity }),
+        ...(input.granularity === 'visible-entity' ? { signal: input.signal } : {}),
       });
     };
     const requireEntityId = (input: ExecuteInput) => {

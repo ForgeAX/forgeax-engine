@@ -37,8 +37,11 @@ function persistentGraph(
   width = 8,
   storeOp: GPUStoreOp = 'store',
   mip = 0,
+  ordered = false,
 ) {
-  const builder = new RenderGraphBuilder<RenderGraphFrame>();
+  const options = { device, surfaceSize: { width, height: 8 }, reuseResourcesFrom: previous };
+  const procedure = ordered ? RenderGraphBuilder.procedure<RenderGraphFrame>(options) : undefined;
+  const builder = procedure?.passes ?? new RenderGraphBuilder<RenderGraphFrame>();
   const texture = builder
     .createTexture('persistent-content', {
       format: 'rgba8unorm',
@@ -96,11 +99,7 @@ function persistentGraph(
         .unwrap();
     }
   }
-  return builder.compile({
-    device,
-    surfaceSize: { width, height: 8 },
-    reuseResourcesFrom: previous,
-  });
+  return procedure === undefined ? builder.compile(options) : procedure.bindResources();
 }
 
 async function executeAndCommit(graph: CompiledRenderGraph<RenderGraphFrame>, device: RhiDevice) {
@@ -504,6 +503,160 @@ it('revalidates borrowed persistent content when another graph discards it after
   await delayed.retire();
   await discard.retire();
   await written.retire();
+});
+
+it.each([
+  [0, false],
+  [1, false],
+  [0, true],
+  [1, true],
+] as const)('qualifies the inherited part of a mixed read after discarding layer %i (ordered %s)', async (discardedLayer, ordered) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const base = persistentGraph(device, undefined, 'write', 0).unwrap();
+  await executeAndCommit(base, device);
+  const both = persistentGraph(device, base, 'write', 1).unwrap();
+  await executeAndCommit(both, device);
+  const options = { device, surfaceSize: { width: 8, height: 8 }, reuseResourcesFrom: both };
+  const procedure = ordered ? RenderGraphBuilder.procedure<RenderGraphFrame>(options) : undefined;
+  const builder = procedure?.passes ?? new RenderGraphBuilder<RenderGraphFrame>();
+  const texture = builder
+    .createTexture('persistent-content', {
+      format: 'rgba8unorm',
+      size: { width: 8, height: 8, depthOrArrayLayers: 2 },
+      mipLevelCount: 2,
+      lifetime: 'persistent',
+      usage: 0x14,
+    })
+    .unwrap();
+  const first = builder
+    .view(texture, { dimension: '2d', mipLevelCount: 1, arrayLayerCount: 1 })
+    .unwrap();
+  const layers = builder
+    .view(texture, { dimension: '2d-array', mipLevelCount: 1, arrayLayerCount: 2 })
+    .unwrap();
+  builder
+    .addRasterPass('replace-layer-zero', {
+      accesses: [{ resource: first, usage: 'color-attachment' }],
+      colorAttachments: [{ view: first, loadOp: 'clear', storeOp: 'store' }],
+      encode() {},
+    })
+    .unwrap();
+  for (let index = 0; index < 64; index++)
+    builder
+      .addComputePass(`layers-${index}`, {
+        accesses: [{ resource: layers, usage: 'sampled-read' }],
+        encode() {},
+      })
+      .unwrap();
+  const candidate = (
+    procedure === undefined ? builder.compile(options) : procedure.bindResources()
+  ).unwrap();
+  const discard = persistentGraph(device, both, 'read-discard', discardedLayer).unwrap();
+  await executeAndCommit(discard, device);
+  const execution = candidate.execute({ encoder: device.createCommandEncoder().unwrap() });
+  expect(execution.ok).toBe(discardedLayer === 0);
+  if (!execution.ok) expect(execution.error.detail).toMatchObject({ passName: 'layers-0' });
+  await candidate.retire();
+  await discard.retire();
+  await both.retire();
+  await base.retire();
+});
+
+it.each([
+  true,
+  false,
+])('keeps history requirements for a declared color scope with no attachment (ordered=%s)', async (ordered) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const prior = persistentGraph(device, undefined, 'write', 0).unwrap();
+  await executeAndCommit(prior, device);
+  const options = { device, surfaceSize: { width: 8, height: 8 }, reuseResourcesFrom: prior };
+  const procedure = ordered ? RenderGraphBuilder.procedure<RenderGraphFrame>(options) : undefined;
+  const builder = procedure?.passes ?? new RenderGraphBuilder<RenderGraphFrame>();
+  const texture = builder
+    .createTexture('persistent-content', {
+      format: 'rgba8unorm',
+      size: { width: 8, height: 8, depthOrArrayLayers: 2 },
+      mipLevelCount: 2,
+      lifetime: 'persistent',
+      usage: 0x14,
+    })
+    .unwrap();
+  const layer = (baseArrayLayer: number) =>
+    builder
+      .view(texture, {
+        dimension: '2d',
+        baseArrayLayer,
+        arrayLayerCount: 1,
+        mipLevelCount: 1,
+      })
+      .unwrap();
+  const ready = layer(0);
+  const missing = layer(1);
+  builder
+    .addComputePass('read-ready', {
+      accesses: [{ resource: ready, usage: 'sampled-read' }],
+      encode() {},
+    })
+    .unwrap();
+  builder
+    .addRasterPass('unbound-color', {
+      accesses: [
+        { resource: missing, usage: 'color-attachment' },
+        { resource: ready, usage: 'color-attachment' },
+      ],
+      colorAttachments: [{ view: ready, loadOp: 'clear', storeOp: 'store' }],
+      encode() {},
+    })
+    .unwrap();
+  builder
+    .addComputePass('read-missing', {
+      accesses: [{ resource: missing, usage: 'sampled-read' }],
+      encode() {},
+    })
+    .unwrap();
+  const result = procedure === undefined ? builder.compile(options) : procedure.bindResources();
+  try {
+    expect(result.ok).toBe(false);
+    if (!result.ok)
+      expect(result.error).toMatchObject({
+        code: 'uninitialized-read',
+        detail: { passName: 'read-missing' },
+      });
+  } finally {
+    if (result.ok) await result.value.retire();
+    await prior.retire();
+  }
+});
+
+it('qualifies only submitted persistent cells when rebuilding ordered passes on every frame', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  let previous = persistentGraph(device, undefined, 'write', 0, 8, 'store', 0, true).unwrap();
+  const candidate = (
+    mode: 'read' | 'write' | 'read-discard' | 'discard-read',
+    layer: number,
+    width = 8,
+    mip = 0,
+  ) => persistentGraph(device, previous, mode, layer, width, 'store', mip, true);
+  expect(candidate('read', 0).ok).toBe(false);
+  await executeAndCommit(previous, device);
+  const creates = vi.spyOn(device, 'createTexture');
+  for (let frame = 0; frame < 60; frame++) {
+    const layer = frame % 2;
+    const current = candidate('read-discard', layer).unwrap();
+    expect(candidate('read', layer, 16).ok).toBe(false);
+    expect(candidate('read', layer, 8, 1).ok).toBe(false);
+    const delayed = candidate('read', layer).unwrap();
+    await executeAndCommit(current, device);
+    expect(delayed.execute({ encoder: device.createCommandEncoder().unwrap() }).ok).toBe(false);
+    const write = candidate('write', 1 - layer).unwrap();
+    await executeAndCommit(write, device);
+    await delayed.retire();
+    await current.retire();
+    await previous.retire();
+    previous = write;
+  }
+  expect(creates).not.toHaveBeenCalled();
+  await previous.retire();
 });
 
 it('rejects a same-graph read after a discard even when the reused allocation had old content', async () => {

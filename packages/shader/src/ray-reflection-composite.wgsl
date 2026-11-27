@@ -10,6 +10,7 @@
 @group(0) @binding(3) var normal: texture_2d<u32>;
 // Deferred split-sum response: DFG(F0, NoV, roughness) x material AO.
 @group(0) @binding(4) var response: texture_2d<f32>;
+@group(0) @binding(5) var previousFallback: texture_2d<f32>;
 
 struct ReflectionOutput {
   @location(0) scene: vec4f,
@@ -26,9 +27,8 @@ fn rawRadiance(index: u32) -> vec4f {
   return vec4f(bitcast<vec3f>(accumulation[base].xyz), 1.0);
 }
 
-// Specular indirect = world radiance x response. The same value is added to the
-// reflection fallback so SSR composition replaces it by confidence instead of
-// adding on top: c*ssr*resp + (1-c)*world*resp. IBL specular is off under GI.
+// Replace the previous directional reflection in both scene HDR and the
+// fallback SSR consumes. Invalid world radiance leaves the previous value.
 fn shadeReflection(pixel: vec2i, radiance: vec4f) -> ReflectionOutput {
   let none = ReflectionOutput(vec4f(0), vec4f(0));
   let extent = textureDimensions(depth);
@@ -40,7 +40,8 @@ fn shadeReflection(pixel: vec2i, radiance: vec4f) -> ReflectionOutput {
   if (!(z > 0.0 && z <= 1.0) || radiance.w != 1.0) { return none; }
   if (!all(radiance.xyz >= vec3f(0)) || !all(radiance.xyz < vec3f(1e30))) { return none; }
   let specular = radiance.xyz * max(textureLoad(response, pixel, 0).rgb, vec3f(0));
-  return ReflectionOutput(vec4f(specular, 0), vec4f(specular, 0));
+  let delta = specular - textureLoad(previousFallback, pixel, 0).rgb;
+  return ReflectionOutput(vec4f(delta, 0), vec4f(delta, 0));
 }
 
 @fragment fn fs_ray_reflection(in: FullscreenOutput) -> ReflectionOutput {

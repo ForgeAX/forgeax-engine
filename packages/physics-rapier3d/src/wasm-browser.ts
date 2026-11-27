@@ -37,8 +37,8 @@ function supportsSimd(): boolean {
 /**
  * Load the Rapier 3D WASM module and initialise it.
  *
- * Dynamically imports the package-local bundle, which includes its WASM bytes.
- * No network request or runtime source patching is required.
+ * Dynamically imports the package-local bindings. The SIMD module carries its
+ * WASM bytes and the scalar module loads the binary shared with native Hosts.
  *
  * Concurrent callers share a single loading promise; after the first
  * successful load the same settled promise is reused.

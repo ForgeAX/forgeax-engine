@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { PNG } from 'pngjs';
 import { sha256 } from './sdk-lib.mjs';
@@ -87,7 +87,7 @@ export async function verifySdkModeling({ sdkRoot, project, evidenceRoot, env, r
     await command(['select', '--selector', 'sel.notAnOperation()'], 'tool-invalid-args');
     const recovered = await command(['select', '--selector', "sel.tag('body')"]);
     assert.ok(recovered.selected.count > 6);
-    const rendered = await command([
+    const render = [
       'render',
       '--views',
       '["front","iso"]',
@@ -97,7 +97,31 @@ export async function verifySdkModeling({ sdkRoot, project, evidenceRoot, env, r
       '128',
       '--annotate',
       'false',
-    ]);
+    ];
+    await command(render, 'model-render-backend-unavailable');
+    // Keep optional registry inputs outside the sealed SDK and its offline store.
+    const carrier = resolve(project, '.forgeax/modeling-node-gpu');
+    await mkdir(carrier, { recursive: true });
+    await run(
+      'npm',
+      [
+        'install',
+        '--prefix',
+        carrier,
+        '--no-save',
+        '--no-package-lock',
+        '--no-audit',
+        '--ignore-scripts',
+        'upstream-webgpu@npm:webgpu@0.6.2',
+      ],
+      { cwd: carrier, env: { ...env, npm_config_offline: 'false' } },
+    );
+    await symlink(
+      resolve(carrier, 'node_modules/upstream-webgpu'),
+      resolve(project, 'node_modules/upstream-webgpu'),
+      'junction',
+    );
+    const rendered = await command(render);
     assert.deepEqual(
       rendered.views.map(({ view }) => view),
       ['front', 'iso'],

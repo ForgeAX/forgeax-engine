@@ -16,15 +16,22 @@ import {
   CardLookupStatus,
   packCardLookupProjections,
 } from './card-lookup';
-import type { GlobalSdfComposition } from './global-sdf';
+import { GLOBAL_SDF_SETTINGS_BYTES, type GlobalSdfComposition } from './global-sdf';
 import {
   GLOBAL_SDF_HIT_STRIDE,
   type GlobalSdfQuery,
   GlobalSdfQueryStatus,
 } from './global-sdf-query';
+import { prepareComputePipeline } from './prepare-pipeline';
 import { RAY_REFERENCE_LIMIT, type RayReferenceError, rayReferenceFailure } from './scene';
 import { SDF_INSTANCE_STRIDE, SDF_SAMPLE_WGSL } from './sdf-query';
 import { CARD_TEXTURES, type SurfaceCapture, type SurfaceCardSource } from './surface-cards';
+import {
+  isWorldBoundsPoolSpan,
+  WORLD_BOUNDS_HEADER_BYTES,
+  WORLD_BOUNDS_POOL_WGSL,
+  WORLD_BOUNDS_ROW_BYTES,
+} from './world-bounds-pool';
 
 /** meta = retained count, refusal flags, query status, admitted count; then four instance IDs. */
 export const GLOBAL_CARD_CANDIDATE_STRIDE = 32;
@@ -40,20 +47,25 @@ export interface GlobalSdfCardLookup {
 /** Distance-ordered instance association for one global hit. The composing
  * kernel declares Grid/`grid`, `instances`, `fields`, and `bounds`. */
 export const GLOBAL_CARD_CANDIDATES_WGSL = `
-struct ObjectBounds { lo: vec4f, hi: vec4f, scale: vec4f }
+${WORLD_BOUNDS_POOL_WGSL}
 struct Candidates { state: vec4u, ids: vec4u }
 fn findCandidates(hit: SdfHit) -> Candidates {
  var out=Candidates(vec4u(0,0,hit.state.x,0),vec4u(0xffffffffu));
  if(hit.state.x!=${GlobalSdfQueryStatus.hit}u){return out;}
+ if(!worldBoundsValid(grid.dimensionsCount.w)){out.state.y=${GlobalCardCandidateFlags.missingField}u;return out;}
  if(dot(hit.normal.xyz,hit.normal.xyz)<0.5){out.state.y=${GlobalCardCandidateFlags.invalidNormal}u;return out;}
  let halfSpacing=grid.originSpacing.w*0.5;
  let world=hit.position.xyz+hit.normal.xyz*halfSpacing;
  // Association support only: this radius is not a bound on geometric error.
  let radius=3.0*halfSpacing;
  var distances=vec4f(3.402823466e+38);
- for(var i=0u;i<grid.dimensionsCount.w;i++){
-  let m=instances[i];if(m.ids.w==0u){continue;}
-  let b=bounds[i];let p=(m.inverse*vec4f(world,1)).xyz;
+ var cursor=worldBoundsCursor(world,grid.dimensionsCount.w,radius);
+ while(worldBoundsCursorCount(cursor)>0u){
+  let i=worldBoundsCursorRow(&cursor);
+  if(sdfInstanceMask(i)==0u){continue;}
+  if(!sdfInstanceValid(i)){out.state.y|=${GlobalCardCandidateFlags.missingField}u;continue;}
+  let m=sdfInstanceAt(i);
+  let b=worldBoundsAt(i);let p=(m.inverse*vec4f(world,1)).xyz;
   let toBox=max(b.lo.xyz-p,p-b.hi.xyz)*b.scale.xyz;
   let boxDistance=length(max(toBox,vec3f(0)))+min(0.0,max(toBox.x,max(toBox.y,toBox.z)));
   if(boxDistance>=radius){continue;}
@@ -81,9 +93,9 @@ export const GLOBAL_SDF_CARD_LOOKUP_WGSL = `
 ${SDF_SAMPLE_WGSL}
 struct Grid { originSpacing: vec4f, dimensionsCount: vec4u, ranges: vec4f }
 @group(0) @binding(0) var<storage,read> hits: array<SdfHit>;
-@group(0) @binding(1) var<storage,read> instances: array<Instance>;
+@group(0) @binding(1) var<storage,read> instances: array<RawInstance>;
 @group(0) @binding(2) var<storage,read> fields: array<u32>;
-@group(0) @binding(3) var<storage,read> bounds: array<ObjectBounds>;
+@group(0) @binding(3) var<storage,read> bounds: array<vec4u>;
 @group(0) @binding(4) var<uniform> grid: Grid;
 @group(0) @binding(5) var<storage,read_write> candidates: array<Candidates>;
 @group(0) @binding(6) var<storage,read> cards: array<Card>;
@@ -190,8 +202,8 @@ export async function createGlobalSdfCardLookup(
     hits: { buffer: query.buffers.hits, size: rayCount * GLOBAL_SDF_HIT_STRIDE },
     instances: { buffer: composition.buffers.instances, size: rows * SDF_INSTANCE_STRIDE },
     fields: { buffer: composition.buffers.fields },
-    bounds: { buffer: composition.buffers.bounds, size: rows * 48 },
-    grid: { buffer: composition.buffers.settings, size: 48 },
+    bounds: { buffer: composition.buffers.bounds },
+    grid: { buffer: composition.buffers.settings, size: GLOBAL_SDF_SETTINGS_BYTES },
     candidates: { buffer: candidates.value, size: rayCount * GLOBAL_CARD_CANDIDATE_STRIDE },
     cards: { buffer: projections.value, size: bytes.byteLength },
     output: { buffer: output.value, size: rayCount * 4 * CARD_LOOKUP_STRIDE },
@@ -203,7 +215,7 @@ export async function createGlobalSdfCardLookup(
     label: 'global-sdf.cards',
   });
   if (!shader.ok) return fail(shader);
-  const recorder = createGlobalSdfCardLookupRecorder(device, shader.value);
+  const recorder = await createGlobalSdfCardLookupRecorder(device, shader.value);
   if (!recorder.ok) return fail(recorder);
   return ok({
     buffer: output.value,
@@ -230,8 +242,8 @@ const CARD_BUFFER_BINDINGS = [
   ['hits', GLOBAL_SDF_HIT_STRIDE, 'read-only-storage'],
   ['instances', SDF_INSTANCE_STRIDE, 'read-only-storage'],
   ['fields', 4, 'read-only-storage'],
-  ['bounds', 48, 'read-only-storage'],
-  ['grid', 48, 'uniform'],
+  ['bounds', WORLD_BOUNDS_HEADER_BYTES + WORLD_BOUNDS_ROW_BYTES, 'read-only-storage'],
+  ['grid', GLOBAL_SDF_SETTINGS_BYTES, 'uniform'],
   ['candidates', GLOBAL_CARD_CANDIDATE_STRIDE, 'storage'],
   ['cards', 80, 'read-only-storage'],
   ['output', CARD_LOOKUP_STRIDE, 'storage'],
@@ -240,28 +252,35 @@ const CARD_BUFFER_BINDINGS = [
 
 /** Borrowed ranges in the existing Global query/composition and Card ABI. Hits are
  * 64-byte rows; each ray writes one 32-byte candidate and four 112-byte samples.
- * Grid/settings are 48/16 bytes. Matching instances/bounds use 144/48-byte rows,
- * with one padding row for an empty scene; Card projections use 80-byte rows.
+ * Grid/settings are 64/16 bytes. Instances use 144-byte rows; bounds use a
+ * versioned 96-byte header, 48-byte canonical rows and optional typed indexes.
+ * One canonical row pads an empty scene; Card projections use 80-byte rows.
  * The producer validates grid counts, packed field indices, Card settings and
  * matching texture contents. It records query/capture before selection, then
  * sampleCards, and retains every input/output until submission completes.
  *
- * fields alone may omit size to retain the reference composition's native
+ * fields and bounds may omit size to retain the reference composition's native
  * whole-buffer binding. RHI then validates its actual remaining capacity and
  * binding limit, as well as every resource's usage and device ownership. */
 export type GlobalSdfCardLookupInputs = Readonly<
   Record<
-    Exclude<(typeof CARD_BUFFER_BINDINGS)[number][0], 'fields'>,
+    Exclude<(typeof CARD_BUFFER_BINDINGS)[number][0], 'fields' | 'bounds'>,
     { readonly buffer: Buffer; readonly offset?: number; readonly size: number }
   >
 > & {
   readonly fields: { readonly buffer: Buffer; readonly offset?: number; readonly size?: number };
+  readonly bounds: { readonly buffer: Buffer; readonly offset?: number; readonly size?: number };
   readonly textures: Readonly<Record<(typeof CARD_TEXTURES)[number], TextureView>>;
 };
 
+/** Whole opaque pools defer actual capacity to RHI; explicit windows use the typed span. */
+function cardBoundsSpanValid(input: GlobalSdfCardLookupInputs, rows: number) {
+  return input.bounds.size === undefined || isWorldBoundsPoolSpan(input.bounds.size, rows);
+}
+
 /** The same two Card kernels for reference and caller-owned resources. Opens no
  * pass and owns no buffers, texture views, uploads, submission or retirement. */
-export function createGlobalSdfCardLookupRecorder(device: RhiDevice, module: ShaderModule) {
+export async function createGlobalSdfCardLookupRecorder(device: RhiDevice, module: ShaderModule) {
   const failure = (expected: string, code: RhiError['code'] = 'rhi-descriptor-invalid') =>
     err(
       new RhiError({
@@ -281,7 +300,7 @@ export function createGlobalSdfCardLookupRecorder(device: RhiDevice, module: Sha
     ['maxStorageBuffersPerShaderStage', 7],
     ['maxUniformBuffersPerShaderStage', 2],
     ['maxSampledTexturesPerShaderStage', 5],
-    ['maxUniformBufferBindingSize', 48],
+    ['maxUniformBufferBindingSize', GLOBAL_SDF_SETTINGS_BYTES],
     ['maxComputeWorkgroupSizeX', 64],
     ['maxComputeInvocationsPerWorkgroup', 64],
   ] as const)
@@ -308,7 +327,7 @@ export function createGlobalSdfCardLookupRecorder(device: RhiDevice, module: Sha
   if (!pipelineLayout.ok) return pipelineLayout;
   const pipelines = {} as Record<(typeof CARD_STAGES)[number], ComputePipeline>;
   for (const entryPoint of CARD_STAGES) {
-    const pipeline = device.createComputePipeline({
+    const pipeline = await prepareComputePipeline(device, {
       layout: pipelineLayout.value,
       compute: { module, entryPoint },
     });
@@ -337,8 +356,8 @@ export function createGlobalSdfCardLookupRecorder(device: RhiDevice, module: Sha
         !Number.isInteger(rows) ||
         rows < 1 ||
         rows > 1024 ||
-        input.bounds.size !== rows * 48 ||
-        input.grid.size !== 48 ||
+        !cardBoundsSpanValid(input, rows) ||
+        input.grid.size !== GLOBAL_SDF_SETTINGS_BYTES ||
         input.settings.size !== 16 ||
         input.hits.size !== rayCount * GLOBAL_SDF_HIT_STRIDE ||
         input.candidates.size !== rayCount * GLOBAL_CARD_CANDIDATE_STRIDE ||

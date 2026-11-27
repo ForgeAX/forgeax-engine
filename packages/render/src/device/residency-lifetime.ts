@@ -12,7 +12,14 @@ export class ResidencyLifetime {
   private retired = false;
   private eviction: (() => void) | undefined;
   private readonly submissions = new Set<Promise<unknown>>();
-  private readonly waiters = new Map<() => void, Set<Promise<unknown>>>();
+  private readonly waiters = new Map<
+    () => void,
+    { pending: Set<Promise<unknown>>; reject(cause: unknown): void }
+  >();
+  private fault: { readonly cause: unknown; readonly effect?: () => void } | undefined;
+  get retirementFailure(): unknown {
+    return this.fault?.cause;
+  }
 
   constructor(private destroy: (() => void) | undefined) {}
 
@@ -25,6 +32,7 @@ export class ResidencyLifetime {
   }
 
   retain(evict: () => void): ResidencyLease {
+    if (this.fault !== undefined) throw this.fault.cause;
     this.leases += 1;
     this.eviction = undefined;
     let released = false;
@@ -32,21 +40,32 @@ export class ResidencyLifetime {
     return {
       track: (submitted) => this.track(submitted),
       release: (shouldEvict) => {
-        if (released) return completion;
+        if (released) {
+          if (completion === undefined && this.fault !== undefined) throw this.fault.cause;
+          return completion;
+        }
         released = true;
         this.leases -= 1;
         if (this.leases === 0 && shouldEvict) this.eviction = evict;
         completion =
           this.submissions.size === 0
             ? undefined
-            : new Promise<void>((resolve) => {
-                this.waiters.set(() => {
-                  if (shouldEvict && this.leases === 0 && this.eviction === evict) {
-                    this.eviction = undefined;
-                    evict();
-                  }
-                  resolve();
-                }, new Set(this.submissions));
+            : new Promise<void>((resolve, reject) => {
+                this.waiters.set(
+                  () => {
+                    try {
+                      if (shouldEvict && this.leases === 0 && this.eviction === evict) {
+                        this.eviction = undefined;
+                        this.runEffect(evict);
+                      }
+                      resolve();
+                    } catch (cause) {
+                      reject(cause);
+                      throw cause;
+                    }
+                  },
+                  { pending: new Set(this.submissions), reject },
+                );
               });
         this.flush();
         return completion;
@@ -67,20 +86,21 @@ export class ResidencyLifetime {
     const finish = (): void => {
       // Cleanup may register a new allocation against this settled submission.
       submissionOwners.delete(completed);
-      let failures: unknown[] | undefined;
+      const failures: unknown[] = [];
       for (const owner of owners) {
+        const observed = owner.waiters.size > 0;
         owner.submissions.delete(completed);
-        for (const pending of owner.waiters.values()) pending.delete(completed);
+        for (const waiter of owner.waiters.values()) waiter.pending.delete(completed);
         try {
           owner.flush();
-        } catch (error) {
-          failures ??= [];
-          failures.push(error);
+        } catch (cause) {
+          // Released leases receive their own rejection; preserve unobserved owner failures.
+          if (!observed) failures.push(cause);
         }
       }
       owners.clear();
-      if (failures?.length === 1) throw failures[0];
-      if (failures !== undefined)
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1)
         throw new AggregateError(failures, 'residency submission cleanup failed');
     };
     void completed.then(finish, finish);
@@ -91,12 +111,31 @@ export class ResidencyLifetime {
     this.flush();
   }
 
+  private runEffect(effect: () => void): void {
+    try {
+      effect();
+    } catch (cause) {
+      this.fault ??= { cause, effect };
+      throw cause;
+    }
+  }
   private flush(): void {
+    if (this.fault !== undefined) throw this.fault.cause;
+    try {
+      this.flushCurrent();
+    } catch (cause) {
+      this.fault ??= { cause };
+      for (const waiter of this.waiters.values()) waiter.reject(this.fault.cause);
+      this.waiters.clear();
+      throw this.fault.cause;
+    }
+  }
+  private flushCurrent(): void {
     if (this.submissions.size === 0) {
       if (this.leases === 0 && this.eviction !== undefined) {
         const evict = this.eviction;
         this.eviction = undefined;
-        evict();
+        this.runEffect(evict);
       }
       // Eviction may attach queue work before retiring this allocation.
       if (
@@ -107,13 +146,13 @@ export class ResidencyLifetime {
       ) {
         const destroy = this.destroy;
         this.destroy = undefined;
-        destroy();
+        this.runEffect(destroy);
       }
     }
     // A released lease waits for work already submitted, while the allocation
     // still covers later frames that reuse its remaining live bindings.
-    for (const [resolve, pending] of this.waiters) {
-      if (pending.size !== 0) continue;
+    for (const [resolve, waiter] of this.waiters) {
+      if (waiter.pending.size !== 0) continue;
       this.waiters.delete(resolve);
       resolve();
     }

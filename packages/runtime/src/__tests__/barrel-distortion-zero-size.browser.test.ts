@@ -8,7 +8,18 @@ import { constructRuntimeRendererHost } from '../renderer-host';
 const WIDTH = 96;
 const HEIGHT = 64;
 
-it('keeps a zero-size surface out of the accepted barrel frame and resumes after restore', async () => {
+it('keeps a zero-size surface out of the accepted barrel frame and resumes after restore', async ({
+  onTestFailed,
+}) => {
+  const start = performance.now();
+  const stages: Record<string, number> = {};
+  const reached = (stage: string) => {
+    stages[stage] = Math.round(performance.now() - start);
+  };
+  onTestFailed(() => {
+    // biome-ignore lint/suspicious/noConsole: report the last reached real GPU stage on timeout.
+    console.info('[barrel-zero-size]', JSON.stringify({ elapsedMs: stages }));
+  });
   const canvas = document.createElement('canvas');
   canvas.width = WIDTH;
   canvas.height = HEIGHT;
@@ -29,6 +40,7 @@ it('keeps a zero-size surface out of the accepted barrel frame and resumes after
     expect(host.ok).toBe(true);
     if (!host.ok) throw host.error;
     renderer = host.value.renderer;
+    reached('rendererReady');
     unsubscribe = renderer.subscribe((event) => {
       if (event.kind === 'error') errors.push(event.error.code);
     });
@@ -57,33 +69,31 @@ it('keeps a zero-size surface out of the accepted barrel frame and resumes after
       .unwrap();
     const transforms = registerPropagateTransforms(world);
     try {
+      const activeRenderer = renderer;
+      const source = activeRenderer.attach(world).unwrap();
+      lease = source;
       const draw = () => {
-        lease?.dispose();
-        const attached = renderer?.attach(world);
-        expect(attached?.ok).toBe(true);
-        if (attached === undefined || !attached.ok) throw attached?.error;
-        lease = attached.value;
         world.update(1 / 60).unwrap();
-        const result = renderer?.draw({ source: attached.value, camera: { entityKey: camera } });
-        expect(result).toBeDefined();
-        return result;
+        return activeRenderer.draw({ source, camera: { entityKey: camera } });
       };
 
       const baseline = draw();
-      expect(baseline?.ok).toBe(true);
-      if (baseline === undefined || !baseline.ok) throw baseline?.error;
+      expect(baseline.ok).toBe(true);
+      if (!baseline.ok) throw baseline.error;
       expect(baseline.value.barrelDistortion).toMatchObject({
         width: WIDTH,
         height: HEIGHT,
       });
       expect(baseline.value.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
+      reached('baselineSubmitted');
       expect((await baseline.value.completed).ok).toBe(true);
+      reached('baselineCompleted');
 
       canvas.width = 0;
       canvas.height = 0;
       const zeroSized = draw();
-      expect(zeroSized?.ok).toBe(false);
-      if (zeroSized?.ok === false) {
+      expect(zeroSized.ok).toBe(false);
+      if (!zeroSized.ok) {
         // biome-ignore lint/suspicious/noConsole: diagnostic for the real zero-size browser boundary.
         console.info(
           '[barrel-zero-size]',
@@ -96,18 +106,21 @@ it('keeps a zero-size surface out of the accepted barrel frame and resumes after
         });
       }
       expect(renderer.inspect().barrelDistortion.effectiveMapping?.width).toBe(WIDTH);
+      reached('zeroSizeRejected');
 
       canvas.width = WIDTH;
       canvas.height = HEIGHT;
       const resumed = draw();
-      expect(resumed?.ok).toBe(true);
-      if (resumed === undefined || !resumed.ok) throw resumed?.error;
+      expect(resumed.ok).toBe(true);
+      if (!resumed.ok) throw resumed.error;
       expect(resumed.value.barrelDistortion).toMatchObject({
         width: WIDTH,
         height: HEIGHT,
       });
       expect(resumed.value.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
+      reached('restoredSubmitted');
       expect((await resumed.value.completed).ok).toBe(true);
+      reached('restoredCompleted');
       expect(errors).toEqual([]);
     } finally {
       transforms();

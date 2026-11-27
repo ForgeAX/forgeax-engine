@@ -1,6 +1,12 @@
 import type { WaterSplashWakeEvent, WaterVisualContact } from '@forgeax/engine-water';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import { snapshot } from '../../__tests__/gpu-driven-production-fixture';
+import { MaterialResource } from '../../material-resource';
+import { FrameProjection } from '../../scene/frame-list';
+import { RenderScene } from '../../scene/render-scene';
+import { SceneSlotPage } from '../../scene/scene-slots';
 import {
+  captureWaterFluidFoamMaterials,
   prepareWaterFluidFoamFrame,
   type WaterFluidFoamInput,
   type WaterFluidFoamMaterial,
@@ -318,4 +324,86 @@ it('rejects stale source frames and does not stamp exit, dry or foreign-World ev
     ).unwrap(),
   );
   expect(filtered.events).toEqual([]);
+});
+
+it('skips dry retained Scene rows and dispatch, then admits and retires a Water owner', () => {
+  const scene = new RenderScene();
+  const ordinary = snapshot(1, 1);
+  const foam = new MaterialResource({
+    ...ordinary.material.snapshot,
+    materialHandle: 8,
+    staticSwitches: { waterOceanFoam: true },
+    paramSnapshot: { simulationLocationM: [3, 0, 7], waveCaptureSizeM: 100 },
+  });
+  const dispatch = {
+    [Symbol.iterator]: vi.fn(() => [{ renderableIndex: 0, materialHandle: 8 }].values()),
+  };
+  scene.apply([{ kind: 'update', entityKey: 1, snapshot: ordinary }]);
+  const dry = scene.materialize();
+  const read = vi.spyOn(SceneSlotPage.prototype, 'read');
+  try {
+    expect(captureWaterFluidFoamMaterials(dry, 'view', dispatch)).toEqual([]);
+    expect(read).not.toHaveBeenCalled();
+    expect(dispatch[Symbol.iterator]).not.toHaveBeenCalled();
+  } finally {
+    read.mockRestore();
+  }
+
+  scene.apply([
+    {
+      kind: 'update',
+      entityKey: 1,
+      snapshot: {
+        ...ordinary,
+        material: foam,
+        materials: [foam],
+        waterOwner: {
+          worldIdentity: 'world-a',
+          guid: 'ocean',
+          generation: 1,
+          zoneGeneration: 1,
+        },
+      },
+    },
+  ]);
+  const wet = scene.materialize();
+  const mapped = {
+    ...material('ocean', 3),
+    mapping: { kind: 'mapped', centerXZ: [3, 7], extentM: 100 },
+  };
+  expect(captureWaterFluidFoamMaterials(wet, 'view', dispatch)).toEqual([mapped]);
+  expect(captureWaterFluidFoamMaterials(wet, 'view', [])).toEqual([]);
+  const borrowed = new FrameProjection(dry, () => requiredFixtureValue(wet.at(0)));
+  expect(captureWaterFluidFoamMaterials(borrowed, 'view', dispatch)).toEqual([mapped]);
+  scene.apply([{ kind: 'remove', entityKey: 1 }]);
+  expect(captureWaterFluidFoamMaterials(scene.materialize(), 'view', dispatch)).toEqual([]);
+  expect(captureWaterFluidFoamMaterials(dry, 'view', dispatch)).toEqual([]);
+  expect(captureWaterFluidFoamMaterials(wet, 'view', dispatch)).toEqual([mapped]);
+});
+
+it('keeps the WaterMesh source route when the root has no ordinary Water owner', () => {
+  const scene = new RenderScene();
+  const ordinary = snapshot(1, 1);
+  const dispatch = { [Symbol.iterator]: vi.fn(() => [].values()) };
+  scene.apply([
+    {
+      kind: 'update',
+      entityKey: 1,
+      snapshot: {
+        ...ordinary,
+        waterMeshSource: {
+          worldIdentity: 'world-a',
+          guid: 'ocean',
+          generation: 1,
+          zoneGuid: 'zone',
+          zoneGeneration: 1,
+          targetFormat: 'rgba16float',
+          materialStartIndex: 0,
+          views: [],
+        },
+      },
+    },
+  ]);
+  expect(captureWaterFluidFoamMaterials(scene.materialize(), 'view', dispatch)).toEqual([]);
+  expect(dispatch[Symbol.iterator]).toHaveBeenCalledOnce();
 });

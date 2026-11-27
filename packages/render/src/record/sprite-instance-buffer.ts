@@ -9,6 +9,7 @@ import {
 import type { InstanceBufferCacheEntry, InstanceBufferCacheKey } from '../instance-buffer-cache';
 import type { SpriteInstancesSnapshot } from '../render-system-extract';
 import { renderWorldFor } from '../world/render-world';
+import type { ValidatedRenderable } from './frame-snapshot';
 import { INSTANCE_UBO_FULL_ARRAY_BYTES, MAX_UNIFORM_INSTANCES } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './render-context';
 
@@ -72,7 +73,7 @@ export interface SpriteInstanceDraw {
 /** Native storage keeps one draw; uniform sprites retain contiguous atlas-correct pages. */
 export function resolveSpriteInstanceDraws(
   c: Pick<_InternalRenderPipelineContext, 'runtime' | 'frameState'>,
-  spriteEntry: _InternalRenderPipelineContext['validatedOrdered'][number],
+  spriteEntry: ValidatedRenderable,
 ): readonly SpriteInstanceDraw[] {
   const { runtime } = c;
   const world = renderWorldFor(runtime);

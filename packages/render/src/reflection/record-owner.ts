@@ -33,7 +33,11 @@ import {
   pmremExtent,
   pmremLevelCount,
 } from '../ibl/pmrem';
-import { SKYLIGHT_UNIFORM_BYTES, skylightGroundLane } from '../ibl/skylight-bind-group';
+import {
+  SKYLIGHT_UNIFORM_BYTES,
+  type SkylightBindGroupResources,
+  skylightGroundLane,
+} from '../ibl/skylight-bind-group';
 import type {
   ReflectionFallbackReadbackReceipt,
   ReflectionFallbackReceipt,
@@ -148,10 +152,11 @@ type PendingFallback = {
   readonly evidence?: StagedFallbackEvidence;
 };
 
-function hasNonNeutralFallback(tickets: ReadonlyMap<string, PendingFallback>): boolean {
-  for (const ticket of tickets.values())
-    if (nonNeutralFallbackSource(ticket.projection.source)) return true;
-  return false;
+interface FallbackConsumer {
+  latest: PendingFallback;
+  /** Old submissions may publish within this uninterrupted source lifetime. */
+  firstTicket: number;
+  generation: number;
 }
 
 function nonNeutralFallbackSource(source: ReflectionFallbackProjection['source']): boolean {
@@ -205,14 +210,7 @@ export class ReflectionProbeRecordOwner {
   // Submitted frames own their immutable candidates until completion. Keep
   // only the current projection here: preparing a source-identical frame
   // must not starve an earlier asynchronous readback of publication.
-  private latestFallbackTickets = new Map<string, PendingFallback>();
-  private fallbackRetiredFrames = new Map<string, number>();
-  private fallbackCommittedFrames = new Map<string, number>();
-  private fallbackGenerations = new Map<
-    string,
-    { readonly source: number; readonly projection: number }
-  >();
-  private fallbackSignatures = new Map<string, string>();
+  private readonly fallbackConsumers = new Map<string, FallbackConsumer>();
   private fallbackReceipts = new Map<string, ReflectionFallbackReceipt>();
   private fallbackReadback: ReflectionFallbackReadbackReceipt | undefined;
   private fallbackReceiptKey: string | undefined;
@@ -290,6 +288,18 @@ export class ReflectionProbeRecordOwner {
     };
   }
 
+  /** Only accepted physical bindings participate; filter preparation is not a publication. */
+  materialBindingCurrent(index: number, expected: SkylightBindGroupResources): boolean {
+    for (const resource of this.resources.values())
+      if (resource.index === index)
+        return (
+          this.acceptedAtlas(resource)?.view === expected.prefilterView &&
+          resource.sampler === expected.prefilterSampler &&
+          resource.uniformBuffer === expected.intensityBuffer
+        );
+    return false;
+  }
+
   private createFallbackReceipt(
     state: ReflectionFallbackReceipt['state'],
   ): ReflectionFallbackReceipt {
@@ -345,7 +355,7 @@ export class ReflectionProbeRecordOwner {
     this.fallbackFailure = undefined;
   }
 
-  private refreshFallbackCapabilities(frameId: number): void {
+  private refreshFallbackCapabilities(): void {
     const available = this.internals.device.caps.rgba16floatRenderable === true;
     const previous = this.fallbackFormatAvailable;
     // resetForRecover() disposes device-bound probe resources before the
@@ -360,7 +370,7 @@ export class ReflectionProbeRecordOwner {
     }
     this.fallbackFormatAvailable = available;
     if (!available) {
-      this.retireFallbackState(frameId);
+      this.retireFallbackState();
       this.recordFallbackFailure({
         stage: 'prepare',
         code: 'reflection-fallback-format-unavailable',
@@ -373,19 +383,9 @@ export class ReflectionProbeRecordOwner {
     }
   }
 
-  private retireFallbackState(frameId: number): void {
-    for (const pending of this.latestFallbackTickets.values()) {
-      const key = pending.projection.renderableKey;
-      if (key !== undefined) this.fallbackRetiredFrames.set(key, frameId);
-    }
-    for (const key of this.fallbackReceipts.keys()) {
-      this.fallbackRetiredFrames.set(key, frameId);
-    }
-    this.latestFallbackTickets.clear();
+  private retireFallbackState(): void {
+    this.fallbackConsumers.clear();
     this.fallbackReceipts.clear();
-    this.fallbackSignatures.clear();
-    this.fallbackCommittedFrames.clear();
-    this.fallbackGenerations.clear();
     this.fallbackReadback = undefined;
     this.fallbackReceiptKey = undefined;
     this.refreshFallbackReceipt();
@@ -582,7 +582,7 @@ export class ReflectionProbeRecordOwner {
   ): ReflectionProbeRecordState {
     if (this.resourceDevice !== this.internals.device) this.dispose();
     this.currentFrame = frameId;
-    this.refreshFallbackCapabilities(frameId);
+    this.refreshFallbackCapabilities();
     this.lastFactCount = facts.length;
     this.lastScheduledRawFaces = 0;
     this.lastScheduledFilteredSteps = 0;
@@ -590,16 +590,13 @@ export class ReflectionProbeRecordOwner {
     // non-neutral probe consumer when the scene contains one. Renderable map
     // order is not a source-selection contract: the first entry is commonly
     // an outside panel while the local probe consumer appears later.
-    const firstSelection =
-      [...selections.values()].find((selection) => selection.kind === 'probe') ??
-      (selections.values().next().value as ReflectionProbeSelectionResult | undefined);
-    this.lastSelection =
-      firstSelection?.kind === 'probe'
-        ? {
-            kind: 'probe',
-            entityKey: firstSelection.entityKey,
-          }
-        : { kind: 'skylight' };
+    this.lastSelection = { kind: 'skylight' };
+    for (const selection of selections.values()) {
+      if (selection.kind === 'probe') {
+        this.lastSelection = { kind: 'probe', entityKey: selection.entityKey };
+        break;
+      }
+    }
     if (facts.length > 0) this.ensurePipelineWarmup();
     void this.pipelineWarmup;
     const ordered = facts.slice().sort((a, b) => a.entityKey - b.entityKey);
@@ -629,7 +626,7 @@ export class ReflectionProbeRecordOwner {
       accepted.set(key, resource);
     }
     this.lastAcceptedCount = acceptedCount;
-    const fallbackTickets = this.fallbackFormatAvailable
+    const fallback = this.fallbackFormatAvailable
       ? this.stageFallbackProjections(
           facts,
           selections,
@@ -639,18 +636,17 @@ export class ReflectionProbeRecordOwner {
           environment,
           resourceWorld,
         )
-      : new Map<string, PendingFallback>();
+      : { tickets: new Map<string, PendingFallback>(), hasNonNeutral: false };
     for (const [key, resource] of this.resources) {
       if (!accepted.has(key)) {
         this.destroyProbeResource(resource);
         this.resources.delete(key);
-      } else resource.index = [...accepted.keys()].indexOf(key);
+      }
     }
     const rows = [...accepted.values()]
-      .map((resource) => {
-        const active = resource.activeFact?.center.every((v, i) => v === resource.fact.center[i])
-          ? this.activeAtlas(resource)
-          : undefined;
+      .map((resource, index) => {
+        resource.index = index;
+        const active = this.acceptedAtlas(resource);
         if (active === undefined) return undefined;
         const array =
           resource.pmrem.kind === 'array' && resource.pmrem.active !== undefined
@@ -790,8 +786,7 @@ export class ReflectionProbeRecordOwner {
     }
     this.arrays.prune();
     const migrations = this.arrays.takeMigrations();
-    const fallbackHasNonNeutral =
-      this.fallbackFormatAvailable && hasNonNeutralFallback(fallbackTickets);
+    const fallbackHasNonNeutral = fallback.hasNonNeutral;
     return {
       table,
       selections,
@@ -807,7 +802,7 @@ export class ReflectionProbeRecordOwner {
       completeSubmission: (submitted, completed, fallbackOutput, fallbackRequested = true) =>
         this.completeSubmission(
           submitted,
-          fallbackTickets,
+          fallback.tickets,
           completed,
           fallbackOutput,
           fallbackRequested,
@@ -913,7 +908,7 @@ export class ReflectionProbeRecordOwner {
     skylight: SkylightSnapshot | undefined,
     environment: SelectedEnvironmentFrame | undefined,
     resourceWorld?: RenderResourceScope,
-  ): ReadonlyMap<string, PendingFallback> {
+  ) {
     const tickets = new Map<string, PendingFallback>();
     // With no environment source every renderable resolves to the same exact
     // zero. Stage that producer fact once instead of allocating one
@@ -939,33 +934,53 @@ export class ReflectionProbeRecordOwner {
       skylightSignature,
       environmentSignature: environment?.environmentSignature ?? '',
     };
-    for (const [renderableKey, selection] of stagedSelections)
-      this.stageFallbackProjection(renderableKey, selection, accepted, frameId, frame, tickets);
-    // Retire rows that disappeared from this frame's main-pass selection.
-    // Keeping them would make a detached inspection row outlive its source.
-    for (const renderableKey of this.fallbackReceipts.keys()) {
-      if (tickets.has(renderableKey)) continue;
-      this.fallbackReceipts.delete(renderableKey);
-      this.fallbackSignatures.delete(renderableKey);
-      this.fallbackCommittedFrames.delete(renderableKey);
-      this.fallbackGenerations.delete(renderableKey);
-      this.latestFallbackTickets.delete(renderableKey);
-      this.fallbackRetiredFrames.set(renderableKey, frameId);
-    }
-    for (const renderableKey of this.fallbackGenerations.keys()) {
-      if (!tickets.has(renderableKey)) this.fallbackGenerations.delete(renderableKey);
-    }
-    // Retire even uncommitted rows, so disappear/reappear cannot revive an
-    // old completion. Storage stays bounded by current renderables.
-    for (const key of this.latestFallbackTickets.keys()) {
-      if (tickets.has(key)) continue;
-      this.latestFallbackTickets.delete(key);
-      this.fallbackRetiredFrames.set(key, frameId);
+    let hasNonNeutral = false;
+    for (const [renderableKey, selection] of stagedSelections) {
+      const pending = this.stageFallbackProjection(
+        renderableKey,
+        selection,
+        accepted,
+        frameId,
+        frame,
+      );
+      if (pending === undefined) continue;
+      this.issueFallback(tickets, renderableKey, pending);
+      if (pending.projection.source !== 'neutral') hasNonNeutral = true;
     }
     if (tickets.size === 0 && facts.length === 0) this.stageNeutralFallback(tickets, frameId);
+    for (const key of this.fallbackConsumers.keys()) {
+      if (tickets.has(key)) continue;
+      this.fallbackConsumers.delete(key);
+      this.fallbackReceipts.delete(key);
+    }
     this.selectFallbackReceiptKey(tickets, skylight !== undefined);
     this.refreshFallbackReceipt();
-    return tickets;
+    return { tickets, hasNonNeutral };
+  }
+
+  private issueFallback(
+    tickets: Map<string, PendingFallback>,
+    key: string,
+    pending: PendingFallback,
+  ): void {
+    const consumer = this.fallbackConsumers.get(key);
+    if (consumer === undefined) {
+      this.fallbackConsumers.set(key, {
+        latest: pending,
+        firstTicket: pending.ticket,
+        generation: 0,
+      });
+    } else {
+      if (consumer.latest.signature !== pending.signature) {
+        consumer.firstTicket = pending.ticket;
+        if (this.fallbackReceipts.delete(key)) {
+          this.fallbackReadback = undefined;
+          if (this.fallbackReceiptKey === key) this.fallbackReceiptKey = undefined;
+        }
+      }
+      consumer.latest = pending;
+    }
+    tickets.set(key, pending);
   }
 
   /** Empty consumers still receive the existing independent neutral frame ticket. */
@@ -978,8 +993,7 @@ export class ReflectionProbeRecordOwner {
       signature: NEUTRAL_FRAME_SIGNATURE,
       receiptFields: NEUTRAL_FRAME_RECEIPT_FIELDS,
     };
-    tickets.set('__frame__', pending);
-    this.latestFallbackTickets.set('__frame__', pending);
+    this.issueFallback(tickets, '__frame__', pending);
   }
 
   /** One consumer's immutable evidence and independent frame ticket. */
@@ -989,9 +1003,8 @@ export class ReflectionProbeRecordOwner {
     accepted: ReadonlyMap<string, ProbeGpuResource>,
     frameId: number,
     frame: FallbackStagingFrame,
-    tickets: Map<string, PendingFallback>,
-  ): void {
-    const previousCandidate = this.latestFallbackTickets.get(renderableKey);
+  ): PendingFallback | undefined {
+    const previousCandidate = this.fallbackConsumers.get(renderableKey)?.latest;
     const staged = stageFallbackEvidence(
       previousCandidate?.evidence,
       renderableKey,
@@ -1008,33 +1021,15 @@ export class ReflectionProbeRecordOwner {
       });
       return;
     }
-    const signature = staged.signature;
-    if (previousCandidate !== undefined && previousCandidate.signature !== signature) {
-      this.fallbackRetiredFrames.set(renderableKey, frameId);
-    }
-    const previousSignature = this.fallbackSignatures.get(renderableKey);
-    if (previousSignature !== undefined && previousSignature !== signature) {
-      // A changed source, coverage, extent, or BRDF is not a compatible LKG.
-      // Hide the old row until this new candidate has its own matching
-      // submit/readback receipt; otherwise SSR could subtract a stale lobe.
-      this.fallbackReceipts.delete(renderableKey);
-      this.fallbackSignatures.delete(renderableKey);
-      this.fallbackCommittedFrames.delete(renderableKey);
-      this.fallbackRetiredFrames.set(renderableKey, frameId);
-      this.fallbackReadback = undefined;
-      if (this.fallbackReceiptKey === renderableKey) this.fallbackReceiptKey = undefined;
-    }
-    const pending: PendingFallback = {
+    return {
       ticket: ++this.nextFallbackTicket,
       frameId,
       deviceGeneration: recordContext(this.internals).deviceScope.generation,
       projection: staged.projection,
-      signature,
+      signature: staged.signature,
       receiptFields: staged.receiptFields,
       evidence: staged,
     };
-    tickets.set(renderableKey, pending);
-    this.latestFallbackTickets.set(renderableKey, pending);
   }
 
   private selectFallbackReceiptKey(
@@ -1079,87 +1074,55 @@ export class ReflectionProbeRecordOwner {
     this.fallbackReceiptKey = firstKey;
   }
 
-  /** Commit exact-zero neutral rows even when a non-neutral MRT readback fails. */
-  private commitNeutralFallbacks(fallbackTickets: ReadonlyMap<string, PendingFallback>): number {
-    let committed = 0;
-    for (const [renderableKey, pending] of fallbackTickets) {
-      if (
-        pending.projection.source === 'neutral' &&
-        this.latestFallbackTickets.get(renderableKey) === pending &&
-        pending.deviceGeneration === recordContext(this.internals).deviceScope.generation
-      ) {
-        this.commitFallbackProjection(renderableKey, pending, 'neutral');
-        committed += 1;
-      }
-    }
-    return committed;
-  }
-
   private commitFallbackProjection(
     renderableKey: string,
+    consumer: FallbackConsumer,
     pending: PendingFallback,
     state: ReflectionFallbackReceipt['state'],
   ): void {
-    const signature = pending.signature;
-    const previousSignature = this.fallbackSignatures.get(renderableKey);
-    const changed = signature !== previousSignature;
-    const previous = this.fallbackReceipts.get(renderableKey);
-    const known = this.fallbackGenerations.get(renderableKey);
-    const generations = known ?? {
-      source: previous?.sourceGeneration ?? 0,
-      projection: previous?.projectionGeneration ?? 0,
-    };
+    if (!this.fallbackReceipts.has(renderableKey)) consumer.generation++;
     const receipt = Object.freeze({
       ...pending.receiptFields,
       rendererId: recordContext(this.internals).deviceScope.owner,
       producerId: REFLECTION_PROBE_PRODUCER_ID,
       ...(this.internals.ssrIdentity === undefined ? {} : { identity: this.internals.ssrIdentity }),
       frameId: pending.frameId,
-      sourceGeneration: generations.source + (changed ? 1 : 0),
-      projectionGeneration: generations.projection + (changed ? 1 : 0),
+      sourceGeneration: consumer.generation,
+      projectionGeneration: consumer.generation,
       deviceGeneration: pending.deviceGeneration,
       state,
       candidateVisible: false,
     }) satisfies ReflectionFallbackReceipt;
-    // An unchanged signature keeps the recorded generations as they are.
-    if (changed || known === undefined)
-      this.fallbackGenerations.set(renderableKey, {
-        source: receipt.sourceGeneration,
-        projection: receipt.projectionGeneration,
-      });
-    this.fallbackSignatures.set(renderableKey, signature);
     this.fallbackReceipts.set(renderableKey, receipt);
-    this.fallbackCommittedFrames.set(renderableKey, pending.frameId);
     if (this.fallbackReceiptKey === undefined) this.fallbackReceiptKey = renderableKey;
-    this.refreshFallbackReceipt();
   }
 
-  /** Retain only a source-identical committed row after candidate failure. */
-  private preserveFallbackLkg(fallbackTickets: ReadonlyMap<string, PendingFallback>): void {
-    for (const [renderableKey, pending] of fallbackTickets) {
-      if (this.latestFallbackTickets.get(renderableKey) !== pending) continue;
-      const previous = this.fallbackReceipts.get(renderableKey);
-      const signature = pending.signature;
-      const compatible =
-        previous !== undefined && this.fallbackSignatures.get(renderableKey) === signature;
-      if (compatible) {
-        if (previous.state !== 'neutral' && pending.projection.source !== 'neutral') {
-          this.fallbackReceipts.set(
-            renderableKey,
-            Object.freeze({ ...previous, state: 'lkg' }) satisfies ReflectionFallbackReceipt,
-          );
-        }
+  /** Settle the issued consumers even when no validated fallback target is available. */
+  private settleMissingFallback(
+    tickets: ReadonlyMap<string, PendingFallback>,
+    submitted: boolean,
+  ): 'neutral' | 'stale-neutral' | 'needs-output' {
+    let result: 'neutral' | 'stale-neutral' | 'needs-output' = 'neutral';
+    const device = recordContext(this.internals).deviceScope.generation;
+    for (const [key, pending] of tickets) {
+      const consumer = this.fallbackConsumers.get(key);
+      if (submitted && pending.projection.source === 'neutral') {
+        if (consumer?.latest === pending && pending.deviceGeneration === device) {
+          this.commitFallbackProjection(key, consumer, pending, 'neutral');
+        } else if (result === 'neutral') result = 'stale-neutral';
         continue;
       }
-      // A source or coverage change cannot use the old row as LKG.  The stage
-      // normally retires it eagerly; this second guard covers failed first
-      // submissions and keeps stale rows fail-closed.
-      this.fallbackReceipts.delete(renderableKey);
-      this.fallbackSignatures.delete(renderableKey);
-      this.fallbackCommittedFrames.delete(renderableKey);
-      this.fallbackRetiredFrames.set(renderableKey, pending.frameId);
+      result = 'needs-output';
+      if (consumer?.latest !== pending) continue;
+      const previous = this.fallbackReceipts.get(key);
+      if (previous === undefined) {
+        consumer.firstTicket = pending.ticket;
+      } else if (previous.state === 'active' && pending.projection.source !== 'neutral') {
+        this.fallbackReceipts.set(key, Object.freeze({ ...previous, state: 'lkg' }));
+      }
     }
     this.refreshFallbackReceipt();
+    return result;
   }
 
   private async completeFallbackSubmission(
@@ -1198,7 +1161,7 @@ export class ReflectionProbeRecordOwner {
             expected: 'the frame containing the fallback projection to submit successfully',
           },
         );
-        this.preserveFallbackLkg(fallbackTickets);
+        this.settleMissingFallback(fallbackTickets, false);
       }
       return;
     }
@@ -1208,15 +1171,10 @@ export class ReflectionProbeRecordOwner {
         fallbackOutput.readback === undefined)
     ) {
       // Neutral rows require no attachment; non-neutral rows need an executed output.
-      const committedNeutral = this.commitNeutralFallbacks(fallbackTickets);
-      const nonNeutral = new Map(
-        [...fallbackTickets].filter(([, pending]) => pending.projection.source !== 'neutral'),
-      );
-      if (nonNeutral.size === 0) this.fallbackReadback = undefined;
-      if (nonNeutral.size === 0 && committedNeutral === fallbackTickets.size) {
-        this.clearFallbackFailure();
-      }
-      if (nonNeutral.size > 0) {
+      const result = this.settleMissingFallback(fallbackTickets, true);
+      if (result !== 'needs-output') this.fallbackReadback = undefined;
+      if (result === 'neutral') this.clearFallbackFailure();
+      if (result === 'needs-output') {
         this.recordFallbackFailure({
           stage: 'completion',
           code:
@@ -1227,7 +1185,6 @@ export class ReflectionProbeRecordOwner {
           detail: { frameId: fallbackTickets.values().next().value?.frameId },
         });
       }
-      this.preserveFallbackLkg(nonNeutral);
       return;
     }
     let readback:
@@ -1247,12 +1204,7 @@ export class ReflectionProbeRecordOwner {
         expected: 'the fallback MRT readback to map and resolve',
         detail: { reason: cause instanceof Error ? cause.message : String(cause) },
       });
-      this.commitNeutralFallbacks(fallbackTickets);
-      this.preserveFallbackLkg(
-        new Map(
-          [...fallbackTickets].filter(([, pending]) => pending.projection.source !== 'neutral'),
-        ),
-      );
+      this.settleMissingFallback(fallbackTickets, true);
       return;
     }
     if (
@@ -1272,34 +1224,36 @@ export class ReflectionProbeRecordOwner {
           actualTextureIdentity: readback.textureIdentity,
         },
       });
-      this.commitNeutralFallbacks(fallbackTickets);
-      this.preserveFallbackLkg(
-        new Map(
-          [...fallbackTickets].filter(([, pending]) => pending.projection.source !== 'neutral'),
-        ),
-      );
+      this.settleMissingFallback(fallbackTickets, true);
       return;
     }
-    const eligible: Array<[string, PendingFallback]> = [];
+    let committed = 0;
+    let hasNonNeutral = false;
     let staleCount = 0;
     for (const [renderableKey, pending] of fallbackTickets) {
-      const latest = this.latestFallbackTickets.get(renderableKey);
-      const retiredAt = this.fallbackRetiredFrames.get(renderableKey);
-      const committedFrame = this.fallbackCommittedFrames.get(renderableKey);
+      const consumer = this.fallbackConsumers.get(renderableKey);
+      const committedFrame = this.fallbackReceipts.get(renderableKey)?.frameId;
       if (
-        latest === undefined ||
-        latest.signature !== pending.signature ||
+        consumer === undefined ||
+        pending.ticket < consumer.firstTicket ||
         pending.frameId !== fallbackOutput.frameId ||
         pending.deviceGeneration !== recordContext(this.internals).deviceScope.generation ||
-        (retiredAt !== undefined && pending.frameId < retiredAt) ||
         (committedFrame !== undefined && pending.frameId <= committedFrame)
       ) {
         staleCount += 1;
         continue;
       }
-      eligible.push([renderableKey, pending]);
+      const neutral = pending.projection.source === 'neutral';
+      this.commitFallbackProjection(
+        renderableKey,
+        consumer,
+        pending,
+        neutral ? 'neutral' : 'active',
+      );
+      if (!neutral) hasNonNeutral = true;
+      committed++;
     }
-    if (eligible.length === 0) {
+    if (committed === 0) {
       if (staleCount > 0) {
         this.recordFallbackFailure({
           stage: 'completion',
@@ -1312,7 +1266,6 @@ export class ReflectionProbeRecordOwner {
       this.refreshFallbackReceipt();
       return;
     }
-    const hasNonNeutral = eligible.some(([, pending]) => pending.projection.source !== 'neutral');
     const previousReadback = this.fallbackReadback;
     if (
       hasNonNeutral &&
@@ -1339,13 +1292,6 @@ export class ReflectionProbeRecordOwner {
       });
     }
     if (readback === undefined) this.fallbackReadback = undefined;
-    for (const [renderableKey, pending] of eligible) {
-      this.commitFallbackProjection(
-        renderableKey,
-        pending,
-        pending.projection.source === 'neutral' ? 'neutral' : 'active',
-      );
-    }
     this.clearFallbackFailure();
     this.refreshFallbackReceipt();
   }
@@ -1361,11 +1307,7 @@ export class ReflectionProbeRecordOwner {
       device.destroyTexture(set.depthTexture);
     }
     this.retiredCubes.clear();
-    this.latestFallbackTickets.clear();
-    this.fallbackRetiredFrames.clear();
-    this.fallbackCommittedFrames.clear();
-    this.fallbackGenerations.clear();
-    this.fallbackSignatures.clear();
+    this.fallbackConsumers.clear();
     this.fallbackReceipts.clear();
     this.fallbackReadback = undefined;
     this.fallbackReceiptKey = undefined;
@@ -1384,6 +1326,12 @@ export class ReflectionProbeRecordOwner {
     this.arrays = new PmremArrayPool(this.resourceDevice, (error) =>
       this.internals.errorRegistry.fire(error),
     );
+  }
+
+  private acceptedAtlas(resource: ProbeGpuResource): PmremAtlas | PmremArrayLayer | undefined {
+    return resource.activeFact?.center.every((v, i) => v === resource.fact.center[i])
+      ? this.activeAtlas(resource)
+      : undefined;
   }
 
   private activeAtlas(resource: ProbeGpuResource): PmremAtlas | PmremArrayLayer | undefined {
@@ -1515,7 +1463,7 @@ export class ReflectionProbeRecordOwner {
     const diffuseAvailable =
       skylight !== undefined &&
       (skylight.equirectHandle === 0 ||
-        (cache?.irradianceView !== undefined &&
+        (cache?.skySh !== undefined &&
           cache.prefilterView !== undefined &&
           cache.brdfLutView !== undefined));
     const diffuse =

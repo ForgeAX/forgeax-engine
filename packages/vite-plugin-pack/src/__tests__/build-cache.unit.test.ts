@@ -13,7 +13,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveDdcRoot, semanticBuildKey } from '@forgeax/engine-ddc';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 
 describe('build-cache.unit.test.ts', () => {
   describe('semantic key', () => {
@@ -57,13 +57,10 @@ describe('build-cache.unit.test.ts', () => {
 
   it('resolves nested app builds to the nearest workspace DDC root', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'forgeax-workspace-'));
-    try {
-      const app = join(workspace, 'apps', 'demo');
-      await mkdir(app, { recursive: true });
-      await writeFile(join(workspace, 'pnpm-workspace.yaml'), 'packages: []\n');
-      expect(resolveDdcRoot(app)).toBe(join(workspace, 'node_modules/.cache/forgeax-ddc'));
-    } finally {
-      await rm(workspace, { recursive: true, force: true });
-    }
+    onTestFinished(() => rm(workspace, { recursive: true, force: true }));
+    const app = join(workspace, 'apps', 'demo');
+    await mkdir(app, { recursive: true });
+    await writeFile(join(workspace, 'pnpm-workspace.yaml'), 'packages: []\n');
+    expect(resolveDdcRoot(app)).toBe(join(workspace, 'node_modules/.cache/forgeax-ddc'));
   });
 });

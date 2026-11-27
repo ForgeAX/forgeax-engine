@@ -11,7 +11,7 @@ import {
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
 import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
-import { createGlobalSdfComposition } from '../../raytracing/global-sdf';
+import { createGlobalSdfComposition, GLOBAL_SDF_SETTINGS_BYTES } from '../../raytracing/global-sdf';
 import {
   createGlobalSdfQueryRecorder,
   GLOBAL_SDF_HIT_STRIDE,
@@ -99,13 +99,14 @@ export async function verifyProbeRays(
       grid,
     )
   ).unwrap();
-  const originSupport = createProbeOriginSupportRecorder(
-    device,
-    await compile(PROBE_ORIGIN_SUPPORT_WGSL),
+  const originSupport = (
+    await createProbeOriginSupportRecorder(device, await compile(PROBE_ORIGIN_SUPPORT_WGSL))
   ).unwrap();
-  const emitter = createProbeRayRecorder(device, await compile(PROBE_RAYS_WGSL)).unwrap();
+  const emitter = (await createProbeRayRecorder(device, await compile(PROBE_RAYS_WGSL))).unwrap();
   const placement = createRasterProbePlacement(device, await compile(fixture.kernel)).unwrap();
-  const query = createGlobalSdfQueryRecorder(device, await compile(GLOBAL_SDF_QUERY_WGSL)).unwrap();
+  const query = (
+    await createGlobalSdfQueryRecorder(device, await compile(GLOBAL_SDF_QUERY_WGSL))
+  ).unwrap();
   const rasterModule = await compile(fixture.raster);
   const layout = device
     .createBindGroupLayout({
@@ -401,7 +402,7 @@ export async function verifyProbeRays(
             trace,
             {
               voxels: { buffer: region.buffers.voxels, size: region.voxelCount * 16 },
-              grid: { buffer: region.buffers.settings, size: 48 },
+              grid: { buffer: region.buffers.settings, size: GLOBAL_SDF_SETTINGS_BYTES },
               rays: { buffer: rays, offset: alignment, size: count * RAY_INPUT_STRIDE },
               hits: { buffer: hits, offset: alignment, size: count * GLOBAL_SDF_HIT_STRIDE },
               settings: { buffer: entry.boundedQuery, size: 16 },
@@ -422,7 +423,7 @@ export async function verifyProbeRays(
             emission: { buffer: diagnostics, offset: alignment, size: 16 },
             hits: { buffer: hits, offset: alignment, size: count * GLOBAL_SDF_HIT_STRIDE },
             voxels: { buffer: region.buffers.voxels, size: region.voxelCount * 16 },
-            grid: { buffer: region.buffers.settings, size: 48 },
+            grid: { buffer: region.buffers.settings, size: GLOBAL_SDF_SETTINGS_BYTES },
             diagnostics: { buffer: entry.support, offset: alignment, size: 96 },
           },
           1,
@@ -820,9 +821,11 @@ export async function verifyProbeRayRows(
     const rays = make(new Uint8Array(count * perProbe * RAY_INPUT_STRIDE));
     const diagnostics = make(new Uint8Array(count * 16));
     const settings = make(new Uint8Array(new Float32Array([2, 0, 0, 0]).buffer), true);
-    const recorder = createProbeRayRecorder(
-      device,
-      (await gpu.createShaderModule(device, { code: PROBE_RAYS_WGSL })).unwrap(),
+    const recorder = (
+      await createProbeRayRecorder(
+        device,
+        (await gpu.createShaderModule(device, { code: PROBE_RAYS_WGSL })).unwrap(),
+      )
     ).unwrap();
     const encoder = device.createCommandEncoder({}).unwrap(),
       pass = encoder.beginComputePass({});

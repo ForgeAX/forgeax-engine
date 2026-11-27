@@ -26,6 +26,7 @@ import type {
   AssetRecords,
   PreparedAssetRanges,
 } from './internal/asset-records';
+import { linkTerrainWeightDetail } from './terrain-closure.js';
 
 /** Author data can create a Terrain directly; the runtime owns its derived closure. */
 export type TerrainInput = TerrainSource & {
@@ -41,6 +42,7 @@ const authorFields = new Set([
   'heights',
   'weights',
   'layers',
+  'weightDetail',
   'materialEncoding',
 ]);
 
@@ -70,7 +72,7 @@ export function prepareTerrainOutputs(
   } catch {
     return err(invalid('plain owned Terrain author data'));
   }
-  const pending: number[] = [];
+  const pending = new Set<number>();
   const reference = <K extends 'material' | 'texture'>(
     value: string | AssetHandle<K>,
     kind: K,
@@ -78,12 +80,23 @@ export function prepareTerrainOutputs(
     const handle = typeof value === 'number' ? value : resolve(value.toLowerCase());
     if (handle === undefined || handle === 0 || !records.validate(handle, kind).ok)
       throw invalid(`a loaded ${kind} owned by this runtime`);
-    pending.push(handle);
+    pending.add(handle);
     return handle as AssetHandle<K>;
   };
   try {
+    const detail = source.weightDetail;
     source = {
       ...source,
+      ...(detail === undefined
+        ? {}
+        : {
+            weightDetail: {
+              ...detail,
+              texture: linkTerrainWeightDetail(detail?.texture, records, resolve, pending, () =>
+                invalid('a loaded Terrain weight detail texture owned by this runtime'),
+              ),
+            },
+          }),
       layers: source.layers.map((layer) =>
         layer.blend === 'height'
           ? {
@@ -94,7 +107,7 @@ export function prepareTerrainOutputs(
           : { ...layer, material: reference(layer.material, 'material') },
       ),
     };
-    const borrowed = records.borrowClosure<Asset>(pending);
+    const borrowed = records.borrowClosure<Asset>([...pending]);
     if (!borrowed.ok) return borrowed;
     const assets = Object.fromEntries(borrowed.value);
     // These keys only name values in this private candidate; they are not GUIDs.

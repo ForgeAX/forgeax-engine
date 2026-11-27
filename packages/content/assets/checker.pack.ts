@@ -1,11 +1,7 @@
 import { definePack } from '@forgeax/engine-pack/source';
 import type { SamplerAsset, TextureAsset } from '@forgeax/engine-types';
-import { ok } from '@forgeax/engine-types';
+import { linearChannelToSrgb, ok } from '@forgeax/engine-types';
 import { CONTENT_PACKAGE_IDS, CONTENT_SOURCE_KEYS } from '../src/ids.ts';
-import {
-  createWaterSurfaceTextures,
-  type WaterSurfaceTextureName,
-} from './water/texture-pixels.ts';
 
 /** Texels per side; a power of two keeps every mip level an exact 2x2 box reduction. */
 export const CHECKER_SIZE = 256;
@@ -13,14 +9,6 @@ export const CHECKER_SIZE = 256;
 export const CHECKER_CELLS = 2;
 /** Linear reflectances of the two cells, a neutral mid-gray pair. */
 export const CHECKER_LINEAR = [0.18, 0.3] as const;
-
-export function linearToSrgb(value: number): number {
-  return value <= 0.0031308 ? value * 12.92 : 1.055 * value ** (1 / 2.4) - 0.055;
-}
-
-export function srgbToLinear(value: number): number {
-  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-}
 
 /**
  * Linear-float mip chain: level 0 is the exact checker; each next level is the
@@ -60,7 +48,7 @@ export function checkerTextureBytes(): Uint8Array {
   let offset = 0;
   for (const level of levels)
     for (const value of level) {
-      const encoded = Math.round(linearToSrgb(value) * 255);
+      const encoded = Math.round(linearChannelToSrgb(value) * 255);
       bytes.set([encoded, encoded, encoded, 255], offset);
       offset += 4;
     }
@@ -70,16 +58,9 @@ export function checkerTextureBytes(): Uint8Array {
 export default definePack({
   schemaVersion: '2.0.0',
   packageId: CONTENT_PACKAGE_IDS.textures,
-  name: 'Engine Content / Textures',
-  build: () => {
-    const waterTextures = Object.fromEntries(
-      Object.entries(createWaterSurfaceTextures()).map(([name, texture]) => [
-        CONTENT_SOURCE_KEYS.waterTexture(name as WaterSurfaceTextureName),
-        texture,
-      ]),
-    );
-    return ok({
-      ...waterTextures,
+  name: 'Engine Content / Checker',
+  build: () =>
+    ok({
       [CONTENT_SOURCE_KEYS.checkerTexture]: {
         kind: 'texture',
         shape: { viewDimension: '2d', extent: { width: CHECKER_SIZE, height: CHECKER_SIZE } },
@@ -97,6 +78,5 @@ export default definePack({
         addressModeV: 'repeat',
         maxAnisotropy: 16,
       } satisfies SamplerAsset,
-    });
-  },
+    }),
 });

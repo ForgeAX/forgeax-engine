@@ -81,7 +81,7 @@ export async function verifyProbeAtmosphere(
     throw new Error(`Atmosphere change did not publish: ${JSON.stringify(renderer.inspect().reflectionProbes)}`);
   };
   try {
-    const installed = renderer.setProfile({ ...profile, ssao: { quality: 'medium', radius: 0.5 } });
+    const installed = renderer.setProfile({ ...profile, ambientOcclusion: { enabled: true, quality: 'medium', radius: 0.5 } });
     if (!installed.ok) throw installed.error;
     world.set(probe, ReflectionProbe, { updateIntent: 0, invalidationVersion: original.invalidationVersion + 1 }).unwrap();
     await settle(generation());

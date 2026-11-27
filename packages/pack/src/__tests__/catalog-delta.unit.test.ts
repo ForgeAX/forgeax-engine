@@ -64,3 +64,48 @@ it('compares canonical POD fields independently of object key order and GUID cas
     calculateCatalogDelta([left], [{ ...right, packageUrl: '/changed' }])?.changed,
   ).toHaveLength(1);
 });
+
+it('separates GUID additions, removals and changes while preserving complete producer facts', () => {
+  const row = (guid: string): CatalogEntry => ({
+    guid,
+    kind: 'texture',
+    packageUrl: `/assets/${guid}.bin`,
+    sourcePath: `${guid}.png`,
+  });
+  const original = {
+    ...row('changed'),
+    packageId: 'pkg/watch',
+    provenance: { provider: 'watch-fixture', version: '1.0.0' },
+    revision: { digest: 'sha256:watch', observedAt: 1, rootId: 'root-watch' },
+    sourceKey: 'watch/main',
+    sourceIndex: 0,
+    diagnostics: [{ code: 'watch-note', severity: 'warning' as const, hint: 'recheck revision' }],
+    relations: [
+      {
+        from: { type: 'asset' as const, id: 'changed' },
+        to: { type: 'asset' as const, id: 'retained' },
+        type: 'references' as const,
+        provenance: { provider: 'watch-fixture', version: '1.0.0' },
+      },
+    ],
+  };
+  const updated = {
+    ...original,
+    packageUrl: '/assets/new.bin',
+    revision: { ...original.revision, digest: 'sha256:watch-2', observedAt: 2 },
+  };
+  const retained = row('retained');
+  expect(
+    calculateCatalogDelta(
+      [retained, original, row('removed')],
+      [{ ...retained, guid: 'RETAINED' }, updated, row('added')],
+    ),
+  ).toMatchObject({ added: [row('added')], changed: [updated], removed: ['removed'] });
+
+  const anonymous = { ...retained, sourceKey: 'watch/main', sourceIndex: 0 };
+  const delta = calculateCatalogDelta(
+    [anonymous],
+    [{ ...anonymous, packageUrl: '/assets/new.bin' }],
+  );
+  expect(delta?.topology).toBeUndefined();
+});

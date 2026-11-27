@@ -74,3 +74,26 @@ it('rejects a missing or wrong-kind ordinary texture edge for the visual child',
     detail: { dependencyGuid: noiseGuid, expectedKind: 'texture', actualKind: 'material' },
   });
 });
+
+it('accepts both sampled texture kinds for the fluid impulse and requires its own reference edge', () => {
+  const fluid = {
+    kind: 'water-simulation-recipe',
+    system: 'fluid-simulation',
+    materialGuids: [],
+    textureGuids: [],
+    impulseNoiseGuid: noiseGuid,
+  } as unknown as Asset;
+  const references = [{ guid: noiseGuid }];
+  for (const kind of ['texture', 'gpu-texture'])
+    expect(validateAssetReferences(fluid, recipeGuid, references, () => kind)).toBeUndefined();
+  expect(validateAssetReferences(fluid, recipeGuid, [], () => 'gpu-texture')).toMatchObject({
+    code: 'asset-parse-failed',
+    detail: { dependencyGuid: noiseGuid, actualKind: 'missing-ref-edge' },
+  });
+  expect(
+    validateAssetReferences(fluid, recipeGuid, references, () => 'texture-generator'),
+  ).toMatchObject({
+    code: 'asset-parse-failed',
+    detail: { dependencyGuid: noiseGuid, actualKind: 'texture-generator' },
+  });
+});

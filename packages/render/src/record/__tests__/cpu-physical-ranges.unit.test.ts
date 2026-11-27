@@ -27,7 +27,7 @@ it.each([
           [3, 1, 0, 0, 0],
           [3, 1, level ? 6 : 3, level ? 5 : 2, 0],
         ]);
-        expect(f.rows(level)[1]?.mesh.submeshes).toBe(f.sourceSubmeshes);
+        expect(f.rows(level).at(1)?.mesh.submeshes).toBe(f.sourceSubmeshes);
         expect(f.second.source.gpuDrivenDraws).toEqual(f.sourceDraws);
         pass.end();
       }

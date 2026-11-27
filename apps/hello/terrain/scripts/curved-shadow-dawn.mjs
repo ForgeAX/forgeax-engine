@@ -36,7 +36,7 @@ try {
   for (const renderPath of ['forward','deferred']) {
   for (const [filter,shadowFilter] of [['pcf1',DirectionalShadowFilterValue.pcf1],['pcf3',DirectionalShadowFilterValue.pcf3],['pcf5',DirectionalShadowFilterValue.pcf5]]) {
     const recorder=attachRecorder(webgpu).unwrap();
-    const h=await terrainHarness({width:960,height:540,backendArgs:['backend=metal'],appOptions:{rhi:recorder.backend.rhi,standardProfile:{...DEFAULT_STANDARD_PROFILE,renderPath,ssao:false}}});
+    const h=await terrainHarness({width:960,height:540,backendArgs:['backend=metal'],appOptions:{rhi:recorder.backend.rhi,standardProfile:{...DEFAULT_STANDARD_PROFILE,renderPath,ambientOcclusion:{ enabled: false }}}});
     const capture=async name => {
       const pending=recorder.captureFrame();(await recorder.frameBoundary()).unwrap();await h.frame();(await recorder.frameBoundary()).unwrap();
       const tape=(await pending).unwrap();writeFileSync(resolve(dir,name+'.rhitape'),tape.bytes);

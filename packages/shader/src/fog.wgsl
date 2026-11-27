@@ -1,5 +1,5 @@
 #define_import_path forgeax_view::fog
-#import forgeax_view::common::{View, view_atmosphere_aerial_enabled}
+#import forgeax_view::common::{View, view_atmosphere_aerial_enabled, view_atmosphere_fast_ap, view_atmosphere_affects_height_fog}
 #import forgeax_view::atmosphere::{view_atmosphere, view_solar_transmittance, view_distant_sky_light}
 
 struct FogViewParams {
@@ -65,11 +65,14 @@ fn height_fog_with_source(v: View, worldPos: vec3<f32>, source:vec3<f32>) -> Fog
 fn height_fog(v:View, worldPos:vec3<f32>)->FogSample {
   if v.fogHeightOpacity.y==0.0 {return FogSample(vec3<f32>(0.0),1.0);}
   var source=v.fogColorDensity.xyz;
-  if view_atmosphere_aerial_enabled(v) {
+  if view_atmosphere_aerial_enabled(v) && view_atmosphere_affects_height_fog(v) {
     // A fixed source preserves the analytic height integral. Ground solar
     // extinction is sampled once, independent of the segment midpoint.
-    let ground=v.atmosphere.originRadius.xyz*1000.0+vec3<f32>(0.0,1.0,0.0);
-    source+=view_distant_sky_light(v)+view_solar_transmittance(v,ground)*v.lightColor/(4.0*3.14159265359);
+    source+=view_distant_sky_light(v);
+    if !view_atmosphere_fast_ap(v) {
+      let ground=v.atmosphere.originRadius.xyz*1000.0+vec3<f32>(0.0,1.0,0.0);
+      source+=view_solar_transmittance(v,ground)*v.lightColor/(4.0*3.14159265359);
+    }
   }
   // Godot 4.6.2 analytic sun scatter: renderer_rd scene_forward_clustered.glsl L1044-1053.
   let towards=worldPos-v.cameraPos;let ray=towards/max(length(towards),0.00001);
@@ -135,11 +138,20 @@ fn forward_fog_transmission(v: View, worldPos: vec3<f32>, transmittance: f32,
   if v.fogSky.y < 0.5 {
     return translucent_fog_transmission(v,worldPos,color,alpha,backdrop,transmission);
   }
+  return forward_vertex_fog_transmission(v,transmittance,color,alpha,backdrop,transmission);
+}
+
+fn forward_vertex_fog_transmission(v: View, transmittance: f32, color: vec3<f32>,
+  alpha: f32, backdrop: vec3<f32>, transmission: vec3<f32>) -> vec3<f32> {
   // Slot zero is an ordinary opaque writer on this route. Blended copies
   // retain their existing straight / premultiplied / additive composition.
   let composition=max(1u,u32(v.fogHeightOpacity.z+0.5));
   let fog=AtmosphereFogSample(v.fogColorDensity.xyz * (1.0 - transmittance),vec3<f32>(transmittance));
   return compose_material_fog(fog,composition,color,alpha,backdrop,transmission);
+}
+
+fn forward_vertex_fog(v: View, transmittance: f32, color: vec3<f32>, alpha: f32) -> vec3<f32> {
+  return forward_vertex_fog_transmission(v,transmittance,color,alpha,vec3<f32>(0.0),vec3<f32>(0.0));
 }
 
 fn forward_fog(v: View, worldPos: vec3<f32>, transmittance: f32,

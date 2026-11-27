@@ -11,18 +11,40 @@ import {
 import { COLOR_PASS_SELECTOR, FORWARD_PASS_SELECTOR } from '../systems/pass-selector';
 import { addTypedScenePass } from '../typed-render-graph-primitives';
 import { addWaterFluidGraph } from '../water/fluid-graph';
+import { renderInternalSize } from './render-extent';
 import { addSingleLayerMediumRawDepthProducer } from './single-layer-medium-passes';
 import type { WaterInfoGraphTargets } from './standard-build-context';
+
+function hasOutputDepthLattice(
+  topology: RenderPipelineTopology,
+  visibleDepth: RenderPipelineTarget,
+  temporal: boolean,
+): boolean {
+  if (temporal || visibleDepth.sampleCount !== 1) return false;
+  const internal = renderInternalSize(topology);
+  return (
+    internal === 'surface' ||
+    (internal.width === topology.surface.width && internal.height === topology.surface.height)
+  );
+}
 
 /** Real output-domain coverage; TAA's dilated motion/depth is not display geometry. */
 export function addStandardPostProcessDepth(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   topology: RenderPipelineTopology,
   scene: RenderPipelineTarget,
-  gpuDriven?: RenderPipelineGpuDrivenProjection,
-  waterInfoTargets?: WaterInfoGraphTargets,
-  waterFoamSimulation?: GraphTextureView,
-): Result<RenderPipelineTarget, RenderGraphError> {
+  input: {
+    readonly requested: boolean;
+    readonly temporal: boolean;
+    readonly visibleDepth: RenderPipelineTarget;
+    readonly gpuDriven?: RenderPipelineGpuDrivenProjection | undefined;
+    readonly waterInfoTargets?: WaterInfoGraphTargets | undefined;
+    readonly waterFoamSimulation?: GraphTextureView | undefined;
+  },
+): Result<RenderPipelineTarget | undefined, RenderGraphError> {
+  if (!input.requested || hasOutputDepthLattice(topology, input.visibleDepth, input.temporal))
+    return ok(undefined);
+  const { gpuDriven, waterInfoTargets, waterFoamSimulation } = input;
   const { graph } = context;
   const depth = createRenderPipelineTarget(graph, 'standard-post-process-depth', {
     format: 'depth32float-stencil8',
@@ -50,12 +72,33 @@ export function addStandardPostProcessDepth(
   });
   if (!opaque.ok) return opaque;
   if (topology.water !== true && topology.singleLayerMedium !== true) return ok(depth.value);
+  return addPostProcessSurfaceCoverage(
+    context,
+    topology,
+    scene,
+    depth.value,
+    coverage.value,
+    waterInfoTargets,
+    waterFoamSimulation,
+  );
+}
+
+function addPostProcessSurfaceCoverage(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  topology: RenderPipelineTopology,
+  scene: RenderPipelineTarget,
+  depth: RenderPipelineTarget,
+  coverage: RenderPipelineTarget,
+  waterInfoTargets: WaterInfoGraphTargets | undefined,
+  waterFoamSimulation: GraphTextureView | undefined,
+): Result<RenderPipelineTarget, RenderGraphError> {
+  const { graph } = context;
   // Surface coverage can read opaque depth while writing nearest depth.
   const rawDepth = addSingleLayerMediumRawDepthProducer({
     graph,
     label: 'standard-post-process-opaque-depth',
     sourceColor: scene,
-    sourceDepth: depth.value,
+    sourceDepth: depth,
     size: 'surface',
   });
   if (!rawDepth.ok) return rawDepth;
@@ -67,8 +110,8 @@ export function addStandardPostProcessDepth(
   ]) {
     const surface = addTypedScenePass(graph, {
       name: `standard-post-process-${recordMode}`,
-      color: coverage.value,
-      depth: depth.value,
+      color: coverage,
+      depth: depth,
       selector: FORWARD_PASS_SELECTOR,
       recordMode,
       passKind: 'forward',
@@ -91,5 +134,5 @@ export function addStandardPostProcessDepth(
     });
     if (!surface.ok) return surface;
   }
-  return ok(depth.value);
+  return ok(depth);
 }

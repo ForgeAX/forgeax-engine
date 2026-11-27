@@ -237,7 +237,7 @@ export async function verifyVisibilitySdf(
         assert(id);
         const bytes = (await replay.readResource(id)).unwrap().bytes;
         const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        expect(v.getFloat32(140, true)).toBe(1);
+        expect(v.getFloat32(140, true)).toBe(2); // sampled visibility surface encoding
         expect(v.getFloat32(132, true)).toBe(0);
         expect(v.getFloat32(128, true)).toBeCloseTo((Math.sqrt(3) * 0.125) / 2, 7);
         expect(v.getFloat32(96, true)).toBe(sheet.origin[0]);

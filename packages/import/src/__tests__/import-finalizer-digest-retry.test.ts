@@ -2,6 +2,7 @@ import type { ImportContext, ImportResult } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { type RunImportMeta, runImport } from '../import-runner.js';
 import { ImporterRegistry } from '../importer-registry.js';
+import { projectImportPack } from '../pack-value.js';
 
 const GUID = '019f0000-0000-7000-8000-000000000071';
 const SOURCE = 'assets/m71.fixture';
@@ -93,7 +94,7 @@ describe('public import finalizer digest recovery', () => {
     if (!repaired.ok || 'skipped' in repaired.value)
       throw new Error('repair must publish a product');
     expect(repaired.value.cookProducts).toHaveLength(1);
-    expect(repaired.value.pack.assets).toHaveLength(1);
+    expect(projectImportPack(repaired.value.product).assets).toHaveLength(1);
     const repairedDigest = repaired.value.cookProducts[0]?.digest;
     if (repairedDigest === undefined) throw new Error('repair must produce a digest');
     publishedDigests.add(repairedDigest);
@@ -103,7 +104,9 @@ describe('public import finalizer digest recovery', () => {
     if (!third.ok || 'skipped' in third.value)
       throw new Error('idempotent run must publish a product');
     expect(third.value.cookProducts[0]?.digest).toBe(repairedDigest);
-    expect(third.value.pack).toEqual(repaired.value.pack);
+    expect(projectImportPack(third.value.product)).toEqual(
+      projectImportPack(repaired.value.product),
+    );
     publishedDigests.add(third.value.cookProducts[0]?.digest ?? '');
 
     expect(publishedDigests.size).toBe(1);

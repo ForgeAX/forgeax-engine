@@ -1,4 +1,11 @@
+import {
+  CLUSTER_GRID_VIEW_SLOT,
+  CLUSTER_INDICES_VIEW_SLOT,
+  CLUSTER_LIGHT_VIEW_SLOT,
+  CLUSTER_PARAMS_VIEW_SLOT,
+} from './environment/bindings';
 import type { SkinTaskBinding } from './record/skin-tasks';
+import { createPrimitiveBindGroup } from './reflection/primitive-bindings';
 // Renderer-owned clustered light resources. One immutable bundle keeps the
 // producer uploads, graph imports, draw bindings and queue-fenced retirement
 // on the same device generation. Storage-capable devices retain the native
@@ -7,13 +14,12 @@ import type { SkinTaskBinding } from './record/skin-tasks';
 
 import type {
   BindGroup,
-  BindGroupEntry,
+  BindGroupDescriptor,
   BindGroupLayout,
   BindGroupLayoutDescriptor,
   Buffer,
   RhiCommandEncoder,
   RhiError,
-  Sampler,
   Texture,
   TextureView,
 } from '@forgeax/engine-rhi';
@@ -27,16 +33,15 @@ import {
 import type { StandardClusterReflectedAbi } from './light-buffer-layout';
 import { createPbrSkinMeshBindGroupEntries } from './pbr-pipeline';
 import { createStandardClusterLayout } from './pipeline/standard-lighting/layout';
+import { StandardClusterStorage } from './pipeline/standard-lighting/storage';
 import {
   type StandardClusterTextureExtent,
   standardClusterTextureLayout,
 } from './pipeline/standard-lighting/texture';
 import { DEFAULT_CLUSTER_GRID, LIGHT_INDEX_LIST_CAPACITY } from './pipeline/standard-profile';
-import { createHdrpBindGroupLayoutDescriptor } from './pipeline-spec';
 import { ClusterTextureTable } from './record/cluster-texture-table';
 import { MESH_PER_ENTITY_STRIDE, MESH_UBO_FULL_ARRAY_BYTES } from './record/mesh-ssbo';
 import type { RenderSystemRuntime } from './record/render-context';
-import { getOrCreateSsaoFallbackTexture } from './ssao-buffers';
 
 export { getOrCreateSsaoFallbackTexture } from './ssao-buffers';
 
@@ -80,10 +85,10 @@ interface HdrpResourceBase {
   readonly directLightSlotBytes: number;
   readonly directLightSlotCapacity: number;
   readonly grid: { readonly x: number; readonly y: number; readonly z: number };
-  readonly unifiedBindGroupLayout: BindGroupLayout;
 }
 
 interface HdrpStorageBuffers extends HdrpResourceBase {
+  readonly membership: StandardClusterStorage;
   readonly kind: 'storage';
   /** The full reflected DirectLightSlot array. */
   readonly lightDataBuffer: Buffer;
@@ -120,6 +125,11 @@ interface HdrpTextureBuffers extends HdrpResourceBase {
 export type HdrpBuffers = HdrpStorageBuffers | HdrpTextureBuffers;
 
 const cache = new WeakMap<RenderSystemRuntime, HdrpBuffers>();
+/** Exact current lighting bundle; does not allocate or recover a missing one. */
+export function hdrpBuffersCurrent(runtime: RenderSystemRuntime, buffers: HdrpBuffers): boolean {
+  return cache.get(runtime) === buffers && buffers.device === runtime.device;
+}
+
 let nextClusterTransportGeneration = 1;
 
 function allocateClusterTransportGeneration(): number {
@@ -131,21 +141,16 @@ function allocateClusterTransportGeneration(): number {
 function supportsHdrpResourceSurface(runtime: RenderSystemRuntime): boolean {
   const surface = runtime.device as unknown as {
     readonly createBuffer?: unknown;
-    readonly createBindGroupLayout?: unknown;
     readonly destroyBuffer?: unknown;
   };
-  return (
-    typeof surface.createBuffer === 'function' &&
-    typeof surface.createBindGroupLayout === 'function' &&
-    typeof surface.destroyBuffer === 'function'
-  );
+  return typeof surface.createBuffer === 'function' && typeof surface.destroyBuffer === 'function';
 }
 
 function isReusableHdrpBundle(
   cached: HdrpBuffers,
   reflectedAbi: StandardClusterReflectedAbi,
   grid: { readonly x: number; readonly y: number; readonly z: number },
-  aoExtent: StandardClusterTextureExtent | undefined,
+  extent: StandardClusterTextureExtent | undefined,
 ): boolean {
   const publicationMatches =
     cached.clusterUniformBytes === reflectedAbi.clusterUniformBytes &&
@@ -153,22 +158,14 @@ function isReusableHdrpBundle(
     cached.directLightSlotCapacity === reflectedAbi.directLightSlot.capacity;
   const requestedCells = grid.x * grid.y * grid.z;
   const cachedCells = cached.grid.x * cached.grid.y * cached.grid.z;
-  const aoLayout = cached.kind === 'texture' ? cached.layout.ao : undefined;
-  const aoMatches =
-    (aoExtent === undefined && aoLayout === undefined) ||
-    (aoExtent !== undefined &&
-      aoLayout !== undefined &&
-      aoLayout.width === aoExtent.width &&
-      aoLayout.height === aoExtent.height &&
-      (cached.kind !== 'texture' ||
-        (cached.layout.screen?.width === aoExtent.screen?.width &&
-          cached.layout.screen?.height === aoExtent.screen?.height &&
-          (cached.layout.atmosphere !== undefined) === (aoExtent.atmosphere === true))));
+  const extentMatches =
+    cached.kind === 'texture' &&
+    (cached.layout.atmosphere !== undefined) === (extent?.atmosphere === true);
   return (
     publicationMatches &&
     (cached.kind === 'storage'
       ? requestedCells <= cachedCells
-      : requestedCells === cachedCells && aoMatches)
+      : requestedCells === cachedCells && extentMatches)
   );
 }
 
@@ -190,7 +187,7 @@ function isReusableHdrpBundle(
 export function getOrCreateHdrpBuffers(
   runtime: RenderSystemRuntime,
   grid: { x: number; y: number; z: number } = DEFAULT_CLUSTER_GRID,
-  aoExtent?: StandardClusterTextureExtent,
+  extent?: StandardClusterTextureExtent,
 ): HdrpBuffers | null {
   const reflectedAbi = runtime.standardClusterAbi;
   if (reflectedAbi === undefined) return null;
@@ -203,11 +200,11 @@ export function getOrCreateHdrpBuffers(
   if (
     cached !== undefined &&
     cached.device === runtime.device &&
-    isReusableHdrpBundle(cached, reflectedAbi, grid, aoExtent)
+    isReusableHdrpBundle(cached, reflectedAbi, grid, extent)
   )
     return cached;
   if (!runtime.device.caps.storageBuffer) {
-    const textures = createHdrpTextureBuffers(runtime, grid, reflectedAbi, aoExtent);
+    const textures = createHdrpTextureBuffers(runtime, grid, reflectedAbi, extent);
     if (textures !== null) {
       cache.set(runtime, textures);
       if (cached !== undefined) retireHdrpBuffers(runtime, cached);
@@ -287,16 +284,9 @@ export function getOrCreateHdrpBuffers(
   }
   created.push(lightBounds.value);
 
-  // Create the unified 7-entry BGL layout for group(2)
-  // (plan D-6, feat-20260609-hdrp-cluster-fragment-ggx M3).
-  // The HDRP BGL descriptor is owned by pipeline-spec and shared with the
-  // pipeline dispatcher and its byte-identical tests.
-  const unifiedBglRes = device.createBindGroupLayout(createHdrpBindGroupLayoutDescriptor());
-  if (!unifiedBglRes.ok) {
-    return failAllocation(unifiedBglRes.error);
-  }
   const buffers: HdrpBuffers = {
     kind: 'storage',
+    membership: new StandardClusterStorage(),
     clusterTransportGeneration: allocateClusterTransportGeneration(),
     device,
     lightDataBuffer: lightData.value,
@@ -312,7 +302,6 @@ export function getOrCreateHdrpBuffers(
     lightBoundsBuffer: lightBounds.value,
     lightBoundsBytes,
     grid: { x: grid.x, y: grid.y, z: grid.z },
-    unifiedBindGroupLayout: unifiedBglRes.value,
   };
   cache.set(runtime, buffers);
   if (cached !== undefined) {
@@ -325,21 +314,21 @@ function createHdrpTextureBuffers(
   runtime: RenderSystemRuntime,
   grid: { readonly x: number; readonly y: number; readonly z: number },
   reflectedAbi: StandardClusterReflectedAbi,
-  aoExtent?: StandardClusterTextureExtent,
+  extent?: StandardClusterTextureExtent,
 ): HdrpTextureBuffers | null {
   const device = runtime.device;
   const clusterUniformBytes = reflectedAbi.clusterUniformBytes;
   const layout = standardClusterTextureLayout(
     createStandardClusterLayout(reflectedAbi.directLightSlot.capacity, grid),
     reflectedAbi.directLightSlot.byteSize,
-    aoExtent,
+    extent,
   );
   const texture = device.createTexture({
     label: 'standard-cluster-tables',
     size: { width: layout.width, height: layout.height, depthOrArrayLayers: 1 },
     format: 'rgba32uint',
     textureBindingViewDimension: '2d',
-    usage: 0x02 | 0x04 | (aoExtent === undefined ? 0 : 0x10 | GPU_TEXTURE_USAGE_COPY_SRC),
+    usage: 0x02 | 0x04 | GPU_TEXTURE_USAGE_COPY_SRC | (extent?.atmosphere ? 0x10 : 0),
   });
   if (!texture.ok) {
     runtime.errorRegistry.fire(texture.error);
@@ -361,13 +350,6 @@ function createHdrpTextureBuffers(
     device.destroyTexture(texture.value);
     return null;
   }
-  const bgl = device.createBindGroupLayout(createHdrpBindGroupLayoutDescriptor(false));
-  if (!bgl.ok) {
-    runtime.errorRegistry.fire(bgl.error);
-    device.destroyBuffer(uniform.value);
-    device.destroyTexture(texture.value);
-    return null;
-  }
   return {
     kind: 'texture',
     atmosphereContent: { medium: {}, aerial: {} },
@@ -376,16 +358,11 @@ function createHdrpTextureBuffers(
     texture: texture.value,
     view: view.value,
     layout,
-    table: new ClusterTextureTable(
-      layout.width,
-      layout.height,
-      reflectedAbi.directLightSlot.capacity,
-    ),
+    table: new ClusterTextureTable(layout.width, layout.height, reflectedAbi.directLightSlot),
     clusterUniformBuffer: uniform.value,
     clusterUniformBytes,
     directLightSlotBytes: reflectedAbi.directLightSlot.byteSize,
     directLightSlotCapacity: reflectedAbi.directLightSlot.capacity,
-    unifiedBindGroupLayout: bgl.value,
     grid: { ...grid },
   };
 }
@@ -470,14 +447,8 @@ export function packClusterUniform(input: {
    * loops them outside the grid.
    */
   readonly directionalLightCount?: number;
-  readonly aoLayout?: {
-    readonly baseWord: number;
-    readonly width: number;
-    readonly height: number;
-    readonly rowWords: number;
-  };
   readonly directLightingStrength?: number;
-  readonly screen?: { readonly width: number; readonly height: number; readonly baseWord?: number };
+  readonly screen?: { readonly width: number; readonly height: number };
   readonly reflectedAbi: Pick<
     StandardClusterReflectedAbi,
     'clusterUniformBytes' | 'clusterUniformOffsets'
@@ -502,7 +473,6 @@ export function packClusterUniform(input: {
     ssaoIntensity = 0,
     lightCount = 0,
     directionalLightCount = 0,
-    aoLayout,
     directLightingStrength = 0,
     screen,
     reflectedAbi,
@@ -538,17 +508,10 @@ export function packClusterUniform(input: {
   setF32('near_far_log', 2, near > 0 && far > near ? Math.log(far / near) : 0);
   // f32[7] = SSAO intensity (default 0 = disabled-equivalent: mix(1.0, x, 0) = 1).
   setF32('near_far_log', 3, ssaoIntensity);
-  if (aoLayout !== undefined) {
-    setU32('ao', 0, aoLayout.baseWord);
-    setU32('ao', 1, aoLayout.width);
-    setU32('ao', 2, aoLayout.height);
-    setU32('ao', 3, aoLayout.rowWords);
-  }
   setF32('direct_ao', 0, directLightingStrength);
   setF32('direct_ao', 1, screen === undefined ? 0 : 1);
   setF32('direct_ao', 2, screen?.width ?? 0);
   setF32('direct_ao', 3, screen?.height ?? 0);
-  setU32('cluster_layout', 2, screen?.baseWord ?? 0);
   setU32('texture', 0, reflectedAbi.directLightSlot.vec4Count);
   setU32('texture', 1, textureAddressing?.gridOffset ?? 0);
   setU32('texture', 2, textureAddressing?.indexOffset ?? 0);
@@ -558,87 +521,46 @@ export function packClusterUniform(input: {
   return buf;
 }
 
-/**
- * Consumers pass the same mesh storage buffer + stride that URP uses, so the
- * physical draw offset at `setBindGroup(2, ...)`
- * stays valid across both pipelines.
- */
-/**
- * Build the unified group(2) BindGroup for HDRP — binding 0 = mesh SSBO
- * (dynamic offset, same buffer URP binds), bindings 3..6 = the cluster
- * buffers from `getOrCreateHdrpBuffers`.
- *
- * feat-20260609-hdrp-cluster-fragment-ggx M4 / w19. Called per-frame from the
- * recordFrame HDRP block after binner+writeBuffer; the resulting BindGroup
- * lands on `passCtx.hdrpClusterBindGroup` and encodeMainPass binds it at
- * group(2) when the prepared Standard topology selects clustered lighting.
- *
- * Returns `null` on `device.createBindGroup` failure (a structured RhiError
- * is fired on `runtime.errorRegistry`); encodeMainPass gracefully falls back
- * to the URP mesh bindGroup when null.
- *
- * Plan D-1 / D-4: the mesh SSBO buffer + stride mirror the URP path, so the
- * single dynamic offset issued at `setBindGroup(2, ...)` covers binding 0 of
- * the unified BGL just as it covers binding 0 of the URP mesh BGL.
- */
-/**
- * SSAO bind-group input (plan-strategy §D-B, M7;
- * scope-amend-webgl2-ubo: dedicated @binding(9) intensity UBO removed).
- *
- * The HDRP unified BGL always declares 7 entries (cluster 5 + ssao 2); the
- * caller supplies one of two shapes depending on `config.ssao?.enabled`:
- *
- *   { enabled: true, ssaoBlurredView }
- *     -> binding 7 = real ssaoBlurred view
- *     -> binding 8 = real ssao sampler (lazy-allocated alongside fallback)
- *
- *   { enabled: false }
- *     -> binding 7 = 1x1 white fallback texture (AO = 1.0)
- *     -> binding 8 = fallback sampler
- *
- * Intensity flows via `cluster_uniform.near_far_log.w` (binding 6); lighting
- * reads it only as the enabled flag (the calc pass already applied the
- * exponent), and the host writes 0 when SSAO is disabled. The
- * "always-7-entries" invariant lets every PBR PSO use the same pipeline
- * layout regardless of SSAO state — toggling the runtime config never
- * triggers shader recompile (charter P4 one consistent abstraction).
- *
- * `ssaoBuffers` is no longer carried in the enabled variant: the SSAO
- * compute-side UBO continues to live on the SSAO compute pipeline's own
- * group(0) BGL, decoupled from the lighting-stage group(2).
- */
-export type SsaoBindOptions =
-  | {
-      readonly enabled: true;
-      readonly ssaoBlurredView: TextureView;
-    }
-  | { readonly enabled: false };
+/** Physical Cluster inputs consumed by the selected View layout. */
+export type ClusterViewResources =
+  | Pick<
+      HdrpStorageBuffers,
+      | 'kind'
+      | 'clusterUniformBuffer'
+      | 'lightDataBuffer'
+      | 'clusterGridBuffer'
+      | 'lightIndexListBuffer'
+    >
+  | Pick<HdrpTextureBuffers, 'kind' | 'clusterUniformBuffer' | 'view'>;
 
-function standardLightingEntries(
-  hdrpBuffers: HdrpBuffers,
-  ssaoTexView: TextureView,
-  ssaoSampler: Sampler,
+export function clusterViewBindings(
+  hdrpBuffers: ClusterViewResources,
 ): import('@forgeax/engine-rhi').BindGroupEntry[] {
   return [
     ...(hdrpBuffers.kind === 'texture'
-      ? [{ binding: 3, resource: { kind: 'textureView' as const, value: hdrpBuffers.view } }]
+      ? [
+          {
+            binding: CLUSTER_LIGHT_VIEW_SLOT,
+            resource: { kind: 'textureView' as const, value: hdrpBuffers.view },
+          },
+        ]
       : [
           {
-            binding: 3,
+            binding: CLUSTER_LIGHT_VIEW_SLOT,
             resource: {
               kind: 'buffer' as const,
               value: { buffer: hdrpBuffers.lightDataBuffer },
             },
           },
           {
-            binding: 4,
+            binding: CLUSTER_GRID_VIEW_SLOT,
             resource: {
               kind: 'buffer' as const,
               value: { buffer: hdrpBuffers.clusterGridBuffer },
             },
           },
           {
-            binding: 5,
+            binding: CLUSTER_INDICES_VIEW_SLOT,
             resource: {
               kind: 'buffer' as const,
               value: { buffer: hdrpBuffers.lightIndexListBuffer },
@@ -646,73 +568,27 @@ function standardLightingEntries(
           },
         ]),
     {
-      binding: 6,
+      binding: CLUSTER_PARAMS_VIEW_SLOT,
       resource: {
         kind: 'buffer',
         value: { buffer: hdrpBuffers.clusterUniformBuffer },
       },
     },
-    ...(hdrpBuffers.kind === 'storage'
-      ? [
-          {
-            binding: 7,
-            resource: { kind: 'textureView' as const, value: ssaoTexView },
-          },
-          {
-            binding: 8,
-            resource: { kind: 'sampler' as const, value: ssaoSampler },
-          },
-        ]
-      : []),
   ];
-}
-
-/** Standard surface resources without scene geometry tables. */
-export function createStandardSurfaceLightingBindGroup(
-  runtime: RenderSystemRuntime,
-  layout: BindGroupLayout,
-  grid: { readonly x: number; readonly y: number; readonly z: number },
-  ssaoOptions: SsaoBindOptions = { enabled: false },
-): BindGroup | null {
-  const buffers = getOrCreateHdrpBuffers(runtime, grid);
-  const fallback = getOrCreateSsaoFallbackTexture(runtime);
-  if (buffers === null || fallback === null) return null;
-  const result = runtime.device.createBindGroup({
-    label: 'standard-surface-lighting',
-    layout,
-    entries: standardLightingEntries(
-      buffers,
-      ssaoOptions.enabled ? ssaoOptions.ssaoBlurredView : fallback.view,
-      fallback.sampler,
-    ),
-  });
-  if (!result.ok) {
-    runtime.errorRegistry.fire(result.error);
-    return null;
-  }
-  return result.value;
 }
 
 export function createHdrpUnifiedBindGroup(
   runtime: RenderSystemRuntime,
-  hdrpBuffers: HdrpBuffers,
+  layout: BindGroupLayout,
   meshStorageBuffer: Buffer,
-  ssaoOptions: SsaoBindOptions = { enabled: false },
   meshBindingBytes = runtime.device.caps.storageBuffer
     ? MESH_PER_ENTITY_STRIDE
     : MESH_UBO_FULL_ARRAY_BYTES,
+  capture?: (group: BindGroup, descriptor: BindGroupDescriptor) => void,
 ): BindGroup | null {
-  const fallback = getOrCreateSsaoFallbackTexture(runtime);
-  if (fallback === null) return null;
-
-  const ssaoTexView: TextureView = ssaoOptions.enabled
-    ? ssaoOptions.ssaoBlurredView
-    : fallback.view;
-  const ssaoSampler: Sampler = fallback.sampler;
-
-  const result = runtime.device.createBindGroup({
-    label: 'hdrp-unified-bg-group2',
-    layout: hdrpBuffers.unifiedBindGroupLayout,
+  const descriptor: BindGroupDescriptor = {
+    label: 'scene-mesh-range',
+    layout,
     entries: [
       {
         binding: 0,
@@ -725,86 +601,39 @@ export function createHdrpUnifiedBindGroup(
           },
         },
       },
-      ...standardLightingEntries(hdrpBuffers, ssaoTexView, ssaoSampler),
     ],
-  });
+  };
+  const result = createPrimitiveBindGroup(runtime.device, descriptor);
   if (!result.ok) {
     runtime.errorRegistry.fire(result.error);
     return null;
   }
+  capture?.(result.value, descriptor);
   return result.value;
 }
 
-/** Build a clustered group(2) with additional material-frame entries. */
-export function createHdrpUnifiedBindGroupWithExtraEntries(
-  runtime: RenderSystemRuntime,
-  hdrpBuffers: HdrpBuffers,
-  layout: BindGroupLayout,
-  meshStorageBuffer: Buffer,
-  extraEntries: readonly BindGroupEntry[],
-  ssaoOptions: SsaoBindOptions = { enabled: false },
-  meshBindingBytes = runtime.device.caps.storageBuffer
-    ? MESH_PER_ENTITY_STRIDE
-    : MESH_UBO_FULL_ARRAY_BYTES,
-): BindGroup | null {
-  const fallback = getOrCreateSsaoFallbackTexture(runtime);
-  if (fallback === null) return null;
-  const result = runtime.device.createBindGroup({
-    label: 'hdrp-water-unified-bg-group2',
-    layout,
-    entries: [
-      {
-        binding: 0,
-        resource: {
-          kind: 'buffer',
-          value: { buffer: meshStorageBuffer, offset: 0, size: meshBindingBytes },
-        },
-      },
-      ...standardLightingEntries(
-        hdrpBuffers,
-        ssaoOptions.enabled ? ssaoOptions.ssaoBlurredView : fallback.view,
-        fallback.sampler,
-      ),
-      ...extraEntries,
-    ],
-  });
-  if (!result.ok) {
-    runtime.errorRegistry.fire(result.error);
-    return null;
-  }
-  return result.value;
-}
-
-/** Bind the actual paired Skin task with the existing clustered lighting. */
+/** Bind the mesh range and the paired Skin task. */
 export function createHdrpSkinUnifiedBindGroup(
   runtime: RenderSystemRuntime,
-  hdrpBuffers: HdrpBuffers,
   layout: BindGroupLayout,
   meshStorageBuffer: Buffer,
   task: SkinTaskBinding,
-  ssaoOptions: SsaoBindOptions = { enabled: false },
   meshBindingBytes = runtime.device.caps.storageBuffer
     ? MESH_PER_ENTITY_STRIDE
     : MESH_UBO_FULL_ARRAY_BYTES,
+  capture?: (group: BindGroup, descriptor: BindGroupDescriptor) => void,
 ): BindGroup | null {
-  const fallback = getOrCreateSsaoFallbackTexture(runtime);
-  if (fallback === null) return null;
-  const result = runtime.device.createBindGroup({
+  const descriptor: BindGroupDescriptor = {
     label: 'hdrp-skin-unified-bg-group2',
     layout,
-    entries: [
-      ...createPbrSkinMeshBindGroupEntries(meshStorageBuffer, meshBindingBytes, task),
-      ...standardLightingEntries(
-        hdrpBuffers,
-        ssaoOptions.enabled ? ssaoOptions.ssaoBlurredView : fallback.view,
-        fallback.sampler,
-      ),
-    ],
-  });
+    entries: [...createPbrSkinMeshBindGroupEntries(meshStorageBuffer, meshBindingBytes, task)],
+  };
+  const result = createPrimitiveBindGroup(runtime.device, descriptor);
   if (!result.ok) {
     runtime.errorRegistry.fire(result.error);
     return null;
   }
+  capture?.(result.value, descriptor);
   return result.value;
 }
 

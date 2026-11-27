@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { shaderManifestUrl } from '../../../../runtime/src/__tests__/shader-manifest-url.fixture';
 import { loadPublishedRayKernels } from './published-kernels.fixture';
@@ -8,7 +8,7 @@ import { prepareRasterRayFixture } from './raster-source.commands';
 import { verifyRasterRaySource } from './raster-source.fixture';
 
 const published = await loadPublishedRayKernels(
-  shaderManifestUrl(await buildEngineShaderManifest()),
+  shaderManifestUrl(await buildEngineShaderTemplateManifest()),
 );
 
 it('generates receiver rays from real raster attachments and exposes invalid inputs in replay', async () => {

@@ -1,5 +1,5 @@
 import { createRenderer } from '@forgeax/engine-runtime';
-import { it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 import { verifySubsurface } from './subsurface.fixture';
 
@@ -9,10 +9,21 @@ it('ordinary rigid SSS preserves emission and restores zero on Browser WebGPU', 
   const canvas = document.createElement('canvas');
   canvas.width = 128;
   canvas.height = 128;
-  const renderer = renderValue(await createRenderer(canvas));
+  const modules = vi.spyOn(GPUDevice.prototype, 'createShaderModule');
+  const diffusionModules = () =>
+    modules.mock.calls.filter(
+      ([descriptor]) => descriptor.label === 'forgeax::engine-subsurface-diffusion',
+    );
   try {
-    await verifySubsurface(renderer, 'rigid');
+    const renderer = renderValue(await createRenderer(canvas));
+    try {
+      expect(diffusionModules()).toHaveLength(0);
+      await verifySubsurface(renderer, 'rigid');
+      expect(diffusionModules()).toHaveLength(1);
+    } finally {
+      await renderer.dispose();
+    }
   } finally {
-    await renderer.dispose();
+    modules.mockRestore();
   }
 }, 180_000);

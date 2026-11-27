@@ -8,6 +8,10 @@ import {
   getOrCreateHdrpBuffers,
   resetHdrpBuffers,
 } from '../hdrp-buffers';
+import { captureStandardLighting } from '../pipeline/standard-lighting/inspection';
+import { DEFAULT_CLUSTER_GRID } from '../pipeline/standard-lighting/layout';
+import { StandardClusterMembershipOwner } from '../pipeline/standard-lighting/membership-owner';
+import { SubmittedClusterBounds } from '../pipeline/standard-lighting/membership-publication';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import {
   COOKIE_MIP_LEVEL_COUNT,
@@ -29,6 +33,7 @@ import type {
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { getOrCreateSsaoBuffers } from '../ssao-buffers';
+import { buildSsaoUniformPayload } from '../ssao-uniform';
 import { createTemporalView } from '../temporal/view';
 import type { ViewLights } from '../world/render-lights';
 import {
@@ -105,6 +110,151 @@ function internalsWithFirstWriteFailure() {
 }
 
 describe('Standard Cluster upload ownership', () => {
+  it('writes published moving rows to their physical storage and restores CPU membership after compute or failed partial writes', async () => {
+    const device = (await new RhiNullAdapter().requestDevice()).unwrap();
+    const runtime = {
+      device,
+      errorRegistry: {
+        fire: (error: unknown) => {
+          throw error;
+        },
+      },
+      standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
+    } as unknown as RenderSystemRuntime;
+    const buffers = getOrCreateHdrpBuffers(runtime);
+    if (buffers?.kind !== 'storage') throw new Error('expected physical Cluster storage');
+    const local = Array.from({ length: 1024 }, () => ({
+      kind: 'point' as const,
+      shadowed: false,
+      position: vec3.create(0, 0, -10),
+      range: 1.25,
+    }));
+    const frame = {
+      directional: undefined,
+      local,
+      view: mat4.identity(mat4.create()),
+      projection: mat4.perspective(mat4.create(), Math.PI / 3, 16 / 9, 0.1, 200),
+      near: 0.1,
+      far: 200,
+      grid: DEFAULT_CLUSTER_GRID,
+      lightCount: 1024 as const,
+      renderPath: 'forward' as const,
+    };
+    const left = local[10],
+      right = local[1000];
+    if (left === undefined || right === undefined)
+      throw new Error('expected both test light slots');
+    const owner = new StandardClusterMembershipOwner();
+    const sample = () => prepareStandardLighting(frame, undefined, undefined, owner).unwrap();
+    const write = (value: ReturnType<typeof sample>, gpu = true) =>
+      buffers.membership.write(device.queue, buffers, value, gpu);
+    const original = device.queue.writeBuffer.bind(device.queue);
+    const writes = vi.spyOn(device.queue, 'writeBuffer');
+    const words = (target: typeof buffers.clusterGridBuffer) =>
+      writes.mock.calls.filter((call) => call[0] === target).map((call) => [call[1], call[4]]);
+    const reference = prepareStandardLighting(frame).unwrap().lightBounds;
+    const first = sample();
+    const observe = vi.spyOn(SubmittedClusterBounds.prototype, 'materialize');
+    let prior = first.boundsColumn;
+    expect(prior?.pages.length).toBe(81);
+    write(first).unwrap();
+    expect(words(buffers.lightBoundsBuffer)).toEqual([[0, 20488]]);
+    expect(words(buffers.clusterGridBuffer)).toEqual([[0, 6912]]);
+    expect(words(buffers.lightIndexListBuffer)).toEqual([]);
+    for (let moving = 0; moving < 12; moving++) {
+      writes.mockClear();
+      left.position[0] = 0.01 + moving * 0.0001;
+      const current = sample();
+      const column = current.boundsColumn;
+      if (column === undefined || prior === undefined)
+        throw new Error('missing issued light pages');
+      let allocated = 0;
+      for (let page = 0; page < column.pages.length; page++) {
+        const data = column.pages[page];
+        if (data !== undefined && data !== prior.pages[page]) allocated += data.byteLength;
+      }
+      expect(allocated).toBe(1024);
+      prior = column;
+      const transport = selectStandardClusterTransport(
+        { compute: true, storageBuffer: true, membershipPipelineReady: true },
+        current,
+      ).unwrap();
+      const read = captureStandardLighting({ kind: 'clustered', transport, prepared: current });
+      expect(read().admitted).toBe(1024);
+      write(current).unwrap();
+      expect(words(buffers.lightBoundsBuffer)).toEqual([[(8 + 10 * 20 + 8) * 4, 1]]);
+      expect(words(buffers.clusterGridBuffer)).toEqual([]);
+    }
+    left.position[0] = 0.1;
+    right.position[0] = 0.1;
+    const separate = sample();
+    writes.mockClear();
+    write(separate).unwrap();
+    expect(words(buffers.lightBoundsBuffer)).toEqual([
+      [(8 + 10 * 20 + 8) * 4, 1],
+      [(8 + 1000 * 20 + 8) * 4, 1],
+    ]);
+    writes.mockClear();
+    write(separate, false).unwrap();
+    expect(words(buffers.clusterGridBuffer)).toEqual([[0, 6912]]);
+    expect(words(buffers.lightIndexListBuffer)).toEqual([[0, separate.membershipEntryCount]]);
+    writes.mockClear();
+    write(separate, false).unwrap();
+    expect(writes).not.toHaveBeenCalled();
+    write(separate).unwrap();
+    left.position[0] = 0.05;
+    right.position[0] = 0.05;
+    const changed = sample();
+    writes.mockClear();
+    writes.mockImplementationOnce(original).mockImplementationOnce(() =>
+      rhiErr(
+        new RhiError({
+          code: 'queue-write-buffer-out-of-bounds',
+          expected: 'the second submitted range',
+          hint: 'injected range write failure',
+        }),
+      ),
+    );
+    expect(write(changed)).toMatchObject({ ok: false, error: { product: 'light-bounds' } });
+    writes.mockClear();
+    write(changed).unwrap();
+    expect(words(buffers.lightBoundsBuffer)).toEqual([[0, 20488]]);
+    const reduced = prepareStandardLighting(
+      { ...frame, local: local.slice(0, 2) },
+      undefined,
+      undefined,
+      owner,
+    ).unwrap();
+    const small = reduced.boundsColumn;
+    if (small === undefined) throw new Error('expected a submitted bounds column');
+    expect(small.pages.every((page) => page.buffer.byteLength <= small.length * 4)).toBe(true);
+    expect(observe).not.toHaveBeenCalled();
+    owner.clear();
+    expect(first.lightBounds).toEqual(reference);
+    writes.mockClear();
+    write(first).unwrap();
+    expect(words(buffers.lightBoundsBuffer)).toEqual([[0, 20488]]);
+    const other = prepareStandardLighting(
+      frame,
+      undefined,
+      undefined,
+      new StandardClusterMembershipOwner(),
+    ).unwrap();
+    writes.mockClear();
+    write(other).unwrap();
+    expect(words(buffers.clusterGridBuffer)).toEqual([[0, 6912]]);
+    // Borrowed producers can change an array in place and have no predecessor proof.
+    const mutable = prepareStandardLighting(frame).unwrap();
+    write(mutable).unwrap();
+    mutable.lightBounds[8] = 2;
+    writes.mockClear();
+    write(mutable).unwrap();
+    expect(words(buffers.lightBoundsBuffer)).toEqual([[0, 20488]]);
+    writes.mockRestore();
+    observe.mockRestore();
+    resetHdrpBuffers(runtime);
+  });
+
   it('keeps the published Cluster generation across failed creation and advances only on recovery', async () => {
     const adapter = new RhiNullAdapter();
     const requested = await adapter.requestDevice();
@@ -155,30 +305,25 @@ describe('Standard Cluster upload ownership', () => {
     );
 
     failTextureCreation = true;
-    expect(
-      getOrCreateHdrpBuffers(runtime, { x: 4, y: 3, z: 4 }, { width: 23, height: 17 }),
-    ).toBeNull();
+    expect(getOrCreateHdrpBuffers(runtime, { x: 4, y: 3, z: 4 }, { atmosphere: true })).toBeNull();
     expect(errors).toMatchObject([{ code: 'device-lost' }, { code: 'device-lost' }]);
     expect(getOrCreateHdrpBuffers(runtime, { x: 4, y: 3, z: 4 })).toBe(original);
     expect(original.clusterTransportGeneration).toBeGreaterThan(0);
 
     failTextureCreation = false;
-    const recovered = getOrCreateHdrpBuffers(
-      runtime,
-      { x: 4, y: 3, z: 4 },
-      { width: 23, height: 17 },
-    );
+    const recovered = getOrCreateHdrpBuffers(runtime, { x: 4, y: 3, z: 4 }, { atmosphere: true });
     expect(recovered?.kind).toBe('texture');
-    if (recovered?.kind !== 'texture') throw new Error('Expected recovered AO texture transport');
+    if (recovered?.kind !== 'texture')
+      throw new Error('Expected recovered atmosphere texture transport');
     expect(recovered.clusterTransportGeneration).toBe(original.clusterTransportGeneration + 1);
-    expect(getOrCreateHdrpBuffers(runtime, { x: 4, y: 3, z: 4 }, { width: 23, height: 17 })).toBe(
+    expect(getOrCreateHdrpBuffers(runtime, { x: 4, y: 3, z: 4 }, { atmosphere: true })).toBe(
       recovered,
     );
     resetHdrpBuffers(runtime);
     await Promise.resolve();
   });
 
-  it('keeps transport generation stable and advances it only when the AO texture layout replaces the bundle', async () => {
+  it('keeps transport generation stable and advances it only when the atmosphere texture layout replaces the bundle', async () => {
     const adapter = new RhiNullAdapter();
     const requested = await adapter.requestDevice();
     expect(requested.ok).toBe(true);
@@ -198,28 +343,31 @@ describe('Standard Cluster upload ownership', () => {
       standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
     } as unknown as RenderSystemRuntime;
     const grid = { x: 4, y: 3, z: 4 };
-    const noAo = getOrCreateHdrpBuffers(runtime, grid);
-    expect(noAo?.kind).toBe('texture');
-    if (noAo?.kind !== 'texture') throw new Error('Expected texture Cluster transport');
-    expect(getOrCreateHdrpBuffers(runtime, grid)).toBe(noAo);
+    const base = getOrCreateHdrpBuffers(runtime, grid);
+    expect(base?.kind).toBe('texture');
+    if (base?.kind !== 'texture') throw new Error('Expected texture Cluster transport');
+    expect(getOrCreateHdrpBuffers(runtime, grid)).toBe(base);
     expect(getOrCreateHdrpBuffers(runtime, grid)?.clusterTransportGeneration).toBe(
-      noAo.clusterTransportGeneration,
+      base.clusterTransportGeneration,
     );
 
-    const ao = getOrCreateHdrpBuffers(runtime, grid, { width: 23, height: 17 });
-    expect(ao?.kind).toBe('texture');
-    if (ao?.kind !== 'texture') throw new Error('Expected AO texture Cluster transport');
-    expect(ao).not.toBe(noAo);
-    expect(ao.clusterTransportGeneration).toBeGreaterThan(noAo.clusterTransportGeneration);
-    expect(getOrCreateHdrpBuffers(runtime, grid, { width: 23, height: 17 })).toBe(ao);
+    const atmosphere = getOrCreateHdrpBuffers(runtime, grid, { atmosphere: true });
+    expect(atmosphere?.kind).toBe('texture');
+    if (atmosphere?.kind !== 'texture')
+      throw new Error('Expected atmosphere texture Cluster transport');
+    expect(atmosphere).not.toBe(base);
+    expect(atmosphere.clusterTransportGeneration).toBeGreaterThan(base.clusterTransportGeneration);
+    expect(getOrCreateHdrpBuffers(runtime, grid, { atmosphere: true })).toBe(atmosphere);
 
-    const disabled = getOrCreateHdrpBuffers(runtime, grid);
-    expect(disabled?.kind).toBe('texture');
-    if (disabled?.kind !== 'texture') throw new Error('Expected non-AO texture Cluster transport');
-    expect(disabled).not.toBe(ao);
-    expect(disabled.clusterTransportGeneration).toBeGreaterThan(ao.clusterTransportGeneration);
+    const restored = getOrCreateHdrpBuffers(runtime, grid);
+    expect(restored?.kind).toBe('texture');
+    if (restored?.kind !== 'texture') throw new Error('Expected base texture Cluster transport');
+    expect(restored).not.toBe(atmosphere);
+    expect(restored.clusterTransportGeneration).toBeGreaterThan(
+      atmosphere.clusterTransportGeneration,
+    );
     expect(getOrCreateHdrpBuffers(runtime, grid)?.clusterTransportGeneration).toBe(
-      disabled.clusterTransportGeneration,
+      restored.clusterTransportGeneration,
     );
     resetHdrpBuffers(runtime);
     await Promise.resolve();
@@ -230,7 +378,7 @@ describe('Standard Cluster upload ownership', () => {
     'none',
     'ao',
     'capsule',
-  ] as const)('retains no-storage Cluster topology for Forward %s with no local lights', (consumer) => {
+  ] as const)('resolves no-storage Cluster topology for Forward %s with no local lights', (consumer) => {
     const aoEnabled = consumer === 'ao';
     const internals = {
       device: {
@@ -238,6 +386,8 @@ describe('Standard Cluster upload ownership', () => {
         limits: { maxTextureDimension2D: 4096 },
       },
       standardProfile: undefined,
+      getPipelineState: () => ({ perPassResources: { ssaoScreenPipeline: vi.fn() } }),
+      depthPyramidShaders: { seed: 'depth seed shader' },
       standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
       errorRegistry: { fire: vi.fn() },
     } as unknown as RenderSystemInternals;
@@ -246,10 +396,10 @@ describe('Standard Cluster upload ownership', () => {
       pointShadowSnapshots: [],
       spotShadowSnapshots: [],
       installedPipelineConfig: {
-        ssao: aoEnabled
+        ambientOcclusion: aoEnabled
           ? {
               enabled: true,
-              algorithm: 'gtao',
+              method: 'gtao',
               quality: 'low',
               radius: 2,
               bias: 0.1,
@@ -284,7 +434,7 @@ describe('Standard Cluster upload ownership', () => {
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    if (consumer === 'none') {
+    if (consumer !== 'capsule') {
       expect(result.value.standard.kind).toBe('no-local-lights');
       return;
     }
@@ -299,7 +449,7 @@ describe('Standard Cluster upload ownership', () => {
     'orthographic',
     'stereo',
     'capture',
-  ] as const)('uploads the sampled %s projection to SSAO before graph recording', async (kind) => {
+  ] as const)('keeps the sampled %s projection in the graph-owned AO payload', async (kind) => {
     const device = (await new RhiNullAdapter().requestDevice()).unwrap();
     const errors: unknown[] = [];
     const internals = {
@@ -342,14 +492,13 @@ describe('Standard Cluster upload ownership', () => {
     const frameState = {
       hdrpClusterMembership: null,
       installedPipelineConfig: {
-        ssao: {
+        ambientOcclusion: {
           enabled: true,
-          algorithm: 'gtao',
+          method: 'gtao',
           quality: 'low',
           radius: 2,
           bias: 0.1,
           intensity: 0.75,
-          directLightingStrength: 0.625,
         },
       },
     } as unknown as RenderFrameState;
@@ -362,8 +511,11 @@ describe('Standard Cluster upload ownership', () => {
     );
     expect(result.ok).toBe(true);
     const upload = writes.mock.calls.find(([buffer]) => buffer === ssao.uniformBuffer);
-    expect(upload).toBeDefined();
-    const payload = upload?.[2] as Float32Array;
+    expect(upload).toBeUndefined();
+    const payload = buildSsaoUniformPayload(
+      sampledCamera,
+      frameState.installedPipelineConfig?.ambientOcclusion,
+    );
     const projection = computeProjectionMatrix(sampledCamera, mat4.create());
     const jitter = sampledCamera.temporal?.currentJitterUv;
     if (jitter === undefined) throw new Error('Expected sampled camera jitter');
@@ -384,7 +536,8 @@ describe('Standard Cluster upload ownership', () => {
     if (clusterUpload === undefined) throw new Error('Cluster uniform upload missing');
     const clusterFields = new Float32Array(clusterUpload.buffer, clusterUpload.byteOffset, 24);
     const clusterWords = new Uint32Array(clusterUpload.buffer, clusterUpload.byteOffset, 24);
-    expect(clusterFields[12]).toBe(0.625);
+    expect(clusterFields[12]).toBe(0);
+    expect(clusterFields[7]).toBe(0.75);
     expect(Array.from(clusterFields.subarray(13, 16))).toEqual([0, 0, 0]);
     expect(Array.from(clusterWords.subarray(16, 20))).toEqual([6, 0, 0, 0]);
     expect(Array.from(clusterWords.subarray(20, 24))).toEqual([2, 1, 0, 0]);
@@ -393,10 +546,10 @@ describe('Standard Cluster upload ownership', () => {
     const uploadedStrengths: number[] = [];
     for (const strength of [0, 1, 0]) {
       frameState.installedPipelineConfig = {
-        ssao: {
-          ...frameState.installedPipelineConfig?.ssao,
+        ambientOcclusion: {
+          ...frameState.installedPipelineConfig?.ambientOcclusion,
           enabled: true,
-          directLightingStrength: strength,
+          intensity: strength,
         },
       };
       const updated = writeHdrpClusterAndSsaoBuffers(
@@ -411,9 +564,9 @@ describe('Standard Cluster upload ownership', () => {
         .filter(([buffer]) => buffer === cluster.clusterUniformBuffer)
         .at(-1)?.[2] as Uint8Array | undefined;
       if (payload === undefined) throw new Error('Updated Cluster uniform upload is missing');
-      uploadedStrengths.push(
-        new Float32Array(payload.buffer, payload.byteOffset, 24)[12] ?? Number.NaN,
-      );
+      const values = new Float32Array(payload.buffer, payload.byteOffset, 24);
+      expect(values[12]).toBe(0);
+      uploadedStrengths.push(values[7] ?? Number.NaN);
     }
     expect(uploadedStrengths).toEqual([0, 1, 0]);
     writes.mockRestore();
@@ -492,6 +645,87 @@ describe('Standard Cluster upload ownership', () => {
     expect(pipelineState.spotModifierUploadState?.cookie.has(1)).toBe(true);
     expect(pipelineState.spotModifierUploadState?.cookieMatrix.has(0)).toBe(true);
     expect(pipelineState.spotModifierUploadState?.cookieMatrix.has(1)).toBe(false);
+  });
+
+  it('publishes the current modifier sources and shadow slots in each prepared view', () => {
+    const internals = {
+      device: {
+        caps: { storageBuffer: true, compute: false },
+        limits: { maxTextureDimension2D: 4096 },
+      },
+      standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
+      errorRegistry: {
+        fire: (error: unknown) => {
+          throw error;
+        },
+      },
+    } as unknown as RenderSystemInternals;
+    const state = {
+      pointShadowSnapshots: [],
+      spotShadowSnapshots: [],
+    } as unknown as RenderFrameState;
+    const point = {
+      kind: 'point' as const,
+      color: vec3.create(1, 1, 1),
+      position: vec3.create(0, 0, -2),
+      intensity: 1,
+      invRangeSquared: 1,
+      shadowAtlasLayer: 0,
+      iesProfileSlice: 0,
+      iesProfileData: new Uint8Array(2),
+    };
+    const plain = { ...point, shadowAtlasLayer: -1, iesProfileSlice: undefined };
+    const prepare = (points: readonly (typeof plain | typeof point)[]) =>
+      prepareFrameLighting(
+        internals,
+        state,
+        {
+          point: points,
+          spot: [],
+          rect: [],
+          pointShadow: [],
+          shadowViews: [],
+        } as unknown as ViewLights,
+        camera(),
+      ).unwrap().standard.prepared.slotWork;
+    const first = prepare([point, plain]);
+    const next = prepare([plain, point]);
+    expect(first?.shadowSlots).toEqual([0]);
+    expect(next?.shadowSlots).toEqual([1]);
+    expect(next?.point).toEqual([point]);
+    expect(next?.complete).toBe(true);
+    const removed = prepare([plain]);
+    expect(removed?.point).toHaveLength(0);
+    expect(removed?.shadowSlots).toHaveLength(0);
+    expect(first?.point[0]).toBe(point);
+  });
+
+  it('publishes both projector poses when their 32-bit byte digests collide', () => {
+    const matrix = mat4.identity(mat4.create());
+    const translations: number[] = [];
+    const internals = {
+      device: {
+        queue: {
+          writeBuffer(_buffer: unknown, _offset: number, data: Float32Array) {
+            translations.push(data[12] as number);
+            return rhiOk(undefined);
+          },
+        },
+      },
+    } as unknown as RenderSystemInternals;
+    const pipeline = { cookieMatrixBuffer: {} } as PipelineState;
+    const spot = { kind: 'spot', projectorSlice: 0, projectorMatrix: matrix } as never;
+    const lights = { point: [], spot: [spot], rect: [] };
+    for (const [x, y] of [
+      [181.421875, 350.98046875],
+      [380.3046875, 321.70703125],
+    ] as const) {
+      matrix[12] = x;
+      matrix[13] = y;
+      writeLightModifierTextures(internals, pipeline, lights);
+      writeLightModifierTextures(internals, pipeline, lights);
+    }
+    expect(translations).toEqual([181.421875, 380.3046875]);
   });
 
   it('reports an unavailable GPU resample once and leaves the slice white', () => {

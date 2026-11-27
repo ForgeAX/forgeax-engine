@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
-import { definePackageId } from '@forgeax/engine/pack/source';
+import { definePackageId, parsePackSourceJson, projectDirectPackJson } from '@forgeax/engine/pack/source';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -31,28 +31,20 @@ describe('empty template authoring contract', () => {
     expect(manifest.roots.engine).toBe(
       AssetGuid.format(AssetGuid.derive(sceneOwnerPackage, 'plugin/scene')),
     );
-    const scene = JSON.parse(
-      await readFile(resolve(root, 'assets/world/world.scene.pack.json'), 'utf8'),
-    ) as {
-      readonly assets: readonly {
-        readonly guid: string;
-        readonly kind: string;
-        readonly sourceKey: string;
-        readonly payload: {
-          readonly kind: string;
-          readonly entities: Record<string, unknown>;
-        };
-        readonly refs: readonly string[];
-      }[];
-    };
-    expect(scene.assets).toHaveLength(1);
-    expect(scene.assets[0]).toMatchObject({
-      guid: '019fb7ce-1000-7000-8000-000000000001',
+    const scene = parsePackSourceJson(
+      JSON.parse(await readFile(resolve(root, 'assets/world/world.scene.pack.json'), 'utf8')),
+    ).unwrap();
+    if (scene.format !== 'direct') throw new Error('The starter scene must be a direct Pack');
+    const assets = projectDirectPackJson(scene).assets;
+    expect(assets).toHaveLength(1);
+    expect(assets[0]).toMatchObject({
+      guid: 'ee7f6b3d-74ee-54e9-a62a-97d3fc58f125',
       kind: 'scene',
       sourceKey: 'world/empty',
       payload: { kind: 'scene', entities: {} },
       refs: [],
     });
-    expect(Object.keys(scene.assets[0]?.payload.entities ?? {})).toHaveLength(0);
+    const payload = assets[0]?.payload as { readonly entities: Record<string, unknown> };
+    expect(Object.keys(payload.entities)).toHaveLength(0);
   });
 });

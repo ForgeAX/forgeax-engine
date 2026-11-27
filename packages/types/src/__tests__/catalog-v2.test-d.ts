@@ -2,7 +2,6 @@ import { describe, expectTypeOf, it } from 'vitest';
 import type {
   CatalogDelta,
   CatalogEntry,
-  CatalogEntryV2,
   CatalogLifecycle,
   CatalogProjection,
   CatalogSubject,
@@ -49,12 +48,5 @@ describe('Catalog v2 POD contract', () => {
     expectTypeOf<CatalogProjection>().toHaveProperty('subject');
     expectTypeOf<CatalogProjection>().toHaveProperty('execution');
     expectTypeOf<CatalogProjection>().toHaveProperty('lifecycle');
-  });
-
-  it('makes the runtime publication tuple part of one canonical row', () => {
-    expectTypeOf<CatalogEntryV2['scopeId']>().toBeString();
-    expectTypeOf<CatalogEntryV2['generation']>().toEqualTypeOf<number>();
-    expectTypeOf<CatalogEntryV2['digest']>().toBeString();
-    expectTypeOf<CatalogEntryV2['outputSetDigest']>().toBeString();
   });
 });

@@ -54,6 +54,7 @@ export interface RendererHostImplementation
     | 'attach'
     | 'prepareDynamicGeometry'
     | 'prepareDynamicGeometryCandidates'
+    | 'reservePublishedMeshTransfer'
     | 'preparePublishedMeshResidency'
     | 'prepareMeshResidency'
     | 'prepareTextureResidency'
@@ -77,9 +78,11 @@ export interface RendererHostImplementation
     | 'bounds'
     | 'currentDeviceGeneration'
     | 'inspect'
+    | 'requestViewportHit'
     | 'observeGeometry'
     | 'observe'
   > {
+  readonly levelSourceAccess?: import('./level-source-access').LevelSourceAccess;
   publishDynamicGeometry: DynamicGeometryHostImplementation['publishDynamicGeometry'];
   /**
    * Internal bounded inspection for high-cardinality producers. The public

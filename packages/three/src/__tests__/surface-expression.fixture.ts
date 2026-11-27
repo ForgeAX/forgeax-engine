@@ -13,6 +13,11 @@ export async function verifySurfaceExpression(
   },
   kind: 'standard' | 'unlit' | 'roughness',
   evidence: (name: string, capture: THREE.ThreeFrameCapture) => Promise<void>,
+  replay: (
+    capture: THREE.ThreeFrameCapture,
+    label: string,
+  ) => void | Promise<unknown> = verifyReplay,
+  retainedDraws = false,
 ) {
   const example = surfaceExpressionExample(kind);
   THREE.bindThreeSurface(example.material, publication.recipe).unwrap();
@@ -48,6 +53,53 @@ export async function verifySurfaceExpression(
     await readyFrames(renderer, scene, camera, 60);
     const first = await renderer.captureFrame(scene, camera);
     await evidence(`${kind}-initial`, first);
+    if (retainedDraws) {
+      const stop = THREE.enableThreeSourceTracking();
+      const glass = new THREE.MeshBasicMaterial({ transparent: true });
+      const fixed = Array.from({ length: 12 }, (_, i) => {
+        const object = new THREE.Mesh(geometry, glass);
+        object.position.x = 10 + i;
+        object.frustumCulled = false;
+        return object;
+      });
+      stop();
+      scene.add(...fixed);
+      if (kind === 'unlit') mesh.renderOrder = 5;
+      THREE.setThreeSceneTracking(scene, true);
+      const originalAmount = example.amount.value;
+      try {
+        await readyFrames(renderer, scene, camera, 3);
+        const retained = renderer.inspect().sourceWork;
+        expect(retained).toMatchObject({
+          mode: 'tracked',
+          viewBindings: 1,
+          meshPlans: kind === 'standard' ? 1 : 0,
+          ...(kind === 'unlit' ? { materialUses: 0 } : {}),
+        });
+        // The twelve ordinary meshes use the native resident path. The
+        // cooked draw is retained separately through its observed bindings.
+        expect(retained?.residentNodes).toBeGreaterThanOrEqual(fixed.length);
+        expect(
+          equalBytes(
+            displayPixels(await renderer.captureFrame(scene, camera)),
+            displayPixels(first),
+          ),
+        ).toBe(true);
+        example.amount.value = 0.8;
+        if (kind === 'unlit') {
+          await readyFrames(renderer, scene, camera, 1);
+          expect(renderer.inspect().sourceWork).toMatchObject({ meshPlans: 0, materialUses: 0 });
+        }
+        const changed = displayPixels(await renderer.captureFrame(scene, camera));
+        expect(equalBytes(changed, displayPixels(first))).toBe(false);
+      } finally {
+        example.amount.value = originalAmount;
+        THREE.setThreeSceneTracking(scene, false);
+        mesh.renderOrder = 0;
+        scene.remove(...fixed);
+        glass.dispose();
+      }
+    }
     if (kind === 'standard') {
       sun.castShadow = false;
       await readyFrames(renderer, scene, camera, 1);
@@ -108,6 +160,8 @@ export async function verifySurfaceExpression(
       expect(equalBytes(displayPixels(updated), displayPixels(textured))).toBe(false);
       expect(drawIdentity(textured)).toEqual(programs);
     }
+    // Replay owns a detached capture and can run while Browser verifies the next revision.
+    await replay(textured, `three-surface-${kind}`);
     const receipt = renderer.inspect().receipt;
     const originalRoot = example.material.colorNode;
     example.material.colorNode = THREE.TSL.vec3(1, 0, 0);
@@ -126,7 +180,6 @@ export async function verifySurfaceExpression(
     const restored = await renderer.captureFrame(scene, camera);
     expect(equalBytes(displayPixels(restored), displayPixels(textured))).toBe(true);
     expect(drawIdentity(restored)).toEqual(programs);
-    await verifyReplay(textured, `three-surface-${kind}`);
     if (kind === 'unlit') {
       // An authored zero threshold still clips alpha zero in r187. A later
       // transparent draw exposes an incorrectly retained front depth write.
@@ -160,7 +213,7 @@ export async function verifySurfaceExpression(
     await evidence(`${kind}-rebound`, recompiled);
     expect(equalBytes(displayPixels(recompiled), displayPixels(textured))).toBe(false);
     expect(drawIdentity(recompiled, publication.reboundRecipe)).not.toEqual(programs);
-    await verifyReplay(recompiled, `three-surface-${kind}-rebound`);
+    await replay(recompiled, `three-surface-${kind}-rebound`);
   } finally {
     replacement?.dispose();
     groundGeometry.dispose();

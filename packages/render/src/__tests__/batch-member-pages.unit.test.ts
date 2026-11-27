@@ -34,6 +34,23 @@ function expected(reference: ReadonlyMap<number, GpuDrivenBatchMember>): string[
 }
 
 describe('paged batch membership', () => {
+  it('publishes a cold roster with the same sparse ranks and replacements as individual edits', () => {
+    const rows = Array.from({ length: 137 }, (_, index) => member((136 - index) * 4, index % 4));
+    rows.push(member(512, 2, 7), member(0, 3, 4));
+    const sequential = rows.reduce((result, row) => result.with(row), new MemberCandidates());
+    const bulk = MemberCandidates.fromMembers(rows);
+    expect(bulk.memberCount).toBe(sequential.memberCount);
+    expect(bulk.length).toBe(sequential.length);
+    expect([...bulk.membersFrame()]).toEqual([...sequential.membersFrame()]);
+    expect([...bulk]).toEqual([...sequential]);
+    expect(bulk.get(512)).toEqual(member(512, 2, 7));
+    const edited = bulk.without(512).with(member(33, 4));
+    const changed: number[] = [];
+    edited.changesSince(bulk, (slot) => changed.push(slot));
+    expect(changed).toEqual([33, 512]);
+    expect(bulk.get(512)).toEqual(member(512, 2, 7));
+  });
+
   it('holds one tree node per page of members, not per member', () => {
     const members = filled(100_000);
     expect(members.memberCount).toBe(100_000);

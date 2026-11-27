@@ -4,28 +4,17 @@ import type { ScriptablePackSceneComponent } from '@forgeax/engine-pack/source';
 import { createTextureGeneratorPackCooker } from '@forgeax/engine-shader-compiler';
 import type {
   AnimationClip,
-  AnimationGraph,
   Asset,
   AssetGuid as AssetGuidType,
-  AudioClipAsset,
-  EquirectAsset,
-  FontAsset,
   GpuTextureAsset,
   MaterialAsset,
   MeshAsset,
   ParticleEffectAsset,
-  RenderPipelineAsset,
-  SamplerAsset,
   SceneAsset,
-  SkeletonAsset,
-  SkinAsset,
   TerrainAsset,
-  TextureAsset,
-  TilesetAsset,
-  VideoAsset,
 } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { createStandardAssetOutputProducerRegistry } from '../standard-output-producers.js';
+import { createStandardAssetOutputProducerRegistry } from '../scriptable-pack-build.js';
 
 function guid(value: string): AssetGuidType {
   const parsed = AssetGuid.parse(value);
@@ -49,7 +38,6 @@ const sceneComponents = [
 
 const OUTPUT_GUID = guid('019ffa97-3000-7000-8000-000000000010');
 const ATLAS_GUID = guid('019ffa97-3000-7000-8000-000000000011');
-const SKELETON_GUID = guid('019ffa97-3000-7000-8000-000000000012');
 
 function canonicalAttributes(vertexCount: number): MeshAsset['attributes'] {
   return {
@@ -80,17 +68,7 @@ const particleProgram = {
   ],
 } as const;
 
-const matrixAssets = [
-  {
-    kind: 'mesh',
-    vertices: new Float32Array(48),
-    indices: new Uint16Array([0]),
-    attributes: canonicalAttributes(4),
-    submeshes: [],
-    materialSlots: [],
-  } satisfies MeshAsset,
-  { kind: 'material', values: { roughness: 0.5 } } satisfies MaterialAsset,
-  { kind: 'scene', entities: {} } satisfies SceneAsset,
+const specialAssets = [
   {
     kind: 'navigation-mesh',
     version: 'recast-poly/1',
@@ -132,14 +110,6 @@ const matrixAssets = [
     ],
   } satisfies TerrainAsset,
   {
-    kind: 'texture',
-    shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
-    format: 'rgba8unorm-srgb',
-    data: new Uint8Array([255, 255, 255, 255]),
-    colorSpace: 'srgb',
-    mips: { kind: 'none' },
-  } satisfies TextureAsset,
-  {
     kind: 'gpu-texture',
     shape: { viewDimension: '2d', extent: { width: 4, height: 4 } },
     format: 'rgba8unorm',
@@ -147,74 +117,6 @@ const matrixAssets = [
     mips: { kind: 'none' },
     source: { kind: 'generated', generator: AssetGuid.format(OUTPUT_GUID), output: 'color' },
   } satisfies GpuTextureAsset,
-  {
-    kind: 'equirect',
-    width: 1,
-    height: 1,
-    format: 'rgba16float',
-    data: new Uint8Array(8),
-    colorSpace: 'linear',
-  } satisfies EquirectAsset,
-  { kind: 'sampler', magFilter: 'linear' } satisfies SamplerAsset,
-  {
-    kind: 'font',
-    atlas: ATLAS_GUID,
-    sampler: OUTPUT_GUID,
-    glyphs: {},
-    common: {
-      lineHeight: 1,
-      base: 1,
-      distanceRange: 4,
-      pxRange: 4,
-      atlasWidth: 1,
-      atlasHeight: 1,
-    },
-  } satisfies FontAsset,
-  {
-    kind: 'render-pipeline',
-    pipelineId: 'forgeax::standard',
-    renderPath: 'forward',
-  } satisfies RenderPipelineAsset,
-  {
-    kind: 'tileset',
-    atlases: [AssetGuid.format(ATLAS_GUID)],
-    tileWidth: 1,
-    tileHeight: 1,
-    columns: 1,
-    rows: 1,
-    regions: [{ x: 0, y: 0, width: 1, height: 1 }],
-    tiles: [{ regionIndex: 0 }],
-  } satisfies TilesetAsset,
-  { kind: 'video', url: 'https://example.test/scene.webm' } satisfies VideoAsset,
-  {
-    kind: 'skeleton',
-    inverseBindMatrices: new Float32Array(16),
-    jointCount: 1,
-  } satisfies SkeletonAsset,
-  {
-    kind: 'skin',
-    skeletonGuid: AssetGuid.format(SKELETON_GUID),
-    jointPaths: ['root'],
-  } satisfies SkinAsset,
-  { kind: 'animation-clip', duration: 1, channels: [] } satisfies AnimationClip,
-  {
-    kind: 'animation-graph',
-    nodes: [{ type: 'clip', clip: AssetGuid.format(OUTPUT_GUID), weight: 1 }],
-    root: 0,
-  } satisfies AnimationGraph,
-  {
-    kind: 'audio',
-    sourceKey: 'audio/matrix',
-    mediaType: 'audio/wav',
-    bytes: new Uint8Array([82, 73, 70, 70]),
-  } satisfies AudioClipAsset,
-  {
-    kind: 'particle-effect',
-    schemaVersion: 3,
-    programFingerprint: particleProgram.fingerprint,
-    emitters: [{ id: 'default', capacity: 16 }],
-    program: particleProgram,
-  } satisfies ParticleEffectAsset,
 ] as const satisfies readonly Asset[];
 
 describe('standard ScriptablePack output producers', () => {
@@ -271,7 +173,7 @@ describe('standard ScriptablePack output producers', () => {
       font: 'ordinary-pod/1',
       'ies-profile': 'ordinary-pod/1',
       material: 'material-pack/2',
-      mesh: 'mesh-binary/7',
+      mesh: 'mesh-binary/8',
       'particle-effect': 'particle-effect/4',
       plugin: 'plugin-definition/1',
       'render-pipeline': 'ordinary-pod/1',
@@ -294,39 +196,8 @@ describe('standard ScriptablePack output producers', () => {
     });
   });
 
-  it('provides a real producer contract for every ordinary Asset kind', async () => {
+  it('produces generator programs and GPU texture, terrain and navigation source facts', async () => {
     const registry = createStandardAssetOutputProducerRegistry();
-    const expectedKinds = [
-      'mesh',
-      'material',
-      'scene',
-      'texture',
-      'gpu-texture',
-      'texture-generator',
-      'equirect',
-      'sampler',
-      'font',
-      'render-pipeline',
-      'tileset',
-      'video',
-      'skeleton',
-      'skin',
-      'animation-clip',
-      'animation-graph',
-      'audio',
-      'ies-profile',
-      'particle-effect',
-      'plugin',
-      'terrain',
-      'navigation-mesh',
-      'water-body',
-      'water-zone',
-      'water-wave-set',
-      'water-brush-recipe',
-      'water-simulation-recipe',
-    ] as const;
-
-    expect(Object.keys(registry.versions()).sort()).toEqual([...expectedKinds].sort());
     const source = {
       kind: 'texture-generator',
       values: {},
@@ -378,57 +249,26 @@ describe('standard ScriptablePack output producers', () => {
         name: 'forgeax-texture-generator-programs',
         version: '1',
       });
-    for (const [index, asset] of matrixAssets.entries()) {
+    for (const [index, asset] of specialAssets.entries()) {
       const producer = registry.get(asset.kind);
-      expect(producer, `${asset.kind} producer`).toBeDefined();
-      if (producer === undefined) continue;
-      const result = await producer.produce({
-        guid: AssetGuid.format(OUTPUT_GUID),
-        sourceKey: `matrix/${index}/${asset.kind}`,
-        asset,
-      });
-      expect(result.ok, result.ok ? asset.kind : JSON.stringify(result.error)).toBe(true);
-      if (!result.ok) continue;
-      expect(result.value.payload.kind ?? asset.kind).toBe(asset.kind);
-      if (asset.kind === 'gpu-texture') {
-        expect(result.value.payload).toEqual({ kind: 'gpu-texture', source: asset.source });
-        expect(result.value.artifacts).toEqual({});
-        expect(result.value.refs).toEqual([{ guid: asset.source.generator }]);
-      }
-      const hasPayload = Object.keys(result.value.payload).length > 0;
-      const hasDescriptor =
-        asset.kind === 'video' &&
-        'url' in asset &&
-        typeof asset.url === 'string' &&
-        asset.url.length > 0;
+      if (producer === undefined) throw new Error(`Missing ${asset.kind} producer`);
+      const result = (
+        await producer.produce({
+          guid: AssetGuid.format(OUTPUT_GUID),
+          sourceKey: `matrix/${index}/${asset.kind}`,
+          asset,
+        })
+      ).unwrap();
+      expect(result.payload.kind ?? asset.kind).toBe(asset.kind);
       expect(
-        hasPayload ||
-          result.value.refs.length + Object.keys(result.value.artifacts).length > 0 ||
-          hasDescriptor,
-        `${asset.kind} producer facts`,
-      ).toBe(true);
-    }
-  });
-
-  it('publishes media and VFX producer facts without host execution', async () => {
-    const registry = createStandardAssetOutputProducerRegistry();
-    for (const kind of ['audio', 'video', 'particle-effect'] as const) {
-      const asset = matrixAssets.find((candidate) => candidate.kind === kind);
-      const producer = registry.get(kind);
-      expect(producer, `${kind} producer`).toBeDefined();
-      expect(asset, `${kind} fixture`).toBeDefined();
-      if (producer === undefined || asset === undefined) continue;
-      const result = await producer.produce({
-        guid: AssetGuid.format(OUTPUT_GUID),
-        sourceKey: `media/${kind}`,
-        asset,
-      });
-      expect(result.ok, `${kind} result`).toBe(true);
-      if (!result.ok) continue;
-      if (kind === 'video') {
-        expect(result.value.payload).toMatchObject({ kind, url: (asset as VideoAsset).url });
-      } else {
-        expect(Object.keys(result.value.artifacts)).not.toHaveLength(0);
+        Object.keys(result.payload).length +
+          result.refs.length +
+          Object.keys(result.artifacts).length,
+      ).toBeGreaterThan(0);
+      if (asset.kind === 'gpu-texture') {
+        expect(result.payload).toEqual({ kind: asset.kind, source: asset.source });
+        expect(result.artifacts).toEqual({});
+        expect(result.refs).toEqual([{ guid: asset.source.generator }]);
       }
     }
   });
@@ -595,47 +435,29 @@ describe('standard ScriptablePack output producers', () => {
 
   it('keeps ordinary output identities and serialized bytes stable across builds', async () => {
     const registry = createStandardAssetOutputProducerRegistry();
-    const mesh = registry.get('mesh');
-    const material = registry.get('material');
-    const scene = registry.get('scene');
-    expect(mesh).toBeDefined();
-    expect(material).toBeDefined();
-    expect(scene).toBeDefined();
-    if (mesh === undefined || material === undefined || scene === undefined) return;
-
     const inputs = [
       {
         guid: AssetGuid.format(MESH_GUID),
         sourceKey: 'mesh/generated',
         asset: createBoxGeometry(1, 1, 1).unwrap(),
-        producer: mesh,
       },
       {
         guid: AssetGuid.format(MATERIAL_GUID),
         sourceKey: 'material/generated',
         asset: { kind: 'material' as const, values: {} },
-        producer: material,
       },
       {
         guid: AssetGuid.format(guid('019ffa97-3000-7000-8000-000000000003')),
         sourceKey: 'scene/generated',
         asset: { kind: 'scene' as const, entities: {} },
-        producer: scene,
       },
     ];
-    const first = await Promise.all(
-      inputs.map(({ producer, ...input }) => producer.produce(input)),
-    );
-    const second = await Promise.all(
-      inputs.map(({ producer, ...input }) => producer.produce(input)),
-    );
-
-    expect(first.map((result) => result.ok)).toEqual([true, true, true]);
-    expect(second.map((result) => result.ok)).toEqual([true, true, true]);
-    expect(first).toEqual(second);
-    for (const result of first) {
-      if (!result.ok) continue;
-      expect(result.value.payload).not.toHaveProperty('scriptableKind');
+    for (const input of inputs) {
+      const producer = registry.get(input.asset.kind);
+      if (producer === undefined) throw new Error(`Missing ${input.asset.kind} producer`);
+      const first = (await producer.produce(input)).unwrap();
+      expect((await producer.produce(input)).unwrap()).toEqual(first);
+      expect(first.payload).not.toHaveProperty('scriptableKind');
     }
   });
 });

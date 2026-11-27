@@ -101,10 +101,11 @@ fn boundsAt(coord: vec3<u32>, node: Node) -> mat2x3<f32> {
   let high = min(zone.xy + zone.zw, low + scale * zone.zw / size);
   return mat2x3<f32>(vec3<f32>(low.x, node.low, low.y), vec3<f32>(high.x, node.high, high.y));
 }
+fn maximumLod() -> u32 { return min(params.p[4].w, params.p[5].y) - 1u; }
 fn lowestLod(observerY: f32, height: f32) -> vec2<f32> {
   let scale = bitcast<f32>(params.p[3].z);
   let distance = max(abs(observerY - height) / scale - 2.0, 0.0) * 2.0;
-  let lod = clamp(log2(max(distance, 1.0)), 0.0, f32(params.p[4].w - 1u));
+  let lod = clamp(log2(max(distance, 1.0)), 0.0, f32(maximumLod()));
   return vec2<f32>(floor(lod), fract(lod));
 }
 fn canRender(node: Node, density: u32) -> bool {
@@ -158,19 +159,20 @@ fn traverse(@builtin(global_invocation_id) id: vec3<u32>) {
   let coord = locate(index); let node = nodes[index]; let owner = primary(node); let transitionBody = transition(node);
   candidates[id.x] = Candidate(index, 0u, 0u, 0u, 0.0, owner, transitionBody, 0u);
   if (owner == 0u) { return; }
+  if (coord.z > maximumLod()) { return; }
   let view = views[viewIndex];
   if (!visible(boundsAt(coord, node), view)) { return; }
   let height = view.lod.xy;
   let lowest = u32(height.x); let distance = distanceTo(coord, node, view);
   let outside = distance > radius(coord.z) || coord.z < lowest;
   var density = 0u; var shouldRender = false;
-  if (coord.z + 1u < params.p[4].w && outside) {
+  if (coord.z < maximumLod() && outside) {
     let parentCoord = vec3<u32>(coord.xy >> vec2<u32>(1u), coord.z + 1u);
     let descriptor = params.mips[parentCoord.z];
     let parent = nodes[descriptor.x + parentCoord.y * descriptor.y + parentCoord.x];
     let parentIntersects = distanceTo(parentCoord, parent, view) <= radius(coord.z) && coord.z >= lowest;
     if (parentIntersects || !canRender(parent, 0u)) {
-      for (var parentLod = coord.z + 1u; parentLod < params.p[4].w; parentLod++) {
+      for (var parentLod = coord.z + 1u; parentLod <= maximumLod(); parentLod++) {
         density = parentLod - coord.z;
         let ancestorCoord = vec3<u32>(coord.xy >> vec2<u32>(density), parentLod);
         let ancestorDescriptor = params.mips[parentLod];
@@ -179,7 +181,7 @@ fn traverse(@builtin(global_invocation_id) id: vec3<u32>) {
       }
       shouldRender = true;
     }
-  } else if (coord.z == lowest || (coord.z > 0u && distance > radius(coord.z - 1u))) { shouldRender = true; }
+  } else if (coord.z == maximumLod() || coord.z == lowest || (coord.z > 0u && distance > radius(coord.z - 1u))) { shouldRender = true; }
   if (!shouldRender || !canRender(node, density)) { return; }
   let bodyOffset = viewIndex * params.p[0].w;
   let body = bodies[bodyOffset + owner]; var material = body.routes.y;
@@ -319,8 +321,7 @@ fn scatter(@builtin(global_invocation_id) id: vec3<u32>) {
     tiles[offset + 7u] = body.routes.x + 1u;
     tiles[offset + 8u] = select(0u, waveBody.routes.x + 1u, candidate.transition != 0u);
     let logicalLod = coord.z + candidate.lod;
-    let densityCount = max(1u, min(params.p[5].y, params.p[4].w - coord.z));
-    let maxMorphLod = max(logicalLod, min(params.p[4].w - 1u, coord.z + densityCount - 1u));
+    let maxMorphLod = max(logicalLod, maximumLod());
     let heightMorph = select(0.0, candidate.morph, logicalLod == u32(views[viewIndex].lod.x));
     tiles[offset + 9u] = logicalLod; tiles[offset + 10u] = min(logicalLod + 1u, params.p[4].w - 1u);
     tiles[offset + 11u] = params.p[3].z; tiles[offset + 12u] = candidate.material; tiles[offset + 13u] = candidate.lod;

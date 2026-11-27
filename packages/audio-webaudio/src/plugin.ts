@@ -3,12 +3,15 @@ import type { Plugin } from '@forgeax/engine-plugin';
 import { createWebAudioBackend } from './host-audio-consumer';
 import { WebAudioEngine } from './web-audio-engine';
 
-export function webAudioPlugin(engine = new WebAudioEngine()): Plugin {
+export function webAudioPlugin(
+  engine = new WebAudioEngine(),
+  options?: Parameters<typeof createWebAudioBackend>[1],
+): Plugin {
   return {
     name: 'web-audio',
     provide: 'audio',
     apply(ctx) {
-      const backend = createWebAudioBackend(engine);
+      const backend = createWebAudioBackend(engine, options);
       ctx.effect(() => () => backend.destroy(), 'audio/destroy-webaudio');
       ctx.provide('audio', backend);
     },

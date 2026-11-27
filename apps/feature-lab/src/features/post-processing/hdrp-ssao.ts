@@ -5,10 +5,11 @@ import { CheckList, defineFeature, type FeatureDefinition } from '../../lab/feat
 import { spawnMesh, spawnStage, standard } from '../../lab/stage';
 
 const AO = {
-  algorithm: 'ssao',
-  quality: 'medium',
+  enabled: true,
+  method: 'ssao',
+  quality: 50,
   radius: 0.5,
-  bias: 0.025,
+  bias: 3,
   intensity: 1,
 } as const;
 
@@ -21,11 +22,11 @@ export default defineFeature<FeatureDefinition>({
   catalog: 'AO forward/deferred path probe',
   kind: 'probe',
   summary:
-    'The probe switches live AO through deferred and forward Standard profiles, then disables and restores it to verify each route owns the expected raw + blur work.',
+    'The probe switches live AO through deferred and forward Standard profiles, then disables and restores it to verify each route owns the expected depth and SSAO work.',
   expect:
-    'All checks pass: deferred and forward AO schedule the raw and blur passes, disabling AO removes them, and restoring the deferred profile restores its AO work.',
+    'All checks pass: Deferred uses coarse and full-size SSAO, and Forward uses a single AO pass, disabling AO removes them, and restoring the deferred profile restores its AO work.',
   appOptions: {
-    standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', ssao: AO },
+    standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', ambientOcclusion: AO },
   },
   setup({ app, world, frames }) {
     const primitiveAssets = world.assets;
@@ -48,16 +49,20 @@ export default defineFeature<FeatureDefinition>({
         const base = renderer.inspect().profile;
         const enabled = aoPasses(renderer.inspect().perFramePassNames);
         checks.ok(
-          'deferred + AO schedules at least two AO passes (raw + blur)',
-          enabled.length >= 2,
+          'deferred + AO uses coarse and full-size evaluation',
+          enabled.includes('ssao-half') && enabled.includes('ssao-calc'),
           enabled.join(','),
         );
-        const off = renderer.setProfile({ ...base, ssao: false });
+        const off = renderer.setProfile({ ...base, ambientOcclusion: { enabled: false } });
         checks.ok('disable AO accepted', off.ok, off.ok ? undefined : off.error.code);
         await frames(3);
         const disabled = aoPasses(renderer.inspect().perFramePassNames);
         checks.equal('AO disabled removes every AO pass', disabled, []);
-        const forward = renderer.setProfile({ ...base, renderPath: 'forward', ssao: AO });
+        const forward = renderer.setProfile({
+          ...base,
+          renderPath: 'forward',
+          ambientOcclusion: AO,
+        });
         checks.ok(
           'forward + AO accepted',
           forward.ok,
@@ -67,8 +72,8 @@ export default defineFeature<FeatureDefinition>({
           await frames(3);
           const forwardPasses = aoPasses(renderer.inspect().perFramePassNames);
           checks.ok(
-            'forward + AO schedules at least two AO passes (raw + blur)',
-            forwardPasses.length >= 2,
+            'forward + AO records one full-size SSAO evaluation',
+            forwardPasses.includes('ssao-calc') && !forwardPasses.includes('ssao-half'),
             forwardPasses.join(','),
           );
         }

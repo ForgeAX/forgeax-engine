@@ -80,28 +80,36 @@ async function assertAuthoredSky(bytes, subject) {
  const decoded = parseImage(bytes,'image/png',{mipmap:false});
  assert.equal(decoded.ok,true,JSON.stringify(decoded));
  const {width,height,bytes:pixels}=decoded.value;
- // Keep the independent sample in the fixed outer margin, before both HUD cards.
- // Relative horizontal positions enter the HUD in the compact CI viewport.
- const x=subject === 'independent' ? 2 : Math.floor(width*.01);
- // Sample the top of the frame: an analytic atmosphere draws its planet ground below
- // the horizon, so only rows above it are sky for both a skybox and an atmosphere.
- const y=Math.floor(height*.02),lowerY=Math.floor(height*.10);
- let blue=0,gradient=0;
- const upper=[0,0,0],lower=[0,0,0];
- for(let dy=0;dy<4;dy++) for(let dx=0;dx<4;dx++) {
-  const offset=((y+dy)*width+x+dx)*4,lowerOffset=((lowerY+dy)*width+x+dx)*4;
-  const [r,g,b]=pixels.slice(offset,offset+3);
-  for(let channel=0;channel<3;channel++) {
-   upper[channel]+=pixels[offset+channel]/16;
-   lower[channel]+=pixels[lowerOffset+channel]/16;
+ // Keep the probe in the top outer margin, but let it find a clear patch when
+ // authored cloud cover moves over the corner sample.
+ const firstX=subject === 'independent' ? 2 : Math.floor(width*.01);
+ const lastX=Math.min(width-4,Math.floor(width*.10)-4);
+ // The planet ground stays below the horizon; both bands remain sky.
+ const firstY=Math.floor(height*.02),lastY=Math.min(height-4,Math.floor(height*.10)-4);
+ const lowerY=Math.min(height-4,Math.floor(height*.18));
+ assert.ok(lastX>=firstX && lastY>=firstY,`sky image is too small to sample: ${width}x${height}`);
+ let best;
+ for(let y=firstY;y<=lastY;y++) for(let x=firstX;x<=lastX;x++) {
+  let blue=0;
+  const upper=[0,0,0],lower=[0,0,0];
+  for(let dy=0;dy<4;dy++) for(let dx=0;dx<4;dx++) {
+   const offset=((y+dy)*width+x+dx)*4,lowerOffset=((lowerY+dy)*width+x+dx)*4;
+   const r=pixels[offset],g=pixels[offset+1],b=pixels[offset+2];
+   for(let channel=0;channel<3;channel++) {
+    upper[channel]+=pixels[offset+channel]/16;
+    lower[channel]+=pixels[lowerOffset+channel]/16;
+   }
+   if(b>r+12 && b>g+4 && b>40)blue++;
   }
-  if(b>r+12 && b>g+4 && b>40)blue++;
+  let gradient=0;
+  for(let channel=0;channel<3;channel++) gradient+=Math.abs(upper[channel]-lower[channel]);
+  if(!best || blue>best.blue || (blue===best.blue && gradient>best.gradient))
+   best={x,y,blue,upper,lower,gradient};
  }
- for(let channel=0;channel<3;channel++) gradient+=Math.abs(upper[channel]-lower[channel]);
- const observation={width,height,x,y,lowerY,blue,upper,lower,gradient};
+ const observation={width,height,...best,lowerY,scan:{firstX,lastX,firstY,lastY}};
  await writeFile(resolve(output,`${subject}-sky.json`),JSON.stringify(observation,null,2));
- assert.equal(blue,16,`the authored blue sky must remain visible beyond the finite floor: ${JSON.stringify(observation)}`);
- assert.ok(gradient>12,`the sky horizon gradient must reject a uniform clear-color fallback: ${JSON.stringify(observation)}`);
+ assert.equal(best.blue,16,`the authored blue sky must remain visible beyond the finite floor: ${JSON.stringify(observation)}`);
+ assert.ok(best.gradient>12,`the sky horizon gradient must reject a uniform clear-color fallback: ${JSON.stringify(observation)}`);
 }
 async function prepareDiagnosticGameProject(template, gameRoot, lightweight) {
  await cp(resolve(template, 'assets'), resolve(gameRoot, 'assets'), { recursive: true });
@@ -218,7 +226,7 @@ try {
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted || !!globalThis.__forgeaxViewReady?.error, undefined, { timeout: 90_000 });
   assert.equal(await page.evaluate(()=>globalThis.__forgeaxViewReady?.error),undefined);
   await openDiagnosticPage(page);
-  await page.getByRole('button', {name:'Import tape',exact:true}).waitFor();
+  await page.getByRole('button', {name:/^(?:Import tape|\u5bfc\u5165\u6355\u83b7\u6587\u4ef6)$/}).waitFor();
   assert.equal(await page.locator('.fx-view-project-open').count(), 0, 'projectless artifact page must remain usable');
  });
  const profiler = createProfiler({ phaseCatalog: { app: ['frame'], render: [] } });
@@ -240,7 +248,7 @@ try {
   await page.locator('[data-forgeax-diagnostic="profiler"] input[type="file"]').setInputFiles(capturePath);
   await page.locator('[data-profile-status="loaded"]').waitFor();
   assert.equal(await page.locator('[data-profile-frames]').getAttribute('data-profile-frames'), '60');
-  assert.ok((await page.locator('.fx-profile-summary').textContent()).includes(`${expected.value.summary.recordCount} records`));
+  assert.match(await page.locator('.fx-profile-summary').textContent(),new RegExp(`${expected.value.summary.recordCount} (?:records|\u6761\u8bb0\u5f55)`));
  });
  await page.screenshot({ path: resolve(output, 'resident-profiler.png') });
  const invalid = resolve(output, 'invalid-profile.json'); await writeFile(invalid, '{"schemaVersion":"invalid"}');
@@ -252,13 +260,13 @@ try {
   await page.reload();
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted);
   await openDiagnosticPage(page);
-  await page.getByRole('button', {name:'Import tape',exact:true}).waitFor();
+  await page.getByRole('button', {name:/^(?:Import tape|\u5bfc\u5165\u6355\u83b7\u6587\u4ef6)$/}).waitFor();
  });
  await page.screenshot({ path: resolve(output, 'resident-rhi.png') });
  for(let sample=0;sample<5;sample++) await stage(`resident-reload-sample-${sample}`, async () => {
   await page.reload(); await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted);
   await openDiagnosticPage(page);
-  await page.getByRole('button',{name:'Import tape',exact:true}).waitFor();
+  await page.getByRole('button',{name:/^(?:Import tape|\u5bfc\u5165\u6355\u83b7\u6587\u4ef6)$/}).waitFor();
  });
  for(const type of ['rhi-debug','profiler']) {
   const ownerUid = await page.evaluate(() => globalThis.__forgeaxViewReady.mounted.frontendHost.context.fiber.uid);
@@ -446,14 +454,14 @@ try {
  await writeFile(resolve(output,'live-producer.json'),JSON.stringify({independent,profileArtifact,liveProfile:liveProfileModel.value.summary,liveCapture,liveBytes,sceneCompletedFrames},null,2));
 
  await openDiagnosticPage(page);
- await page.getByRole('button', {name:'Import tape',exact:true}).waitFor();
+ await page.getByRole('button', {name:/^(?:Import tape|\u5bfc\u5165\u6355\u83b7\u6587\u4ef6)$/}).waitFor();
  // The existing artifact fixture is explicit structural/replay data, not a claimed live capture.
  const generator = resolve(output, 'diagnostic-fixture.mjs');
  await writeFile(generator, (await readFile(resolve(root, 'apps/rhi-debug-viewer/fixtures/generate-fixture.mjs'), 'utf8')).replace('@forgeax/engine-rhi-debug', engineEntry('rhi-debug')));
  const fixture = spawnSync(process.execPath, [generator,output], {cwd:gameRoot,encoding:'utf8'});
  assert.equal(fixture.status,0,fixture.stderr); const tapePath = resolve(output, 'frame-0.rhitape');
  await stage('rhi-file-to-model', async () => {
-  await page.getByLabel('Select one v7 RHI tape').setInputFiles(tapePath);
+  await page.locator('[data-forgeax-diagnostic="rhi-debug"] input[type="file"][accept=".rhitape"]').setInputFiles(tapePath);
   await page.waitForFunction(() => globalThis.__forgeaxRhiDebug?.model?.works?.length > 0, undefined, {timeout:90000});
  });
  await page.evaluate(() => {
@@ -469,7 +477,7 @@ try {
   observer.observe(document,{childList:true,attributes:true,subtree:true});
  });
  await page.locator('[data-forgeax-event-browser] [data-forgeax-work-index="0"]').click();
- const drawTab=page.getByRole('tab',{name:'Draw Call Viewer',exact:true});
+ const drawTab=page.getByRole('tab',{name:/^(?:Draw Call Viewer|\u7ed8\u5236\u8c03\u7528\u67e5\u770b\u5668)$/});
  if(await drawTab.count()) await drawTab.click();
  await page.locator('[data-forgeax-rt-status="ok"]').first().waitFor({timeout:90000});
  const firstReadyPixels=await page.evaluate(()=>globalThis.__forgeaxFirstReadyPixels);
@@ -487,7 +495,7 @@ try {
  assert.ok(layout.y+layout.height<=rhiViewport.height+1,`RHI tool must fit inside the View viewport: ${JSON.stringify({layout,viewport:rhiViewport})}`);
  await page.screenshot({ path: resolve(output, 'embedded-rhi.png') });
  await stage('live-rhi-file-to-model', async () => {
-  await page.getByLabel('Select one v7 RHI tape').setInputFiles(liveTape);
+  await page.locator('[data-forgeax-diagnostic="rhi-debug"] input[type="file"][accept=".rhitape"]').setInputFiles(liveTape);
   await page.waitForFunction(digest => globalThis.__forgeaxRhiDebug?.artifactRef?.digest===digest && !!globalThis.__forgeaxRhiDebug?.model?.works?.length,liveCapture.digest,{timeout:90000});
  });
  const liveModel=await page.evaluate(()=>({digest:globalThis.__forgeaxRhiDebug.artifactRef.digest,passes:globalThis.__forgeaxRhiDebug.model.passes.length,works:globalThis.__forgeaxRhiDebug.model.works.length,resources:globalThis.__forgeaxRhiDebug.model.resources.length}));
@@ -564,7 +572,7 @@ try {
  await page.goto(restartedView.url);
  await page.waitForFunction(()=>!!globalThis.__forgeaxViewReady?.mounted,undefined,{timeout:90000});
  await openDiagnosticPage(page);
- await page.getByRole('button',{name:'Import tape',exact:true}).waitFor();
+ await page.getByRole('button',{name:/^(?:Import tape|\u5bfc\u5165\u6355\u83b7\u6587\u4ef6)$/}).waitFor();
  // The projectless fallback must run before a project intent can auto-open
  // another game in this GPU-disabled page. Backend restart clears that intent.
  const noGpu=await browser.newPage({viewport:{width:1440,height:900}});
@@ -572,7 +580,7 @@ try {
  await noGpu.goto(restartedView.url);
  await noGpu.waitForFunction(()=>!!globalThis.__forgeaxViewReady?.mounted,undefined,{timeout:90000});
  await noGpu.locator('[role="tab"][data-page-id="page-rhi-debug"]').click();
- await noGpu.getByLabel('Select one v7 RHI tape').setInputFiles(tapePath);
+ await noGpu.locator('[data-forgeax-diagnostic="rhi-debug"] input[type="file"][accept=".rhitape"]').setInputFiles(tapePath);
  await noGpu.locator('[data-forgeax-event-browser] [data-forgeax-work-index="0"]').click();
  await noGpu.locator('[data-forgeax-rt-status="no-webgpu"]').first().waitFor();
  assert.ok(await noGpu.evaluate(()=>globalThis.__forgeaxRhiDebug.model.works.length>0));

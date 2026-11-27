@@ -9,6 +9,7 @@ export {
   type AssetPublicationInput,
   assetPublicationGeneration,
   assetPublicationOutputSetDigest,
+  assetPublicationReceiptMatches,
   createAssetPublication,
 } from './asset-publication.js';
 export { encodeBase64 } from './base64.js';
@@ -56,7 +57,9 @@ export {
   recordLoadTimeline,
   snapshotLoadTimeline,
 } from './load-timeline.js';
+export * from './material-lighting-inputs.js';
 export * from './material-program-abi.js';
+export * from './material-source-program.js';
 export { createMeshMaterialSlotTable, type MeshMaterialSlotSource } from './mesh-material-slots.js';
 export type { NavigationBakeSettings, NavigationMeshAsset } from './navigation.js';
 export type { PackageFetcher, PackageRequest, PackageResponse } from './package-fetch.js';
@@ -97,11 +100,18 @@ export type {
   GeneratedTextureSource,
   GpuTextureMipFilter,
   TextureGenerationPass,
+  TextureGenerationRasterPass,
   TextureGenerationRead,
+  TextureGenerationVolumePass,
   TextureGeneratorAsset,
   TextureGeneratorPrograms,
 } from './texture/generator.js';
-export { validateTextureGenerator } from './texture/generator.js';
+export {
+  TEXTURE_GENERATOR_VOLUME_ENTRY,
+  textureGenerationMipShape,
+  textureGeneratorParameterLayout,
+  validateTextureGenerator,
+} from './texture/generator.js';
 export type { GpuTextureAsset, SampledTextureAsset } from './texture/gpu-asset.js';
 export { isGpuTextureAsset } from './texture/gpu-asset.js';
 export type {

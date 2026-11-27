@@ -621,15 +621,18 @@ export class ViewWorkspaceBroker {
     return this.changeSceneSelection(args, context, () => ({ entityId, label: args.label, ...(entityIds && entityIds.length > 1 ? { entityIds } : {}) }));
   }
   pickSceneEntity(args: Args = {}, context?: WorkspaceCallContext) {
+    const granularity = args.granularity ?? 'triangle';
+    if (granularity !== 'triangle' && granularity !== 'visible-entity')
+      throw workspaceError('view-workspace-selection-invalid', 'A supported scene picking granularity', 'Use triangle or visible-entity.');
     return this.changeSceneSelection(args, context, async requestContext => {
-      const result = await this.invoke('target.pick', { ...args, granularity: 'triangle' }, requestContext) as {
+      const result = await this.invoke('target.pick', { ...args, granularity }, requestContext) as {
         entityId?: string | null;
         granularity?: string;
       };
-      if (result?.granularity !== 'triangle') throw workspaceError(
+      if (result?.granularity !== granularity) throw workspaceError(
         'view-workspace-operation-unavailable',
-        'the Engine triangle-picking capability',
-        'Pair this View build with an Engine target that supports triangle granularity.',
+        granularity === 'triangle' ? 'the Engine triangle-picking capability' : 'the Engine GPU picking capability',
+        'Pair this View build with an Engine target that supports the requested granularity.',
         { operation: 'target.pick', granularity: result?.granularity },
       );
       if (result?.entityId === null) return null;

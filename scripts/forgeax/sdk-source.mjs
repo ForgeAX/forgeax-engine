@@ -1,7 +1,19 @@
 import { execFile } from 'node:child_process';
-import { access, cp, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import {
+  access,
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  readlink,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, isAbsolute, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import {
   artifact,
@@ -78,6 +90,33 @@ export async function seedSourcePackageBuilds({ repositoryRoot, sdkRoot, sourceR
   }
 }
 
+// Demo Packs reference the single Engine shader source through relative links.
+// Materialize only those links from the archived tree so the SDK stays portable.
+async function materializeArchivedDemoShaders(root, destination, commit) {
+  const { stdout } = await execFileAsync('git', ['ls-tree', '-rz', commit, '--', 'apps/hello'], {
+    cwd: root,
+  });
+  const base = await realpath(destination);
+  const shaderRoot = resolve(base, 'packages/shader/src');
+  for (const entry of stdout.split('\0')) {
+    const match = /^120000 blob [a-f0-9]+\t(apps\/hello\/[^/]+\/src\/[^/]+\.wgsl)$/.exec(entry);
+    if (!match) continue;
+    const path = resolve(base, match[1]);
+    const link = await readlink(path);
+    const target = resolve(dirname(path), link);
+    if (
+      isAbsolute(link) ||
+      !target.startsWith(shaderRoot + sep) ||
+      (await realpath(target)) !== target ||
+      !(await lstat(target)).isFile()
+    )
+      throw new Error(`sdk-source-demo-shader-link: ${match[1]}`);
+    const shader = await readFile(target);
+    await rm(path);
+    await writeFile(path, shader, { flag: 'wx' });
+  }
+}
+
 export async function archiveEngineSource({ root, destination, commit }) {
   const temporary = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-source-'));
   const archive = resolve(temporary, 'source.tar');
@@ -91,6 +130,7 @@ export async function archiveEngineSource({ root, destination, commit }) {
       },
     );
     await execFileAsync('tar', ['-xf', archive, '-C', destination]);
+    await materializeArchivedDemoShaders(root, destination, commit);
     const sources = [];
     for (const path of SDK_SOURCE_GIT_DEPENDENCIES) {
       const { stdout } = await execFileAsync('git', ['ls-tree', '-z', commit, '--', path], {

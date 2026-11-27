@@ -41,7 +41,10 @@ function fixture() {
   return { arena, skin, source, skeleton, position, skinIndex, skinWeight, envelopes };
 }
 
-it('encloses actual weighted vertices and all material-displacement corners with caller-owned output', () => {
+it.each([
+  false,
+  true,
+])('encloses weighted vertices and displacement with caller-owned output (affine points: %s)', (affinePoint) => {
   const f = fixture(),
     frame = f.skin.capture(),
     current = mat4.create(),
@@ -49,13 +52,17 @@ it('encloses actual weighted vertices and all material-displacement corners with
   try {
     const out = new Float32Array(8).fill(123),
       radius = 0.75;
-    expect(frame.bounds(0, f.envelopes, radius, out, current, inverse)).toBe(true);
+    const meshWorld = affinePoint ? matrix(31) : undefined;
+    if (meshWorld !== undefined) meshWorld[13] = -17;
+    expect(frame.bounds(0, f.envelopes, radius, out, current, inverse, meshWorld)).toBe(true);
     expect(Array.from(out.subarray(6))).toEqual([123, 123]);
     for (let vertex = 0; vertex < 3; vertex++)
       for (let corner = 0; corner < 8; corner++) {
         const point = [0, 0, 0];
+        let sum = 0;
         for (let lane = 0; lane < 4; lane++) {
           const weight = f.skinWeight[vertex * 4 + lane] as number;
+          sum += weight;
           const joint = f.skinIndex[vertex * 4 + lane] as number;
           expect(frame.matrix(0, joint, current, inverse)).toBe(true);
           for (let axis = 0; axis < 3; axis++) {
@@ -69,8 +76,9 @@ it('encloses actual weighted vertices and all material-displacement corners with
           }
         }
         for (let axis = 0; axis < 3; axis++) {
-          expect(point[axis]).toBeGreaterThanOrEqual(out[axis] as number);
-          expect(point[axis]).toBeLessThanOrEqual(out[axis + 3] as number);
+          const corrected = (point[axis] as number) + (1 - sum) * (meshWorld?.[12 + axis] ?? 0);
+          expect(corrected).toBeGreaterThanOrEqual(out[axis] as number);
+          expect(corrected).toBeLessThanOrEqual(out[axis + 3] as number);
         }
       }
   } finally {

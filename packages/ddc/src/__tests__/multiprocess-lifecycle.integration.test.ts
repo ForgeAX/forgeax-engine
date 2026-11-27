@@ -1,8 +1,7 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 import { spawnDdcWorker } from './multiprocess-worker.js';
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -45,15 +44,12 @@ function runWorker(
 }
 
 describe('DDC multiprocess lifecycle', () => {
-  const roots: string[] = [];
+  const scratch = temporaryDirectories();
 
-  afterEach(async () => {
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-  });
+  afterEach(scratch.clear);
 
   it('allocates unique persistent generations across two independent processes', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-multiprocess-generation-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-ddc-multiprocess-generation-');
     const script = `
       const { DdcLifecycle } = await load(process.argv[1]);
       const lease = await new DdcLifecycle(process.argv[2]).begin(process.argv[3], process.argv[4]);
@@ -67,8 +63,7 @@ describe('DDC multiprocess lifecycle', () => {
   });
 
   it('does not reuse a generation after a process restart', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-multiprocess-restart-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-ddc-multiprocess-restart-');
     const script = `
       const { DdcLifecycle } = await load(process.argv[1]);
       const lease = await new DdcLifecycle(process.argv[2]).begin(process.argv[3], process.argv[4]);
@@ -81,8 +76,7 @@ describe('DDC multiprocess lifecycle', () => {
   });
 
   it('serializes generation allocation across independent asset heads', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-multiprocess-generation-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-ddc-multiprocess-generation-');
     const script = `
       const { DdcLifecycle } = await load(process.argv[1]);
       const lease = await new DdcLifecycle(process.argv[2]).begin(process.argv[3], process.argv[4]);
@@ -99,8 +93,7 @@ describe('DDC multiprocess lifecycle', () => {
   });
 
   it('rejects the stale writer instead of silently overwriting current', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-multiprocess-head-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-ddc-multiprocess-head-');
     const script = `
       const { mkdir, readdir, writeFile } = await import('node:fs/promises');
       const { join } = await import('node:path');
@@ -134,7 +127,7 @@ describe('DDC multiprocess lifecycle', () => {
     ]);
 
     expect([first.result, second.result].filter((value) => value === 'current')).toHaveLength(1);
-    expect([first.result, second.result]).toContain('stale');
+    expect([first.result, second.result]).toContain('lease-lost');
     expect(first.revision ?? second.revision).toEqual(expect.any(Number));
   });
 });

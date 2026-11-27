@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import devkitPackage from '../package.json' with { type: 'json' };
 import type { SdkManifest } from './sdk.js';
 import type { CommandResult, InitOptions, ProjectFacts } from './types.js';
+import { completeCommand, failCommand } from './types.js';
 
 const STANDARD_SCRIPTS = {
   dev: 'forgeax dev start',
@@ -41,15 +42,52 @@ export interface InitPlan {
   readonly scriptChanges: readonly { readonly name: string; readonly to: string }[];
 }
 
+function appendInstalledEngineDependencies(
+  manifest: Record<string, unknown>,
+  packages: SdkManifest['packages'],
+  dependencyChanges: InitPlan['dependencyChanges'][number][],
+): void {
+  const existingEngineNames = new Set(
+    ['dependencies', 'devDependencies'].flatMap((section) => {
+      const value = manifest[section];
+      return value !== null && typeof value === 'object'
+        ? Object.keys(value).filter((name) => isEnginePackage(name))
+        : [];
+    }),
+  );
+  for (const entry of packages) {
+    if (entry.name === '@forgeax/engine-devkit' || existingEngineNames.has(entry.name)) continue;
+    dependencyChanges.push({
+      section: 'dependencies',
+      name: entry.name,
+      to: entry.version,
+    });
+  }
+  const devDependencies =
+    manifest.devDependencies !== null && typeof manifest.devDependencies === 'object'
+      ? (manifest.devDependencies as Record<string, unknown>)
+      : {};
+  for (const [name, version] of Object.entries(SDK_DEV_DEPENDENCIES)) {
+    if (devDependencies[name] === version) continue;
+    dependencyChanges.push({
+      section: 'devDependencies',
+      name,
+      ...(typeof devDependencies[name] === 'string' ? { from: devDependencies[name] } : {}),
+      to: version,
+    });
+  }
+}
+
 export function createInitPlan(
   facts: ProjectFacts,
   sdk?: Pick<SdkManifest, 'sdkVersion' | 'packages' | 'requirements'>,
+  embedded = false,
 ): CommandResult<InitPlan> {
   const manifest = structuredClone(facts.packageJson) as Record<string, unknown>;
   const packageVersions = new Map(sdk?.packages.map((entry) => [entry.name, entry.version]));
   const devkitVersion = packageVersions.get('@forgeax/engine-devkit') ?? devkitPackage.version;
   const dependencyChanges: InitPlan['dependencyChanges'][number][] = [];
-  if (sdk !== undefined) {
+  if (sdk !== undefined && !embedded) {
     for (const section of ['dependencies', 'devDependencies'] as const) {
       const dependencies = manifest[section];
       if (dependencies === null || typeof dependencies !== 'object') continue;
@@ -57,15 +95,12 @@ export function createInitPlan(
         (name) => !isEnginePackage(name) && !(name in SDK_DEV_DEPENDENCIES),
       );
       if (unsupported.length > 0) {
-        return {
-          ok: false,
-          error: {
-            code: 'sdk-external-dependency-unsupported',
-            expected: 'archive-backed init dependencies to belong to the SDK closure',
-            hint: 'Remove the external dependency or use a network-backed package workflow explicitly.',
-            detail: { root: facts.root, dependencies: unsupported.sort() },
-          },
-        };
+        return failCommand(
+          'sdk-external-dependency-unsupported',
+          'archive-backed init dependencies to belong to the SDK closure',
+          'Remove the external dependency or use a network-backed package workflow explicitly.',
+          { root: facts.root, dependencies: unsupported.sort() },
+        );
       }
     }
   }
@@ -80,35 +115,7 @@ export function createInitPlan(
     }
   }
   if (sdk !== undefined) {
-    const existingEngineNames = new Set(
-      ['dependencies', 'devDependencies'].flatMap((section) => {
-        const value = manifest[section];
-        return value !== null && typeof value === 'object'
-          ? Object.keys(value).filter((name) => isEnginePackage(name))
-          : [];
-      }),
-    );
-    for (const entry of sdk.packages) {
-      if (entry.name === '@forgeax/engine-devkit' || existingEngineNames.has(entry.name)) continue;
-      dependencyChanges.push({
-        section: 'dependencies',
-        name: entry.name,
-        to: entry.version,
-      });
-    }
-    const devDependencies =
-      manifest.devDependencies !== null && typeof manifest.devDependencies === 'object'
-        ? (manifest.devDependencies as Record<string, unknown>)
-        : {};
-    for (const [name, version] of Object.entries(SDK_DEV_DEPENDENCIES)) {
-      if (devDependencies[name] === version) continue;
-      dependencyChanges.push({
-        section: 'devDependencies',
-        name,
-        ...(typeof devDependencies[name] === 'string' ? { from: devDependencies[name] } : {}),
-        to: version,
-      });
-    }
+    appendInstalledEngineDependencies(manifest, sdk.packages, dependencyChanges);
   }
   const scriptsValue = manifest.scripts;
   const scripts =
@@ -120,15 +127,12 @@ export function createInitPlan(
     const existing = scripts[name];
     if (existing === undefined) scriptChanges.push({ name, to: command });
     else if (existing !== command) {
-      return {
-        ok: false,
-        error: {
-          code: 'project-script-conflict',
-          expected: `package.json#scripts.${name} to be absent or ${JSON.stringify(command)}`,
-          hint: `Rename the existing ${name} script, then rerun forgeax project init.`,
-          detail: { root: facts.root, script: name, existing },
-        },
-      };
+      return failCommand(
+        'project-script-conflict',
+        `package.json#scripts.${name} to be absent or ${JSON.stringify(command)}`,
+        `Rename the existing ${name} script, then rerun forgeax project init.`,
+        { root: facts.root, script: name, existing },
+      );
     }
   }
   const devDependencies = manifest.devDependencies;
@@ -144,17 +148,14 @@ export function createInitPlan(
       to: devkitVersion,
     });
   }
-  return {
-    ok: true,
-    value: {
-      root: facts.root,
-      version: sdk?.sdkVersion ?? devkitVersion,
-      ...(sdk === undefined ? {} : { pnpmVersion: sdk.requirements.pnpm }),
-      archiveBacked: sdk !== undefined,
-      dependencyChanges,
-      scriptChanges,
-    },
-  };
+  return completeCommand({
+    root: facts.root,
+    version: sdk?.sdkVersion ?? devkitVersion,
+    ...(sdk === undefined ? {} : { pnpmVersion: sdk.requirements.pnpm }),
+    archiveBacked: sdk !== undefined,
+    dependencyChanges,
+    scriptChanges,
+  });
 }
 
 export async function applyInitPlan(

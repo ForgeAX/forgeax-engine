@@ -3,7 +3,7 @@ import type {} from '@vitest/browser-playwright';
 import { afterEach, expect, it } from 'vitest';
 import { cdp, commands, page, userEvent } from 'vitest/browser';
 import { createBlitzUi } from '../index.js';
-import { required, uiEvidenceDirectory } from './fixture.js';
+import { required, selectAllKeys, uiEvidenceDirectory } from './fixture.js';
 
 const cleanup: (() => void)[] = [];
 afterEach(async () => {
@@ -230,7 +230,7 @@ it('localizes the complete dynamic form without replacing edits, focus, validati
     required(inputs.find((input) => input.name === 'radius')),
   );
   required(radii[0]).focus();
-  await userEvent.keyboard('{Control>}a{/Control}0.65');
+  await userEvent.keyboard(`${selectAllKeys()}0.65`);
   required(radii[1]).focus();
   ui.input.text('0.65');
   await language('en');

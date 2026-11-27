@@ -139,19 +139,26 @@ export function prepareRuntimeMeshRange(
     input.first + count > vertexCount
   )
     return invalid('a whole-vertex range within the existing mesh');
-  for (let i = 0; i < values.length; i++)
-    if (!Number.isFinite(values[i])) return invalid('finite mesh attribute values');
   if (count === 0) return ok({ writes: [] });
   const fields: Record<string, unknown> = {};
   if (input.attribute === 'position') {
-    const bounds = growBounds(mesh, values, 3, 0, count);
+    const bounds = validatePositionBounds(
+      mesh,
+      values,
+      3,
+      0,
+      count,
+      input.first === 0 && count === vertexCount,
+    );
     if (!bounds.ok) return bounds;
     if (bounds.value !== undefined) fields.aabb = bounds.value;
-  }
+  } else
+    for (let i = 0; i < values.length; i++)
+      if (!Number.isFinite(values[i])) return invalid('finite mesh attribute values');
   const bytes = new Uint8Array(values.buffer, values.byteOffset, values.byteLength);
   return ok({
     writes: [
-      ...(mesh.attributeStorage === 'interleaved'
+      ...(mesh.attributeStorage !== undefined
         ? []
         : [
             {
@@ -179,21 +186,49 @@ function matchesRangeStorage(format: string, values: unknown): boolean {
   return values instanceof Float32Array;
 }
 
-function growBounds(
+function validatePositionBounds(
   mesh: MeshAsset,
   positions: ArrayLike<number>,
   stride: number,
   offset: number,
   rows: number,
+  complete: boolean,
+  packed?: Float32Array,
 ): Result<Float32Array | undefined, AssetError> {
   if (mesh.aabb === undefined) return invalid('admitted conservative mesh bounds');
-  const bounds = mesh.aabb.slice();
-  for (let row = 0; row < rows; row++)
-    for (let axis = 0; axis < 3; axis++) {
-      const value = positions[row * stride + offset + axis] as number;
-      bounds[axis] = Math.min(bounds[axis] as number, value);
-      bounds[axis + 3] = Math.max(bounds[axis + 3] as number, value);
+  const bounds = complete
+    ? Float32Array.of(Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity)
+    : mesh.aabb.slice();
+  let minX = bounds[0] as number;
+  let minY = bounds[1] as number;
+  let minZ = bounds[2] as number;
+  let maxX = bounds[3] as number;
+  let maxY = bounds[4] as number;
+  let maxZ = bounds[5] as number;
+  for (let row = 0, start = offset; row < rows; row++, start += stride) {
+    const x = positions[start] as number;
+    const y = positions[start + 1] as number;
+    const z = positions[start + 2] as number;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z))
+      return invalid('finite mesh attribute values');
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    minZ = Math.min(minZ, z);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+    maxZ = Math.max(maxZ, z);
+    if (packed !== undefined) {
+      packed[row * 3] = x;
+      packed[row * 3 + 1] = y;
+      packed[row * 3 + 2] = z;
     }
+  }
+  bounds[0] = minX;
+  bounds[1] = minY;
+  bounds[2] = minZ;
+  bounds[3] = maxX;
+  bounds[4] = maxY;
+  bounds[5] = maxZ;
   return ok(bounds.some((value, index) => value !== mesh.aabb?.[index]) ? bounds : undefined);
 }
 
@@ -226,7 +261,7 @@ function prepareInterleavedRows(
     const lanes = attribute.byteLength / 4;
     const lane = attribute.offset / 4;
     const packed =
-      mesh.attributeStorage === 'interleaved'
+      mesh.attributeStorage !== undefined
         ? undefined
         : attribute.format === 'uint32'
           ? new Uint32Array(rows * lanes)
@@ -235,17 +270,25 @@ function prepareInterleavedRows(
       attribute.format === 'uint32'
         ? new Uint32Array(values.buffer, values.byteOffset, values.length)
         : values;
-    for (let row = 0; row < rows; row++)
-      for (let index = 0; index < lanes; index++) {
-        const value = source[row * floats + lane + index] as number;
-        if (!Number.isFinite(value)) return invalid('finite mesh attribute values');
-        if (packed !== undefined) packed[row * lanes + index] = value;
-      }
     if (attribute.key === 'position') {
-      const bounds = growBounds(mesh, values, floats, lane, rows);
+      const bounds = validatePositionBounds(
+        mesh,
+        values,
+        floats,
+        lane,
+        rows,
+        input.first === 0 && rows === vertexCount,
+        packed instanceof Float32Array ? packed : undefined,
+      );
       if (!bounds.ok) return bounds;
       if (bounds.value !== undefined) fields.aabb = bounds.value;
-    }
+    } else
+      for (let row = 0; row < rows; row++)
+        for (let index = 0; index < lanes; index++) {
+          const value = source[row * floats + lane + index] as number;
+          if (!Number.isFinite(value)) return invalid('finite mesh attribute values');
+          if (packed !== undefined) packed[row * lanes + index] = value;
+        }
     if (packed !== undefined)
       writes.push({
         path: ['attributes', attribute.key],

@@ -128,13 +128,13 @@ async function productionFixture() {
   );
   const selected = (artifact = inputs.materialArtifact) =>
     collectGpuDrivenMaterialArtifacts({
-      batches: topology.query(topology.sourcePlan(), undefined).batches,
+      batches: topology.query(topology.sourcePlan(), undefined).active.batches,
       programs,
       resolve: () => artifact,
       clustered: false,
       reflectionFallback: false,
       probeBlend: false,
-      shadowViews: false,
+      demand: 'forward',
     });
   return {
     device,
@@ -318,8 +318,14 @@ describe('GPU-driven mesh world identity', () => {
     const firstMesh = mesh(fixture.device, 3);
     const secondMesh = mesh(fixture.device, 6);
     const meshes = new Map<GpuDrivenBatchBinding, MeshGpuHandles>([
-      [bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined), 0), firstMesh],
-      [bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined), 1), secondMesh],
+      [
+        bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined).active, 0),
+        firstMesh,
+      ],
+      [
+        bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined).active, 1),
+        secondMesh,
+      ],
     ]);
     const prepared = fixture.production
       .prepare(
@@ -327,7 +333,7 @@ describe('GPU-driven mesh world identity', () => {
           ...fixture.inputs,
           scene: {
             scene: fixture.availability.scene,
-            plan: fixture.topology.query(fixture.topology.sourcePlan(), undefined),
+            plan: fixture.topology.query(fixture.topology.sourcePlan(), undefined).active,
             slots,
             slotAt: fixture.projection.slotAt,
           },
@@ -359,7 +365,7 @@ describe('GPU-driven mesh world identity', () => {
     if (first === undefined || second === undefined) return;
     const firstMesh = mesh(fixture.device, 3);
     const secondMesh = mesh(fixture.device, 6);
-    const sourcePlan = fixture.topology.query(fixture.topology.sourcePlan(), undefined);
+    const sourcePlan = fixture.topology.query(fixture.topology.sourcePlan(), undefined).active;
     const baseScene = {
       scene: fixture.availability.scene,
       plan: sourcePlan,
@@ -374,11 +380,11 @@ describe('GPU-driven mesh world identity', () => {
           camera: makeZeroCameraFallbackSnapshot(),
           meshByBinding: new Map<GpuDrivenBatchBinding, MeshGpuHandles>([
             [
-              bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined), 0),
+              bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined).active, 0),
               firstMesh,
             ],
             [
-              bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined), 1),
+              bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined).active, 1),
               secondMesh,
             ],
           ]),
@@ -411,11 +417,11 @@ describe('GPU-driven mesh world identity', () => {
           camera: makeZeroCameraFallbackSnapshot(),
           meshByBinding: new Map<GpuDrivenBatchBinding, MeshGpuHandles>([
             [
-              bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined), 0),
+              bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined).active, 0),
               secondMesh,
             ],
             [
-              bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined), 1),
+              bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined).active, 1),
               secondMesh,
             ],
           ]),
@@ -431,9 +437,12 @@ describe('GPU-driven mesh world identity', () => {
     // not a structural edit: prepared rows and the filtered plan are retained.
     const retainedMeshes = () =>
       new Map<GpuDrivenBatchBinding, MeshGpuHandles>([
-        [bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined), 0), firstMesh],
         [
-          bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined), 1),
+          bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined).active, 0),
+          firstMesh,
+        ],
+        [
+          bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined).active, 1),
           secondMesh,
         ],
       ]);
@@ -463,8 +472,14 @@ describe('GPU-driven mesh world identity', () => {
     // batch that consulted it.
     prepareRetained(
       new Map<GpuDrivenBatchBinding, MeshGpuHandles>([
-        [bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined), 0), firstMesh],
-        [bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined), 1), firstMesh],
+        [
+          bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined).active, 0),
+          firstMesh,
+        ],
+        [
+          bindingAt(fixture.topology.query(fixture.topology.sourcePlan(), undefined).active, 1),
+          firstMesh,
+        ],
       ]),
     );
     expect(fixture.production.inspect()).toMatchObject({
@@ -484,7 +499,7 @@ describe('GPU-driven mesh world identity', () => {
     const explicit = { ...implicit, fragmentEntry: 'fs_main' };
     const source = {
       scene: fixture.availability.scene,
-      plan: fixture.topology.query(fixture.topology.sourcePlan(), undefined),
+      plan: fixture.topology.query(fixture.topology.sourcePlan(), undefined).active,
       slots,
       slotAt: fixture.projection.slotAt,
     };
@@ -539,7 +554,7 @@ describe('GPU-driven mesh world identity', () => {
     assert(materialKey);
     const source = {
       scene: fixture.availability.scene,
-      plan: fixture.topology.query(fixture.topology.sourcePlan(), undefined),
+      plan: fixture.topology.query(fixture.topology.sourcePlan(), undefined).active,
       slots,
       slotAt: fixture.projection.slotAt,
     };

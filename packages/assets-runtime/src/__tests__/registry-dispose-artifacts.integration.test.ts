@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/build';
 import { ok } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { AssetRegistry, createCatalogSource, defineAssetKind } from '../index.js';
+import { catalogPack } from './fixtures/catalog-pack';
 
 it('Registry.dispose aborts artifact I/O and rejects late cache refill from an ignoring transport', async () => {
   const guid = '11111111-1111-4111-8111-111111111111';
@@ -17,18 +18,16 @@ it('Registry.dispose aborts artifact I/O and rejects late cache refill from an i
       digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
     },
   };
-  const { pack, publication } = createRuntimePackPublication({
-    pack: {
-      assets: [
-        { guid, kind: 'test-bytes', payload: {}, refs: [], artifacts: { body: descriptor } },
-      ],
+  const { pack, publication } = catalogPack(
+    [{ guid, kind: 'test-bytes', payload: {}, refs: [], artifacts: { body: descriptor } }],
+    {
+      scopeId: 'test',
+      sourcePath: 'test.pack.ts',
+      sourceRevision: 'r1',
+      packageUrl: '/test.pack.json',
+      generation: 1,
     },
-    scopeId: 'test',
-    sourcePath: 'test.pack.ts',
-    sourceRevision: 'r1',
-    packageUrl: '/test.pack.json',
-    generation: 1,
-  });
+  );
   let finishBody!: (response: Response) => void;
   const response = new Promise<Response>((resolve) => {
     finishBody = resolve;
@@ -37,10 +36,7 @@ it('Registry.dispose aborts artifact I/O and rejects late cache refill from an i
   const reading = new Promise<AbortSignal>((resolve) => {
     entered = resolve;
   });
-  let decoded!: () => void;
-  const finished = new Promise<void>((resolve) => {
-    decoded = resolve;
-  });
+  const { promise: finished, resolve: decoded } = testGate();
   const registry = new AssetRegistry({
     scopeId: 'test',
     catalog: createCatalogSource({
@@ -69,26 +65,20 @@ it('Registry.dispose aborts artifact I/O and rejects late cache refill from an i
       return result.ok ? ok(result.value) : result;
     },
   });
-  try {
-    const pending = registry.load(guid, kind);
-    const signal = await reading;
-    registry.dispose();
-    expect(signal.aborted).toBe(true);
-    expect(await pending).toMatchObject({ ok: false, error: { code: 'asset-runtime-disposed' } });
-    finishBody(new Response(bytes));
-    await finished;
-    expect(registry.inspectSource()).toBeUndefined();
-  } finally {
-    registry.dispose();
-  }
+  onTestFinished(() => registry.dispose());
+  const pending = registry.load(guid, kind);
+  const signal = await reading;
+  registry.dispose();
+  expect(signal.aborted).toBe(true);
+  expect(await pending).toMatchObject({ ok: false, error: { code: 'asset-runtime-disposed' } });
+  finishBody(new Response(bytes));
+  await finished;
+  expect(registry.inspectSource()).toBeUndefined();
 });
 
 it('observes cancellation before and during a shared cold Catalog read', async () => {
   const guid = '11111111-1111-4111-8111-111111111111';
-  let finish!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    finish = resolve;
-  });
+  const { promise: gate, resolve: finish } = testGate();
   const enumerate = vi.fn(async () => {
     await gate;
     return ok([]);

@@ -133,9 +133,7 @@ export function inspectTransmission(input: TransmissionInspectionInput): Transmi
     : 0;
   assertNonNegativeInteger('transmission inspection bytes', bytes);
   const copyCount = resourcePresent ? input.topology.copyCount : 0;
-  if (copyCount !== (resourcePresent ? 1 : 0)) {
-    throw new Error('transmission inspection copy count does not match backdrop topology');
-  }
+  assertNonNegativeInteger('transmission inspection copyCount', copyCount);
 
   return Object.freeze({
     activeCount: input.demand.activeCount,

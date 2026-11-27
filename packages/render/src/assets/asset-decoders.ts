@@ -1,7 +1,19 @@
-import { createMaterialLoader } from '@forgeax/engine-assets-runtime/internal';
+import {
+  completeSourceMaterialPayload,
+  createMaterialLoader,
+} from '@forgeax/engine-assets-runtime/internal';
+import {
+  MATERIAL_RASTER_SOURCES_PATH,
+  MATERIAL_TEMPLATE_SOURCES_MEDIA_TYPE,
+  readMaterialTemplateSources,
+  validateMaterialRasterSourcePublication,
+  validateMaterialTemplatePublication,
+  validateSourceCookedMaterialRecord,
+} from '@forgeax/engine-pack/material-cook';
 import {
   type AddressMode,
   type AssetDecoderContribution,
+  type AssetDecoderInput,
   AssetError,
   type AssetKind,
   type AssetLoadError,
@@ -21,7 +33,11 @@ import {
   type SamplerAsset,
 } from '@forgeax/engine-types';
 import { isStandardOutputContract } from '../pipeline/standard-output/types';
-import { resolveSsaoParameters } from '../ssao-config';
+import {
+  hasStandardAoKeys,
+  migrateSavedAmbientOcclusion,
+  resolveSsaoParameters,
+} from '../ssao-config';
 
 function invalid(guid: string, expected: string, reason: string) {
   return err({
@@ -193,86 +209,196 @@ function digestOf(descriptor: { readonly integrity?: { readonly digest: string }
   return digest === undefined ? {} : { digest };
 }
 
+async function decodeMaterialTemplate(
+  payload: Record<string, unknown>,
+  { envelope, artifacts }: AssetDecoderInput<MaterialAsset>,
+) {
+  const source = validateMaterialTemplatePublication(payload.template);
+  const fail = (reason: string) =>
+    invalid(envelope.guid, 'a verified material template publication', reason);
+  if (!source.ok) return fail(source.error);
+  if (
+    source.value.guid.toLowerCase() !== envelope.guid.toLowerCase() ||
+    payload.cooked !== undefined
+  )
+    return fail('material template does not own this material payload');
+  const { path, digest } = source.value.sourceArtifact;
+  const descriptor = envelope.artifacts[path];
+  if (
+    descriptor === undefined ||
+    descriptor.mediaType !== MATERIAL_TEMPLATE_SOURCES_MEDIA_TYPE ||
+    descriptor.integrity?.digest !== digest
+  )
+    return fail('the material source descriptor is absent or disagrees with its template');
+  const bytes = await (artifacts.program ?? artifacts.read)(descriptor);
+  if (!bytes.ok) return bytes;
+  const modules = readMaterialTemplateSources(bytes.value, digest);
+  if (!modules.ok) return fail(modules.error);
+  const { template: _, ...authored } = payload;
+  if (!validMaterial(authored)) return fail('material owner validation failed');
+  const resolved = resolveMaterialWireRefs(authored, envelope.refs, envelope.guid);
+  if (!resolved.ok) return resolved;
+  return ok({
+    ...resolved.value,
+    materialTemplate: { publication: source.value, sources: modules.value },
+  });
+}
+
+async function decodeSourceCookedMaterial(
+  { envelope, artifacts }: Pick<AssetDecoderInput<MaterialAsset>, 'envelope' | 'artifacts'>,
+  payload: MaterialAsset,
+  cooked: Record<string, unknown>,
+) {
+  const compiled = validateSourceCookedMaterialRecord(cooked);
+  if (!compiled.ok)
+    return invalid(envelope.guid, compiled.error.expected, compiled.error.detail.field);
+  const descriptor = envelope.artifacts[MATERIAL_RASTER_SOURCES_PATH];
+  if (descriptor === undefined || descriptor.integrity?.digest === undefined)
+    return invalid(
+      envelope.guid,
+      'a verified raster source artifact',
+      'missing raster source artifact or its digest',
+    );
+  const bytes = await artifacts.read(descriptor);
+  if (!bytes.ok) return bytes;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.value));
+  } catch {
+    return invalid(envelope.guid, 'a valid raster source document', 'invalid raster source JSON');
+  }
+  const sources = validateMaterialRasterSourcePublication(raw, compiled.value);
+  if (!sources.ok)
+    return invalid(envelope.guid, sources.error.expected, sources.error.detail.field);
+  const sourcePayload = completeSourceMaterialPayload(envelope.guid, compiled.value, sources.value);
+  if ('status' in sourcePayload)
+    return invalid(
+      envelope.guid,
+      sourcePayload.error.expected,
+      sourcePayload.error.detail.field ?? 'invalid source material',
+    );
+  return resolveMaterialWireRefs(
+    { ...payload, ...sourcePayload } as MaterialAsset,
+    envelope.refs,
+    envelope.guid,
+  );
+}
+
+function cookedMaterialArtifactRequests(
+  envelope: AssetDecoderInput<MaterialAsset>['envelope'],
+  artifacts: AssetDecoderInput<MaterialAsset>['artifacts'],
+  programs: readonly unknown[],
+  sourceBacked: boolean,
+) {
+  // Hydrate unique bytes in bounded parallel work before the one complete Cook validation.
+  const requests = new Map<
+    string,
+    { descriptor: (typeof envelope.artifacts)[string]; indices: number[] }
+  >();
+  for (const [index, program] of programs.entries()) {
+    if (!record(program) || !record(program.artifact)) continue;
+    const artifact = program.artifact;
+    if (sourceBacked && artifact.backing === 'raster-source') continue;
+    const path = artifact.path;
+    const descriptor = typeof path === 'string' ? envelope.artifacts[path] : undefined;
+    if (artifact.bytes !== undefined && descriptor === undefined) continue;
+    if (
+      typeof path !== 'string' ||
+      descriptor === undefined ||
+      (sourceBacked &&
+        descriptor.integrity?.digest !== undefined &&
+        descriptor.integrity.digest !== artifact.digest) ||
+      (artifacts.locate !== undefined && artifacts.locate(descriptor) === undefined)
+    )
+      return invalid(
+        envelope.guid,
+        'a verified external artifact for each compact material program',
+        'compact material program artifact descriptor or digest mismatch',
+      );
+    const request = requests.get(path);
+    if (request === undefined) requests.set(path, { descriptor, indices: [index] });
+    else request.indices.push(index);
+  }
+  return ok([...requests.values()]);
+}
+
+/** Verify and share external program bytes before admitting either Cooked Material schema. */
+async function hydrateCookedMaterialPrograms(
+  envelope: AssetDecoderInput<MaterialAsset>['envelope'],
+  artifacts: AssetDecoderInput<MaterialAsset>['artifacts'],
+) {
+  const payload: unknown = envelope.payload;
+  if (
+    record(payload) &&
+    record(payload.cooked) &&
+    (payload.cooked.schemaVersion === 'material-cook/5' ||
+      payload.cooked.schemaVersion === 'material-cook/6') &&
+    Array.isArray(payload.cooked.programs)
+  ) {
+    const programs = [...payload.cooked.programs];
+    const cooked = payload.cooked;
+    const requested = cookedMaterialArtifactRequests(
+      envelope,
+      artifacts,
+      programs,
+      cooked.schemaVersion === 'material-cook/6',
+    );
+    if (!requested.ok) return requested;
+    const distinct = requested.value;
+    const results: Awaited<ReturnType<typeof artifacts.read>>[] = new Array(distinct.length);
+    let cursor = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(8, distinct.length) }, async () => {
+        while (cursor < distinct.length) {
+          const index = cursor++;
+          const request = distinct[index];
+          if (request === undefined) continue;
+          // Materials share program modules; the session keeps one resident copy.
+          results[index] = await (artifacts.program ?? artifacts.read)(request.descriptor);
+        }
+      }),
+    );
+    // Keep declaration-order failure precedence even when later reads finish first.
+    for (const [index, request] of distinct.entries()) {
+      const loaded = results[index];
+      if (loaded === undefined) throw new Error('material artifact read did not complete');
+      if (!loaded.ok) return loaded;
+      for (const programIndex of request.indices) {
+        const program = programs[programIndex] as Record<string, unknown>;
+        const inline = (program.artifact as Record<string, unknown>).bytes;
+        if (
+          inline !== undefined &&
+          (!(Array.isArray(inline) || inline instanceof Uint8Array) ||
+            inline.length !== loaded.value.length ||
+            loaded.value.some((byte, offset) => byte !== inline[offset]))
+        )
+          return invalid(
+            envelope.guid,
+            'inline bytes matching the verified external program',
+            'inline material program bytes differ from their external artifact',
+          );
+        programs[programIndex] = {
+          ...program,
+          artifact: { ...(program.artifact as object), bytes: loaded.value },
+        };
+      }
+    }
+    return ok({ ...payload, cooked: { ...cooked, programs } });
+  }
+  return ok(payload);
+}
+
 export const materialContribution: AssetDecoderContribution<MaterialAsset, 'material'> = {
   kind: { kind: 'material' } as AssetKind<MaterialAsset, 'material'>,
   consumer: 'Render MaterialScene',
   decoder: {
-    async decode({ envelope, artifacts }) {
-      let payload: unknown = envelope.payload;
-      if (
-        record(payload) &&
-        record(payload.cooked) &&
-        payload.cooked.schemaVersion === 'material-cook/5' &&
-        Array.isArray(payload.cooked.programs)
-      ) {
-        const programs = [...payload.cooked.programs];
-        const cooked = payload.cooked;
-        // Hydrate unique bytes in bounded parallel work before the one complete Cook validation.
-        const requests = new Map<
-          string,
-          { descriptor: (typeof envelope.artifacts)[string]; indices: number[] }
-        >();
-        for (const [index, program] of programs.entries()) {
-          if (!record(program) || !record(program.artifact)) continue;
-          const artifact = program.artifact;
-          const path = artifact.path;
-          const descriptor = typeof path === 'string' ? envelope.artifacts[path] : undefined;
-          if (artifact.bytes !== undefined && descriptor === undefined) continue;
-          if (
-            typeof path !== 'string' ||
-            descriptor === undefined ||
-            (artifacts.locate !== undefined && artifacts.locate(descriptor) === undefined)
-          )
-            return invalid(
-              envelope.guid,
-              'a verified external artifact for each compact material program',
-              'compact material program artifact descriptor or digest mismatch',
-            );
-          const request = requests.get(path);
-          if (request === undefined) requests.set(path, { descriptor, indices: [index] });
-          else request.indices.push(index);
-        }
-        const distinct = [...requests.values()];
-        const results: Awaited<ReturnType<typeof artifacts.read>>[] = new Array(distinct.length);
-        let cursor = 0;
-        await Promise.all(
-          Array.from({ length: Math.min(8, distinct.length) }, async () => {
-            while (cursor < distinct.length) {
-              const index = cursor++;
-              const request = distinct[index];
-              if (request === undefined) continue;
-              // Materials share program modules; the session keeps one resident copy.
-              results[index] = await (artifacts.program ?? artifacts.read)(request.descriptor);
-            }
-          }),
-        );
-        // Keep declaration-order failure precedence even when later reads finish first.
-        for (const [index, request] of distinct.entries()) {
-          const loaded = results[index];
-          if (loaded === undefined) throw new Error('material artifact read did not complete');
-          if (!loaded.ok) return loaded;
-          for (const programIndex of request.indices) {
-            const program = programs[programIndex] as Record<string, unknown>;
-            const inline = (program.artifact as Record<string, unknown>).bytes;
-            if (
-              inline !== undefined &&
-              (!(Array.isArray(inline) || inline instanceof Uint8Array) ||
-                inline.length !== loaded.value.length ||
-                loaded.value.some((byte, offset) => byte !== inline[offset]))
-            )
-              return invalid(
-                envelope.guid,
-                'inline bytes matching the verified external program',
-                'inline material program bytes differ from their external artifact',
-              );
-            programs[programIndex] = {
-              ...program,
-              artifact: { ...(program.artifact as object), bytes: loaded.value },
-            };
-          }
-        }
-        payload = { ...payload, cooked: { ...cooked, programs } };
-      }
+    async decode(input) {
+      const { envelope, artifacts } = input;
+      if (record(envelope.payload) && envelope.payload.template !== undefined)
+        return decodeMaterialTemplate(envelope.payload, input);
+      const hydrated = await hydrateCookedMaterialPrograms(envelope, artifacts);
+      if (!hydrated.ok) return hydrated;
+      let payload = hydrated.value;
       if (!validMaterial(payload)) {
         return invalid(
           envelope.guid,
@@ -282,6 +408,8 @@ export const materialContribution: AssetDecoderContribution<MaterialAsset, 'mate
       }
       if (record(payload) && payload.cooked !== undefined) {
         const cooked = payload.cooked;
+        if (record(cooked) && cooked.schemaVersion === 'material-cook/6')
+          return decodeSourceCookedMaterial({ envelope, artifacts }, payload, cooked);
         const programs = record(cooked) && Array.isArray(cooked.programs) ? cooked.programs : [];
         const ready = await createMaterialLoader({
           loadPublication: async () => ({
@@ -458,12 +586,14 @@ function validRenderPipelineConfig(value: unknown): value is Record<string, unkn
       return false;
     }
   }
-  const ssao = value.ssao;
-  if (
-    ssao !== undefined &&
-    (!record(ssao) || typeof ssao.enabled !== 'boolean' || !resolveSsaoParameters(ssao).ok)
-  )
-    return false;
+  const ao = value.ambientOcclusion;
+  if (ao !== undefined) {
+    if (!record(ao) || typeof ao.enabled !== 'boolean') return false;
+    const typed = ao as unknown as NonNullable<
+      NonNullable<RenderPipelineAsset['config']>['ambientOcclusion']
+    >;
+    if (!hasStandardAoKeys(typed) || !resolveSsaoParameters(typed).ok) return false;
+  }
   const outputDither = value.outputDither;
   if (outputDither !== undefined && typeof outputDither !== 'boolean') return false;
   if (value.outputContract !== undefined && !isStandardOutputContract(value.outputContract))
@@ -486,17 +616,42 @@ function renderPipelineDescriptor(value: Record<string, unknown>): RenderPipelin
   if (renderPath !== undefined && renderPath !== 'forward' && renderPath !== 'deferred') {
     return undefined;
   }
-  const config = value.config;
-  if (config !== undefined && !validRenderPipelineConfig(config)) return undefined;
+  const inputConfig = value.config;
+  if (inputConfig !== undefined && !record(inputConfig)) return undefined;
+  const normalizedConfig = inputConfig ?? {};
+  if (Object.hasOwn(normalizedConfig, 'ssao') || !validRenderPipelineConfig(normalizedConfig))
+    return undefined;
   return {
     kind: 'render-pipeline',
     pipelineId,
     ...(renderPath === undefined ? {} : { renderPath }),
     config: {
       outputContract: 'standard-output-v1',
-      ...(config as NonNullable<RenderPipelineAsset['config']> | undefined),
+      ...(normalizedConfig as NonNullable<RenderPipelineAsset['config']>),
     },
   };
+}
+
+function savedRenderPipelineDescriptor(value: Record<string, unknown>) {
+  if (!record(value.config)) return renderPipelineDescriptor(value);
+  const { ssao: legacyAo, ...config } = value.config;
+  let ambientOcclusion = config.ambientOcclusion;
+  if (legacyAo !== undefined) {
+    if (ambientOcclusion !== undefined || !record(legacyAo) || Object.hasOwn(legacyAo, 'method'))
+      return undefined;
+    const { algorithm, ...settings } = legacyAo;
+    // Old assets implicitly selected GTAO. Migrate at decode, preserving their appearance.
+    ambientOcclusion = migrateSavedAmbientOcclusion(
+      { ...settings, method: algorithm ?? 'gtao' },
+      true,
+    );
+  }
+  ambientOcclusion = migrateSavedAmbientOcclusion(ambientOcclusion);
+  const normalizedConfig = {
+    ...config,
+    ...(ambientOcclusion === undefined ? {} : { ambientOcclusion }),
+  };
+  return renderPipelineDescriptor({ ...value, config: normalizedConfig });
 }
 
 export const renderPipelineContribution: AssetDecoderContribution<
@@ -534,7 +689,7 @@ export const renderPipelineContribution: AssetDecoderContribution<
           );
         }
       }
-      const value = record(payload) ? renderPipelineDescriptor(payload) : undefined;
+      const value = record(payload) ? savedRenderPipelineDescriptor(payload) : undefined;
       return value === undefined
         ? invalid(
             envelope.guid,

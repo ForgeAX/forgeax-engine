@@ -153,20 +153,172 @@ it.each([
     expect(query).not.toHaveBeenCalled();
     allocate.mockClear();
     const next = skin.capture();
-    // One pose row per Binding reading the joint; capture neither enumerates nor pins rows.
-    expect(allocate.mock.calls.filter(([words]) => words === 17)).toHaveLength(count);
+    // All consumers of this ordered source roster share one raw pose row.
+    expect(allocate.mock.calls.filter(([words]) => words === 17)).toHaveLength(1);
     expect(query).not.toHaveBeenCalled();
     const out = mat4.create(),
       inverse = mat4.create();
-    expect(old.matrix(count - 1, 0, out, inverse)).toBe(true);
-    expect(out[12]).toBe(4);
-    expect(next.matrix(count - 1, 0, out, inverse)).toBe(true);
-    expect(out[12]).toBe(7);
+    for (let slot = 0; slot < count; slot++) {
+      expect(old.matrix(slot, 0, out, inverse)).toBe(true);
+      expect(out[12]).toBe(4);
+      expect(next.matrix(slot, 0, out, inverse)).toBe(true);
+      expect(out[12]).toBe(7);
+    }
     next.release();
   } finally {
     allocate.mockRestore();
     query.mockRestore();
     old.release();
+    skin.dispose();
+    inputs.dispose();
+    arena.dispose();
+  }
+});
+
+it('shares raw ordered poses across Skeletons while preserving source, duplicates and binding history', async () => {
+  const { inputs, arena, skin, source } = await fixture();
+  const other = skin.source();
+  const identity = skin.skeleton(2, new Float32Array([...world(0), ...world(0)]));
+  const shifted = skin.skeleton(2, new Float32Array([...world(100), ...world(200)]));
+  for (const [key, x] of [
+    [7, 1],
+    [8, 9],
+  ] as const) {
+    skin.setJoint(source, key, world(x));
+    skin.setJoint(other, key, world(x + 30));
+  }
+  skin.bind(2, source, identity, [7, 8]);
+  skin.bind(3, source, shifted, [7, 8]);
+  skin.bind(4, source, identity, [8, 7]);
+  skin.bind(5, source, identity, [7, 7]);
+  skin.bind(6, other, identity, [7, 8]);
+  const held = skin.capture();
+  const allocate = vi.spyOn(arena, 'allocateDescriptor');
+  const out = mat4.create(),
+    inverse = mat4.create();
+  const check = (frame: SkinInputFrame, slot: number, a: number, b: number) => {
+    for (const [index, value] of [a, b].entries()) {
+      expect(frame.matrix(slot, index, out, inverse)).toBe(true);
+      expect(out[12]).toBe(value);
+    }
+  };
+  try {
+    skin.setJoint(source, 7, world(3));
+    const changed = skin.capture();
+    try {
+      expect(allocate.mock.calls.filter(([words]) => words === 33)).toHaveLength(3);
+      check(changed, 2, 3, 9);
+      check(changed, 3, 103, 209);
+      check(changed, 4, 9, 3);
+      check(changed, 5, 3, 3);
+      check(changed, 6, 31, 39);
+      skin.unbind(2);
+      skin.bind(3, other, shifted, [7, 8]);
+      skin.unbind(6);
+      skin.setJoint(other, 8, world(49));
+      allocate.mockClear();
+      const rebound = skin.capture();
+      try {
+        expect(allocate.mock.calls.filter(([words]) => words === 33)).toHaveLength(1);
+        expect(rebound.available(2)).toBe(false);
+        expect(rebound.available(6)).toBe(false);
+        expect(rebound.historyCompatible(changed, 3)).toBe(false);
+        check(rebound, 3, 131, 249);
+        check(rebound, 4, 9, 3);
+        check(changed, 3, 103, 209);
+        check(changed, 6, 31, 39);
+        check(held, 2, 1, 9);
+        check(held, 3, 101, 209);
+      } finally {
+        rebound.release();
+      }
+    } finally {
+      changed.release();
+    }
+  } finally {
+    allocate.mockRestore();
+    held.release();
+    skin.dispose();
+    inputs.dispose();
+    arena.dispose();
+  }
+});
+
+it('links new consumers to an unchanged pose and retains a pending successor across last-slot removal', async () => {
+  const { inputs, arena, skin, source } = await fixture();
+  const skeleton = skin.skeleton(1, world(2));
+  const bind = (slot: number) => skin.bind(slot, source, skeleton, [7]);
+  skin.setJoint(source, 7, world(11));
+  for (const slot of [0, 1, 2]) bind(slot);
+  const initial = skin.capture();
+  const frames = [initial];
+  const capture = () => {
+    const frame = skin.capture();
+    frames.push(frame);
+    return frame;
+  };
+  const allocate = vi.spyOn(arena, 'allocateDescriptor');
+  const poseRows = () => allocate.mock.calls.filter(([words]) => words === 17).length;
+  const out = mat4.create();
+  const value = (frame: SkinInputFrame, slot: number) => {
+    expect(readJoint(frame, slot, out)).toBe(true);
+    expect(out[12]).toBe(13);
+  };
+  try {
+    bind(3);
+    const expanded = capture();
+    expect(poseRows()).toBe(0);
+    for (const slot of [0, 1, 2, 3]) value(expanded, slot);
+    expect(initial.available(3)).toBe(false);
+    for (const slot of [0, 1, 2]) skin.unbind(slot);
+    bind(256);
+    skin.unbind(3);
+    const successor = capture();
+    expect(poseRows()).toBe(0);
+    value(successor, 256);
+    expect(successor.available(3)).toBe(false);
+    value(expanded, 3);
+    skin.unbind(256);
+    const empty = capture();
+    expect(empty.available(256)).toBe(false);
+    bind(511);
+    const fresh = capture();
+    expect(poseRows()).toBe(1);
+    value(fresh, 511);
+    value(successor, 256);
+    value(initial, 0);
+  } finally {
+    allocate.mockRestore();
+    for (const frame of frames) frame.release();
+    skin.dispose();
+    inputs.dispose();
+    arena.dispose();
+  }
+});
+
+it('validates only the supplied 16-float joint window before replacing its pose', async () => {
+  const { inputs, arena, skin, source } = await fixture();
+  bindJoints(skin, source, [7]);
+  const packet = new Float32Array(49).fill(Number.NaN);
+  packet.set(world(13), 17);
+  try {
+    skin.setJoint(source, 7, packet, 17);
+    packet[29] = 99;
+    for (const offset of [-1, 0.5, 34, Number.MAX_SAFE_INTEGER]) {
+      expect(() => skin.setJoint(source, 7, packet, offset)).toThrow();
+    }
+    expect(() => skin.setJoint(source, 7, packet)).toThrow();
+    packet[30] = Number.NaN;
+    expect(() => skin.setJoint(source, 7, packet, 17)).toThrow();
+    const frame = skin.capture();
+    try {
+      const out = mat4.create();
+      expect(readJoint(frame, 7, out)).toBe(true);
+      expect(out[12]).toBe(13);
+    } finally {
+      frame.release();
+    }
+  } finally {
     skin.dispose();
     inputs.dispose();
     arena.dispose();

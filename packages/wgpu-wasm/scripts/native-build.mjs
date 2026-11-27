@@ -31,7 +31,7 @@ export async function buildNativeWgpu({ out, pkgDirectory = join(root, 'pkg') })
   const outputGlue = [
     "import { sha256 } from '@forgeax/engine/wgpu-wasm/native-host';",
     "const nativeSha256 = bytes => Array.from(sha256(bytes), v => v.toString(16).padStart(2, '0')).join('');",
-    `const nativeArtifact = ${JSON.stringify({ bytes: canonical.artifactBytes, sha256: canonical.artifactSha256 })};`,
+    `const nativeArtifact = ${JSON.stringify({ bytes: canonical.artifactBytes, sha256: canonical.artifactSha256, compilerFingerprint: canonical.compilerFingerprint })};`,
     glue.slice(0, glue.indexOf(loader)), initializer,
   ].join('\n');
   const declarationBoundary = '\nexport type InitInput =';
@@ -42,6 +42,8 @@ export async function buildNativeWgpu({ out, pkgDirectory = join(root, 'pkg') })
     "import type { NativeWgpuInitializer } from '@forgeax/engine/wgpu-wasm/native-host';",
     declarations.slice(0, declarations.indexOf(declarationBoundary)),
     "export declare const initializeNativeWgpu: NativeWgpuInitializer['initializeNativeWgpu'];",
+    "export declare const nativeWgpuReady: () => ReturnType<NativeWgpuInitializer['initializeNativeWgpu']>;",
+    'export declare function getCompilerFingerprint(): Promise<string>;',
   ].join('\n');
   const receipt = {
     schemaVersion: 'wgpu-native-binding/1',

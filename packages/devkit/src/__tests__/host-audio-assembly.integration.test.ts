@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import {
+  createBrowserGameSaves,
   EngineConfigurationError,
   prepareEngineStartup,
   withEngineSettings,
@@ -85,6 +86,8 @@ it('projects the current Host audio consumer and resolves the native factory on 
           EngineConfigurationError,
           withEngineSettings,
           createBrowserConfigurationHost,
+          createBrowserGameSaves,
+          createBrowserFileStore: () => ({}),
           location: { search: '' },
           workerExecution: true,
           canvas: {},
@@ -252,6 +255,8 @@ it('projects the main-realm audio engine used by the native backend into GameHos
       EngineConfigurationError,
       withEngineSettings,
       createBrowserConfigurationHost,
+      createBrowserGameSaves,
+      createBrowserFileStore: () => ({}),
       location: { search: '' },
       crypto: { randomUUID: () => 'main-audio' },
       workerExecution: false,

@@ -51,8 +51,8 @@ const HEIGHT = 192;
 const PIXEL_THRESHOLD = 0.05;
 const TARGET_FRAMES = 3;
 const CLEAR_COLOR: readonly [number, number, number] = [0.05, 0.05, 0.08];
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-const ENGINE_MANIFEST = await buildEngineShaderManifest();
+const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const ENGINE_MANIFEST = await buildEngineShaderTemplateManifest();
 const ENGINE_MANIFEST_URL = URL.createObjectURL(
   new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }),
 );

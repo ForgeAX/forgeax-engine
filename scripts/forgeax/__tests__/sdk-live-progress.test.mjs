@@ -108,5 +108,6 @@ test('SDK engine build stage output is visible before cancellation can lose its 
 });
 
 test('the exact SDK engine build opts into live stage evidence without changing final JSON stdout', () => {
-  assert.match(builder, /await run\('pnpm', \['build:engine'\], \{\s+streamOutput: true/);
+  assert.match(builder, /const engineBuildArgs = \['build:engine'\]/);
+  assert.match(builder, /await run\('pnpm', engineBuildArgs, \{\s+streamOutput: true/);
 });

@@ -15,7 +15,6 @@ function admittedAdmission() {
       near: 0.1,
       far: 100,
       screenSpaceReflection: {
-        waterTemporal: 0,
         maxDistance: 40,
         thickness: 0.2,
         maxRoughness: 0.6,
@@ -88,35 +87,26 @@ describe('SSR typed spatial graph', () => {
     const compiled = graph.compile({ device, surfaceSize: { width: 5, height: 3 } }).unwrap();
     const info = compiled.inspect();
     const names = info.passes.map((pass) => pass.name);
-    expect(names).toEqual([
-      'seed-inputs',
-      'depth-pyramid-seed',
-      'depth-pyramid-reduce-chain',
-      'ssr-trace',
-    ]);
+    expect(names).toEqual(['seed-inputs', 'hzb-seed', 'hzb-reduce-chain', 'ssr-trace']);
     expect(info.resources.map((resource) => resource.label)).toEqual(
-      expect.arrayContaining(['depth-pyramid', 'ssr-trace', 'ssr-hit-reactivity']),
+      expect.arrayContaining(['hzb', 'ssr-trace', 'ssr-hit-reactivity']),
     );
     expect(info.passes.find((pass) => pass.name === 'ssr-trace')?.accesses).toEqual(
       expect.arrayContaining([
         { resource: 'scene-temporal', usage: 'sampled-read' },
-        { resource: 'depth-pyramid', usage: 'sampled-read' },
+        { resource: 'hzb', usage: 'sampled-read' },
         { resource: 'ssr-hit-reactivity', usage: 'storage-write' },
       ]),
     );
-    expect(
-      info.passes.find((pass) => pass.name === 'depth-pyramid-reduce-chain')?.accesses,
-    ).toEqual([
-      { resource: 'depth-pyramid', usage: 'sampled-read' },
-      { resource: 'depth-pyramid', usage: 'storage-write' },
+    expect(info.passes.find((pass) => pass.name === 'hzb-reduce-chain')?.accesses).toEqual([
+      { resource: 'hzb', usage: 'sampled-read' },
+      { resource: 'hzb', usage: 'storage-write' },
     ]);
-    expect(
-      info.resources.find((resource) => resource.label === 'depth-pyramid')?.descriptor,
-    ).toMatchObject({
+    expect(info.resources.find((resource) => resource.label === 'hzb')?.descriptor).toMatchObject({
       format: 'r32float',
       mipLevelCount: 2,
     });
-    expect(names.indexOf('depth-pyramid-reduce-chain')).toBeLessThan(names.indexOf('ssr-trace'));
+    expect(names.indexOf('hzb-reduce-chain')).toBeLessThan(names.indexOf('ssr-trace'));
     await compiled.retire();
   });
 });

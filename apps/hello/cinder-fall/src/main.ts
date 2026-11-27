@@ -26,12 +26,12 @@ import { CinderFallCast, type CinderFallPhase } from './cast.js';
 
 import { createPrimitiveMesh } from '@forgeax/engine/geometry';
 
-const EFFECT_GUID = 'c1de0000-0000-7000-8000-000000000000';
-const STANDARD_MATERIAL_GUID = 'c1de0000-0000-7000-8000-000000000001';
-const ADDITIVE_MATERIAL_GUID = 'c1de0000-0000-7000-8000-000000000002';
-const ALPHA_MATERIAL_GUID = 'c1de0000-0000-7000-8000-000000000003';
-const PLATFORM_MATERIAL_GUID = 'c1de0000-0000-7000-8000-000000000004';
-const SCORCH_MATERIAL_GUID = 'c1de0000-0000-7000-8000-000000000005';
+const EFFECT_GUID = '7429936f-3afc-5afc-8425-fc3ec8025438';
+const STANDARD_MATERIAL_GUID = '33824ebe-2258-5b46-9ed0-93240d60957d';
+const ADDITIVE_MATERIAL_GUID = '2dad36f7-99bb-5aad-8dbe-321db767a727';
+const ALPHA_MATERIAL_GUID = '36594983-f28c-5bbc-a95a-3f1a66238c0c';
+const PLATFORM_MATERIAL_GUID = '04b0cc47-a1e0-50b1-843a-faf4db93aaaf';
+const SCORCH_MATERIAL_GUID = 'f8757116-0566-57f2-af01-f69acf149dee';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 const status = document.querySelector<HTMLElement>('#status');

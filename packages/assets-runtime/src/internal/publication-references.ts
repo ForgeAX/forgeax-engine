@@ -1,5 +1,6 @@
 import {
   type AssetLoadError,
+  type AssetPublicationExternalEvidence,
   type AssetPublicationOutput,
   type CatalogEntry,
   err,
@@ -15,7 +16,16 @@ export function validatePublicationReferences(
   row: PublicationRow | undefined,
   lookup: (guid: string) => PublicationRow | undefined,
 ): Result<void, AssetLoadError> {
+  return validatePublicationReferenceRoots([[guid, row]], lookup);
+}
+
+/** One synchronous observation of several roots; no visited/table state survives this call. */
+export function validatePublicationReferenceRoots(
+  roots: Iterable<readonly [string, PublicationRow | undefined]>,
+  lookup: (guid: string) => PublicationRow | undefined,
+): Result<void, AssetLoadError> {
   const visited = new Set<string>();
+  const checkedEvidence = new Set<readonly AssetPublicationExternalEvidence[]>();
   // A large generated Pack shares one output table across all referenced rows.
   // Index each table once for this synchronous check, without retaining source
   // generations or reusing a successful validation across later source changes.
@@ -44,6 +54,7 @@ export function validatePublicationReferences(
     return index.get(key);
   };
   const visit = (
+    guid: string,
     current: string,
     row: PublicationRow | undefined,
   ): Result<void, AssetLoadError> => {
@@ -52,27 +63,37 @@ export function validatePublicationReferences(
     visited.add(key);
     const publication = row?.publication;
     if (!publication) return ok(undefined);
-    for (const evidence of publication.externalEvidence) {
-      if (evidence.usage === 'content') continue;
-      const actual = lookup(evidence.guid)?.publication;
-      const output = actual === undefined ? undefined : findOutput(actual.outputs, evidence.guid);
-      if (
-        (evidence.digest !== undefined && evidence.digest !== output?.digest) ||
-        (evidence.generation !== undefined && evidence.generation !== actual?.generation)
-      ) {
-        return err({
-          code: 'asset-dependency-failed',
-          expected: `reference ${evidence.guid} to retain its recorded version ${evidence.digest ?? evidence.generation}`,
-          hint: 'restore the recorded dependency version or rebuild this publication before switching consumers',
-          detail: { guid, dependencyGuid: evidence.guid },
-        });
+    const evidenceTable = publication.externalEvidence;
+    // Sibling outputs carry the same publication-wide evidence. Check it once
+    // inside this traversal and follow each output's own references below.
+    if (!checkedEvidence.has(evidenceTable)) {
+      checkedEvidence.add(evidenceTable);
+      for (const evidence of evidenceTable) {
+        if (evidence.usage === 'content') continue;
+        const actual = lookup(evidence.guid)?.publication;
+        const output = actual === undefined ? undefined : findOutput(actual.outputs, evidence.guid);
+        if (
+          (evidence.digest !== undefined && evidence.digest !== output?.digest) ||
+          (evidence.generation !== undefined && evidence.generation !== actual?.generation)
+        ) {
+          return err({
+            code: 'asset-dependency-failed',
+            expected: `reference ${evidence.guid} to retain its recorded version ${evidence.digest ?? evidence.generation}`,
+            hint: 'restore the recorded dependency version or rebuild this publication before switching consumers',
+            detail: { guid, dependencyGuid: evidence.guid },
+          });
+        }
       }
     }
     for (const ref of findOutput(publication.outputs, current)?.refs ?? []) {
-      const result = visit(ref, lookup(ref));
+      const result = visit(guid, ref, lookup(ref));
       if (!result.ok) return result;
     }
     return ok(undefined);
   };
-  return visit(guid, row);
+  for (const [guid, row] of roots) {
+    const valid = visit(guid, guid, row);
+    if (!valid.ok) return valid;
+  }
+  return ok(undefined);
 }

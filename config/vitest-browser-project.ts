@@ -15,6 +15,7 @@ import { assetRoots as hdrAssetRoots } from '../apps/learn-render/5.advanced-lig
 import { assetRoots as bloomAssetRoots } from '../apps/learn-render/5.advanced-lighting/7.bloom/vite.config';
 import { gameCapabilityAssetRoots } from '../apps/preview/src/template-asset-roots';
 import { renderWorkerCommands } from '../packages/app/__tests__/render-worker.commands';
+import { materialTemplateWorkerCommands } from '../packages/app/src/__tests__/material-template-worker.commands';
 import { pcmRangeFixture } from '../packages/audio-webaudio/src/__tests__/support/pcm-range-fixture';
 import { websocketListenerCommands } from '../packages/net-websocket/__tests__/support/ws-listener-commands';
 import { diffuseGiCommands } from '../packages/render/src/__tests__/raytracing/diffuse-gi.commands';
@@ -89,11 +90,11 @@ const submoduleDejavuFontMetaPath = resolve(
   rootDir,
   'forgeax-engine-assets/dejavu-fonts/DejaVuSansMono.ttf.meta.json',
 );
-const submoduleDejavuLegacyAtlasMetaPath = resolve(
+const submoduleDejavuBakedAtlasMetaPath = resolve(
   rootDir,
   'forgeax-engine-assets/dejavu-fonts/DejaVuSansMono.atlas.png.meta.json',
 );
-const submoduleDejavuLegacyPackPath = resolve(
+const submoduleDejavuBakedPackPath = resolve(
   rootDir,
   'forgeax-engine-assets/dejavu-fonts/DejaVuSansMono.font.pack.json',
 );
@@ -141,8 +142,8 @@ const previewExternalRoots = [
   submoduleFbxDir,
   submoduleGlbDir,
   submoduleDejavuFontMetaPath,
-  submoduleDejavuLegacyAtlasMetaPath,
-  submoduleDejavuLegacyPackPath,
+  submoduleDejavuBakedAtlasMetaPath,
+  submoduleDejavuBakedPackPath,
   submoduleSpriteAtlasDir,
 ];
 
@@ -170,6 +171,9 @@ export function createBrowserProject() {
     // This real-device contract runs on both Browser and native Dawn.
     'packages/rhi-webgpu/src/__tests__/r32float-capability-generation.integration.test.ts',
   ];
+  const prepareNodeInputs = include.includes(
+    'packages/three/src/__tests__/node-inputs.browser.test.ts',
+  );
   const parityComparison = include.some(
     (file) => file.includes('*') || file.startsWith('apps/parity/color-lighting/'),
   );
@@ -179,15 +183,11 @@ export function createBrowserProject() {
     materialContractInventory.materialPackages,
     fixtureSources,
   ).map((file: string) => resolve(rootDir, file));
-  // This fixture compiles its real selector WGSL through RHI. Keep Engine
-  // source publication available without eagerly cooking unrelated profiles.
-  const gpuViewOnly =
-    include.length === 1 &&
-    include[0] === 'packages/render/src/__tests__/gpu-driven-view.browser.test.ts';
   // These owners either reuse their demo closure or author all assets through
   // the fixture Catalog or direct URLs. Unknown/broad/mixed selectors keep the full Catalog.
   const ownerPackRoots = new Map<string, readonly string[]>([
     ['packages/render/src/__tests__/gpu-driven-view.browser.test.ts', []],
+    ['packages/runtime/src/__tests__/point-light-shadow.browser.test.ts', []],
     [
       'packages/runtime/src/__tests__/water-mesh-visibility.browser.test.ts',
       [waterVisibilityPackRoot],
@@ -200,6 +200,13 @@ export function createBrowserProject() {
       'apps/learn-render/5.advanced-lighting/7.bloom/src/__tests__/onerror-gate.browser.test.ts',
       bloomAssetRoots,
     ],
+    ['packages/three/src/__tests__/material-output-0.browser.test.ts', []],
+    ['packages/three/src/__tests__/material-output-1.browser.test.ts', []],
+    ['packages/three/src/__tests__/material-output-2.browser.test.ts', []],
+    ['packages/three/src/__tests__/material-output-3.browser.test.ts', []],
+    ['packages/three/src/__tests__/opaque-order.browser.test.ts', []],
+    ['packages/three/src/__tests__/composer.browser.test.ts', []],
+    ['packages/three/src/__tests__/targets-environment.browser.test.ts', []],
     ['packages/runtime/src/__tests__/vfx-mesh-lighting.browser.test.ts', []],
     ['packages/runtime/src/__tests__/vfx-mesh-lighting-publication.browser.test.ts', []],
     ['packages/runtime/src/__tests__/optional-pipeline-library.browser.test.ts', []],
@@ -207,6 +214,7 @@ export function createBrowserProject() {
     ['packages/render/src/__tests__/transient-scene-taa.browser.test.ts', []],
     ['packages/render/src/record/__tests__/indirect-bundle-retirement.browser.test.ts', []],
     ['packages/app/__tests__/engine-worker-asset-loss.browser.test.ts', []],
+    ['packages/app/__tests__/level-runtime-split.browser.test.ts', []],
     ['packages/app/src/__tests__/auto-exposure-webgl2.browser.test.ts', []],
     ['packages/ui-blitz/src/__tests__/browser-extension.browser.test.ts', []],
     ['packages/ui-blitz/src/__tests__/dom.browser.test.ts', []],
@@ -253,7 +261,6 @@ export function createBrowserProject() {
     weaponSpiritMaterialFixture(),
     weaponSpiritMaterialFixture(true),
     forgeaxShader({
-      ...(gpuViewOnly ? { publication: 'source' as const } : {}),
       engineEntries: { pointShadows: true, hdrpSsao: true },
       materialPackages,
     }),
@@ -286,6 +293,10 @@ export function createBrowserProject() {
     }),
   ];
   return {
+    // Browser transpilation shares compiler options, not the composite build graph.
+    // An explicit native owner also keeps optimizer scanning and OXC in agreement.
+    tsconfig: resolve(rootDir, 'tsconfig.base.json'),
+    oxc: { tsconfig: resolve(rootDir, 'tsconfig.base.json') },
     // A live Host or another selected roster must not replace this optimizer's files.
     cacheDir: resolve(browserProcessCacheDir(rootDir, process.pid), 'renderer'),
     // Resolve nested dependencies through their installed workspace owners.
@@ -293,6 +304,7 @@ export function createBrowserProject() {
     // Vitest adds its normal entries; the selected Parity source also exposes
     // the comparison imports before serialized Browser callbacks execute.
     optimizeDeps: {
+      rolldownOptions: { tsconfig: resolve(rootDir, 'tsconfig.base.json') },
       include: [
         // Vitest's browser command transport discovers ws after startup.
         // Preload it so optimization cannot invalidate running test imports.
@@ -327,7 +339,24 @@ export function createBrowserProject() {
     plugins:
       process.argv.includes('list') && process.argv.includes('--filesOnly')
         ? []
-        : [...browserStartupDiagnostics('browser'), ...plugins],
+        : [
+            ...browserStartupDiagnostics('browser'),
+            ...(prepareNodeInputs
+              ? [
+                  {
+                    name: 'forgeax-three-node-input-materials',
+                    async configureServer() {
+                      const start = performance.now();
+                      await threeNodeInputCommands.prepareThreeNodeInputMaterials();
+                      process.stderr.write(
+                        `[three-node-input-materials] prepared before browser startup in ${Math.round(performance.now() - start)} ms\n`,
+                      );
+                    },
+                  },
+                ]
+              : []),
+            ...plugins,
+          ],
     server: {
       // Loop state is not a browser source; test discovery exclusions do not filter Vite watches.
       watch: { ignored: ['**/.forgeax-harness/**'] },
@@ -393,6 +422,7 @@ export function createBrowserProject() {
           ...nativeBindingCommands,
           ...threeNodeInputCommands,
           ...textureGeneratorCommands,
+          ...materialTemplateWorkerCommands,
           ...productionCspCommands,
           ...fixedFieldCommands,
           ...renderWorkerCommands,
@@ -406,6 +436,9 @@ export function createBrowserProject() {
         },
         provider: playwrightWithBackgroundPages({
           launchOptions: browserLaunchOptions(),
+          ...(process.env.FORGEAX_BROWSER_PROCESS_ENDPOINT
+            ? { connectOptions: { wsEndpoint: process.env.FORGEAX_BROWSER_PROCESS_ENDPOINT } }
+            : {}),
         }),
         instances: [{ browser: 'chromium' }],
         headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0' && !!process.env.CI,

@@ -15,8 +15,8 @@ import type { ImportSubAsset } from '@forgeax/engine-types';
 // The import-runner then validates produced == declared and rejects mismatches.
 
 import { deriveAnimationTargetId } from '@forgeax/engine-animation/target-id';
+import { packMeshBin } from '@forgeax/engine-geometry';
 import { reconcileMeshLodMeta } from '@forgeax/engine-import';
-import { packMeshBin } from '@forgeax/engine-import/mesh-bin';
 import { box3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {

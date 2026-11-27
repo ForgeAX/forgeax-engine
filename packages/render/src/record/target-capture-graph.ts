@@ -4,6 +4,7 @@ import type {
   RenderGraphBuilder,
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
+import type { RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import type { PlanarCapture } from '../capture/planar-state';
 import { planarReflectionLevels } from '../capture/planar-target';
@@ -11,9 +12,12 @@ import { addAtmosphereBackground } from '../environment/background';
 import { atmosphereTextures, atmosphereVolumeViews } from '../environment/luts';
 import { atmosphereStorage } from '../environment/storage';
 import { RenderTargetDescriptorInvalidError } from '../errors/render';
+import { addGraphColorMipPasses } from '../graph-color-mips';
 import { analyticFogSampleCountError } from '../pipeline/analytic-fog-pass';
 import type { StandardClusterGraphBuffers } from '../pipeline/standard-lighting/graph';
+import { cameraAdmitsLayers } from '../render-layers';
 import type { RenderPipelineFrame, RenderPipelineGpuDrivenProjection } from '../render-pipeline';
+import type { RenderableSnapshot } from '../render-system-extract';
 import { FORWARD_PASS_SELECTOR } from '../systems/pass-selector';
 import {
   type RenderTarget,
@@ -28,8 +32,7 @@ import type { TransmissionBackdropMipEncoder } from '../transmission/backdrop';
 import type { TypedShadowTargets } from '../typed-shadow-passes';
 import { addCaptureFaceFeaturePasses } from './capture-face-features';
 import { buildPerFrameBindGroups } from './frame-lighting';
-import { encodeMainPass } from './main-pass';
-import { addPlanarMipPasses } from './planar-mip-passes';
+import { encodeMainPass, type MainPassOptions } from './main-pass';
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
 import { type CaptureScenePasses, registerScenePass, scenePassContext } from './scene-pass-work';
 import { selectForwardFragmentEntry } from './standard-opaque-entry';
@@ -59,6 +62,8 @@ export interface CaptureFaceFeatureWork {
 
 export interface CubeCaptureGraphState {
   work: readonly CubeCaptureGraphWork[];
+  /** Device views claimed by active writers. The capture batch releases unclaimed ordinals. */
+  lightingViews?: import('./target-capture-lighting').CaptureLightingViews;
   atmosphere?: boolean;
   reflectionProbes?: ReflectionProbeGraphState;
   planar?: import('../capture/planar-state').PlanarCaptureState;
@@ -71,7 +76,8 @@ export function materialSamplesTarget(
   material: Pick<import('../render-system-extract').MaterialSnapshot, 'textureSources'>,
   target: RenderTarget,
 ): boolean {
-  for (const source of material.textureSources?.values() ?? []) {
+  if (material.textureSources === undefined) return false;
+  for (const source of material.textureSources.values()) {
     if (
       source.source !== 'feature' &&
       !isCanvasTextureSource(source) &&
@@ -83,40 +89,127 @@ export function materialSamplesTarget(
   return false;
 }
 
-/** Materials sampling the target cannot participate in that same target write. */
-function captureSelfSampling(
+/** Captures hold the same face visibility used by their queued passes until receipt settlement. */
+export function capturePresentation(
+  writes: readonly Pick<CubeCaptureGraphWork, 'faceCamera' | 'target' | 'write'>[],
+) {
+  if (!writes.length) return undefined;
+  type Visibility = (row: RenderableSnapshot) => boolean;
+  const faces = writes.map(({ faceCamera, target, write }) => ({
+    camera: faceCamera,
+    target,
+    clearOnly: write?.clearOnly === true,
+    visible: undefined as Visibility | undefined,
+  }));
+  return {
+    observe(eye: CubeCaptureGraphWork['faceCamera'], visible: Visibility | undefined) {
+      for (const face of faces) if (face.camera === eye) face.visible = visible;
+    },
+    admits(row: RenderableSnapshot, material: RenderableSnapshot['material']) {
+      return faces.some(
+        (face) =>
+          !face.clearOnly &&
+          cameraAdmitsLayers(face.camera, row) &&
+          face.visible?.(row) !== false &&
+          !materialSamplesTarget(material.snapshot, face.target),
+      );
+    },
+  };
+}
+
+/** Exclude only the submitted material bindings that sample this writer's destination. */
+function captureDispatch(
   internal: ReturnType<typeof scenePassContext>,
   target: RenderTarget,
-  write?: import('../render-contract').RenderTargetWrite,
-): Map<number, Set<number>> {
-  const selfSampling = new Map<number, Set<number>>();
-  let nextIndex = 0;
+  write: CubeCaptureGraphWork['write'],
+) {
+  let feedback: Map<number, Set<number>> | undefined;
+  let index = 0;
+  let lastSlot = -1;
+  let samplesTarget = false;
   for (const row of internal.validatedOrdered) {
-    const index = nextIndex++;
-    for (const slot of internal.materialSlotIndices.at(index) ?? []) {
+    const slots = internal.materialSlotIndices.at(index++);
+    if (slots === undefined) continue;
+    for (const slot of slots) {
       const material = internal.materialSlots[slot];
       if (material === undefined) throw new Error('Capture has no submitted material');
-      if (!materialSamplesTarget(material, target)) continue;
-      let handles = selfSampling.get(row.renderableIndex);
+      if (slot !== lastSlot) {
+        samplesTarget = materialSamplesTarget(material, target);
+        lastSlot = slot;
+      }
+      if (!samplesTarget) continue;
+      if (write !== undefined)
+        throw new RenderTargetDescriptorInvalidError({
+          field: 'targetWrite',
+          value: target,
+          expected: 'no sampled feedback from the destination target',
+        });
+      feedback ??= new Map();
+      let handles = feedback.get(row.renderableIndex);
       if (handles === undefined) {
         handles = new Set();
-        selfSampling.set(row.renderableIndex, handles);
+        feedback.set(row.renderableIndex, handles);
       }
       handles.add(material.materialHandle ?? 0);
     }
   }
-  if (write !== undefined && selfSampling.size > 0)
-    throw new RenderTargetDescriptorInvalidError({
-      field: 'targetWrite',
-      value: target,
-      expected: 'no sampled feedback from the destination target',
-    });
-  return selfSampling;
+  if (feedback === undefined) return internal.dispatch;
+  const excluded = feedback;
+  return internal.dispatch.filter(
+    (entry) => !excluded.get(entry.renderableIndex)?.has(entry.materialHandle),
+  );
+}
+
+/** The face recorder consumes the current submitted rows, target and physical bindings. */
+export function encodeCaptureScenePass(
+  pass: RhiRenderPassEncoder,
+  internal: _InternalRenderPipelineContext,
+  face: CubeCaptureGraphWork,
+  descriptor: RenderTargetPhysical['descriptor'],
+  options: MainPassOptions,
+  keepGpuMaterials: boolean,
+  groups?: ReturnType<typeof buildPerFrameBindGroups>,
+  environmentIbl?: _InternalRenderPipelineContext['environmentIbl'],
+  capturedAtmosphere?: _InternalRenderPipelineContext['capturedAtmosphere'],
+): void {
+  const dispatch = captureDispatch(internal, face.target, face.write);
+  // The main pass reads an empty dispatch as "no roster" and draws
+  // every row. When the exclusion removed all of them, no CPU row
+  // participates: a row sampling this target is a same-pass
+  // attachment/binding conflict that invalidates the whole submission.
+  const excludedEveryRow = dispatch.length === 0 && internal.dispatch.length > 0;
+  const captureContext = {
+    ...internal,
+    ...groups,
+    ...(environmentIbl === undefined ? {} : { environmentIbl }),
+    ...(capturedAtmosphere === undefined ? {} : { capturedAtmosphere }),
+    camera: face.faceCamera,
+    planarReflectionAllowed: false,
+    targetW: descriptor.width,
+    targetH: descriptor.height,
+    dispatch,
+    ...(excludedEveryRow ? { validatedOrdered: [] } : {}),
+    foldDispatchPlan: null,
+
+    // Cube faces are raw scene captures, not display-camera HDR output.
+    // Select the PSO against the actual target attachment so an LDR
+    // cube target is rendered by a compatible forward pipeline.
+    tonemapActive: false,
+    skyboxActive: false,
+    transparentColorFormat: face.physical.descriptor.format as GPUTextureFormat,
+    msaaActive: face.physical.descriptor.sampleCount === 4,
+    viewBindGroupDynamicOffset: 0,
+    splitLdrSprite: false,
+  };
+  delete captureContext.planarReflectionView;
+  delete captureContext.gpuDrivenSelection;
+  if (!keepGpuMaterials) delete captureContext.gpuDrivenStandardPbrFrameResources;
+  encodeMainPass(captureContext, pass, FORWARD_PASS_SELECTOR, options);
 }
 
 function captureShadowReads(shadows: TypedShadowTargets | undefined): GraphAccess[] {
   if (shadows === undefined) return [];
-  const targets = [shadows.directional, shadows.spot, shadows.moments, shadows.point];
+  const targets = [shadows.directional, shadows.spot, shadows.point];
   return targets.flatMap((target) =>
     target === undefined ? [] : [{ resource: target.view, usage: 'sampled-read' as const }],
   );
@@ -268,6 +361,7 @@ export function addTargetCaptureGraphPasses(
     if (!selected.ok) return err(selected.error);
     const attachment = selected.value;
     const descriptor = attachment.descriptor;
+    const colorFormats = [descriptor.format];
     const volume = descriptor.shape === '3d';
     const { levels: mipLevels, usage: mipUsage } = planarMipPlan(encodeMip, initial, descriptor);
     const colorAttachment = importCaptureColor(
@@ -374,10 +468,10 @@ export function addTargetCaptureGraphPasses(
             }))),
         ...(environment === undefined
           ? []
-          : [environment.value.irradiance, environment.value.prefilter].map((resource) => ({
-              resource,
-              usage: 'sampled-read' as const,
-            }))),
+          : [
+              { resource: environment.value.skySh, usage: 'uniform-read' as const },
+              { resource: environment.value.prefilter, usage: 'sampled-read' as const },
+            ]),
         ...captureShadowReads(lighting?.shadows),
         ...(gpuDriven?.accesses ?? []),
         { resource: color.value, usage: 'color-attachment' },
@@ -418,17 +512,23 @@ export function addTargetCaptureGraphPasses(
         stencilStoreOp: 'store',
       },
       encodeDirect: (pass, frame, resources) => {
+        const captureFaceOptions = (request: (typeof requests)[number]): MainPassOptions => {
+          const gpu = gpuDriven !== undefined && request.gpu;
+          return {
+            colorFormats,
+            passKind: 'forward',
+            ...(request.recordMode === undefined ? {} : { recordMode: request.recordMode }),
+            ...(gpu && gpuDriven !== undefined
+              ? {
+                  gpuDriven: { projection: gpuDriven, resources },
+                  gpuDrivenFilter: 'opaque' as const,
+                }
+              : {}),
+          };
+        };
         for (const request of requests) {
           const internal = scenePassContext(frame as _InternalRenderPipelineContext, request);
-          const selfSampling = captureSelfSampling(internal, current().target, current().write);
-          const dispatch = internal.dispatch.filter(
-            (entry) => !selfSampling.get(entry.renderableIndex)?.has(entry.materialHandle),
-          );
-          // The main pass reads an empty dispatch as "no roster" and draws
-          // every row. When the exclusion removed all of them, no CPU row
-          // participates: a row sampling this target is a same-pass
-          // attachment/binding conflict that invalidates the whole submission.
-          const excludedEveryRow = dispatch.length === 0 && internal.dispatch.length > 0;
+          const face = current();
           const resolveShadow = (
             target: import('../render-pipeline').RenderPipelineTarget | undefined,
           ) => {
@@ -457,60 +557,26 @@ export function addTargetCaptureGraphPasses(
                     atmosphere: atmosphereVolumeViews(resources, atmosphere),
                     directionalShadow: resolveShadow(lighting.shadows.directional),
                     spotShadow: resolveShadow(lighting.shadows.spot),
-                    shadowMoments: resolveShadow(lighting.shadows.moments),
                   },
                   true,
                   internal.standardLighting,
                 );
-          const gpu = gpuDriven !== undefined && request.gpu;
-          const captureContext = {
-            ...internal,
-            ...(groups === undefined ? {} : groups),
-            // A capture view's atmosphere is its own recording storage; the
-            // in-shader aerial chain replaces the display's post pass.
-            ...(view === undefined || atmosphere === undefined
-              ? {}
-              : { capturedAtmosphere: atmosphereStorage(frame) }),
-            ...(environment === undefined
-              ? {}
+          encodeCaptureScenePass(
+            pass,
+            internal,
+            face,
+            descriptor,
+            captureFaceOptions(request),
+            gpuDriven !== undefined,
+            groups,
+            environment === undefined
+              ? undefined
               : {
-                  environmentIbl: {
-                    irradiance: resources.textureView(environment.value.irradiance).unwrap(),
-                    prefilter: resources.textureView(environment.value.prefilter).unwrap(),
-                  },
-                }),
-            camera: current().faceCamera,
-            targetW: descriptor.width,
-            targetH: descriptor.height,
-            dispatch,
-            ...(excludedEveryRow ? { validatedOrdered: [] } : {}),
-            foldDispatchPlan: null,
-
-            // Cube faces are raw scene captures, not display-camera HDR output.
-            // Select the PSO against the actual target attachment so an LDR
-            // cube target is rendered by a compatible forward pipeline.
-            tonemapActive: false,
-            skyboxActive: false,
-            transparentColorFormat: initial.physical.descriptor.format as GPUTextureFormat,
-            msaaActive: initial.physical.descriptor.sampleCount === 4,
-            viewBindGroupDynamicOffset: 0,
-            splitLdrSprite: false,
-          };
-          delete captureContext.planarReflectionView;
-          delete captureContext.gpuDrivenSelection;
-          if (gpuDriven === undefined) delete captureContext.gpuDrivenStandardPbrFrameResources;
-          // Each prepared lane uses the capture camera's own sorted draw roster.
-          encodeMainPass(captureContext, pass, FORWARD_PASS_SELECTOR, {
-            colorFormats: [initial.physical.descriptor.format as GPUTextureFormat],
-            passKind: 'forward',
-            ...(request.recordMode === undefined ? {} : { recordMode: request.recordMode }),
-            ...(gpu && gpuDriven !== undefined
-              ? {
-                  gpuDriven: { projection: gpuDriven, resources },
-                  gpuDrivenFilter: 'opaque' as const,
-                }
-              : {}),
-          });
+                  skySh: resources.buffer(environment.value.skySh).unwrap(),
+                  prefilter: resources.textureView(environment.value.prefilter).unwrap(),
+                },
+            view === undefined || atmosphere === undefined ? undefined : atmosphereStorage(frame),
+          );
         }
       },
     });
@@ -523,7 +589,7 @@ export function addTargetCaptureGraphPasses(
       lighting,
     });
     if (!featured.ok) return featured;
-    const mipped = addPlanarMipPasses(
+    const mipped = addGraphColorMipPasses(
       builder,
       `${label}.${slot}`,
       resolveTexture ?? texture.value,
@@ -575,7 +641,7 @@ function importRetainedPlanarView(
   );
 }
 
-function captureLabel(work: CubeCaptureGraphWork): string {
+export function captureLabel(work: CubeCaptureGraphWork): string {
   if (work.sceneInput) return 'feature-scene-depth';
   return work.faceCamera.planarReflection === undefined ? 'cube-capture' : 'planar-reflection';
 }

@@ -1,8 +1,7 @@
-import type { Result, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
+import type { Result, RhiRenderCommands } from '@forgeax/engine-rhi';
 import * as backend from '@forgeax/engine-rhi-webgpu';
 import { expect } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
-import { RenderBundleCache } from '../../../render/src/record/render-bundle-cache';
 import { buildFrameModel } from '../../../rhi-debug/src/frame-model';
 import { decodeTape } from '../../../rhi-debug/src/protocol/codec';
 import { readbackTexturePixels } from '../../../rhi-debug/src/readback';
@@ -34,12 +33,12 @@ export async function runInvalidBundleOffsetFixture() {
       const pass = encoder.beginRenderPass({
         colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store' }],
       });
-      const record = (target: RhiRenderPassEncoder) =>
+      const record = (target: RhiRenderCommands) =>
         target.setBindGroup(0, group, new Uint32Array([0]), 1, 1);
       try {
         expect(() => {
           if (cached)
-            new RenderBundleCache({ colorFormats: ['rgba8unorm'] }).encode(device, pass, record);
+            record(value(device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] })));
           else record(pass);
         }).toThrow();
       } finally {
@@ -105,10 +104,9 @@ export async function runRenderBundleFixture(warmupFrames = 60) {
       fragment: { module: shader, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] },
     }),
   );
-  const cache = new RenderBundleCache({ colorFormats: ['rgba8unorm'] });
   const offsets = new Uint32Array([0, 256, 0]);
   let count = 3;
-  const record = (pass: RhiRenderPassEncoder) => {
+  const record = (pass: RhiRenderCommands) => {
     pass.setPipeline(pipeline);
     pass.setVertexBuffer(0, vertices, 0, 24);
     pass.setIndexBuffer(indices, 'uint16', 0, 6);
@@ -118,12 +116,18 @@ export async function runRenderBundleFixture(warmupFrames = 60) {
     pass.drawIndirect(indirect, 0);
     pass.drawIndexedIndirect(indirect, 20);
   };
+  const recordBundle = () => {
+    const encoder = value(device.createRenderBundleEncoder({ colorFormats: ['rgba8unorm'] }));
+    record(encoder);
+    return value(encoder.finish());
+  };
+  let bundle = recordBundle();
   const frame = async (cached = true) => {
     const encoder = value(device.createCommandEncoder());
     const pass = encoder.beginRenderPass({
       colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }],
     });
-    if (cached) cache.encode(device, pass, record);
+    if (cached) value(pass.executeBundles([bundle]));
     else record(pass);
     pass.end();
     value(device.queue.submit([value(encoder.finish())]));
@@ -174,6 +178,7 @@ export async function runRenderBundleFixture(warmupFrames = 60) {
     }
     // Falsifier: all draws become empty; stale cached commands must not survive.
     count = 0;
+    bundle = recordBundle();
     value(device.queue.writeBuffer(indirect, 0, new Uint32Array(10)));
     await frame();
     await frame();

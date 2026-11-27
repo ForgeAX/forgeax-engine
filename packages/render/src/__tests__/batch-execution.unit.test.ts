@@ -1,3 +1,8 @@
+import {
+  DEFAULT_VERTEX_ATTRIBUTE_MAP,
+  deriveVertexLayoutProjection,
+  projectStaticMeshVertexStreams,
+} from '@forgeax/engine-geometry';
 import { vec3 } from '@forgeax/engine-math';
 import {
   createMaterialShaderProgram,
@@ -205,4 +210,20 @@ it('requests the alpha-mask program only for a material that can cut out', () =>
     expect.objectContaining({ alphaMask: true }),
     expect.objectContaining({ alphaMask: false }),
   ]);
+});
+
+it('admits a missing shader UV on the physical UV stream of a split mesh', () => {
+  const layout = deriveVertexLayoutProjection(DEFAULT_VERTEX_ATTRIBUTE_MAP);
+  const split = projectStaticMeshVertexStreams(layout, 3)?.layout;
+  if (split === undefined) throw new Error('Expected a split static layout');
+  const uv1 = { semantic: 'uv1', location: 6, format: 'float32x2' };
+  const source = {
+    ...artifact,
+    uvSetCount: 2,
+    receipt: { ...receipt, vertexInputs: [...receipt.vertexInputs, uv1] },
+  };
+  expect(
+    prepareBatchExecution({ ...geometry, layout: split }, material, pass, () => source).unwrap()
+      .route,
+  ).toBe('gpu');
 });

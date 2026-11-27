@@ -13,7 +13,7 @@ export function installSurfaceControls(parent: HTMLElement, world: World, render
   ao.addEventListener('change', () => {
     const quality = ao.value as 'off' | 'low' | 'medium' | 'high';
     const result = renderer.setProfile({ ...renderer.inspect().profile,
-      ssao: quality === 'off' ? false : { quality, radius: 0.5, intensity: 1 } });
+      ambientOcclusion: quality === 'off' ? { enabled: false } : { enabled: true, quality, radius: 0.5, intensity: 1 } });
     if (!result.ok) throw result.error;
   });
   const sky = controls.querySelector<HTMLInputElement>('#surface-sky')!;

@@ -35,6 +35,7 @@ export function objectClipping(
 export function projectClipping(
   objects: readonly Object3D[],
   source: ReadonlyMap<Object3D, SourceClipping | undefined>,
+  allowCamera = true,
 ): {
   camera?: ClippingOptions;
   local: ReadonlyMap<Object3D, ClippingOptions>;
@@ -42,13 +43,16 @@ export function projectClipping(
   const local = new Map<Object3D, ClippingOptions>();
   const firstObject = objects[0];
   const first = firstObject === undefined ? undefined : source.get(firstObject);
-  const common = (['union', 'intersection'] as const).find(
-    (kind) =>
-      (first?.[kind].length ?? 0) > 0 &&
-      objects.every(
-        (object) => JSON.stringify(source.get(object)?.[kind]) === JSON.stringify(first?.[kind]),
-      ),
-  );
+  const common = !allowCamera
+    ? undefined
+    : (['union', 'intersection'] as const).find(
+        (kind) =>
+          (first?.[kind].length ?? 0) > 0 &&
+          objects.every(
+            (object) =>
+              JSON.stringify(source.get(object)?.[kind]) === JSON.stringify(first?.[kind]),
+          ),
+      );
   const camera =
     common === undefined || first === undefined
       ? undefined

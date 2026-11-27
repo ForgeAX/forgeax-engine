@@ -1,10 +1,10 @@
-import type { ViewLocale } from './locale-bridge.ts';
+import { getViewLocale, type ViewLocale } from './locale-bridge.ts';
 
 type Catalog = { readonly [key: string]: string | Catalog };
 
 /** Product plugins retain their catalogs; lookup and subscription semantics are shared. */
 export function createPluginI18n(catalogs: Record<ViewLocale, Catalog>) {
-  let current: ViewLocale = 'zh';
+  let current: ViewLocale = getViewLocale();
   const listeners = new Set<() => void>();
   const lookup = (catalog: Catalog, key: string): string | undefined => {
     let value: string | Catalog | undefined = catalog;

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { build, preview } from 'vite';
 import { expect, it } from 'vitest';
-import { createStartupCacheIdentity } from '../host/startup-cache-identity.js';
+import { createStartupCacheIdentity } from '../host/startup-cache-http.js';
 import { startupEntrySource } from '../host/startup-cache-source.js';
 
 it('compiles versioned and retry TypeScript entries through Vite with their CSS and distinct URLs', async () => {

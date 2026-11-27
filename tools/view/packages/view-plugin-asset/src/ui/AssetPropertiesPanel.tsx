@@ -39,7 +39,7 @@ export function AssetPropertiesPanel({
 }
 
 function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient; assetActions?: ResourceAssetActionResolver }) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const visible = usePanelVisible();
   const connected = useWorkspaceClientConnected(client);
   const writeClipboard = useClipboardAction();
@@ -104,7 +104,7 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
         end={<IconButton variant="quiet" size="compact" icon={<Copy size={15} />} label={t('asset.copyGuid')} onClick={() => { void writeClipboard(subject.guid); }} />} />
       {cloud ? <CloudMaterialDetails key={key} details={cloud} client={client} reader={reader} workspace={workspace} assetActions={assetActions} /> : ['cloud-material', 'cloud-material-instance'].includes(subject.kind)
         ? <Text as="div" tone="muted" role="status">{t('asset.cloudParametersUnavailable')}</Text> : null}
-      <InspectorForm assetActions={assetActions} inspection={cloud ? { ...current.inspection, meta: { kind: cloud.kind, model: cloud.model, ...(cloud.material ? { material: cloud.material } : {}), ...(cloud.sample ? { sample: cloud.sample } : {}) } } : current.inspection} identityTitle={t('asset.facts')} />
+      <InspectorForm locale={locale} assetActions={assetActions} inspection={cloud ? { ...current.inspection, meta: { kind: cloud.kind, model: cloud.model, ...(cloud.material ? { material: cloud.material } : {}), ...(cloud.sample ? { sample: cloud.sample } : {}) } } : current.inspection} identityTitle={t('asset.facts')} />
     </div>
   );
 }

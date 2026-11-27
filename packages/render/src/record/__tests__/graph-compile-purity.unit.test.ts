@@ -1,5 +1,6 @@
 import { setFlagsFromString } from 'node:v8';
 import { runInNewContext } from 'node:vm';
+import { mat4 } from '@forgeax/engine-math';
 import { type PhysicsWorld, PhysicsWorldResource } from '@forgeax/engine-physics';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
@@ -21,21 +22,32 @@ import {
 import { createRenderFeatureGpuWorkOwner } from '../../features/prepared-gpu-work';
 import type { RenderFeature } from '../../features/types';
 import { RhiErrorListenerRegistry } from '../../lifecycle';
+import { createPremultipliedForwardPipeline } from '../../pipeline/standard-forward-output';
+import { prepareStandardLighting } from '../../pipeline/standard-lighting/prepare';
+import { DEFAULT_STANDARD_PROFILE, standardPipeline } from '../../pipeline/standard-pipeline';
 import type { RenderPipeline } from '../../render-pipeline';
 import { createTemporalFrameTransaction, TemporalViewHistory } from '../../temporal/frame';
+import { createStandardSceneSurfaceAdmission } from '../../temporal/standard-scene-data-admission';
 import { createWaterAdvancedFeature } from '../../water/advanced-feature';
 import { createWaterFluidFeature, type WaterFluidFeatureFrame } from '../../water/fluid-feature';
+import { EMPTY_VIEW_PASS_PLAN } from '../../world/pass-plan-systems';
 import type { ViewLights } from '../../world/render-lights';
+import type { ReflectionProbeGraphWork } from '../frame-graph-history';
 import type { RenderFrameState } from '../frame-snapshot';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
+import { buildFramePostProcessParams } from '../frame-temporal';
+import { MaterialBgAssemblyCache } from '../material-bg-assembly-cache';
 import type { PipelineState, RenderSystemInternals } from '../render-context';
+import type { CubeCaptureGraphWork } from '../target-capture-graph';
 import {
   compileViewGraph,
   ensureShadowDepthLayers,
   getRenderFeatureGraphInspection,
+  getRenderFeatureGraphState,
   mutableFeatureGraphInspection,
   promoteGraphCandidate,
   rollbackGraphCandidate,
+  settleFeatureGraphState,
 } from '../typed-frame-graph';
 
 async function harness(retainBuildBinding = false) {
@@ -64,6 +76,8 @@ async function harness(retainBuildBinding = false) {
     compiledFrameGraphGeneration: 0,
     standardLightingGraphSignature: '',
     retiredCompiledFrameGraphs: new Set(),
+    materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+    meshBindGroupCache: new WeakMap(),
     activePipeline,
     installedPipelineConfig: undefined,
     frameNumber: 0,
@@ -117,12 +131,553 @@ async function harness(retainBuildBinding = false) {
 
 type Harness = Awaited<ReturnType<typeof harness>>;
 
+it('uses current fullscreen uniforms across graph reuse and retains accepted uniforms on rejection', async () => {
+  const h = await harness();
+  const id = 'test-ray';
+  const defaults = new Uint8Array(16);
+  const candidate = (value: number) => ({
+    plans: [],
+    fullscreenEffects: new Map([
+      [
+        id,
+        {
+          source: 'fn fs_main() -> vec4f { return vec4f(1); }',
+          params: { byteSize: 16, defaultValue: defaults },
+          frameParams: new Uint8Array(16).fill(value),
+        },
+      ],
+    ]),
+  });
+  const currentParams = (explicit = new Map<string, Uint8Array>()) =>
+    buildFramePostProcessParams(
+      h.internals,
+      h.frameState,
+      h.input().camera,
+      explicit,
+      false,
+      0,
+      { historyValid: false } as never,
+      1,
+      undefined,
+      getRenderFeatureGraphState(h.internals).fullscreenEffects,
+    ).get(id);
+  const firstInput = { ...h.input(), featurePlan: { candidate: candidate(1) } };
+  const graph = compileAndAdoptViewGraph(firstInput);
+  if (!graph) throw new Error('missing view graph');
+  try {
+    h.accept();
+    settleFeatureGraphState(h.internals, true);
+    expect(currentParams()?.[0]).toBe(1);
+    const secondInput = { ...h.input(), featurePlan: { candidate: candidate(2) } };
+    expect(compileViewGraph(secondInput).kind).toBe('reused');
+    expect(compileAndAdoptViewGraph(secondInput)).toBe(graph);
+    expect(currentParams()?.[0]).toBe(2);
+    expect(currentParams(new Map([[id, new Uint8Array(16).fill(7)]]))?.[0]).toBe(7);
+    h.accept();
+    settleFeatureGraphState(h.internals, true);
+    h.setFail(true);
+    const rejectedInput = { ...h.input(2), featurePlan: { candidate: candidate(3) } };
+    expect(compileViewGraph(rejectedInput).kind).toBe('retained');
+    expect(compileAndAdoptViewGraph(rejectedInput)).toBe(graph);
+    expect(currentParams()?.[0]).toBe(2);
+  } finally {
+    await graph.retire();
+  }
+});
+
+function unlitDisplayGraphInput(h: Harness) {
+  const prepared = prepareStandardLighting({
+    directional: undefined,
+    local: [],
+    view: mat4.identity(mat4.create()),
+    projection: mat4.identity(mat4.create()),
+    near: 0.1,
+    far: 100,
+    grid: { x: 1, y: 1, z: 1 },
+    lightCount: 256,
+    renderPath: 'forward',
+  }).unwrap();
+  return {
+    ...h.input(),
+    rendererRecording: true,
+    clearOnly: true,
+    standardLighting: { kind: 'no-local-lights' as const, prepared },
+  };
+}
+
+it('binds resolved Forward color to Bloom across MSAA, fog and output changes', async () => {
+  const h = await harness();
+  h.frameState.activePipeline = createPremultipliedForwardPipeline('rgba16float', 'custom-output');
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  const install = (samples: boolean, bloomIntensity: number, analyticFog: boolean) => {
+    const graph = compileAndAdoptViewGraph({
+      ...input,
+      analyticFog,
+      camera: {
+        ...input.camera,
+        antialias: samples ? 'msaa' : 'none',
+        bloom: 'on',
+        bloomIntensity,
+      },
+    });
+    if (graph === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    return graph;
+  };
+  try {
+    const sampled = install(true, 1, true);
+    expect(h.frameState.compiledFrameGraph?.displayPorts?.samples).toBe(4);
+    expect(sampled.inspect().passes.some((pass) => pass.name.includes('bloom'))).toBe(true);
+    expect(install(true, 0.5, false)).toBe(sampled);
+    const single = install(false, 0.5, true);
+    expect(single).not.toBe(sampled);
+    expect(h.frameState.compiledFrameGraph?.displayPorts?.samples).toBe(1);
+    const unfiltered = install(false, 0, true);
+    expect(unfiltered).not.toBe(single);
+    expect(unfiltered.inspect().passes.some((pass) => pass.name.includes('bloom'))).toBe(false);
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
+it('records changing Standard exposures and probe faces into the same physical display stages', async () => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  const install = (
+    camera: typeof input.camera,
+    cubeCaptureState?: Parameters<typeof compileViewGraph>[0]['cubeCaptureState'],
+  ) => {
+    const graph = compileAndAdoptViewGraph({ ...input, camera, cubeCaptureState });
+    if (graph === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    return graph;
+  };
+  const camera = { ...input.camera, tonemap: 'reinhard-extended' as const };
+  const first = install(camera);
+  try {
+    expect(h.frameState.compiledFrameGraph?.displayPorts?.standardPost).toBeDefined();
+    const passes = first.inspect().passes.map((pass) => pass.name);
+    expect(passes).toContain('forward-display-draws');
+    expect(passes).toContain('reflection-probe-filters');
+    for (let frame = 0; frame < 60; frame++) {
+      const probe = {
+        probeIndex: frame % 3,
+        step: { faceIndex: frame % 6, mipLevel: frame % 4 },
+      } as ReflectionProbeGraphWork;
+      const changed = { ...camera, exposure: 1 + frame / 60, whitePoint: 2 + frame / 30 };
+      expect(install(changed, { work: [], reflectionProbes: { work: [probe] } })).toBe(first);
+    }
+    const fxaa = install({ ...camera, antialias: 'fxaa' });
+    expect(fxaa).not.toBe(first);
+    expect(
+      fxaa
+        .inspect()
+        .passes.map((pass) => pass.name)
+        .some((name) => name.includes('fxaa')),
+    ).toBe(true);
+    const noPost = install({ ...camera, antialias: 'fxaa', postProcessing: false });
+    expect(noPost).not.toBe(fxaa);
+    h.frameState.installedPipelineConfig = { outputDither: false };
+    const undithered = install({ ...camera, postProcessing: false });
+    expect(undithered).toBe(noPost);
+    for (let frame = 0; frame < 60; frame++) {
+      h.frameState.installedPipelineConfig = { outputDither: frame % 2 === 0 };
+      expect(install({ ...camera, postProcessing: false })).toBe(noPost);
+    }
+    h.frameState.activePipeline = createPremultipliedForwardPipeline(
+      'rgba16float',
+      'external-output',
+    );
+    expect(install(camera)).not.toBe(undithered);
+    expect(h.frameState.compiledFrameGraph?.displayPorts?.standardPost).toBeUndefined();
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
+it.each([
+  'forward',
+  'deferred',
+] as const)('keeps the %s native output ports through neutral crossings and live camera values', async (renderPath) => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  h.frameState.cameraStandardProfile = { ...DEFAULT_STANDARD_PROFILE, renderPath };
+  h.frameState.installedPipelineConfig = { outputContract: 'standard-output-v2' };
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  const install = (frame: number) => {
+    const active = frame % 2 !== 0;
+    const graph = compileAndAdoptViewGraph({
+      ...input,
+      camera: {
+        ...input.camera,
+        tonemap: active ? 'aces-filmic' : 'reinhard-extended',
+        exposure: 1 + frame / 80,
+        lensEffects: active
+          ? {
+              vignetteIntensity: 0.5,
+              vignetteRadius: 0.5,
+              vignetteSoftness: 0.2,
+              vignetteColor: [0, 0, 0],
+              grainIntensity: 0.2,
+              grainSize: 1,
+              chromaticAberration: 1 + frame / 80,
+              chromaticAberrationStartOffset: 0,
+            }
+          : undefined,
+        output: {
+          exposure: { kind: 'manual', multiplier: 1 },
+          temperature: active ? 5400 : 6504,
+          tint: active ? frame / 80 : 0,
+          colorLut: 0,
+          colorLutStrength: 0,
+        },
+      },
+    });
+    if (graph === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    return graph;
+  };
+  try {
+    const first = install(0);
+    expect(first.inspect().passes.some((p) => p.name === 'standard-grade')).toBe(true);
+    for (let frame = 1; frame <= 60; frame++) expect(install(frame)).toBe(first);
+    expect(h.frameState.compiledFrameGraph?.displayPorts?.lane).toBe(renderPath);
+    expect(getRenderFeatureGraphInspection(h.internals).compileAttempts).toBe(1);
+    Object.assign(h.internals, { observationCaptureDomains: ['linear-ldr', 'final-display'] });
+    const captured = install(0);
+    expect(captured).not.toBe(first);
+    const names = (graph: typeof first) => graph.inspect().passes.map((pass) => pass.name);
+    expect(names(captured)).toEqual(
+      expect.arrayContaining([
+        'standard-grade',
+        'standard-encode',
+        'linear-ldr-observation',
+        'final-display-observation',
+      ]),
+    );
+    expect(names(captured).indexOf('debug-overlay')).toBeGreaterThan(
+      names(captured).indexOf('standard-encode'),
+    );
+    const gradedOverlay = install(1);
+    expect(gradedOverlay).not.toBe(captured);
+    expect(names(gradedOverlay).indexOf('debug-overlay')).toBeLessThan(
+      names(gradedOverlay).indexOf('standard-encode'),
+    );
+    for (let frame = 3; frame <= 61; frame += 2) expect(install(frame)).toBe(gradedOverlay);
+    expect(h.frameState.compiledFrameGraph?.displayPorts?.lane).toBe(renderPath);
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
+it('records Forward AO from the current depth before lighting', async () => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  h.frameState.cameraStandardProfile = DEFAULT_STANDARD_PROFILE;
+  h.frameState.standardSceneSurfaceAdmission = createStandardSceneSurfaceAdmission({
+    viewIdentity: 'camera:0',
+    generation: 0,
+    deviceGeneration: 0,
+    standardPipeline: true,
+    cameraAvailable: true,
+    lane: 'clustered',
+    renderPath: 'forward',
+    contributors: [],
+  });
+  Object.assign(h.internals, { depthPyramidShaders: { seed: {} } });
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  Object.assign(input.pipelineState, {
+    perPassResources: { ssaoScreenPipeline: () => undefined },
+  });
+  const install = (frame: number, method: 'ssao' | 'gtao', enabled = true, quality = 50) => {
+    h.frameState.installedPipelineConfig = {
+      ambientOcclusion: {
+        enabled,
+        method,
+        quality,
+        intensity: 0.25 + frame / 100,
+        radius: 0.2 + frame / 200,
+      },
+    };
+    const graph = compileAndAdoptViewGraph({ ...input, currentGpuCamera: frame % 2 === 0 });
+    if (graph === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    return graph;
+  };
+  try {
+    for (const method of ['ssao', 'gtao'] as const) {
+      const graph = install(1, method);
+      expect(h.frameState.compiledFrameGraph?.displayPorts?.lane).toBe('forward');
+      const passes = graph.inspect().passes.map((pass) => pass.name);
+      const depth = passes.indexOf('standard-scene-surface-data');
+      const raw = passes.indexOf('ssao-calc');
+      expect(depth).toBeGreaterThanOrEqual(0);
+      expect(raw).toBeGreaterThan(depth);
+      expect(passes.indexOf('main')).toBeGreaterThan(raw);
+      expect(passes).not.toContain('ssao-scene-color');
+      for (let frame = 1; frame <= 60; frame++) expect(install(frame, method)).toBe(graph);
+      expect(install(61, method, true, 100)).not.toBe(graph);
+    }
+    const disabled = install(62, 'ssao', false);
+    expect(disabled.inspect().passes.map((pass) => pass.name)).not.toContain('ssao-calc');
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
+it('records current GBuffer, light, blended and output stages for an ordinary Deferred view', async () => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  h.frameState.cameraStandardProfile = {
+    ...DEFAULT_STANDARD_PROFILE,
+    renderPath: 'deferred',
+  };
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false };
+  const install = (frame: number, gpu: boolean) => {
+    h.frameState.installedPipelineConfig = { outputDither: frame % 2 === 0, gpuOcclusion: false };
+    const graph = compileAndAdoptViewGraph({
+      ...input,
+      currentGpuCamera: gpu,
+      camera: { ...input.camera, tonemap: 'reinhard-extended', exposure: 1 + frame / 60 },
+    });
+    if (graph === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    return graph;
+  };
+  try {
+    const cpu = install(0, false);
+    expect(h.frameState.compiledFrameGraph?.displayPorts?.lane).toBe('deferred');
+    const names = cpu.inspect().passes.map((pass) => pass.name);
+    expect(names).toContain('g-buffer');
+    expect(names).toContain('lighting');
+    expect(names.indexOf('lighting')).toBeGreaterThan(names.indexOf('g-buffer'));
+    expect(names.indexOf('deferred-display-draws')).toBeGreaterThan(names.indexOf('lighting'));
+    for (let frame = 1; frame <= 60; frame++) expect(install(frame, false)).toBe(cpu);
+    const selected = install(61, true);
+    expect(selected).toBe(cpu);
+    expect(h.frameState.compiledFrameGraph?.displayPorts?.geometry).toBe('selection');
+    expect(selected.inspect().passes.map((pass) => pass.name)).toContain('camera-gpu-selection');
+    for (let frame = 62; frame <= 121; frame++) expect(install(frame, frame % 2 === 0)).toBe(cpu);
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
+it('issues current camera selection and five Bloom levels while the scene and lens values change', async () => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false, currentGpuCamera: true };
+  const camera = { ...input.camera, tonemap: 'reinhard-extended' as const, bloom: 'on' as const };
+  const install = (bloomIntensity: number, frameNumber: number, currentGpuCamera = true) => {
+    const graph = compileAndAdoptViewGraph({
+      ...input,
+      currentGpuCamera,
+      camera: {
+        ...camera,
+        exposure: 1 + frameNumber / 60,
+        bloomIntensity,
+        bloomThreshold: 0.5 + frameNumber / 20,
+      },
+    });
+    if (graph === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    return graph;
+  };
+  try {
+    const graph = install(1, 0);
+    const ports = h.frameState.compiledFrameGraph?.displayPorts;
+    expect(ports?.geometry).toBe('selection');
+    expect(ports?.standardPost?.bloom).toBe(true);
+    expect(typeof h.frameState.compiledFrameGraph?.prepareGpuDrivenPipelines).toBe('function');
+    const declared = graph.inspect().passes.map((pass) => pass.name);
+    expect(declared).toContain('camera-gpu-selection');
+    expect(declared).toContain('forward-display-draws');
+    expect(declared.filter((name) => /^bloom-(horizontal|vertical)-/.test(name))).toHaveLength(10);
+    for (let frame = 1; frame <= 60; frame++) expect(install(frame / 60, frame)).toBe(graph);
+    const withoutBloom = install(0, 61);
+    expect(withoutBloom).not.toBe(graph);
+    expect(withoutBloom.inspect().passes.some((p) => p.name.startsWith('bloom-'))).toBe(false);
+    const direct = install(0, 62, false);
+    expect(direct).toBe(withoutBloom);
+    for (let frame = 63; frame < 123; frame++)
+      expect(install(0, frame, frame % 2 === 0)).toBe(direct);
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
+it('submits changing Forward sun shadows through the physical depth and mask ports', async () => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  h.frameState.cameraStandardProfile = { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' };
+  h.internals.standardSceneShaders = {
+    forwardDirectionalShadow: 'forward-shadow-program',
+  } as NonNullable<RenderSystemInternals['standardSceneShaders']>;
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false, currentGpuCamera: true };
+  const install = (frame: number, coverage = true) => {
+    h.frameState.cameraStandardProfile = {
+      ...DEFAULT_STANDARD_PROFILE,
+      renderPath: 'forward',
+      ...(frame % 2
+        ? { forwardShadowViewFade: true, forwardShadowSpotFilter: 'gather' as const }
+        : {}),
+    };
+    const graph = compileAndAdoptViewGraph({
+      ...input,
+      passPlan: {
+        ...EMPTY_VIEW_PASS_PLAN,
+        ...(coverage ? { forwardShadowCoverage: true as const } : {}),
+      },
+      lights: {
+        ...input.lights,
+        cascades: { cascadeCount: 1 + (frame % 4) } as ViewLights['cascades'],
+      },
+      shadowMapSize: frame % 2 ? 32 : 16,
+    });
+    if (graph === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    return graph;
+  };
+  try {
+    const first = install(0);
+    expect(h.frameState.compiledFrameGraph?.displayPorts?.lane).toBe('forward');
+    const passes = first.inspect().passes.map((pass) => pass.name);
+    expect(passes).toContain('forward-directional-shadow');
+    expect(passes.indexOf('forward-directional-shadow')).toBeLessThan(passes.indexOf('main'));
+    const begin = getRenderFeatureGraphInspection(h.internals).compileSuccesses;
+    for (let frame = 1; frame <= 60; frame++) {
+      expect(install(frame)).toBe(first);
+      expect(h.frameState.forwardDisplayReceiver?.mode).toBe('screen');
+    }
+    expect(getRenderFeatureGraphInspection(h.internals).compileSuccesses).toBe(begin);
+    const raw = install(61, false);
+    expect(raw).not.toBe(first);
+    expect(raw.inspect().passes.some((pass) => pass.name === 'forward-directional-shadow')).toBe(
+      false,
+    );
+    expect(h.frameState.forwardDisplayReceiver).toEqual({ mode: 'raw', reason: 'coverage' });
+    expect(
+      install(62)
+        .inspect()
+        .passes.map((pass) => pass.name),
+    ).toContain('forward-directional-shadow');
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
+it('keeps ordinary shadow atlas ports while cascade counts, directional size and occupied faces rotate', async () => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  const input = { ...unlitDisplayGraphInput(h), clearOnly: false, currentGpuCamera: true };
+  const install = (frame: number, pointSize = 16, owner = input.shadowDepthLayers) => {
+    const lights = {
+      ...input.lights,
+      cascades: { cascadeCount: 1 + (frame % 4) } as ViewLights['cascades'],
+      pointShadow: [
+        {
+          shadowAtlasLayer: frame % 4,
+          mapSize: pointSize,
+        },
+      ] as unknown as ViewLights['pointShadow'],
+    };
+    const graph = compileAndAdoptViewGraph({
+      ...input,
+      lights,
+      shadowDepthLayers: owner,
+      shadowMapSize: frame % 2 ? 32 : 16,
+    });
+    if (graph === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    return graph;
+  };
+  try {
+    const first = install(0);
+    expect(h.frameState.compiledFrameGraph?.displayPorts?.directional).toBe(true);
+    expect(h.frameState.compiledFrameGraph?.directionalShadowViewCount).toBe('current');
+    expect(first.inspect().passes.map((p) => p.name)).toContain('forward-display-draws');
+    for (let frame = 1; frame <= 60; frame++) expect(install(frame)).toBe(first);
+    const resized = install(61, 32);
+    expect(resized).not.toBe(first);
+    const otherOwner = ensureShadowDepthLayers({} as RenderFrameState, h.internals.device);
+    expect(install(62, 32, otherOwner)).not.toBe(resized);
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
+it('changes the installed Forward targets when a same-identity output recipe changes', async () => {
+  const h = await harness();
+  const input = unlitDisplayGraphInput(h);
+  const install = (format: 'rgba8unorm' | 'rgba16float', name: string) => {
+    h.frameState.activePipeline = createPremultipliedForwardPipeline(format, name);
+    const graph = compileAndAdoptViewGraph(input);
+    if (graph === null) throw new Error(h.errors.map(String).join('\n'));
+    h.accept();
+    return graph;
+  };
+  const first = install('rgba16float', 'first');
+  try {
+    expect(install('rgba16float', 'first')).toBe(first);
+    const second = install('rgba8unorm', 'first');
+    expect(second).not.toBe(first);
+    expect(install('rgba8unorm', 'second')).not.toBe(second);
+  } finally {
+    await h.frameState.compiledFrameGraph?.graph.retire();
+  }
+});
+
+it('keeps the display graph across independent capture target, face and roster changes', async () => {
+  const h = await harness();
+  h.frameState.activePipeline = standardPipeline;
+  const input = unlitDisplayGraphInput(h);
+  const graph = compileAndAdoptViewGraph(input);
+  if (graph === null) throw new Error(h.errors.map(String).join('\n'));
+  h.accept();
+  // Capture views own their physical descriptors. The display reads only sampler demand.
+  const face = (layer: number) =>
+    ({
+      physical: { descriptor: { shape: 'cube', size: 64, format: 'rgba8unorm' } },
+      layer,
+      mipLevel: layer % 2,
+      faceCamera: {},
+    }) as unknown as CubeCaptureGraphWork;
+  try {
+    for (const work of [[face(1)], [face(3), face(5)], []]) {
+      const change = { ...input, cubeCaptureState: { work } };
+      expect(compileViewGraph(change).kind).toBe('reused');
+      expect(compileAndAdoptViewGraph(change)).toBe(graph);
+      h.accept();
+    }
+    for (let i = 0; i < 300; i++) {
+      const probeIndex = i % 7;
+      const probe = {
+        probeIndex,
+        captureGeneration: i,
+        filteredGeneration: i + 1,
+        filteredLayer: i % 5,
+        step: { probeIndex, mipLevel: Math.floor(i / 3) % 4, faceIndex: (i % 3) * 2 },
+      } as ReflectionProbeGraphWork;
+      const change = {
+        ...input,
+        cubeCaptureState: { work: [], reflectionProbes: { work: i % 5 === 0 ? [] : [probe] } },
+      };
+      expect(compileViewGraph(change).kind).toBe('reused');
+      expect(compileAndAdoptViewGraph(change)).toBe(graph);
+      h.accept();
+    }
+  } finally {
+    await graph.retire();
+  }
+});
+
 it('rejects a failed capsule-consumer switch instead of recording a graph with the old caster policy', async () => {
   const h = await harness();
   h.compile();
   h.accept();
   h.setFail(true);
-  const outcome = compileViewGraph({ ...h.input(), forwardCapsuleShadows: true });
+  const outcome = compileViewGraph({ ...h.input(), capsuleShadows: true });
   expect(outcome.kind).toBe('rejected');
 });
 

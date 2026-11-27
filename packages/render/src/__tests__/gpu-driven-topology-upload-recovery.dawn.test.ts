@@ -3,6 +3,7 @@ import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
+import { GPU_TASK_HEADER_WORDS, GPU_TASK_MEMBER_WORD } from '../gpu-driven/task-header';
 import { GPU_DRIVEN_BATCH_STRIDE, GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
 import { uploadFixture } from './gpu-driven-topology-upload-fixture';
 import { observeGpuInputBytes } from './helpers/gpu-input-bytes';
@@ -51,8 +52,10 @@ it.each([
     const before = await bytes(device, original.arena, extent);
     const tasks = await bytes(device, original.tasks, GPU_DRIVEN_BATCH_STRIDE);
     const words = new Uint32Array(before.buffer, before.byteOffset, before.byteLength / 4);
+    const headerAddress = new DataView(tasks.buffer, tasks.byteOffset).getUint32(4, true);
+    expect(headerAddress + GPU_TASK_HEADER_WORDS).toBeLessThanOrEqual(words.length);
     const reachable = new Set<number>();
-    const pending = [new DataView(tasks.buffer, tasks.byteOffset).getUint32(48, true)];
+    const pending = [words[headerAddress + GPU_TASK_MEMBER_WORD] as number];
     while (pending.length > 0) {
       const address = pending.pop();
       if (address === undefined || address === 0) continue;
@@ -70,6 +73,12 @@ it.each([
     expect(rejected.error).toBe(failure);
     // Free arena capacity may receive provisional nodes; held nodes must survive.
     const after = await bytes(device, original.arena, extent);
+    expect(
+      equalBytes(
+        after.subarray(headerAddress * 4, (headerAddress + GPU_TASK_HEADER_WORDS) * 4),
+        before.subarray(headerAddress * 4, (headerAddress + GPU_TASK_HEADER_WORDS) * 4),
+      ),
+    ).toBe(true);
     for (const address of reachable)
       expect(
         equalBytes(

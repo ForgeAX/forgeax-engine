@@ -22,8 +22,10 @@ import type {
   RenderFeatureWork,
 } from '../features/plan';
 import { captureFeatureSourceAssetVersion } from '../features/source';
+import { POST_PROCESS_OUTPUT_DEPTH } from '../features/targets';
 import type { RenderFeature, RenderFeatureExtractContext } from '../features/types';
 import { materialProgramInputs, waterProgramEntryPoints } from '../material-program-inputs';
+import { materialProgramSelectionsForMaterial } from '../material-program-selection';
 import {
   captureMaterialSource,
   type MaterialSourceReferences,
@@ -33,7 +35,6 @@ import {
 } from '../material-source';
 import { worldRenderResources } from '../publication/resource-scope';
 import { cameraNearPlaneCornerDistanceM } from '../record/helpers';
-import { materialProgramSelectionsForMaterial } from '../render-system-extract';
 import {
   requireWaterBodyBakedSources,
   waterMaterialEntryPointReferences,
@@ -41,6 +42,7 @@ import {
 import type { WaterRenderView } from './view-projection';
 
 export const WATER_UNDERWATER_FEATURE_IDENTITY = 'water-underwater-post-process';
+const STOCK_UNDERWATER_PROGRAM = 'forgeax_material::water_underwater';
 const COPY_PROGRAM = 'forgeax.water-underwater-scene-copy';
 const COPY_SOURCE = /* wgsl */ `
 struct Output { @builtin(position) position: vec4<f32> };
@@ -64,6 +66,7 @@ interface UnderwaterMaterialFrame {
   readonly handle: number;
   readonly revision: number;
   readonly shader: string;
+  readonly depthTarget: 'depth' | typeof POST_PROCESS_OUTPUT_DEPTH;
   readonly sourceAssets: MaterialSourceReferences;
   readonly selection: Float32Array;
   readonly state: WaterViewState;
@@ -80,6 +83,7 @@ interface AcceptedUnderwaterMaterial {
   readonly source: MaterialSourceSnapshot;
   readonly references: MaterialSourceReferences;
   readonly shader: string;
+  readonly depthTarget: 'depth' | typeof POST_PROCESS_OUTPUT_DEPTH;
   readonly views: Set<string>;
   readonly waterProgramInputs?: UnderwaterProgramInputs;
 }
@@ -309,6 +313,10 @@ function extractUnderwater(
                 references: materialSourceReferences(source),
                 views: previous?.views ?? new Set<string>(),
                 shader: program.specializationKey,
+                depthTarget:
+                  pass.program?.module === STOCK_UNDERWATER_PROGRAM
+                    ? 'depth'
+                    : POST_PROCESS_OUTPUT_DEPTH,
                 ...(checkedInputs === undefined || checkedPoints === undefined
                   ? {}
                   : {
@@ -400,6 +408,7 @@ function extractUnderwater(
           handle: accepted.source.root,
           revision: accepted.source.revision,
           shader: accepted.shader,
+          depthTarget: accepted.depthTarget,
           sourceAssets: accepted.references,
           selection: new Float32Array([
             positionY + checkedState.immersionDepthM,
@@ -501,7 +510,7 @@ export function createWaterUnderwaterFeature(): RenderFeature<UnderwaterFeatureF
         }
         const view = context.views.find((entry) => entry.identity === material.view);
         const color = view?.targets.find((target) => target.name === 'color');
-        const depth = view?.targets.find((target) => target.kind === 'depth');
+        const depth = view?.targets.find((target) => target.name === material.depthTarget);
         const width = view?.frame.extent?.outputWidth ?? view?.frame.width;
         const height = view?.frame.extent?.outputHeight ?? view?.frame.height;
         if (

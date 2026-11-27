@@ -2,6 +2,8 @@ import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import {
   Camera,
+  ClippingPlanes,
+  clippingPlanesData,
   DirectionalLight,
   LightProbe,
   Materials,
@@ -184,7 +186,7 @@ export async function verifyStandardDeferredParity(
       renderer.setProfile({
         ...original,
         renderPath,
-        ssao,
+        ambientOcclusion: { enabled: ssao },
         ...(options.visibleSurface ? { visibleSurface: renderPath === 'deferred' } : {}),
       }),
     );
@@ -203,6 +205,8 @@ export async function verifyStandardDeferredParity(
         { source: lease, ...(direct ? { geometryLane: 'direct' as const } : {}) },
         index === testQuality.staticFrames - 1 ? ['linear-hdr'] : undefined,
       );
+      if (renderPath === 'deferred' && !options.visibleSurface)
+        expect(renderer.inspect().output.graphPassNames).toContain('deferred-display-draws');
       if (capture !== undefined && options.recorder !== undefined) {
         (await options.recorder.frameBoundary()).unwrap();
         await options.capture?.(compactTape((await capture).unwrap()), renderPath);
@@ -294,8 +298,20 @@ export async function verifyStandardDeferredParity(
         },
       )
       .unwrap();
+    // Compare the same native receiver on both lighting paths. Screen PCF
+    // shapes its penumbra separately, which the receiver fixtures exercise.
+    world
+      .addComponent(camera, {
+        component: ClippingPlanes,
+        data: clippingPlanesData({ planes: [[1, 0, 0, 100]] }),
+      })
+      .unwrap();
     const forwardShadow = await sample('forward', false);
+    expect(
+      renderer.inspect({ fields: ['directionalShadow'] }).directionalShadow.forwardReceiver,
+    ).toEqual({ mode: 'raw', reason: 'coverage' });
     const deferredShadow = await sample('deferred', false);
+    world.removeComponent(camera, ClippingPlanes).unwrap();
     expect(
       Math.max(...forwardShadow.map((v, i) => Math.abs(v - (deferredShadow[i] ?? NaN)))),
     ).toBeLessThanOrEqual(0.05);

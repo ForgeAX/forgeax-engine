@@ -1,7 +1,18 @@
-import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
+import {
+  type CompiledRenderGraphInfo,
+  compiledRenderGraphGeneration,
+  compiledRenderGraphHasPass,
+  compiledRenderGraphResourceDeclarations,
+} from '@forgeax/engine-render-graph';
 import { mipDimension, textureFormatBlock } from '@forgeax/engine-types';
 import type { DepthOfFieldInspection } from '../../inspection-types';
-import { depthOfFieldPassNames, depthOfFieldTopology } from './depth-of-field-feature';
+import type { InstalledFrameGraph } from '../../record/frame-snapshot';
+import {
+  DEPTH_OF_FIELD_COMPUTE_TILE_PASS,
+  DEPTH_OF_FIELD_TILE_PASSES,
+  depthOfFieldPassNames,
+  depthOfFieldTopology,
+} from './depth-of-field-feature';
 import {
   DEFAULT_DEPTH_OF_FIELD_PARAMS,
   type DepthOfFieldParams,
@@ -12,7 +23,13 @@ function resourceBytes(resource: CompiledRenderGraphInfo['resources'][number]): 
   if (resource.byteSize !== undefined) return resource.byteSize;
   const descriptor = resource.descriptor;
   if (descriptor.kind !== 'texture') return 0;
-  if (descriptor.format !== 'rgba16float' && descriptor.format !== 'rgba8unorm') return 0;
+  if (
+    descriptor.format !== 'rg16float' &&
+    descriptor.format !== 'rgba16float' &&
+    descriptor.format !== 'rgba8unorm' &&
+    descriptor.format !== 'rg8unorm'
+  )
+    return 0;
   const texelBytes = textureFormatBlock(descriptor.format).bytesPerBlock;
   let bytes = 0;
   for (let level = 0; level < descriptor.mipLevelCount; level += 1) {
@@ -26,17 +43,18 @@ function resourceBytes(resource: CompiledRenderGraphInfo['resources'][number]): 
 }
 
 function textureExtent(
-  graph: CompiledRenderGraphInfo,
+  resources: CompiledRenderGraphInfo['resources'],
   label: string,
 ): { readonly width: number; readonly height: number } | undefined {
-  const resource = graph.resources.find(
+  const resource = resources.find(
     (candidate) => candidate.kind === 'texture' && candidate.label === label,
   );
   if (resource?.descriptor.kind !== 'texture') return undefined;
-  return { width: resource.descriptor.width, height: resource.descriptor.height };
+  return Object.freeze({ width: resource.descriptor.width, height: resource.descriptor.height });
 }
 
-interface DepthOfFieldGraphInspection {
+export interface DepthOfFieldGraphInspection {
+  readonly blurSide?: DepthOfFieldParams['blurSide'];
   readonly status: 'empty' | 'active' | 'invalid';
   readonly outputExtent: { readonly width: number; readonly height: number };
   readonly workExtent: { readonly width: number; readonly height: number };
@@ -47,36 +65,38 @@ interface DepthOfFieldGraphInspection {
 
 interface DepthOfFieldAcceptedState {
   readonly params: DepthOfFieldParams;
-  readonly graph: CompiledRenderGraphInfo;
+  readonly graph: DepthOfFieldGraphInspection;
   readonly deviceGeneration: number;
 }
 
 const emptyExtent = Object.freeze({ width: 0, height: 0 });
 const OFF_PARAMS = Object.freeze({ ...DEFAULT_DEPTH_OF_FIELD_PARAMS, maxRadiusPixels: 0 });
 
-/** Inspect only the compiled graph facts owned by the DoF feature. */
+function emptyDepthOfFieldGraph(graphGeneration: number): DepthOfFieldGraphInspection {
+  return {
+    status: 'empty',
+    outputExtent: emptyExtent,
+    workExtent: emptyExtent,
+    passCount: 0,
+    textureBytes: 0,
+    graphGeneration,
+  };
+}
+
+/** Bind only the DoF passes and attachments. Optical parameters remain frame inputs. */
 export function inspectDepthOfFieldGraph(
-  graph: CompiledRenderGraphInfo | undefined,
-  params: DepthOfFieldParams | undefined,
+  graph: InstalledFrameGraph['graph'],
+  topology: NonNullable<ReturnType<typeof depthOfFieldTopology>>,
 ): DepthOfFieldGraphInspection {
-  const topology = depthOfFieldTopology(params);
-  if (graph === undefined || topology === undefined) {
-    return {
-      status: 'empty',
-      outputExtent: emptyExtent,
-      workExtent: emptyExtent,
-      passCount: 0,
-      textureBytes: 0,
-      graphGeneration: graph?.generation ?? 0,
-    };
-  }
-  const expectedPasses = new Set(depthOfFieldPassNames(topology));
-  const passes = graph.passes.filter((pass) => expectedPasses.has(pass.name));
-  const dofResources = graph.resources.filter(
-    (resource) => resource.kind === 'texture' && resource.label.startsWith('dof-'),
+  const computeTiles = compiledRenderGraphHasPass(graph, DEPTH_OF_FIELD_COMPUTE_TILE_PASS);
+  const expectedPasses = depthOfFieldPassNames(topology, computeTiles);
+  const completePasses = expectedPasses.every((name) => compiledRenderGraphHasPass(graph, name));
+  const dofResources = compiledRenderGraphResourceDeclarations(graph, 'dof-').filter(
+    (resource) => resource.kind === 'texture',
   );
   const expectedResourceLabels = [
     'dof-coc',
+    ...DEPTH_OF_FIELD_TILE_PASSES,
     ...(topology.useNear
       ? ['dof-near', 'dof-prefilter-near', 'dof-prefilter-near-metadata', 'dof-background']
       : []),
@@ -84,29 +104,47 @@ export function inspectDepthOfFieldGraph(
     'dof-composite',
   ];
   const resourceLabels = new Set(dofResources.map((resource) => resource.label));
-  const completePasses =
-    passes.length === expectedPasses.size && passes.every((pass) => expectedPasses.has(pass.name));
   const completeResources =
     dofResources.length === expectedResourceLabels.length &&
     expectedResourceLabels.every((label) => resourceLabels.has(label)) &&
     dofResources.every((resource) => resourceBytes(resource) > 0);
-  const outputExtent = textureExtent(graph, 'dof-composite') ?? emptyExtent;
-  const workExtent = textureExtent(graph, topology.useNear ? 'dof-near' : 'dof-far') ?? emptyExtent;
+  const outputExtent = textureExtent(dofResources, 'dof-composite') ?? emptyExtent;
+  const workExtent =
+    textureExtent(dofResources, topology.useNear ? 'dof-near' : 'dof-far') ?? emptyExtent;
   return {
+    blurSide: topology.blurSide,
     status: completePasses && completeResources ? 'active' : 'invalid',
     outputExtent,
     workExtent,
-    passCount: completePasses ? passes.length : 0,
+    passCount: completePasses ? expectedPasses.length : 0,
     textureBytes: completeResources
       ? dofResources.reduce((bytes, resource) => bytes + resourceBytes(resource), 0)
       : 0,
-    graphGeneration: graph.generation,
+    graphGeneration: compiledRenderGraphGeneration(graph),
   };
+}
+
+/** Match the bound aperture shape even when the latest requested candidate was rejected. */
+export function depthOfFieldGraphForParams(
+  installed: InstalledFrameGraph | null,
+  params: DepthOfFieldParams | undefined,
+): DepthOfFieldGraphInspection {
+  if (installed == null) return emptyDepthOfFieldGraph(0);
+  if (
+    params !== undefined &&
+    params.maxRadiusPixels > 0 &&
+    installed.depthOfField?.blurSide === params.blurSide
+  )
+    return installed.depthOfField;
+  const shape = depthOfFieldTopology(params);
+  return shape === undefined
+    ? emptyDepthOfFieldGraph(compiledRenderGraphGeneration(installed.graph))
+    : inspectDepthOfFieldGraph(installed.graph, shape);
 }
 
 export function projectDepthOfFieldInspection(input: {
   readonly params?: DepthOfFieldParams;
-  readonly graph?: CompiledRenderGraphInfo;
+  readonly graph?: DepthOfFieldGraphInspection;
   readonly deviceGeneration: number;
   readonly error?: DepthOfFieldRequestFailure | undefined;
   /** Explicit submit-bound state supplied by Renderer.inspect(). */
@@ -127,14 +165,13 @@ export function projectDepthOfFieldInspection(input: {
   const transactionBound = 'accepted' in input;
   const accepted = input.accepted;
   const acceptedTopology = depthOfFieldTopology(accepted?.params);
-  const acceptedGraph =
-    accepted === undefined ? undefined : inspectDepthOfFieldGraph(accepted.graph, accepted.params);
+  const acceptedGraph = accepted?.graph;
   const acceptedValid =
     accepted !== undefined &&
     accepted.deviceGeneration === input.deviceGeneration &&
     acceptedTopology !== undefined &&
     acceptedGraph?.status === 'active';
-  const candidateGraph = inspectDepthOfFieldGraph(input.graph, input.params);
+  const candidateGraph = input.graph ?? emptyDepthOfFieldGraph(0);
   // Renderer.inspect() is transaction-bound: a compiled candidate is useful
   // for diagnosis, but it is not the effective graph until submit succeeds.
   // Direct callers that omit `accepted` retain the original structural

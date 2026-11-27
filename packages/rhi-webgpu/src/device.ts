@@ -41,7 +41,6 @@ import type {
   ComputePipeline,
   ComputePipelineDescriptor,
   ExternalImageTextureDestination,
-  MappedBuffer,
   PipelineLayout,
   PipelineLayoutDescriptor,
   QuerySet,
@@ -75,7 +74,6 @@ import type {
   TextureViewDescriptor,
 } from '@forgeax/engine-rhi';
 import {
-  bufferWriteRange,
   commandEncoderFinished,
   createQueueCompletionHold,
   err,
@@ -84,11 +82,13 @@ import {
   queueWriteBufferOutOfBounds,
   RhiError as RhiErrorClass,
   rayQueryUnsupported,
+  readBufferWriteRange,
   renderPassNotEnded,
   validateRayQueryBindGroupLayout,
   validateRayQueryBufferUsage,
 } from '@forgeax/engine-rhi';
 
+import { WebGpuBuffer } from './buffer';
 import { COMMAND_COUNTS } from './command-counts';
 import {
   UNVERIFIED_FLOAT_TEXTURE_CAPABILITIES,
@@ -188,10 +188,8 @@ const QUERY_SET_COUNT_LIMIT = 4096;
  * (no internal field) and clears automatically when the device is GC'd
  * (charter proposition 5 consistent abstraction).
  *
- * Buffer<->raw GPUBuffer / Encoder<->raw GPUCommandEncoder etc. WeakMaps
- * follow the same pattern; they enable the queue.writeBuffer real-path to
- * resolve buffer.size for bounds validation, and the encoder shim to
- * forward recording calls to the underlying GPUCommandEncoder.
+ * Buffer metadata and command dependency WeakMaps
+ * track information needed for validation and submission lifetime.
  */
 const RAW_DEVICE_MAP: WeakMap<RhiDevice, GPUDevice> = new WeakMap();
 const PIPELINE_LIBRARY_MAP = new WeakMap<RhiDevice, WebGpuPipelineLibrary>();
@@ -206,11 +204,6 @@ const R32FLOAT_PROBE_CACHE: WeakMap<
   Promise<Result<import('@forgeax/engine-rhi').RhiTextureFormatCapabilityReceipt, RhiError>>
 > = new WeakMap();
 let NEXT_DEVICE_GENERATION = 1;
-const BUFFER_RAW_MAP: WeakMap<Buffer, GPUBuffer> = new WeakMap();
-const TEXTURE_VIEW_RAW_MAP: WeakMap<TextureView, GPUTextureView> = new WeakMap();
-const ENCODER_STATE: WeakMap<RhiCommandEncoder, EncoderState> = new WeakMap();
-const COMMAND_BUFFER_RAW_MAP: WeakMap<CommandBuffer, GPUCommandBuffer> = new WeakMap();
-
 /**
  * Texture metadata tracked by the shim for createTextureView fast-path
  * cross-resource validation (research §1.1):
@@ -240,39 +233,11 @@ interface TextureMeta {
 }
 const TEXTURE_META_MAP: WeakMap<Texture, TextureMeta> = new WeakMap();
 
-interface EncoderState {
-  raw: GPUCommandEncoder;
-  finished: boolean;
-  activePass: WebGpuRenderPassEncoder | null;
-}
-
 /** WeakMap that tracks raw GPUQuerySet for createQuerySet handles so the shim
  *  can read `.count` for queryIndex bounds checking (research §2.1 step 2). */
 const QUERY_SET_RAW_MAP: WeakMap<QuerySet, GPUQuerySet> = new WeakMap();
 const QUERY_SET_DESTROYED_MAP: WeakMap<QuerySet, { destroyed: boolean }> = new WeakMap();
 
-/**
- * WeakMap that tracks Buffer metadata (size + usage) so resolveQuerySet (and
- * other shim entry points) can validate spec preconditions before forwarding
- * to the raw GPU (research §2.3 destination.usage / destinationOffset bounds).
- *
- * usage is the bitmask passed at createBuffer time; size is `desc.size` (the
- * underlying GPUBuffer.size is also readable but the shim records the
- * descriptor-level size for parity with TextureMeta).
- */
-interface BufferMeta {
-  readonly size: number;
-  readonly usage: GPUBufferUsageFlags;
-  /**
-   * Per-handle lifecycle marker for `RhiDevice.destroyBuffer` fail-fast
-   * (feat-20260612 D-7). Mutated to `true` by the first successful
-   * `destroyBuffer(buf)` call; a second destroy on the same handle reads
-   * the flag and surfaces `Result.err({ code: 'destroy-after-destroy' })`
-   * rather than forwarding to the underlying spec idempotent void.
-   */
-  destroyed: boolean;
-}
-const BUFFER_META_MAP: WeakMap<Buffer, BufferMeta> = new WeakMap();
 /** GPUBufferUsage.QUERY_RESOLVE bit (W3C WebGPU §3.5.2 GPUBufferUsage). */
 const BUFFER_USAGE_QUERY_RESOLVE = 0x200;
 /** Spec normative resolve alignment (research §2.3 step 6 +
@@ -437,28 +402,43 @@ const BUNDLE_LANE: RenderCommandLane = {
   vertexBufferSets: 'bundleVertexBufferSets',
 };
 
+// Bundles remain reusable. A finished command buffer hands its dependencies to
+// the queue on its one accepted submission. Both retain pipeline recipe metadata.
+const bundleDependencies = new WeakMap<GPURenderBundle, object>();
+const commandDependencies = new WeakMap<CommandBuffer, object>();
+
+class RecordingDependencies {
+  private first: object | null | undefined;
+  private many: Set<object> | undefined;
+
+  add(resource: object): void {
+    if (this.first === resource || this.first === null) return;
+    if (this.first === undefined) this.first = resource;
+    else {
+      this.many ??= new Set<object>().add(this.first);
+      this.many.add(resource);
+    }
+  }
+
+  /** Detach even when a caller retains an ended pass or its finished encoder. */
+  seal(): object | undefined {
+    const resources = this.many ?? this.first ?? undefined;
+    this.first = null;
+    this.many = undefined;
+    return resources;
+  }
+}
+
 /**
  * Shared native draw, binding and debug commands for passes and bundles.
  * Encoders are class instances: one allocation per pass instead of a closure
  * per command, which every recorded pass and bundle paid on every frame.
  */
-// Encoded work retains the JS dependency closure as well as native internal
-// handles, so source/recipe metadata survives when only a bundle is retained.
-const COMMAND_REFERENCES = new WeakMap<object, Set<object>>();
-function commandReferences(owner: object): Set<object> {
-  let references = COMMAND_REFERENCES.get(owner);
-  if (references === undefined) {
-    references = new Set();
-    COMMAND_REFERENCES.set(owner, references);
-  }
-  return references;
-}
-
 class WebGpuRenderCommands implements RhiRenderCommands {
   constructor(
     protected readonly rawPass: GPURenderPassEncoder | GPURenderBundleEncoder,
     private readonly lane: RenderCommandLane,
-    protected readonly references = new Set<object>(),
+    protected readonly references = new RecordingDependencies(),
   ) {}
 
   setPipeline(pipeline: RenderPipeline): void {
@@ -475,7 +455,7 @@ class WebGpuRenderCommands implements RhiRenderCommands {
   ): void {
     // M5 / w35: resolve forgeax Buffer wrapper to raw GPUBuffer.
     COMMAND_COUNTS[this.lane.vertexBufferSets]++;
-    const rawBuf = BUFFER_RAW_MAP.get(buffer) ?? (buffer as unknown as GPUBuffer);
+    const rawBuf = WebGpuBuffer.native(buffer);
     this.rawPass.setVertexBuffer(slot, rawBuf, offset, size);
   }
 
@@ -486,7 +466,7 @@ class WebGpuRenderCommands implements RhiRenderCommands {
     size?: number | undefined,
   ): void {
     // M5 / w35: resolve forgeax Buffer wrapper to raw GPUBuffer.
-    const rawBuf = BUFFER_RAW_MAP.get(buffer) ?? (buffer as unknown as GPUBuffer);
+    const rawBuf = WebGpuBuffer.native(buffer);
     this.rawPass.setIndexBuffer(rawBuf, format, offset, size);
   }
 
@@ -539,13 +519,13 @@ class WebGpuRenderCommands implements RhiRenderCommands {
   }
 
   drawIndirect(indirectBuffer: Buffer, indirectOffset: number): void {
-    const rawBuf = BUFFER_RAW_MAP.get(indirectBuffer) ?? (indirectBuffer as unknown as GPUBuffer);
+    const rawBuf = WebGpuBuffer.native(indirectBuffer);
     COMMAND_COUNTS[this.lane.draws]++;
     this.rawPass.drawIndirect(rawBuf, indirectOffset);
   }
 
   drawIndexedIndirect(indirectBuffer: Buffer, indirectOffset: number): void {
-    const rawBuf = BUFFER_RAW_MAP.get(indirectBuffer) ?? (indirectBuffer as unknown as GPUBuffer);
+    const rawBuf = WebGpuBuffer.native(indirectBuffer);
     COMMAND_COUNTS[this.lane.draws]++;
     this.rawPass.drawIndexedIndirect(rawBuf, indirectOffset);
   }
@@ -579,13 +559,13 @@ class WebGpuRenderPassEncoder extends WebGpuRenderCommands implements RhiRenderP
 
   constructor(
     private readonly renderPass: GPURenderPassEncoder,
-    private readonly encoder: RhiCommandEncoder,
+    private readonly encoder: WebGpuCommandEncoder,
     // [[occlusion_query_set]] (research §2.1): the QuerySet injected via
     // GPURenderPassDescriptor.occlusionQuerySet at beginRenderPass time.
     // null means occlusion queries are unavailable in this pass.
     private readonly occlusionQuerySet: QuerySet | null,
   ) {
-    super(renderPass, PASS_LANE, commandReferences(encoder));
+    super(renderPass, PASS_LANE, encoder);
   }
 
   setViewport(
@@ -737,10 +717,7 @@ class WebGpuRenderPassEncoder extends WebGpuRenderCommands implements RhiRenderP
     this.ended = true;
     this.renderPass.end();
     // Clear active-pass tracking on the owning encoder.
-    const encState = ENCODER_STATE.get(this.encoder);
-    if (encState !== undefined && encState.activePass === this) {
-      encState.activePass = null;
-    }
+    this.encoder.endRenderPass(this);
   }
 }
 
@@ -754,9 +731,10 @@ class WebGpuRenderBundleEncoder extends WebGpuRenderCommands implements RhiRende
   finish(descriptor?: RenderBundleDescriptor | undefined): Result<RenderBundle, RhiError> {
     if (this.finished) return err(commandEncoderFinished('render bundle'));
     this.finished = true;
+    const dependencies = this.references.seal();
     try {
       const bundle = this.bundle.finish(descriptor as GPURenderBundleDescriptor);
-      COMMAND_REFERENCES.set(bundle, this.references);
+      if (dependencies !== undefined) bundleDependencies.set(bundle, dependencies);
       return ok(bundle as unknown as RenderBundle);
     } catch (cause) {
       return err(
@@ -773,7 +751,7 @@ class WebGpuRenderBundleEncoder extends WebGpuRenderCommands implements RhiRende
 class WebGpuComputePassEncoder implements RhiComputePassEncoder {
   constructor(
     private readonly rawPass: GPUComputePassEncoder,
-    private readonly references: Set<object>,
+    private readonly references: RecordingDependencies,
   ) {}
 
   setPipeline(pipeline: ComputePipeline): void {
@@ -802,24 +780,13 @@ class WebGpuComputePassEncoder implements RhiComputePassEncoder {
 
   dispatchWorkgroupsIndirect(indirectBuffer: Buffer, indirectOffset: number): void {
     COMMAND_COUNTS.dispatches++;
-    const rawBuffer =
-      BUFFER_RAW_MAP.get(indirectBuffer) ?? (indirectBuffer as unknown as GPUBuffer);
+    const rawBuffer = WebGpuBuffer.native(indirectBuffer);
     this.rawPass.dispatchWorkgroupsIndirect(rawBuffer, indirectOffset);
   }
 
   end(): void {
     this.rawPass.end();
   }
-}
-
-function throwIfFinished(state: EncoderState | undefined): void {
-  if (state?.finished) {
-    throw commandEncoderFinished();
-  }
-}
-
-function rawTextureView(view: TextureView): GPUTextureView {
-  return TEXTURE_VIEW_RAW_MAP.get(view) ?? (view as unknown as GPUTextureView);
 }
 
 function mirrorRenderPassDescriptor(desc: RenderPassDescriptor): GPURenderPassDescriptor {
@@ -835,13 +802,13 @@ function mirrorRenderPassDescriptor(desc: RenderPassDescriptor): GPURenderPassDe
       throw new TypeError('RHI render-pass color attachments require loadOp and storeOp');
     }
     const color: GPURenderPassColorAttachment = {
-      view: rawTextureView(attachment.view),
+      view: attachment.view as unknown as GPUTextureView,
       loadOp: attachment.loadOp,
       storeOp: attachment.storeOp,
     };
     if (attachment.depthSlice !== undefined) color.depthSlice = attachment.depthSlice;
     if (attachment.resolveTarget !== undefined)
-      color.resolveTarget = rawTextureView(attachment.resolveTarget);
+      color.resolveTarget = attachment.resolveTarget as unknown as GPUTextureView;
     if (attachment.clearValue !== undefined) color.clearValue = attachment.clearValue;
     colorAttachments.push(color);
   }
@@ -850,7 +817,9 @@ function mirrorRenderPassDescriptor(desc: RenderPassDescriptor): GPURenderPassDe
   if (desc.label !== undefined) out.label = desc.label;
   const depth = desc.depthStencilAttachment;
   if (depth !== undefined) {
-    const raw: GPURenderPassDepthStencilAttachment = { view: rawTextureView(depth.view) };
+    const raw: GPURenderPassDepthStencilAttachment = {
+      view: depth.view as unknown as GPUTextureView,
+    };
     if (depth.depthClearValue !== undefined) raw.depthClearValue = depth.depthClearValue;
     if (depth.depthLoadOp !== undefined) raw.depthLoadOp = depth.depthLoadOp;
     if (depth.depthStoreOp !== undefined) raw.depthStoreOp = depth.depthStoreOp;
@@ -950,24 +919,33 @@ function mirrorComputePassDescriptor(
  *   - render-pass-not-ended is detected by tracking activePass; finish()
  *     while a pass has not been end()-ed returns the structured error.
  */
-class WebGpuCommandEncoder implements RhiCommandEncoder {
+class WebGpuCommandEncoder extends RecordingDependencies implements RhiCommandEncoder {
+  private finished = false;
+  private activePass: WebGpuRenderPassEncoder | undefined;
   readonly #rawEncoder: GPUCommandEncoder;
   readonly #accelerationStructures: WebGpuAccelerationStructures;
   constructor(rawEncoder: GPUCommandEncoder, accelerationStructures: WebGpuAccelerationStructures) {
+    super();
     this.#rawEncoder = rawEncoder;
     this.#accelerationStructures = accelerationStructures;
-    ENCODER_STATE.set(this, { raw: rawEncoder, finished: false, activePass: null });
+  }
+
+  private requireRecording(): void {
+    if (this.finished) throw commandEncoderFinished();
+  }
+
+  endRenderPass(pass: WebGpuRenderPassEncoder): void {
+    if (this.activePass === pass) this.activePass = undefined;
   }
   buildAccelerationStructures(
     blas: Parameters<RhiCommandEncoder['buildAccelerationStructures']>[0],
     tlas: Parameters<RhiCommandEncoder['buildAccelerationStructures']>[1],
   ) {
-    throwIfFinished(ENCODER_STATE.get(this));
+    this.requireRecording();
     return this.#accelerationStructures.build(this.#rawEncoder, blas, tlas);
   }
   beginRenderPass(desc: RenderPassDescriptor): RhiRenderPassEncoder {
-    const state = ENCODER_STATE.get(this);
-    throwIfFinished(state);
+    this.requireRecording();
     const rawPass = this.#rawEncoder.beginRenderPass(mirrorRenderPassDescriptor(desc));
     COMMAND_COUNTS.renderPasses++;
     // Extract occlusionQuerySet from the descriptor (research §2.2:
@@ -977,23 +955,21 @@ class WebGpuCommandEncoder implements RhiCommandEncoder {
     // undefined`; the raw GPU descriptor is structurally compatible.
     const occlusionQuerySet = desc.occlusionQuerySet ?? null;
     const pass = new WebGpuRenderPassEncoder(rawPass, this, occlusionQuerySet);
-    if (state !== undefined) state.activePass = pass;
+    this.activePass = pass;
     return pass;
   }
   beginComputePass(desc?: ComputePassDescriptor | undefined): RhiComputePassEncoder {
-    const state = ENCODER_STATE.get(this);
-    throwIfFinished(state);
+    this.requireRecording();
     const rawDescriptor = mirrorComputePassDescriptor(desc);
     const rawPass =
       rawDescriptor === undefined
         ? this.#rawEncoder.beginComputePass()
         : this.#rawEncoder.beginComputePass(rawDescriptor);
     COMMAND_COUNTS.computePasses++;
-    return new WebGpuComputePassEncoder(rawPass, commandReferences(this));
+    return new WebGpuComputePassEncoder(rawPass, this);
   }
   encodeEmptyComputePass(desc: ComputePassDescriptor): void {
-    const state = ENCODER_STATE.get(this);
-    throwIfFinished(state);
+    this.requireRecording();
     const rawPass = this.#rawEncoder.beginComputePass(mirrorComputePassDescriptor(desc));
     rawPass.end();
   }
@@ -1004,23 +980,22 @@ class WebGpuCommandEncoder implements RhiCommandEncoder {
     arg4?: number | undefined,
     arg5?: number | undefined,
   ): void {
-    const state = ENCODER_STATE.get(this);
-    throwIfFinished(state);
+    this.requireRecording();
     // M5 / w35: the forgeax Buffer is a wrapper (not the raw GPUBuffer);
-    // resolve through BUFFER_RAW_MAP before delegating.
-    const rawSource = BUFFER_RAW_MAP.get(source) ?? (source as unknown as GPUBuffer);
+    // resolve its native handle before delegating.
+    const rawSource = WebGpuBuffer.native(source);
     // Two overloads (research F-1):
     //   (a) (src, dst, size?)                        - 3-arg shorthand
     //   (b) (src, srcOffset, dst, dstOffset, size)   - 5-arg full form
     if (typeof arg2 === 'number') {
       // 5-arg form
       const dst = arg3 as Buffer;
-      const rawDst = BUFFER_RAW_MAP.get(dst) ?? (dst as unknown as GPUBuffer);
+      const rawDst = WebGpuBuffer.native(dst);
       this.#rawEncoder.copyBufferToBuffer(rawSource, arg2, rawDst, arg4 ?? 0, arg5 ?? 0);
     } else {
       // Lower convenience syntax to the stable native signature.
       const dst = arg2 as Buffer;
-      const rawDst = BUFFER_RAW_MAP.get(dst) ?? (dst as unknown as GPUBuffer);
+      const rawDst = WebGpuBuffer.native(dst);
       this.#rawEncoder.copyBufferToBuffer(
         rawSource,
         0,
@@ -1035,11 +1010,10 @@ class WebGpuCommandEncoder implements RhiCommandEncoder {
     destination: TexelCopyTextureInfo,
     copySize: GPUExtent3DStrict,
   ): void {
-    const state = ENCODER_STATE.get(this);
-    throwIfFinished(state);
+    this.requireRecording();
     const rawSrc = {
       ...source,
-      buffer: BUFFER_RAW_MAP.get(source.buffer) ?? (source.buffer as unknown as GPUBuffer),
+      buffer: WebGpuBuffer.native(source.buffer),
     };
     this.#rawEncoder.copyBufferToTexture(rawSrc, rawTextureCopy(destination), copySize);
   }
@@ -1048,12 +1022,10 @@ class WebGpuCommandEncoder implements RhiCommandEncoder {
     destination: TexelCopyBufferInfo,
     copySize: GPUExtent3DStrict,
   ): void {
-    const state = ENCODER_STATE.get(this);
-    throwIfFinished(state);
+    this.requireRecording();
     const rawSource = rawTextureCopy(source);
     const rawDst: GPUTexelCopyBufferInfo = {
-      buffer:
-        BUFFER_RAW_MAP.get(destination.buffer) ?? (destination.buffer as unknown as GPUBuffer),
+      buffer: WebGpuBuffer.native(destination.buffer),
     };
     if (destination.offset !== undefined) rawDst.offset = destination.offset;
     if (destination.bytesPerRow !== undefined) rawDst.bytesPerRow = destination.bytesPerRow;
@@ -1065,8 +1037,7 @@ class WebGpuCommandEncoder implements RhiCommandEncoder {
     destination: TexelCopyTextureInfo,
     copySize: GPUExtent3DStrict,
   ): void {
-    const state = ENCODER_STATE.get(this);
-    throwIfFinished(state);
+    this.requireRecording();
     this.#rawEncoder.copyTextureToTexture(
       rawTextureCopy(source),
       rawTextureCopy(destination),
@@ -1074,10 +1045,9 @@ class WebGpuCommandEncoder implements RhiCommandEncoder {
     );
   }
   clearBuffer(buffer: Buffer, offset?: number | undefined, size?: number | undefined): void {
-    const state = ENCODER_STATE.get(this);
-    throwIfFinished(state);
+    this.requireRecording();
     // M5 / w35: resolve forgeax Buffer wrapper to raw GPUBuffer.
-    const rawBuf = BUFFER_RAW_MAP.get(buffer) ?? (buffer as unknown as GPUBuffer);
+    const rawBuf = WebGpuBuffer.native(buffer);
     this.#rawEncoder.clearBuffer(rawBuf, offset, size);
   }
   resolveQuerySet(
@@ -1087,8 +1057,7 @@ class WebGpuCommandEncoder implements RhiCommandEncoder {
     destination: Buffer,
     destinationOffset: number,
   ): Result<void, RhiError> {
-    const state = ENCODER_STATE.get(this);
-    if (state?.finished) {
+    if (this.finished) {
       return err(commandEncoderFinished());
     }
     // Step 6 (research §2.3): destinationOffset is a multiple of 256.
@@ -1103,13 +1072,13 @@ class WebGpuCommandEncoder implements RhiCommandEncoder {
       );
     }
     // Step 3 (research §2.3): destination.usage contains QUERY_RESOLVE.
-    const dstMeta = BUFFER_META_MAP.get(destination);
-    if (dstMeta !== undefined && (dstMeta.usage & BUFFER_USAGE_QUERY_RESOLVE) === 0) {
+    const usage = WebGpuBuffer.usage(destination);
+    if (usage !== undefined && (usage & BUFFER_USAGE_QUERY_RESOLVE) === 0) {
       return err(
         new RhiErrorClass({
           code: 'webgpu-runtime-error',
           expected: 'destination.usage must contain QUERY_RESOLVE',
-          hint: `got destination.usage=0x${dstMeta.usage.toString(16)}; create the buffer with GPUBufferUsage.QUERY_RESOLVE (0x200)`,
+          hint: `got destination.usage=0x${usage.toString(16)}; create the buffer with GPUBufferUsage.QUERY_RESOLVE (0x200)`,
         }),
       );
     }
@@ -1130,20 +1099,21 @@ class WebGpuCommandEncoder implements RhiCommandEncoder {
       );
     }
     // Step 7 (research §2.3): destinationOffset + 8 * queryCount <= dst.size.
-    if (dstMeta !== undefined) {
+    const size = WebGpuBuffer.size(destination);
+    if (size !== undefined) {
       const requiredBytes = destinationOffset + 8 * queryCount;
-      if (requiredBytes > dstMeta.size) {
+      if (requiredBytes > size) {
         return err(
           new RhiErrorClass({
             code: 'webgpu-runtime-error',
             expected: 'destinationOffset + 8 * queryCount <= destination.size',
-            hint: `got destinationOffset=${destinationOffset}, queryCount=${queryCount} (8 * queryCount = ${8 * queryCount}); destination.size=${dstMeta.size}`,
+            hint: `got destinationOffset=${destinationOffset}, queryCount=${queryCount} (8 * queryCount = ${8 * queryCount}); destination.size=${size}`,
           }),
         );
       }
     }
     const rawQsHandle = QUERY_SET_RAW_MAP.get(querySet) ?? (querySet as unknown as GPUQuerySet);
-    const rawDstHandle = BUFFER_RAW_MAP.get(destination) ?? (destination as unknown as GPUBuffer);
+    const rawDstHandle = WebGpuBuffer.native(destination);
     return resolveTimestampQueries({
       rawEncoder: this.#rawEncoder,
       rawQuerySet: rawQsHandle,
@@ -1163,22 +1133,17 @@ class WebGpuCommandEncoder implements RhiCommandEncoder {
     this.#rawEncoder.insertDebugMarker(markerLabel);
   }
   finish(): Result<CommandBuffer, RhiError> {
-    const state = ENCODER_STATE.get(this);
-    if (state === undefined) {
-      // Should not happen in practice; treat as a finished encoder.
+    if (this.finished) {
       return err(commandEncoderFinished());
     }
-    if (state.finished) {
-      return err(commandEncoderFinished());
-    }
-    if (state.activePass !== null && !state.activePass.ended) {
+    if (this.activePass !== undefined && !this.activePass.ended) {
       return err(renderPassNotEnded());
     }
     const rawCommandBuffer = this.#rawEncoder.finish();
-    state.finished = true;
+    this.finished = true;
     const cb = rawCommandBuffer as unknown as CommandBuffer;
-    COMMAND_BUFFER_RAW_MAP.set(cb, rawCommandBuffer);
-    COMMAND_REFERENCES.set(cb, commandReferences(this));
+    const dependencies = this.seal();
+    if (dependencies !== undefined) commandDependencies.set(cb, dependencies);
     return ok(cb);
   }
 }
@@ -1193,188 +1158,6 @@ class WebGpuCommandEncoder implements RhiCommandEncoder {
 // 'webgpu-runtime-error' with structured .expected / .hint per F-3
 // ai-user-review carry-over.
 
-/** Spec normative GPUMapMode bits (research §4.2 step 7). */
-const MAP_MODE_READ = 0x1;
-const MAP_MODE_WRITE = 0x2;
-/** GPUBufferUsage MAP_READ / MAP_WRITE bits (research §4.2 step 9 / F-8 row 3). */
-const BUFFER_USAGE_MAP_READ = 0x0001;
-const BUFFER_USAGE_MAP_WRITE = 0x0002;
-
-function rangeError(args: { expected: string; hint: string }): Result<never, RhiError> {
-  return err(
-    new RhiErrorClass({
-      code: 'webgpu-runtime-error',
-      expected: args.expected,
-      hint: args.hint,
-    }),
-  );
-}
-
-/**
- * Build a forgeax Buffer wrapper around a raw GPUBuffer (w35).
- *
- * The wrapper exposes the brand-only Buffer interface plus the M5 mapping
- * surface (mapAsync / getMappedRange / unmap + mapState getter).
- *
- * Validation policy (K-2 + research §4.2 + F-8 three rows):
- *   - mapAsync rejects on 8 spec validation steps + F-8 row 1/3 with
- *     'webgpu-runtime-error' before delegating to raw mapAsync. The raw
- *     mapAsync may still reject (driver-level validation); the shim wraps
- *     such rejections via 'webgpu-runtime-error' carrying the underlying
- *     message in .hint.
- *   - getMappedRange rejects with 'webgpu-runtime-error' when mapState !==
- *     'mapped' (F-8 row 2 detach guard) before delegating.
- *   - unmap is silent (spec normative). Mapping state is read directly from
- *     the native GPUBuffer, including pending, unmap and destroy transitions.
- */
-function makeBufferWrapper(raw: GPUBuffer, size: number, usage: GPUBufferUsageFlags): Buffer {
-  // Reading `raw.mapState` crosses into the browser on every access. Only this
-  // wrapper can start a mapping, so an observed 'unmapped' stays true until
-  // mapAsync below passes validation and delegates.
-  let knownUnmapped = false;
-  const wrapper = {
-    get mapState(): Buffer['mapState'] {
-      if (knownUnmapped) return 'unmapped';
-      const state = raw.mapState;
-      if (state === 'unmapped') knownUnmapped = true;
-      return state;
-    },
-    async mapAsync(
-      mode: GPUMapModeFlags,
-      offset?: number | undefined,
-      sizeArg?: number | undefined,
-    ): Promise<Result<MappedBuffer, RhiError>> {
-      // F-8 row 1: mapState must be 'unmapped' (research §4.2 step 1).
-      const cur = wrapper.mapState;
-      if (cur !== 'unmapped') {
-        return rangeError({
-          expected: 'buffer.mapState === "unmapped" before mapAsync',
-          hint: `got mapState=${cur}; call buffer.unmap() before mapAsync, or wait for the previous mapAsync to settle`,
-        });
-      }
-      const off = offset ?? 0;
-      const rangeSize = sizeArg === undefined ? Math.max(0, size - off) : sizeArg;
-      // step 4: offset % 8 == 0
-      if (off % 8 !== 0) {
-        return rangeError({
-          expected: 'mapAsync offset % 8 == 0 (spec normative)',
-          hint: `got offset=${off}; align offset to 8 bytes`,
-        });
-      }
-      // step 5: rangeSize % 4 == 0
-      if (rangeSize % 4 !== 0) {
-        return rangeError({
-          expected: 'mapAsync rangeSize % 4 == 0 (spec normative)',
-          hint: `got rangeSize=${rangeSize}; align rangeSize to 4 bytes`,
-        });
-      }
-      // step 6: offset + rangeSize <= size
-      if (off + rangeSize > size) {
-        return rangeError({
-          expected: 'mapAsync offset + rangeSize <= buffer.size',
-          hint: `got offset=${off}, rangeSize=${rangeSize}; buffer.size=${size}`,
-        });
-      }
-      // step 7: mode contains only allowed bits
-      const allowed = MAP_MODE_READ | MAP_MODE_WRITE;
-      if ((mode & ~allowed) !== 0) {
-        return rangeError({
-          expected: 'mapAsync mode contains only READ or WRITE bits',
-          hint: `got mode=0x${mode.toString(16)}; pass GPUMapMode.READ (0x1) or GPUMapMode.WRITE (0x2)`,
-        });
-      }
-      // step 8: mode is exactly READ or WRITE (not both)
-      if (mode !== MAP_MODE_READ && mode !== MAP_MODE_WRITE) {
-        return rangeError({
-          expected: 'mapAsync mode is exactly one of READ | WRITE (not both)',
-          hint: `got mode=0x${mode.toString(16)}; pass GPUMapMode.READ (0x1) or GPUMapMode.WRITE (0x2), not the OR-combined mask`,
-        });
-      }
-      // step 9: mode-usage cross-check (F-8 row 3)
-      if ((mode & MAP_MODE_READ) !== 0 && (usage & BUFFER_USAGE_MAP_READ) === 0) {
-        return rangeError({
-          expected: 'mapAsync mode READ requires buffer.usage to contain MAP_READ',
-          hint: `got mode=READ, buffer.usage=0x${usage.toString(16)}; create buffer with GPUBufferUsage.MAP_READ`,
-        });
-      }
-      if ((mode & MAP_MODE_WRITE) !== 0 && (usage & BUFFER_USAGE_MAP_WRITE) === 0) {
-        return rangeError({
-          expected: 'mapAsync mode WRITE requires buffer.usage to contain MAP_WRITE',
-          hint: `got mode=WRITE, buffer.usage=0x${usage.toString(16)}; create buffer with GPUBufferUsage.MAP_WRITE`,
-        });
-      }
-      // Delegate to raw GPUBuffer; raw rejection wraps as webgpu-runtime-error.
-      knownUnmapped = false;
-      try {
-        if (sizeArg === undefined && offset === undefined) {
-          await raw.mapAsync(mode);
-        } else if (sizeArg === undefined) {
-          await raw.mapAsync(mode, off);
-        } else {
-          await raw.mapAsync(mode, off, sizeArg);
-        }
-        // D-P2 #6: the structural wrapper carries both Buffer + MappedBuffer
-        // members; on the success path we surface the same JS object typed as
-        // the branded MappedBuffer (charter proposition 5: brand is structural,
-        // no runtime cost).
-        return ok(wrapper as unknown as MappedBuffer);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        return rangeError({
-          expected: 'underlying GPUBuffer.mapAsync to succeed',
-          hint: `mapAsync raised: ${message}`,
-        });
-      }
-    },
-    getMappedRange(
-      offset?: number | undefined,
-      sizeArg?: number | undefined,
-    ): Result<ArrayBuffer, RhiError> {
-      // F-8 row 2 detach guard: mapState must be 'mapped'.
-      const cur = wrapper.mapState;
-      if (cur !== 'mapped') {
-        return rangeError({
-          expected: 'buffer.mapState === "mapped" before getMappedRange',
-          hint: 'call buffer.mapAsync(MODE) and await it before getMappedRange',
-        });
-      }
-      try {
-        if (typeof raw.getMappedRange !== 'function') {
-          return rangeError({
-            expected: 'underlying GPUBuffer.getMappedRange to be available',
-            hint: 'mock or driver does not expose getMappedRange; use a real GPUBuffer',
-          });
-        }
-        const view =
-          sizeArg === undefined
-            ? offset === undefined
-              ? raw.getMappedRange()
-              : raw.getMappedRange(offset)
-            : raw.getMappedRange(offset ?? 0, sizeArg);
-        return ok(view);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        return rangeError({
-          expected: 'underlying GPUBuffer.getMappedRange to succeed',
-          hint: `getMappedRange raised: ${message}`,
-        });
-      }
-    },
-    unmap(): void {
-      // Spec normative silent no-op (research §4.4): unmap on a destroyed or
-      // already-unmapped buffer must NOT throw / return an error.
-      try {
-        if (typeof raw.unmap === 'function') {
-          raw.unmap();
-        }
-      } catch {
-        // swallow per spec; the forgeax form does not surface unmap failures.
-      }
-    },
-  } as unknown as Buffer;
-  return wrapper;
-}
-
 /**
  * Build a RhiQueue around a raw GPUQueue (w6).
  *
@@ -1385,8 +1168,9 @@ function makeBufferWrapper(raw: GPUBuffer, size: number, usage: GPUBufferUsageFl
  *     out-of-bounds writes return 'queue-write-buffer-out-of-bounds' (D-S3 #4).
  */
 function makeQueue(rawQueue: GPUQueue): RhiQueue {
+  const sourceRange = { byteOffset: 0, byteLength: 0 };
   const completions = createQueueCompletionHold();
-  const inFlight = new Set<CommandBuffer[]>();
+  const inFlight = new Map<() => void, object>();
   let completion: Promise<undefined> | undefined;
   const nativeCompletion = () => (completion ??= rawQueue.onSubmittedWorkDone());
   return {
@@ -1398,11 +1182,9 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
       size?: number | undefined,
     ): Result<void, RhiError> {
       completion = undefined;
-      const rawBuffer = BUFFER_RAW_MAP.get(buffer) ?? (buffer as unknown as GPUBuffer);
-      const bufferSize =
-        typeof (rawBuffer as { size?: number }).size === 'number'
-          ? (rawBuffer as { size: number }).size
-          : Number.MAX_SAFE_INTEGER;
+      const rawBuffer = WebGpuBuffer.native(buffer);
+      const capacity = rawBuffer.size;
+      const bufferSize = typeof capacity === 'number' ? capacity : Number.MAX_SAFE_INTEGER;
       // 4-byte alignment validation (W3C WebGPU 23.2 writeBuffer).
       if (!Number.isSafeInteger(bufferOffset) || bufferOffset < 0 || bufferOffset % 4 !== 0) {
         return err(
@@ -1414,10 +1196,10 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
           }),
         );
       }
-      const range = bufferWriteRange(data, dataOffset, size);
+      const range = readBufferWriteRange(sourceRange, data, dataOffset, size);
       if (!range.ok) return range;
       const writeStart = dataOffset ?? 0;
-      const writeSize = range.value.byteLength;
+      const writeSize = sourceRange.byteLength;
       // Bounds validation: bufferOffset + writeSize <= bufferSize.
       if (bufferOffset + writeSize > bufferSize) {
         return err(
@@ -1467,31 +1249,36 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
       }
     },
     submit(commandBuffers: readonly CommandBuffer[]): Result<void, RhiError> {
-      const rawList: GPUCommandBuffer[] = [];
-      for (const cb of commandBuffers) {
-        const raw = COMMAND_BUFFER_RAW_MAP.get(cb);
-        if (raw !== undefined) {
-          rawList.push(raw);
-        } else {
-          rawList.push(cb as unknown as GPUCommandBuffer);
-        }
-      }
       try {
         completion = undefined;
-        rawQueue.submit(rawList);
-        // Pin the owning buffers: their WeakMap entries already retain the full dependency closure.
-        const references: CommandBuffer[] = [];
-        for (const cb of commandBuffers) {
-          const dependencies = COMMAND_REFERENCES.get(cb);
-          if (dependencies !== undefined && dependencies.size > 0) references.push(cb);
-        }
-        if (references.length > 0 && typeof rawQueue.onSubmittedWorkDone === 'function') {
-          inFlight.add(references);
-          const release = () => {
-            inFlight.delete(references);
-            references.length = 0;
-          };
-          void nativeCompletion().then(release, release);
+        // Native submission and lifetime transfer must see the same handles when
+        // the caller supplies a reentrant iterator or mutates the input array.
+        const submitted = [...commandBuffers];
+        rawQueue.submit(submitted as unknown as GPUCommandBuffer[]);
+        if (typeof rawQueue.onSubmittedWorkDone === 'function') {
+          let first: object | undefined;
+          let more: object[] | undefined;
+          let fence: Promise<undefined> | undefined;
+          for (const cb of submitted) {
+            const dependencies = commandDependencies.get(cb);
+            if (dependencies === undefined) continue;
+            fence ??= nativeCompletion();
+            commandDependencies.delete(cb);
+            if (first === undefined) first = dependencies;
+            else {
+              more ??= [first];
+              more.push(dependencies);
+            }
+          }
+          if (first !== undefined && fence !== undefined) {
+            // Each fence delivery owns these dependencies without pinning spent
+            // command buffers, even when submissions share the same pipeline.
+            const release = () => {
+              inFlight.delete(release);
+            };
+            inFlight.set(release, more ?? first);
+            void fence.then(release, release);
+          }
         }
         COMMAND_COUNTS.submits++;
         return ok(undefined);
@@ -1623,8 +1410,8 @@ export function makeRhiDevice(
   const accelerationStructures = new WebGpuAccelerationStructures(
     caps.rayQuery,
     rawDevice,
-    (buffer) => (BUFFER_META_MAP.get(buffer)?.usage as number | undefined) ?? 0,
-    (buffer) => BUFFER_RAW_MAP.get(buffer) ?? (buffer as unknown as GPUBuffer),
+    (buffer) => WebGpuBuffer.usage(buffer) ?? 0,
+    WebGpuBuffer.native,
   );
   const features = rawDevice.features as unknown as RhiFeatures;
   const limits = rawDevice.limits as RhiLimits;
@@ -1703,25 +1490,10 @@ export function makeRhiDevice(
       const out = rawDevice.createBuffer(
         mirror(desc, BUFFER_KEYS) as unknown as GPUBufferDescriptor,
       );
-      // Record metadata for downstream shim validation (resolveQuerySet
-      // destination.usage / destinationOffset bounds, research §2.3 +
-      // M5 mapAsync mode-usage cross-check, research §4.2 step 9 / F-8 row 3).
-      const sizeField = typeof desc.size === 'number' ? desc.size : 0;
-      const usageField = (desc.usage as GPUBufferUsageFlags | undefined) ?? 0;
-      // M5 / w35: wrap the raw GPUBuffer in a forgeax Buffer wrapper that
-      // exposes the mapping surface (mapAsync / getMappedRange / unmap /
-      // mapState getter). The wrapper validates BEFORE delegating to the raw
-      // GPUBuffer; failures ride 'webgpu-runtime-error' with structured
-      // .expected / .hint (K-2 + research §4.2 / F-8 three rows).
-      const handle = makeBufferWrapper(out, sizeField, usageField);
+      const size = typeof desc.size === 'number' ? desc.size : 0;
+      const usage = (desc.usage as GPUBufferUsageFlags | undefined) ?? 0;
       COMMAND_COUNTS.bufferCreates++;
-      BUFFER_RAW_MAP.set(handle, out);
-      BUFFER_META_MAP.set(handle, {
-        size: sizeField,
-        usage: usageField,
-        destroyed: false,
-      });
-      return ok(handle);
+      return ok(new WebGpuBuffer(out, size, usage) as unknown as Buffer);
     },
     createTexture(desc: TextureDescriptor): Result<Texture, RhiError> {
       const out = rawDevice.createTexture(
@@ -1746,41 +1518,7 @@ export function makeRhiDevice(
     createTlas: (desc) => accelerationStructures.createTlas(desc),
     destroyBlas: (blas) => accelerationStructures.destroy(blas, 'destroyBlas'),
     destroyTlas: (tlas) => accelerationStructures.destroy(tlas, 'destroyTlas'),
-    destroyBuffer(buf: Buffer): Result<void, RhiError> {
-      // feat-20260612 M1 / w4 — fail-fast over the spec idempotent-void
-      // contract (plan-strategy D-7). The shim layer tracks
-      // `destroyed: boolean` on per-handle BufferMeta and routes the second
-      // destroy to 'destroy-after-destroy' rather than forwarding to the
-      // underlying GPUBuffer.destroy(). Charter proposition 4 explicit
-      // failure + architecture-principles §5 Fail Fast.
-      const meta = BUFFER_META_MAP.get(buf);
-      if (meta?.destroyed) {
-        return err(
-          new RhiErrorClass({
-            code: 'destroy-after-destroy',
-            expected: 'GPU buffer handle has not been destroyed yet',
-            hint: 'object already destroyed; track lifecycle in caller or check isDestroyed before re-destroy',
-          }),
-        );
-      }
-      const rawBuf = BUFFER_RAW_MAP.get(buf);
-      try {
-        if (rawBuf !== undefined && typeof rawBuf.destroy === 'function') {
-          rawBuf.destroy();
-        }
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        return err(
-          new RhiErrorClass({
-            code: 'webgpu-runtime-error',
-            expected: 'underlying GPUBuffer.destroy() to succeed',
-            hint: `destroy raised: ${message}`,
-          }),
-        );
-      }
-      if (meta !== undefined) meta.destroyed = true;
-      return ok(undefined);
-    },
+    destroyBuffer: WebGpuBuffer.destroy,
     destroyTexture(tex: Texture): Result<void, RhiError> {
       // feat-20260612 M1 / w4 — fail-fast on second destroy (D-7); shape
       // mirrors destroyBuffer above. The shim tracks `destroyed: boolean`
@@ -1851,9 +1589,7 @@ export function makeRhiDevice(
         const rawView = rawTexture.createView(
           mirror(desc, TEXTURE_VIEW_KEYS) as unknown as GPUTextureViewDescriptor,
         );
-        const handle = rawView as unknown as TextureView;
-        TEXTURE_VIEW_RAW_MAP.set(handle, rawView);
-        return ok(handle);
+        return ok(rawView as unknown as TextureView);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         return err(
@@ -1915,7 +1651,7 @@ export function makeRhiDevice(
           }
           case 'buffer': {
             const { buffer, offset, size } = resource.value;
-            const rawBuf = BUFFER_RAW_MAP.get(buffer) ?? (buffer as unknown as GPUBuffer);
+            const rawBuf = WebGpuBuffer.native(buffer);
             const bufferBinding: GPUBufferBinding = { buffer: rawBuf };
             if (offset !== undefined) bufferBinding.offset = offset;
             if (size !== undefined) bufferBinding.size = size;
@@ -2275,6 +2011,7 @@ const CANVAS_CONFIG_KEYS = [
  *  GPUCanvasContext satisfies this; the unit-test mock fixture only
  *  implements what is needed (charter proposition 1: progressive disclosure). */
 export interface GpuCanvasContextLike {
+  readonly supportedTextureUsages?: number | undefined;
   readonly supportedAlphaModes?: readonly GPUCanvasAlphaMode[] | undefined;
   configure(configuration: GPUCanvasConfiguration): void;
   unconfigure(): void;
@@ -2301,6 +2038,9 @@ export interface GpuCanvasContextLike {
  */
 export function makeCanvasContext(rawContext: GpuCanvasContextLike): RhiCanvasContext {
   return {
+    get supportedTextureUsages() {
+      return rawContext.supportedTextureUsages;
+    },
     get supportedAlphaModes() {
       return rawContext.supportedAlphaModes;
     },

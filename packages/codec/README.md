@@ -16,6 +16,12 @@ Runtime imports do not construct text decoders. Native hosts may load shared
 chunks before installing their standard interfaces; document and KTX2 readers
 create their cached decoders on first use, after host initialization.
 
+A runtime that must select an embedded compressed record synchronously can await
+`prepareRetainedZstdDecoder()` during initialization. The returned decoder owns
+its compressed bytes. Consumers can carry that provenance to an exact member
+window with `copyRetainedZstdBytes(source, member, offset)`. Artifact validation
+and digest checks still belong to the consumer.
+
 ## WASM provisioning
 
 > [!IMPORTANT]

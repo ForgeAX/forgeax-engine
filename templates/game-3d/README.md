@@ -1,5 +1,7 @@
 # ForgeAX Game 3D
 
+This project pins one dependency for the Engine and its authoring tools, `@forgeax/engine`. Start with [AGENTS.md](AGENTS.md).
+
 A small runnable third-person demo to start your game from, with a transforming red-and-blue
 armored robot built by the native modeling toolchain. Click the game to lock the camera;
 move with <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>, look with the mouse (or hold the
@@ -26,7 +28,7 @@ details, deletion steps, packs, UI realms, lighting, materials and coordinates a
 | `assets/geometry.pack.ts` | Primitive meshes for the level. |
 | `assets/ui/` | HUD and touch controls (frontend realm). |
 | `assets/shared/` | Ids, port messages and math shared by features. |
-| `scripts/playthrough.mjs`, `scripts/convoy-playthrough.mjs` | `project play` journeys (the second drives transform, driving and reload); PlayContext API in [`api/play.md`](skills/forgeax-engine-sdk/references/api/play.md). |
+| `scripts/playthrough.mjs`, `scripts/convoy-playthrough.mjs` | `project play` journeys (the second drives transform, driving and reload); PlayContext API in [`api/play.md`](skills/forgeax-engine-authoring/references/api/play.md). |
 
 ## Shortest paths
 
@@ -43,6 +45,7 @@ details, deletion steps, packs, UI realms, lighting, materials and coordinates a
 ```bash
 pnpm exec forgeax project check --json
 pnpm exec forgeax project play scripts/playthrough.mjs --require-ui --json
+pnpm exec forgeax project play scripts/checkpoint-playthrough.mjs --require-ui --json
 pnpm exec forgeax project build --json
 pnpm exec forgeax project play scripts/playthrough.mjs --release --require-ui --json
 ```
@@ -51,22 +54,15 @@ While iterating, `project play` takes `--from <step>` for a top-level step with 
 `--time-scale` runs game time in lockstep (faster), so tune difficulty and pass/fail in
 real time; final acceptance runs without either.
 
+Use **Save checkpoint** after moving. The same game restores position and view on its next launch. Music starts when the Host has an audio output, and a chime follows a committed save.
+
 ## Optional View
 
-From this game root, open the View included in the installed Engine:
-
-```sh
-node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
-```
-
-Keep the terminal open and open the returned URL. The page reports Backend and
-project readiness; the URL alone is not readiness. No global SDK or Engine build
-is needed. Agent guidance: `skills/forgeax-view-start/SKILL.md`, or the copy under
-`node_modules/@forgeax/engine/tools/view/skills/` for older projects.
+From the game root, run `pnpm exec forgeax project view --json`. Open the returned URL and confirm the selected project. For service controls, read the [View startup guide](skills/forgeax-view-start/SKILL.md).
 
 To look at a scene without playing, list its GUID with `pnpm exec forgeax asset list --type scene --json`
 and render it through its authored camera with
 `pnpm exec forgeax asset preview --kind scene --guid <guid> --json`.
 
-Append confirmed Engine/SDK issues to [`docs/feedback.md`](docs/feedback.md); it ships in the
+Append confirmed Engine issues to [`docs/feedback.md`](docs/feedback.md); it ships in the
 release archive with this README.

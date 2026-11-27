@@ -1,10 +1,12 @@
 export type ViewLocale = 'en' | 'zh';
 
+export const DEFAULT_VIEW_LOCALE: ViewLocale = 'en';
+
 const pluginSinks = new Set<(locale: ViewLocale) => void>();
 const shellListeners = new Set<() => void>();
 
 /** @type {ViewLocale} */
-let viewLocale: ViewLocale = 'zh';
+let viewLocale: ViewLocale = DEFAULT_VIEW_LOCALE;
 
 function notifyPlugins(locale: ViewLocale) {
   for (const sink of pluginSinks) {
@@ -40,13 +42,13 @@ export function subscribeViewLocale(listener: () => void) {
  */
 export function setViewLocale(locale: unknown) {
   if (locale !== 'en' && locale !== 'zh') return;
+  if (typeof document !== 'undefined') {
+    document.documentElement.lang = locale;
+  }
   if (viewLocale === locale) return;
   viewLocale = locale;
   notifyPlugins(locale);
   notifyShell();
-  if (typeof document !== 'undefined') {
-    document.documentElement.lang = locale;
-  }
 }
 
 /**

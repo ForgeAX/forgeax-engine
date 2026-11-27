@@ -3,7 +3,12 @@ import type { GpuDrawSelection } from './gpu-driven/draw-selection';
 import type { MaterialResource } from './material-resource';
 import type { RenderResourceScope } from './publication/resource-scope';
 import type { RenderSystemInternals } from './record/render-context';
-import type { FramePresentation, FramePresentationPendingReason } from './render-contract';
+import type {
+  CameraSnapshot,
+  FramePresentation,
+  FramePresentationPendingReason,
+} from './render-contract';
+import { cameraAdmitsLayers } from './render-layers';
 import type {
   DispatchList,
   ExtractedFrame,
@@ -11,8 +16,18 @@ import type {
   RenderableSnapshot,
 } from './render-system-extract';
 import { createMaterialResidencyObserver } from './render-system-residency';
-import type { FrameList } from './scene/frame-list';
+import {
+  EMPTY_FRAME_ROWS,
+  type FrameList,
+  FrameListBase,
+  RetainedFrameProjection,
+  type SparseRowKind,
+} from './scene/frame-list';
+import { visitCapturedPassRanks } from './scene/material-dispatch';
 import { hasRasterDemand } from './scene/raster-demand';
+import { sceneDrawContentOf } from './scene/render-scene-view';
+import type { RowContent } from './scene/row-contents';
+import { SelectedSceneDrawRows } from './scene/selected-draw-rows';
 import type { ViewLights } from './world/render-lights';
 
 /** The existing boolean remains the readiness authority; record only its first owner. */
@@ -46,54 +61,128 @@ function hasDrawIndex(draws: DrawIndices, entity: number, index: number): boolea
     : previous?.has(index) === true;
 }
 
-/** Frame-local submitted draw evidence; single-submesh entities need no string or Set. */
+/** Primary submesh evidence occupies one word per 32 stable entity keys. Extra
+ * submeshes, unindexed draws and terrain have separate sparse evidence. All
+ * storage belongs to the recording attempt, including when views overlap. */
 export function createPresentationDraws() {
-  const submeshes: DrawIndices = new Map();
-  const terrain: DrawIndices = new Map();
+  let page: number | undefined;
+  let mask = 0;
+  let otherPages: Map<number, number> | undefined;
+  let submeshes: DrawIndices | undefined;
+  let terrain: DrawIndices | undefined;
+  const hasPrimary = (entity: number): boolean => {
+    if (!Number.isSafeInteger(entity)) return false;
+    const key = Math.floor(entity / 32);
+    const word = key === page ? mask : (otherPages?.get(key) ?? 0);
+    return (word & (1 << (entity & 31))) !== 0;
+  };
   return {
     record(entity: number, submesh: number | undefined, terrainSection?: number): void {
-      addDrawIndex(submeshes, entity, submesh);
-      if (submesh !== undefined && terrainSection !== undefined)
+      if (submesh === 0 && Number.isSafeInteger(entity)) {
+        const key = Math.floor(entity / 32);
+        if (page !== key) {
+          if (page !== undefined) {
+            otherPages ??= new Map();
+            otherPages.set(page, mask);
+          }
+          page = key;
+          mask = otherPages?.get(key) ?? 0;
+        }
+        mask |= 1 << (entity & 31);
+      } else {
+        submeshes ??= new Map();
+        addDrawIndex(submeshes, entity, submesh);
+      }
+      if (submesh !== undefined && terrainSection !== undefined) {
+        terrain ??= new Map();
         addDrawIndex(terrain, entity, terrainSection);
+      }
     },
-    hasEntity: (entity: number): boolean => submeshes.has(entity),
+    hasEntity: (entity: number): boolean => hasPrimary(entity) || submeshes?.has(entity) === true,
     hasSubmesh: (entity: number, submesh: number): boolean =>
-      hasDrawIndex(submeshes, entity, submesh),
+      (submesh === 0 && hasPrimary(entity)) ||
+      (submeshes !== undefined && hasDrawIndex(submeshes, entity, submesh)),
     hasTerrain: (entity: number, section: number): boolean =>
-      hasDrawIndex(terrain, entity, section),
+      terrain !== undefined && hasDrawIndex(terrain, entity, section),
   };
 }
 
-const displayWorksets = new WeakMap<
-  DispatchList,
-  {
-    readonly renderables: FrameList<RenderableSnapshot>;
-    readonly value: FrameList<RenderableSnapshot>;
-  }
->();
+function displayColumns(rows: FrameList<RenderableSnapshot>) {
+  return SelectedSceneDrawRows.native(rows) ? rows : sceneDrawContentOf(rows);
+}
 
-/**
- * Display workset used by recording and its later submitted-picture checks.
- * It reads only the fixed dispatch and immutable snapshots, so an unchanged
- * frame reuses the previous workset instead of rescanning every row.
- */
+/** Select display rows in source order. A sparse hint narrows indexed scene rows;
+ * the consumer still checks its actual inputs when a borrowed list has no index. */
 export function projectDisplayRenderables(
   renderables: FrameList<RenderableSnapshot>,
   dispatch: DispatchList,
+  camera?: Pick<CameraSnapshot, 'cullMask'>,
+  kind?: SparseRowKind,
 ): FrameList<RenderableSnapshot> {
-  const cached = displayWorksets.get(dispatch);
-  if (cached?.renderables === renderables) return cached.value;
-  const displayRenderableIndices = new Set<number>();
-  for (const entry of dispatch) {
-    if (entry.renderableIndex === undefined) continue;
-    if (entry.tags.LightMode !== 'ShadowCaster')
-      displayRenderableIndices.add(entry.renderableIndex);
+  const count = renderables.length;
+  let prefix = 0;
+  let later: Uint32Array | undefined;
+  const include = (index: number): void => {
+    if (index === prefix) {
+      prefix++;
+      while (
+        later !== undefined &&
+        prefix < count &&
+        ((later[prefix >>> 5] ?? 0) & (1 << (prefix & 31))) !== 0
+      )
+        prefix++;
+    } else if (Number.isInteger(index)) {
+      later ??= new Uint32Array(Math.ceil(count / 32));
+      const word = index >>> 5;
+      later[word] = (later[word] ?? 0) | (1 << (index & 31));
+    }
+  };
+  if (
+    !visitCapturedPassRanks(dispatch, 'display', (index) => {
+      if (index >= prefix && index < count) include(index);
+    })
+  ) {
+    for (const entry of dispatch) {
+      const index = entry.renderableIndex;
+      if (
+        index === undefined ||
+        index < prefix ||
+        index >= count ||
+        entry.tags.LightMode === 'ShadowCaster'
+      )
+        continue;
+      include(index);
+    }
   }
-  const value = renderables.filter(
-    (renderable, index) => displayRenderableIndices.has(index) && hasRasterDemand(renderable),
-  );
-  displayWorksets.set(dispatch, { renderables, value });
-  return value;
+  if (
+    kind === undefined &&
+    prefix === count &&
+    renderables instanceof RetainedFrameProjection &&
+    renderables.facts?.rasterRowCount === count &&
+    (camera === undefined ||
+      (renderables.facts.allDefaultRenderLayers === true &&
+        ((camera.cullMask ?? 0xffffffff) & 1) !== 0))
+  )
+    return renderables;
+  const selected = (row: RowContent, i: number): boolean =>
+    (i < prefix || (later !== undefined && ((later[i >>> 5] ?? 0) & (1 << (i & 31))) !== 0)) &&
+    hasRasterDemand(row) &&
+    (camera === undefined || cameraAdmitsLayers(camera, row));
+  const subset = SelectedSceneDrawRows.native(renderables) ? renderables : undefined;
+  const columns = subset === undefined ? sceneDrawContentOf(renderables) : undefined;
+  if (renderables.filter !== FrameListBase.prototype.filter) return renderables.filter(selected);
+  if (subset !== undefined)
+    return subset.selectDisplay(
+      selected,
+      kind === undefined ? undefined : subset.source.indexedSlots(kind),
+    );
+  if (columns === undefined || !columns.permitsSlotCull(undefined))
+    return renderables.filter(selected);
+  const indexed = kind === undefined ? undefined : columns.source.indexedSlots(kind);
+  if (indexed?.size === 0) return EMPTY_FRAME_ROWS;
+  const members = columns.source.selectContent(selected, undefined, indexed);
+  if (members.size === count) return renderables;
+  return members.size === 0 ? [] : new SelectedSceneDrawRows(columns, members);
 }
 
 /**
@@ -104,18 +193,62 @@ export function projectResidualDisplayRows(
   frame: Pick<ExtractedFrame, 'cameraVisible'>,
   gpuOwned: GpuOwnedFrame,
   selection: GpuDrawSelection,
+  camera?: Pick<CameraSnapshot, 'cullMask'>,
 ): readonly RenderableSnapshot[] {
   return gpuOwned
     .residual(selection)
     .filter(
       (row) =>
-        gpuOwned.displays(row) && hasRasterDemand(row) && frame.cameraVisible?.(row) !== false,
+        gpuOwned.displays(row) &&
+        hasRasterDemand(row) &&
+        (camera === undefined || cameraAdmitsLayers(camera, row)) &&
+        frame.cameraVisible?.(row) !== false,
     );
+}
+
+/** First visible occurrence of each fixed binding, in submission order. The common
+ * single-material view uses two fields. A second distinct material opens the index. */
+class VisibleMaterialBindings {
+  private first: MaterialResource | undefined;
+  private entity = 0;
+  private others: Map<MaterialResource, number> | undefined;
+
+  include(entity: number, materials: readonly MaterialResource[]): void {
+    for (let i = 0; i < materials.length; i++) {
+      const material = materials[i] as MaterialResource;
+      if (material === this.first) continue;
+      if (this.first === undefined) {
+        this.first = material;
+        this.entity = entity;
+      } else {
+        this.others ??= new Map();
+        if (!this.others.has(material)) this.others.set(material, entity);
+      }
+    }
+  }
+
+  allOwned(): boolean {
+    if (this.first !== undefined && !this.first.ownsValues(this.first.snapshot)) return false;
+    if (this.others !== undefined)
+      for (const material of this.others.keys())
+        if (!material.ownsValues(material.snapshot)) return false;
+    return true;
+  }
+
+  firstPending(pending: (material: MaterialResource) => boolean): number | undefined {
+    if (this.first !== undefined && pending(this.first)) return this.entity;
+    if (this.others !== undefined)
+      for (const [material, entity] of this.others) if (pending(material)) return entity;
+    return undefined;
+  }
 }
 
 /** Check material readiness once, after the display work has actually submitted. */
 export function projectFramePresentation(input: {
   readonly renderables: FrameList<RenderableSnapshot>;
+  readonly admits?: MaterialAdmission | undefined;
+  /** Actual submitted geometry. Without a receipt this call only observes materials. */
+  readonly draws?: PresentationDraws | undefined;
   /** Materials of GPU-executed bindings, standing for every row they draw. */
   readonly coveredBindings?: Iterable<{
     readonly material: MaterialResource;
@@ -124,6 +257,44 @@ export function projectFramePresentation(input: {
   readonly internals: RenderSystemInternals;
   readonly onPending?: (reason: FramePresentationPendingReason) => void;
 }): FramePresentation {
+  const columns = input.admits === undefined ? displayColumns(input.renderables) : undefined;
+  let bindings: VisibleMaterialBindings | undefined;
+  if (input.draws !== undefined) {
+    const draws = input.draws;
+    let gap: FramePresentationPendingReason | undefined;
+    if (columns?.fixedMaterialReads === true) {
+      // The receipt must prove every required draw before observing any resident
+      // material. Gather the exact visible bindings during that same column walk.
+      const visible = new VisibleMaterialBindings();
+      gap = columns.findDrawContent(true, (entity, content) => {
+        const missing = renderableDrawGap(
+          content,
+          entity,
+          entity,
+          draws,
+          input.preparedSourceScope,
+          input.internals,
+        );
+        if (missing === undefined) visible.include(entity, content.materials);
+        return missing;
+      });
+      // A material can publish a borrowed value after the scene was captured.
+      // Keep each of its live reads in the original entity order.
+      if (gap === undefined && visible.allOwned()) bindings = visible;
+    } else {
+      gap = missingDrawEvidence(
+        input.renderables,
+        draws,
+        input.preparedSourceScope,
+        input.internals,
+        input.admits,
+      );
+    }
+    if (gap !== undefined) {
+      input.onPending?.(gap);
+      return 'pending';
+    }
+  }
   const observeResidency = createMaterialResidencyObserver(input.internals, false);
   const pending = (material: MaterialResource): boolean => {
     const snapshot = material.snapshot;
@@ -134,14 +305,29 @@ export function projectFramePresentation(input: {
     ).readiness;
     return readiness === 'pending' || readiness === 'failed';
   };
-  for (const renderable of input.renderables) {
-    for (const material of renderable.materials) {
-      if (pending(material)) {
-        input.onPending?.({
-          code: 'material-residency',
-          entity: renderable.entityKey,
-        });
-        return 'pending';
+  if (columns !== undefined) {
+    const entity =
+      bindings === undefined
+        ? columns.findDrawContent(true, (entity, draw) => {
+            for (let i = 0; i < draw.materials.length; i++)
+              if (pending(draw.materials[i] as MaterialResource)) return entity;
+            return undefined;
+          })
+        : bindings.firstPending(pending);
+    if (entity !== undefined) {
+      input.onPending?.({ code: 'material-residency', entity });
+      return 'pending';
+    }
+  } else {
+    for (const renderable of input.renderables) {
+      for (const material of renderable.materials) {
+        if (input.admits?.(renderable, material) !== false && pending(material)) {
+          input.onPending?.({
+            code: 'material-residency',
+            entity: renderable.entityKey,
+          });
+          return 'pending';
+        }
       }
     }
   }
@@ -183,30 +369,47 @@ type PresentationDraws = ReturnType<typeof createPresentationDraws>;
  * First submitted-draw gap among the display workset: every entity, terrain
  * section and submesh must have drawn against resident mesh handles.
  */
+type MaterialAdmission = (row: RenderableSnapshot, material: MaterialResource) => boolean;
+
 export function missingDrawEvidence(
   renderables: FrameList<RenderableSnapshot>,
   draws: PresentationDraws,
   preparedSourceScope: RenderResourceScope,
   internals: RenderSystemInternals,
+  admits?: MaterialAdmission,
 ): FramePresentationPendingReason | undefined {
+  const columns = admits === undefined ? displayColumns(renderables) : undefined;
+  if (columns !== undefined)
+    return columns.findDrawContent(false, (entity, content) =>
+      renderableDrawGap(content, entity, entity, draws, preparedSourceScope, internals),
+    );
   for (const renderable of renderables) {
     const entityKey = renderable.entityKey;
-    const missing = renderableDrawGap(renderable, entityKey, draws, preparedSourceScope, internals);
+    const missing = renderableDrawGap(
+      renderable,
+      entityKey,
+      renderable.entityKey,
+      draws,
+      preparedSourceScope,
+      internals,
+      admits === undefined ? undefined : (material) => admits(renderable, material),
+    );
     if (missing !== undefined) return missing;
   }
   return undefined;
 }
 
 function renderableDrawGap(
-  renderable: RenderableSnapshot,
+  renderable: RowContent,
   entityKey: number,
+  entity: number,
   draws: PresentationDraws,
   preparedSourceScope: RenderResourceScope,
   internals: RenderSystemInternals,
+  admits?: (material: MaterialResource) => boolean,
 ): FramePresentationPendingReason | undefined {
   // Runs for every displayed row of every frame: the pending reason is
   // allocated only when a gap is actually found.
-  const entity = renderable.entityKey;
   if (!draws.hasEntity(entityKey)) return { code: 'draw-entity-missing', entity };
   const renderableWorld = preparedSourceScope;
   const meshHandles =
@@ -225,6 +428,15 @@ function renderableDrawGap(
   if (renderable.pointsLines !== undefined) return undefined;
   const submeshCount = meshHandles.submeshes.length;
   for (let submesh = 0; submesh < submeshCount; submesh++) {
+    if (admits) {
+      const slot = meshHandles.submeshes[submesh]?.materialSlot;
+      if (
+        !admits(
+          (slot === undefined ? undefined : renderable.materials[slot]) ?? renderable.material,
+        )
+      )
+        continue;
+    }
     if (!draws.hasSubmesh(entityKey, submesh))
       return { code: 'draw-submesh-missing', entity, submesh };
   }

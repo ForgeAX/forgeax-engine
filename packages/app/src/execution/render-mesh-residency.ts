@@ -2,6 +2,7 @@ import {
   DynamicGeometryError,
   type FrameReceipt,
   type PreparedPublishedMeshResidency,
+  type PublishedMeshTransferReservation,
   type Renderer,
   type RenderPublicationIdentity,
 } from '@forgeax/engine-render';
@@ -24,10 +25,21 @@ interface Request {
   evict?: boolean;
 }
 
+type PreparationRequest = Exclude<MeshResidencyRequest, { kind: 'mesh-release' }>;
+type Respond = (result: MeshResidencyResponse['result']) => void;
+type Fail = (error: MeshResidencyFailure) => void;
+
 /** Transport leases only. Candidate and World admission remain in the source realm. */
 export class RenderMeshResidency {
   private readonly requests = new Map<number, Request>();
   private readonly credits = new Set<Request>();
+  private readonly reservations = new Map<
+    number,
+    {
+      readonly credit: PublishedMeshTransferReservation;
+      readonly deviceGeneration: number;
+    }
+  >();
   private disposed = false;
   private lastRequest = 0;
   private consumedBindings = new Float64Array(0);
@@ -39,14 +51,19 @@ export class RenderMeshResidency {
 
   async receive(message: MeshResidencyRequest): Promise<void> {
     const identity = message.kind === 'mesh-prepare' ? message.input : message.identity;
-    const respond = (result: MeshResidencyResponse['result']) =>
+    const respond: Respond = (result) =>
       this.post({
-        kind: message.kind === 'mesh-prepare' ? 'mesh-ready' : 'mesh-released',
+        kind:
+          message.kind === 'mesh-reserve'
+            ? 'mesh-reserved'
+            : message.kind === 'mesh-prepare'
+              ? 'mesh-ready'
+              : 'mesh-released',
         requestId: message.requestId,
         identity: this.identity,
         result,
       });
-    const fail = (error: MeshResidencyFailure) => {
+    const fail: Fail = (error) => {
       respond({
         ok: false,
         error: {
@@ -86,17 +103,30 @@ export class RenderMeshResidency {
       await this.release(message.requestId, message.evict);
       respond({
         ok: true,
-        deviceGeneration:
-          this.renderer.currentDeviceGeneration?.() ??
-          this.renderer.inspect({ fields: ['frame'] }).frame.deviceGeneration,
+        deviceGeneration: this.deviceGeneration(),
       });
       return;
     }
+    await this.receivePreparation(message, respond, fail);
+  }
+
+  private async receivePreparation(
+    message: PreparationRequest,
+    respond: Respond,
+    fail: Fail,
+  ): Promise<void> {
+    const { requestId } = message;
+    const reserved = message.kind === 'mesh-prepare' && message.reserved === true;
+    const reservation = this.reservations.get(requestId);
+    const fresh = reserved
+      ? reservation?.deviceGeneration === this.deviceGeneration()
+      : requestId > this.lastRequest;
     if (
-      message.requestId <= this.lastRequest ||
-      (message.entity !== undefined && !Number.isSafeInteger(message.entity)) ||
-      (message.input.pipelinePreparation !== undefined &&
-        message.input.pipelinePreparation.entity !== message.entity)
+      !fresh ||
+      (message.kind === 'mesh-prepare' &&
+        ((message.entity !== undefined && !Number.isSafeInteger(message.entity)) ||
+          (message.input.pipelinePreparation !== undefined &&
+            message.input.pipelinePreparation.entity !== message.entity)))
     ) {
       fail(
         new DynamicGeometryError(
@@ -107,9 +137,9 @@ export class RenderMeshResidency {
       );
       return;
     }
-    this.lastRequest = message.requestId;
-    const pending = this.credits.size;
-    if (pending >= MESH_RESIDENCY_REQUEST_LIMIT) {
+    if (!reserved) this.lastRequest = requestId;
+    const pending = this.credits.size + this.reservations.size;
+    if (!reserved && pending >= MESH_RESIDENCY_REQUEST_LIMIT) {
       fail(
         new DynamicGeometryError(
           'dynamic-geometry-budget-exceeded',
@@ -126,6 +156,28 @@ export class RenderMeshResidency {
       );
       return;
     }
+    if (message.kind === 'mesh-reserve') {
+      const deviceGeneration = this.deviceGeneration();
+      const credit = this.renderer.reservePublishedMeshTransfer(message.bytes);
+      if (!credit.ok) {
+        fail(credit.error);
+        return;
+      }
+      this.reservations.set(requestId, { credit: credit.value, deviceGeneration });
+      respond({ ok: true, deviceGeneration });
+      return;
+    }
+    this.reservations.delete(requestId);
+    await this.prepareMesh(message, reservation?.credit, respond, fail);
+  }
+
+  private async prepareMesh(
+    message: Extract<PreparationRequest, { kind: 'mesh-prepare' }>,
+    reservation: PublishedMeshTransferReservation | undefined,
+    respond: Respond,
+    fail: Fail,
+  ): Promise<void> {
+    let retired = false;
     let resolve!: (lease: PreparedPublishedMeshResidency | undefined) => void;
     const request: Request = {
       prepared: new Promise<PreparedPublishedMeshResidency | undefined>((done) => {
@@ -141,6 +193,17 @@ export class RenderMeshResidency {
       // detected and copied by the Renderer before becoming prepared storage.
       const result = await this.renderer.preparePublishedMeshResidency(message.input, 'received', {
         signal: request.controller.signal,
+        ...(reservation === undefined ? {} : { reservation }),
+        onRetired: (deviceGeneration) => {
+          retired = true;
+          if (this.disposed || request.lease === undefined) return;
+          this.post({
+            kind: 'mesh-retired',
+            requestId: message.requestId,
+            identity: this.identity,
+            result: { ok: true, deviceGeneration },
+          });
+        },
       });
       if (!result.ok) {
         resolve(undefined);
@@ -155,6 +218,17 @@ export class RenderMeshResidency {
         await this.release(message.requestId, this.disposed || request.evict !== false);
         return;
       }
+      if (retired) {
+        await this.release(message.requestId);
+        fail(
+          new DynamicGeometryError(
+            'dynamic-geometry-gpu-not-ready',
+            'the receiver still holds the prepared Mesh revision',
+            'retry after preparing the current Mesh revision',
+          ),
+        );
+        return;
+      }
       if (request.entity !== undefined) this.credits.delete(request);
       respond({ ok: true, deviceGeneration: result.value.deviceGeneration });
     } catch (cause) {
@@ -162,10 +236,21 @@ export class RenderMeshResidency {
       // An unexpected throw cannot attest that physical allocation was undone.
       // The Worker failure owner faults paired source recovery and drains disposal.
       throw cause;
+    } finally {
+      reservation?.release();
     }
   }
 
+  private deviceGeneration(): number {
+    return (
+      this.renderer.currentDeviceGeneration?.() ??
+      this.renderer.inspect({ fields: ['frame'] }).frame.deviceGeneration
+    );
+  }
+
   private release(requestId: number, evict = true): Promise<void> {
+    this.reservations.get(requestId)?.credit.release();
+    this.reservations.delete(requestId);
     const request = this.requests.get(requestId);
     if (request === undefined) return Promise.resolve();
     if (request.release !== undefined) {
@@ -221,6 +306,8 @@ export class RenderMeshResidency {
   async dispose(): Promise<void> {
     this.disposed = true;
     this.consumedBindings = new Float64Array(0);
+    for (const reservation of this.reservations.values()) reservation.credit.release();
+    this.reservations.clear();
     const results = await Promise.allSettled(
       [...this.requests.keys()].map((id) => this.release(id)),
     );

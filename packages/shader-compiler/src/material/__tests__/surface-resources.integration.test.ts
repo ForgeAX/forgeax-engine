@@ -95,6 +95,12 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
             (selection) => selection.pass === pass && selection.address === address,
           );
           expect(selection?.abi?.vertexInputs.some((input) => input.semantic === 'uv1')).toBe(true);
+          if (pass !== 'shadow-caster') {
+            expect(selection?.abi?.surface).toMatchObject({
+              model: 'standard',
+              module: 'test::layered_surface',
+            });
+          }
           if (address === 'scene-index')
             expect(selection?.abi?.sceneIndexEntry).toBe('vs_scene_index');
         }

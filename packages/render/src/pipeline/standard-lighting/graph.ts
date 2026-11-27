@@ -5,8 +5,8 @@ import type {
   RenderGraphBuilder,
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
-import { RenderGraphError as RenderGraphFailure } from '@forgeax/engine-render-graph';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import type { RhiComputePassEncoder } from '@forgeax/engine-rhi';
+import { ok, type Result } from '@forgeax/engine-types';
 import { GPU_TEXTURE_USAGE_COPY_SRC } from '../../gpu-texture-usage';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
@@ -15,8 +15,7 @@ import {
 } from '../../gpu-usage';
 import { getOrCreateHdrpBuffers, type HdrpBuffers } from '../../hdrp-buffers';
 import type { _InternalRenderPipelineContext } from '../../record/render-context';
-import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
-import { addTypedSsaoClusterPackPass } from '../../typed-render-graph-primitives';
+import type { RenderPipelineFrame } from '../../render-pipeline';
 import type { StandardClusterTextureExtent } from './texture';
 import { standardClusterTextureLayout } from './texture';
 import type { StandardTopologyInputValue } from './topology';
@@ -44,15 +43,15 @@ export type StandardClusterGraphBuffers =
 /** Stable graph-time projection; never retain a frame's typed-array payload. */
 interface StandardClusterGraphDescriptor {
   readonly grid: { readonly x: number; readonly y: number; readonly z: number };
-  readonly aoExtent?: StandardClusterTextureExtent | undefined;
+  readonly extent?: StandardClusterTextureExtent | undefined;
 }
 
 function projectDescriptor(
   input: StandardTopologyInputValue,
-  aoExtent?: StandardClusterTextureExtent,
+  extent?: StandardClusterTextureExtent,
 ): StandardClusterGraphDescriptor {
   const { x, y, z } = input.prepared.layout.grid;
-  return { grid: { x, y, z }, ...(aoExtent === undefined ? {} : { aoExtent }) };
+  return { grid: { x, y, z }, ...(extent === undefined ? {} : { extent }) };
 }
 
 function resolveBuffers(
@@ -60,7 +59,7 @@ function resolveBuffers(
   descriptor: StandardClusterGraphDescriptor,
 ): HdrpBuffers {
   const internal = frame as _InternalRenderPipelineContext;
-  const buffers = getOrCreateHdrpBuffers(internal.runtime, descriptor.grid, descriptor.aoExtent);
+  const buffers = getOrCreateHdrpBuffers(internal.runtime, descriptor.grid, descriptor.extent);
   if (buffers === null) throw new Error('Standard persistent buffer allocation failed');
   return buffers;
 }
@@ -75,20 +74,42 @@ export function shouldExecuteStandardClusterMembershipPass(frame: RenderPipeline
   );
 }
 
+/** Only the punctual shadow projector reads this light-row buffer. Resolve the physical
+ * owner of the recording frame, including after a Cluster grid replacement. */
+export function importForwardShadowLightData(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  byteLength: number,
+): Result<GraphBuffer, RenderGraphError> {
+  return graph.importBuffer(
+    'hdrp-light-data',
+    { size: byteLength, usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST },
+    (frame) => {
+      const internal = frame as _InternalRenderPipelineContext;
+      const lights = internal.standardLighting;
+      if (lights?.kind !== 'clustered')
+        throw new Error('The projected shadow requires current light rows');
+      const buffers = getOrCreateHdrpBuffers(internal.runtime, lights.prepared.layout.grid);
+      if (buffers?.kind !== 'storage')
+        throw new Error('The projected shadow requires storage light rows');
+      return buffers.lightDataBuffer;
+    },
+  );
+}
+
 /** Import the shared Standard Cluster buffers with sizes derived from layout. */
 export function importStandardClusterBuffers(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: StandardTopologyInputValue,
-  aoExtent?: StandardClusterTextureExtent,
+  extent?: StandardClusterTextureExtent,
 ): Result<StandardClusterGraphBuffers | null, RenderGraphError> {
   if (input.kind !== 'clustered') return ok(null);
   const layout = input.prepared.layout;
-  const descriptor = projectDescriptor(input, aoExtent);
+  const descriptor = projectDescriptor(input, extent);
   if (input.transport.kind === 'cpu-texture') {
     const textureLayout = standardClusterTextureLayout(
       layout,
       input.transport.lightDataSlotBytes,
-      aoExtent,
+      extent,
     );
     const texture = graph.importTexture(
       'standard-cluster-tables',
@@ -99,7 +120,7 @@ export function importStandardClusterBuffers(
           depthOrArrayLayers: 1,
         },
         format: 'rgba32uint',
-        usage: 0x02 | 0x04 | (aoExtent === undefined ? 0 : 0x10 | GPU_TEXTURE_USAGE_COPY_SRC),
+        usage: 0x02 | 0x04 | GPU_TEXTURE_USAGE_COPY_SRC | (extent?.atmosphere ? 0x10 : 0),
       },
       (frame) => {
         const buffers = resolveBuffers(frame, descriptor);
@@ -201,36 +222,6 @@ export function standardClusterReadAccesses(
   ];
 }
 
-/** Add the AO producer to the spare region of the no-storage Cluster texture. */
-export function addStandardClusterAoPackPass(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  buffers: StandardClusterGraphBuffers,
-  source: RenderPipelineTarget,
-): Result<void, RenderGraphError> {
-  if (buffers.kind !== 'texture') return ok(undefined);
-  const region = buffers.textureLayout.ao;
-  if (region === undefined) {
-    return err(
-      new RenderGraphFailure({
-        code: 'resource-descriptor-invalid',
-        expected: 'the no-storage Cluster texture reserves an initialized AO region',
-        hint: 'rebuild the Cluster texture generation with the current AO extent',
-        detail: {
-          resourceLabel: 'standard-cluster-tables',
-          field: 'ao-region',
-          expected: 'disjoint initialized AO region',
-          actual: 'missing',
-        },
-      }),
-    );
-  }
-  return addTypedSsaoClusterPackPass(graph, { source, output: buffers.texture, region });
-}
-
-/**
- * Add the sole GPU membership producer. CPU membership is already materialized
- * in PreparedStandardLighting and therefore contributes no second pass.
- */
 export function addStandardClusterMembershipPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: StandardTopologyInputValue,
@@ -239,7 +230,7 @@ export function addStandardClusterMembershipPass(
   if (input.kind !== 'clustered') return ok(undefined);
   if (input.transport.kind !== 'compute-storage') return ok(undefined);
   if (buffers.kind !== 'storage') throw new Error('GPU membership requires storage transport');
-  const descriptor = projectDescriptor(input);
+  const { grid } = projectDescriptor(input);
   return graph.addComputePass('cluster-membership-producer', {
     accesses: [
       { resource: buffers.clusterGrid, usage: 'storage-read-write' },
@@ -253,19 +244,26 @@ export function addStandardClusterMembershipPass(
     // executing this pass would only turn an otherwise valid frame into a
     // null-backend encode failure.
     executeIf: shouldExecuteStandardClusterMembershipPass,
-    encodeDirect: (pass, frame, _graphresources) => {
-      const internal = frame as _InternalRenderPipelineContext;
-      const pipeline = internal.pipelineState.hdrpClusterMembershipPipeline;
-      const bindings = internal.hdrpClusterMembershipBindGroup;
-      if (pipeline === null || bindings === null) {
-        throw new Error(
-          'standard-cluster-transport-unavailable: selected compute Cluster producer is not ready',
-        );
-      }
-      const { x, y, z } = descriptor.grid;
-      pass.setPipeline(pipeline);
-      pass.setBindGroup(0, bindings);
-      pass.dispatchWorkgroups(Math.ceil((x * y * z) / 64));
-    },
+    encodeDirect: (pass, frame) => encodeStandardClusterMembership(pass, frame, grid),
   });
+}
+
+/** Encode the compute-storage producer with this view's prepared light grid. */
+export function encodeStandardClusterMembership(
+  pass: RhiComputePassEncoder,
+  frame: RenderPipelineFrame,
+  grid: StandardClusterGraphDescriptor['grid'],
+): void {
+  const internal = frame as _InternalRenderPipelineContext;
+  const pipeline = internal.pipelineState.hdrpClusterMembershipPipeline;
+  const bindings = internal.hdrpClusterMembershipBindGroup;
+  if (pipeline === null || bindings === null) {
+    throw new Error(
+      'standard-cluster-transport-unavailable: selected compute Cluster producer is not ready',
+    );
+  }
+  const { x, y, z } = grid;
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bindings);
+  pass.dispatchWorkgroups(Math.ceil((x * y * z) / 64));
 }

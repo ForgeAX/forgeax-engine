@@ -20,7 +20,7 @@ import { gbufferSource } from './standard-gbuffer.fixture';
 // plane + cube example. No captured GPU handles, pixels or shader outputs are fixtures.
 it.each([
   0, 0.07, -0.07,
-])('keeps the reflected cube silhouette connected without exterior rays (camera offset %f)', async (offset) => {
+])('keeps reflection coverage inside the cube silhouette with bounded coarse misses (camera offset %f)', async (offset) => {
   const compiler = await import(
     /* @vite-ignore */ new URL('../../../shader-compiler/dist/index.mjs', import.meta.url).href
   );
@@ -34,6 +34,7 @@ it.each([
         'forgeax_pbr::gbuffer': gbufferSource,
         forgeax_scene_temporal: source('scene-temporal'),
         'forgeax_depth_pyramid::sample': source('depth-pyramid-sample'),
+        'forgeax_ssr::ray': source('ssr-ray'),
       },
     });
     if (!result.ok) throw result.error;
@@ -64,7 +65,9 @@ it.each([
     values.set([6 + offset, 3, 6 - offset], 24);
     values.set(inverse, 44);
     values.set([0.1, 20, 0, 0], 228);
-    values.set([12, 0.2, 0.65, 1], 236);
+    values.set([12, 0.2, 0.6, 1], 236);
+    // Use the ordinary Medium mirror budget, as uploaded by the view owner.
+    values.set([1, 16, 1, 0], 324);
     const view = device.createBuffer({
       size: VIEW_UNIFORM_BYTES,
       usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
@@ -220,6 +223,7 @@ struct Out { @builtin(frag_depth) depth:f32, @location(0) normal:u32, @location(
           { binding: 6, resource: fallback.createView() },
           { binding: 7, resource: temporal.createView() },
           { binding: 8, resource: reactive.createView() },
+          { binding: 13, resource: radiance.createView() },
         ]),
       size,
     );
@@ -281,7 +285,10 @@ struct Out { @builtin(frag_depth) depth:f32, @location(0) normal:u32, @location(
       }
     expect(await device.popErrorScope()).toBeNull();
     expect(interior).toBeGreaterThan(1000);
-    expect({ misses, exteriorHits }).toEqual({ misses: 0, exteriorHits: 0 });
+    // A conservative furthest bound can erase edge hits which were exact on
+    // the former fine walk. Guard against exterior streaks and excessive loss.
+    expect(exteriorHits).toBe(0);
+    expect(misses / interior).toBeLessThan(0.05);
   } finally {
     device.destroy();
   }

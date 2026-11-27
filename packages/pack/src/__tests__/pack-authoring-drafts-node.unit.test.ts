@@ -1,18 +1,15 @@
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 import type { PackDraftSnapshot } from '../pack-authoring-draft.js';
 import { createFileSystemPackDrafts } from '../pack-authoring-drafts-node.js';
 import { createFileSystemPackAuthoringGateway } from '../pack-authoring-node.js';
 
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+const scratch = temporaryDirectories();
+afterEach(scratch.clear);
 async function setup() {
-  const root = await mkdtemp(join(tmpdir(), 'forgeax-author-draft-'));
-  roots.push(root);
+  const root = await scratch.make('forgeax-author-draft-');
   const source = `export default definePack({schemaVersion:'2.0.0',packageId:definePackageId('01900000-0000-7000-8000-000000000077'),parameters:[{name:'radius',type:'f32',default:1},{name:'color',type:'vec3',default:[1,1,1],apply:{asset:'scene/main',path:['entities','sun','components','DirectionalLight','color']}}],build(){throw new Error('must not run');}});`;
   await writeFile(join(root, 'scene.pack.ts'), source);
   return { root, source };

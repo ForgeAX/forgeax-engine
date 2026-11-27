@@ -120,7 +120,7 @@ export async function verifyDecals(
     renderer.setProfile({
       ...originalProfile,
       renderPath,
-      ssao: false,
+      ambientOcclusion: { enabled: false },
     }),
   );
   const unsubscribe = renderer.subscribe((event) => {

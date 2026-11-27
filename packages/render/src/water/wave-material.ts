@@ -31,6 +31,7 @@ import {
   GPU_BUFFER_USAGE_STORAGE,
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
+import { bindGroupChainLeaf } from '../record/mesh-ssbo';
 import { waterMaterialReadsBakedSource } from './material-admission';
 import { isOwnedWaterMeshAdmissionUpload } from './mesh-source-admission';
 
@@ -1037,6 +1038,84 @@ export function waterMaterialFrameBindGroupEntries(
   });
 }
 
+const waterSystemGroups = new WeakMap<object, unknown>();
+const activeWaterSystemGroups = new WeakMap<object, unknown>();
+
+interface WaterPrimitiveBuffers {
+  readonly mesh: { readonly buffer: Buffer; readonly size: number };
+  readonly tiles?: { readonly buffer: Buffer; readonly size: number } | undefined;
+}
+
+/**
+ * A frame receipt establishes current admission. The GPU group is reusable
+ * whenever its layout, resource handles and bound ranges match that receipt.
+ */
+export function waterMaterialSystemBindGroup(
+  device: Pick<RhiDevice, 'createBindGroup'>,
+  layout: BindGroupLayout,
+  inputs: WaterMaterialFrameBindingResources,
+  entryPoints: readonly ShaderEntryPointReads[],
+  primitive?: WaterPrimitiveBuffers,
+): BindGroup {
+  const frameKeys: object[] = [inputs, layout];
+  if (primitive !== undefined)
+    frameKeys.push(
+      primitive.mesh.buffer,
+      primitive.tiles?.buffer ?? inputs.waterMeshInstanceBuffer,
+    );
+  const frameKey =
+    primitive === undefined
+      ? 'frame'
+      : `${primitive.mesh.size}:${primitive.tiles?.size ?? 'default'}`;
+  const frameLeaf = bindGroupChainLeaf(activeWaterSystemGroups, frameKeys);
+  const issued = frameLeaf.get(frameKey);
+  if (issued !== undefined) return issued;
+  const entries = waterMaterialFrameBindGroupEntries(inputs, 16, entryPoints);
+  if (primitive !== undefined) {
+    const { mesh, tiles } = primitive;
+    if (tiles !== undefined) {
+      const slot = entries.findIndex(
+        (entry) => entry.binding === 16 + WATER_MATERIAL_FRAME_BINDINGS.waterMeshInstances,
+      );
+      if (slot >= 0) {
+        entries[slot] = {
+          binding: 16 + WATER_MATERIAL_FRAME_BINDINGS.waterMeshInstances,
+          resource: { kind: 'buffer', value: { ...tiles, offset: 0 } },
+        };
+      }
+    }
+    entries.unshift({ binding: 0, resource: { kind: 'buffer', value: { ...mesh, offset: 0 } } });
+  }
+  const keys: object[] = [layout];
+  const ranges: string[] = [];
+  for (const { binding, resource } of entries) {
+    if (resource.kind === 'buffer') {
+      keys.push(resource.value.buffer);
+      ranges.push(`${binding}:${resource.value.offset ?? 0}:${resource.value.size ?? 'all'}`);
+    } else {
+      keys.push(resource.value);
+      ranges.push(`${binding}:${resource.kind}`);
+    }
+  }
+  const leaf = bindGroupChainLeaf(waterSystemGroups, keys);
+  const variant = ranges.join(',');
+  const cached = leaf.get(variant);
+  if (cached !== undefined) {
+    frameLeaf.set(frameKey, cached);
+    return cached;
+  }
+  const group = device
+    .createBindGroup({
+      label: primitive === undefined ? 'water-system-frame' : 'water-system-primitive',
+      layout,
+      entries,
+    })
+    .unwrap();
+  leaf.set(variant, group);
+  frameLeaf.set(frameKey, group);
+  return group;
+}
+
 export function waterMaterialFrameDynamicOffsets(
   offsets: Readonly<{ waterInfo?: number; body: number; mesh: number }>,
   entryPoints?: readonly ShaderEntryPointReads[],
@@ -1226,6 +1305,26 @@ export function waterMaterialBodyIndex(
   return ok(bodyIndex);
 }
 
+/** Retained targets can share a body. Prefer the cohort owning its draw offset. */
+function selectWaterBodyBindings(
+  bindings: ReadonlyMap<string, WaterMaterialFrameBindings>,
+  bodyGuid: string,
+  drawKey: string | undefined,
+): WaterMaterialFrameBindings | undefined {
+  let first: WaterMaterialFrameBindings | undefined;
+  for (const candidate of bindings.values()) {
+    if (
+      !candidate.bodyIndices.has(bodyGuid) ||
+      candidate.bodyTargetNames.get(bodyGuid) !== candidate.waterInfoTargetName
+    )
+      continue;
+    if (drawKey === undefined || candidate.waterMeshInstanceDynamicOffsets?.has(drawKey))
+      return candidate;
+    first ??= candidate;
+  }
+  return first;
+}
+
 export function waterMaterialDrawBinding(
   bindings: WaterMaterialFrameBindings | ReadonlyMap<string, WaterMaterialFrameBindings>,
   bodyGuid: string,
@@ -1239,26 +1338,12 @@ export function waterMaterialDrawBinding(
   }>,
   drawKey?: string,
 ): Result<WaterMaterialDrawBinding, WaterMaterialBindingError> {
-  // Retained and current targets may share an unchanged Body. Its draw key
-  // identifies the complete cohort, including generation-qualified transitions.
-  const bodyBindings =
-    'bodyIndices' in bindings
-      ? []
-      : [...bindings.values()].filter(
-          (candidate) =>
-            candidate.bodyIndices.has(bodyGuid) &&
-            candidate.bodyTargetNames.get(bodyGuid) === candidate.waterInfoTargetName,
-        );
   const frameBindings =
     'bodyIndices' in bindings
       ? bindings
-      : expected.targetName === undefined
-        ? ((drawKey === undefined
-            ? bodyBindings[0]
-            : bodyBindings.find((candidate) =>
-                candidate.waterMeshInstanceDynamicOffsets?.has(drawKey),
-              )) ?? bodyBindings[0])
-        : bindings.get(expected.targetName);
+      : expected.targetName !== undefined
+        ? bindings.get(expected.targetName)
+        : selectWaterBodyBindings(bindings, bodyGuid, drawKey);
   if (frameBindings === undefined)
     return err({
       code: 'water-material-binding-missing',

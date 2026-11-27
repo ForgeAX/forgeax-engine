@@ -2,14 +2,12 @@ import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { defineResource, defineSystem } from '@forgeax/engine-ecs';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import type { RenderSystemInternals } from '../record/render-context';
-import { reportSsrHistoryFailure } from '../record/ssr-history-frame';
 import type { CameraSnapshot } from '../render-contract';
 import {
   acceptSubmittedDepthOfField,
   commitSubmittedBloom,
   discardUnsubmittedFrame,
 } from '../render-system-record-attempt';
-import { commitSsrHistoryBaseline } from './history-admission-systems';
 import { ViewSubmission, viewAccepted } from './render-views';
 import { RenderCleanup, RenderCommit } from './render-world';
 import { recordContext } from './view-record-context';
@@ -47,8 +45,7 @@ export function postSubmissionsOf(world: World): PostSubmissionQueue {
 }
 
 /**
- * An accepted view publishes the receipts and SSR history its frame staged:
- * Motion Blur execution, bloom record receipts and the SSR history candidate.
+ * An accepted view publishes Motion Blur and bloom receipts.
  */
 function commitPostReceipts({ frameState, internals }: PostCandidate): void {
   const motionBlur = frameState.stagedMotionBlurExecution;
@@ -63,27 +60,12 @@ function commitPostReceipts({ frameState, internals }: PostCandidate): void {
       ?.perPassResources.commitBloomFrameReceipts?.(frameState.bloomFrameReceipts);
     frameState.bloomFrameReceipts = undefined;
   }
-  for (const owner of [frameState.ssrHistoryOwner, frameState.waterSsrHistoryOwner]) {
-    const candidate = owner?.candidate;
-    if (owner === undefined || candidate === undefined) continue;
-    const committed = owner.submitFrame(candidate, internals.device.queue);
-    if (committed.ok) {
-      owner.retireReplacedAfterFence(internals.device.queue, (cause) =>
-        reportSsrHistoryFailure(internals, 'submit', cause),
-      );
-      continue;
-    }
-    owner.abortFrame(candidate, 'submit');
-    reportSsrHistoryFailure(internals, 'submit', committed.error);
-  }
 }
 
 /** A view without an accepted submission never advances history or publishes receipts. */
 function discardPostReceipts({ frameState }: PostCandidate): void {
   delete frameState.stagedMotionBlurExecution;
   frameState.bloomFrameReceipts = undefined;
-  for (const owner of [frameState.ssrHistoryOwner, frameState.waterSsrHistoryOwner])
-    if (owner?.candidate !== undefined) owner.abortFrame(owner.candidate, 'submit');
 }
 
 /** Register the post commit/cleanup systems and their queue on a Render World once. */
@@ -113,7 +95,6 @@ export function registerPostSystems(world: World): void {
           recordContext(internals).getPipelineState()?.perPassResources.discardBloomResources?.();
           continue;
         }
-        commitSsrHistoryBaseline(world, entity, frameState, internals, camera);
         frameState.lastSuccessfulCameraAntialias = camera?.antialias;
         acceptSubmittedDepthOfField(frameState, internals, camera);
         commitSubmittedBloom(frameState, internals, candidate.bloomAdmitted);

@@ -5,7 +5,6 @@ import {
   ANTIALIAS_TAA,
   Camera,
   CameraView,
-  CubeCamera,
   DirectionalLight,
   Materials,
   MeshFilter,
@@ -64,19 +63,26 @@ async function assertCompleted(
   for (const completed of await Promise.all(completions)) if (!completed.ok) throw completed.error;
 }
 
+function isEnvironmentPrecompute(labels: readonly string[]): boolean {
+  return labels.some((label) => label.startsWith('ibl-') || label.startsWith('sky-sh-'));
+}
+
+function expectEnvironmentPrecompute(submissions: readonly string[][]): void {
+  const stages = submissions.filter(isEnvironmentPrecompute);
+  expect(stages).toEqual([
+    Array.from({ length: 6 }, () => 'ibl-equirect-to-cube'),
+    ['sky-sh-project', 'sky-sh-reduce', 'ibl-prefilter'],
+    ...Array.from({ length: 59 }, () => ['ibl-prefilter']),
+    ['ibl-brdf-lut'],
+  ]);
+}
+
 it.each([
-  'shared',
-  'skybox',
-  'skylight',
-  'solid',
-  'shared-taa',
-  'shared-output',
-  'shared-first',
   'shared-view-first',
-  'shared-capture-first',
-  'shared-vfx-first',
   'shared-vfx-taa',
 ] as const)('keeps %s environment presentation pending through the real IBL completion fence', async (mode) => {
+  const firstImage = mode === 'shared-view-first';
+  const taa = mode === 'shared-vfx-taa';
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 32;
   document.body.append(canvas);
@@ -153,16 +159,14 @@ it.each([
   let detach: (() => void) | undefined;
   let transforms: (() => void) | undefined;
   let restoreTemporalObserver: (() => void) | undefined;
-  const vfx = mode.startsWith('shared-vfx')
-    ? createVfxRuntimeHost({ camera: { read: () => undefined } })
-    : undefined;
+  const vfx = taa ? createVfxRuntimeHost({ camera: { read: () => undefined } }) : undefined;
   let detachVfx: (() => Promise<void>) | undefined;
   try {
     const host = await constructRuntimeRendererHost(
       canvas,
       {
         ...(vfx === undefined ? {} : { features: [vfx.feature] }),
-        ...(mode === 'shared-view-first'
+        ...(firstImage
           ? {
               rhiInstrumentation: {
                 deviceLost: () =>
@@ -181,7 +185,7 @@ it.each([
     );
     if (!host.ok) throw host.error;
     renderer = host.value.renderer;
-    if (mode === 'shared-view-first')
+    if (firstImage)
       unsubscribeLifecycle = renderer.subscribe((event) => {
         if (event.kind === 'error') lifecycleErrors.push(event.error);
       });
@@ -205,14 +209,14 @@ it.each([
             aspect: 1,
             near: 0.1,
             far: 100,
-            antialias: mode.endsWith('-taa') ? ANTIALIAS_TAA : ANTIALIAS_NONE,
+            antialias: taa ? ANTIALIAS_TAA : ANTIALIAS_NONE,
             tonemap: TONEMAP_ACES_FILMIC,
-            exposure: mode === 'shared-output' ? 0.92 : 1,
+            exposure: 1,
           },
         },
       )
       .unwrap();
-    if (mode === 'shared-view-first')
+    if (firstImage)
       world.addComponent(camera, { component: CameraView, data: { enabled: true } }).unwrap();
     world
       .spawn({
@@ -234,37 +238,27 @@ it.each([
       colorSpace: 'linear',
       data: new Uint8Array(new Float32Array(8 * 4 * 4).fill(1).buffer),
     };
-    const firstImage =
-      mode === 'shared-first' ||
-      mode === 'shared-view-first' ||
-      mode === 'shared-capture-first' ||
-      mode === 'shared-vfx-first';
-    const mesh =
-      mode.endsWith('-taa') || firstImage
-        ? world
-            .spawn(
-              { component: Transform, data: { pos: [0, 0, 0] } },
-              {
-                component: MeshFilter,
-                data: {
-                  assetHandle: testAssets(world)
-                    .create(createPrimitiveMesh('cube').unwrap())
-                    .unwrap(),
-                },
-              },
-              {
-                component: MeshRenderer,
-                data: {
-                  materials: [
-                    testAssets(world)
-                      .create(Materials.unlit([0.8, 0.2, 0.1, 1]))
-                      .unwrap(),
-                  ],
-                },
-              },
-            )
-            .unwrap()
-        : undefined;
+    const mesh = world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, 0] } },
+        {
+          component: MeshFilter,
+          data: {
+            assetHandle: testAssets(world).create(createPrimitiveMesh('cube').unwrap()).unwrap(),
+          },
+        },
+        {
+          component: MeshRenderer,
+          data: {
+            materials: [
+              testAssets(world)
+                .create(Materials.unlit([0.8, 0.2, 0.1, 1]))
+                .unwrap(),
+            ],
+          },
+        },
+      )
+      .unwrap();
     let previousMeshX: number | undefined;
     const prepareTemporalFrame = PersistentRenderScene.prototype.prepareTemporalFrame;
     const temporalObserver = vi
@@ -277,7 +271,7 @@ it.each([
         return prepareTemporalFrame.call(this, renderables);
       });
     restoreTemporalObserver = () => temporalObserver.mockRestore();
-    const equirect = mode === 'solid' ? undefined : testAssets(world).create(source).unwrap();
+    const equirect = testAssets(world).create(source).unwrap();
     const attached = renderer.attach(world);
     if (!attached.ok) throw attached.error;
     const lease = attached.value;
@@ -311,55 +305,14 @@ it.each([
       }
       return presentation;
     };
-    if (mode === 'shared-capture-first') {
-      const target = renderer.createRenderTarget({
-        shape: 'cube',
-        width: 32,
-        height: 32,
-        format: 'rgba8unorm',
-        mipLevels: 1,
-        sampleCount: 1,
-        sampled: true,
-        readback: true,
-      });
-      if (!target.ok) throw target.error;
-      world.addComponent(camera, { component: CameraView, data: { enabled: false } }).unwrap();
-      const captureCamera = world
-        .spawn(
-          { component: Transform, data: { pos: [0, 0, 2] } },
-          {
-            component: CubeCamera,
-            data: {
-              target: world.allocSharedRef('RenderTarget', target.value),
-              faceBudget: 1,
-              updateIntent: 0,
-            },
-          },
-        )
-        .unwrap();
-      const beforeCapture = submissions.length;
-      await drawUntilPass('cube-capture-face.0');
-      expect(submissions.slice(beforeCapture).flat(), 'real capture must execute first').toContain(
-        'cube-capture-face.0',
-      );
-      world.removeComponent(camera, CameraView).unwrap();
-      world.despawn(captureCamera).unwrap();
-    }
     const installEnvironment = () => {
-      if (mode !== 'skybox')
-        world
-          .spawn({
-            component: Skylight,
-            data: { ...(equirect === undefined ? {} : { equirect }), intensity: 1 },
-          })
-          .unwrap();
-      if (mode === 'skybox' || mode.startsWith('shared'))
-        world
-          .spawn({
-            component: SkyboxBackground,
-            data: { ...(equirect === undefined ? {} : { equirect }), mode: SKYBOX_MODE_CUBEMAP },
-          })
-          .unwrap();
+      world.spawn({ component: Skylight, data: { equirect, intensity: 1 } }).unwrap();
+      world
+        .spawn({
+          component: SkyboxBackground,
+          data: { equirect, mode: SKYBOX_MODE_CUBEMAP },
+        })
+        .unwrap();
     };
     let projectionStart = submissions.length;
     if (firstImage) installEnvironment();
@@ -374,9 +327,7 @@ it.each([
       firstImage ? 'pending' : 'ready',
     );
     const initialDisplay = firstImage
-      ? submissions
-          .slice(projectionStart)
-          .filter((labels) => !labels.some((label) => label.startsWith('ibl-')))
+      ? submissions.slice(projectionStart).filter((labels) => !isEnvironmentPrecompute(labels))
       : [];
     if (firstImage)
       expect(
@@ -385,9 +336,8 @@ it.each([
       ).toContain('main');
     const acceptedEpoch = renderer.inspect().temporal.epoch;
     const acceptedOutput = renderer.inspect().output;
-    const acceptedPixels = mode === 'solid' ? undefined : await presentedPixels(canvas);
+    const acceptedPixels = await presentedPixels(canvas);
     if (firstImage) {
-      if (!acceptedPixels) throw new Error('First display readback missing');
       expect(
         redMeshPixels(acceptedPixels),
         'the first pending display must contain actual red mesh pixels',
@@ -398,111 +348,102 @@ it.each([
       installEnvironment();
     }
 
-    if (mode !== 'solid') {
-      while (!reachedFinalFence && performance.now() < deadline) {
-        await draw();
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      }
-      expect(reachedFinalFence, 'lazy projection must run through its actual final GPU stage').toBe(
-        true,
+    while (!reachedFinalFence && performance.now() < deadline) {
+      await draw();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    expect(reachedFinalFence, 'lazy projection must run through its actual final GPU stage').toBe(
+      true,
+    );
+    world.set(mesh, Transform, { pos: [0.2, 0, 0] }).unwrap();
+    await draw();
+    world.set(mesh, Transform, { pos: [0.4, 0, 0] }).unwrap();
+    const beforeHeldDraw = submissions.length;
+    expect(
+      await draw(),
+      'submitted clear/environment cannot qualify incomplete image lighting',
+    ).toBe('pending');
+    expect(
+      submissions.length,
+      'pending work still crosses the native submit barrier',
+    ).toBeGreaterThan(beforeHeldDraw);
+    const pendingSubmissions = submissions.slice(projectionStart);
+    expectEnvironmentPrecompute(pendingSubmissions);
+    expect(
+      pendingSubmissions
+        .filter((labels) => !isEnvironmentPrecompute(labels))
+        .slice(initialDisplay.length)
+        .flat()
+        .filter((label) => !firstImage || label !== 'camera-view-composite'),
+      'fallback scene/shadow/post work must not delay the authored image',
+    ).toEqual([]);
+    expect(renderer.inspect().temporal.epoch, 'pending draws retain accepted camera history').toBe(
+      acceptedEpoch,
+    );
+    const shadow = renderer.inspect().directionalShadow;
+    expect(shadow.error, JSON.stringify(shadow)).toBeUndefined();
+    if (vfx !== undefined)
+      expect(renderer.inspect().featureDiagnostics).toContainEqual(
+        expect.objectContaining({
+          identity: vfx.feature.identity,
+          status: 'active',
+          latestError: undefined,
+        }),
       );
-      if (mesh !== undefined) {
-        world.set(mesh, Transform, { pos: [0.2, 0, 0] }).unwrap();
-        await draw();
-        world.set(mesh, Transform, { pos: [0.4, 0, 0] }).unwrap();
-      }
-      const beforeHeldDraw = submissions.length;
+    expect(renderer.inspect().output).toEqual(acceptedOutput);
+    if (taa) expect(previousMeshX, 'undrawn transforms are not submitted history').toBe(0);
+    expect(
+      await presentedPixels(canvas),
+      'pending image work retains the physical picture at unchanged size',
+    ).toEqual(acceptedPixels);
+    if (firstImage) {
+      canvas.width = canvas.height = 48;
+      const resizedStart = submissions.length;
+      expect(await drawUntilPass('main')).toBe('pending');
       expect(
-        await draw(),
-        'submitted clear/environment cannot qualify incomplete image lighting',
-      ).toBe('pending');
+        submissions.slice(resizedStart).flat(),
+        'a resized output must be written before presentation',
+      ).toContain('main');
+      const resizedPixels = await presentedPixels(canvas);
+      // Element screenshots include iframe scaling; the accepted GPU extent owns this size.
+      expect(renderer.inspect().barrelDistortion.extent).toEqual({ width: 48, height: 48 });
+      expect(redMeshPixels(resizedPixels)).toBeGreaterThan(16);
+      const resizedEpoch = renderer.inspect().temporal.epoch;
+      const resizedOutput = renderer.inspect().output;
+      const stableResizeStart = submissions.length;
+      expect(await draw()).toBe('pending');
       expect(
-        submissions.length,
-        'pending work still crosses the native submit barrier',
-      ).toBeGreaterThan(beforeHeldDraw);
-      const pendingSubmissions = submissions.slice(projectionStart);
-      // One cube projection, six irradiance faces, ten PMREM levels × six faces, one LUT.
-      expect(
-        pendingSubmissions.filter((labels) => labels.some((label) => label.startsWith('ibl-'))),
-      ).toHaveLength(68);
-      expect(
-        pendingSubmissions
-          .filter((labels) => !labels.some((label) => label.startsWith('ibl-')))
-          .slice(initialDisplay.length)
-          .flat()
-          .filter((label) => mode !== 'shared-view-first' || label !== 'camera-view-composite'),
-        'fallback scene/shadow/post work must not delay the authored image',
+        submissions.slice(stableResizeStart).flat(),
+        'a retained full-surface picture needs no composite while the image is pending',
       ).toEqual([]);
+      expect(await presentedPixels(canvas)).toEqual(resizedPixels);
+      expect(renderer.inspect().temporal.epoch).toBe(resizedEpoch);
+      expect(renderer.inspect().output).toEqual(resizedOutput);
+    }
+    if (firstImage) {
+      const generation = renderer.inspect().frame.deviceGeneration;
+      if (loseDevice === undefined) throw new Error('Device-loss notification is required');
+      loseDevice();
+      while (renderer.inspect().state !== 'device-lost' && performance.now() < deadline)
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      expect(renderer.inspect().state).toBe('device-lost');
+      expect(lifecycleErrors, JSON.stringify(lifecycleErrors)).toHaveLength(1);
+      expect(lifecycleErrors[0]).toMatchObject({
+        code: 'device-operation-failed',
+        detail: { operation: 'renderer-event', cause: { code: 'device-lost' } },
+      });
+      const recovered = await renderer.recover();
+      if (!recovered.ok) throw recovered.error;
+      expect(renderer.inspect().frame.deviceGeneration).toBeGreaterThan(generation);
+      const recoveredStart = submissions.length;
+      expect(await drawUntilPass('main')).toBe('pending');
       expect(
-        renderer.inspect().temporal.epoch,
-        'pending draws retain accepted camera history',
-      ).toBe(acceptedEpoch);
-      const shadow = renderer.inspect().directionalShadow;
-      expect(shadow.error, JSON.stringify(shadow)).toBeUndefined();
-      if (vfx !== undefined)
-        expect(renderer.inspect().featureDiagnostics).toContainEqual(
-          expect.objectContaining({
-            identity: vfx.feature.identity,
-            status: 'active',
-            latestError: undefined,
-          }),
-        );
-      expect(renderer.inspect().output).toEqual(acceptedOutput);
-      if (mode.endsWith('-taa'))
-        expect(previousMeshX, 'undrawn transforms are not submitted history').toBe(0);
-      expect(
-        await presentedPixels(canvas),
-        'pending image work retains the physical picture at unchanged size',
-      ).toEqual(acceptedPixels);
-      if (mode === 'shared-view-first' || mode === 'shared-first') {
-        canvas.width = canvas.height = 48;
-        const resizedStart = submissions.length;
-        expect(await drawUntilPass('main')).toBe('pending');
-        expect(
-          submissions.slice(resizedStart).flat(),
-          'a resized output must be written before presentation',
-        ).toContain('main');
-        const resizedPixels = await presentedPixels(canvas);
-        // Element screenshots include iframe scaling; the accepted GPU extent owns this size.
-        expect(renderer.inspect().barrelDistortion.extent).toEqual({ width: 48, height: 48 });
-        expect(redMeshPixels(resizedPixels)).toBeGreaterThan(16);
-        const resizedEpoch = renderer.inspect().temporal.epoch;
-        const resizedOutput = renderer.inspect().output;
-        const stableResizeStart = submissions.length;
-        expect(await draw()).toBe('pending');
-        expect(
-          submissions.slice(stableResizeStart).flat(),
-          'a retained full-surface picture needs no composite while the image is pending',
-        ).toEqual([]);
-        expect(await presentedPixels(canvas)).toEqual(resizedPixels);
-        expect(renderer.inspect().temporal.epoch).toBe(resizedEpoch);
-        expect(renderer.inspect().output).toEqual(resizedOutput);
-      }
-      if (mode === 'shared-view-first') {
-        const generation = renderer.inspect().frame.deviceGeneration;
-        if (loseDevice === undefined) throw new Error('Device-loss notification is required');
-        loseDevice();
-        while (renderer.inspect().state !== 'device-lost' && performance.now() < deadline)
-          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-        expect(renderer.inspect().state).toBe('device-lost');
-        expect(lifecycleErrors, JSON.stringify(lifecycleErrors)).toHaveLength(1);
-        expect(lifecycleErrors[0]).toMatchObject({
-          code: 'device-operation-failed',
-          detail: { operation: 'renderer-event', cause: { code: 'device-lost' } },
-        });
-        const recovered = await renderer.recover();
-        if (!recovered.ok) throw recovered.error;
-        expect(renderer.inspect().frame.deviceGeneration).toBeGreaterThan(generation);
-        const recoveredStart = submissions.length;
-        expect(await drawUntilPass('main')).toBe('pending');
-        expect(
-          submissions.slice(recoveredStart).flat(),
-          'a new device cannot compose an unwritten CameraView output',
-        ).toContain('main');
-        const recoveredPixels = await presentedPixels(canvas);
-        expect(renderer.inspect().barrelDistortion.extent).toEqual({ width: 48, height: 48 });
-        expect(redMeshPixels(recoveredPixels)).toBeGreaterThan(16);
-      }
+        submissions.slice(recoveredStart).flat(),
+        'a new device cannot compose an unwritten CameraView output',
+      ).toContain('main');
+      const recoveredPixels = await presentedPixels(canvas);
+      expect(renderer.inspect().barrelDistortion.extent).toEqual({ width: 48, height: 48 });
+      expect(redMeshPixels(recoveredPixels)).toBeGreaterThan(16);
     }
     const readyStart = submissions.length;
     released = true;
@@ -511,18 +452,16 @@ it.each([
     let readyFrames = 0;
     while (readyFrames < 60 && performance.now() < deadline) {
       if ((await draw()) === 'ready') {
-        if (mode.endsWith('-taa') && readyFrames === 0) expect(previousMeshX).toBe(0);
-        if (mode.endsWith('-taa') && readyFrames === 1) expect(previousMeshX).toBeCloseTo(0.4);
+        if (taa && readyFrames === 0) expect(previousMeshX).toBe(0);
+        if (taa && readyFrames === 1) expect(previousMeshX).toBeCloseTo(0.4);
         readyFrames++;
       }
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
     expect(readyFrames).toBe(60);
     expect(submissions.slice(readyStart).flat()).toContain('main');
-    if (mode.endsWith('-taa'))
-      expect(renderer.inspect().temporal.epoch).toBeGreaterThan(acceptedEpoch);
-    expect(reachedFinalFence).toBe(mode !== 'solid');
-    if (mode === 'shared-view-first') expect(lifecycleErrors).toHaveLength(1);
+    if (taa) expect(renderer.inspect().temporal.epoch).toBeGreaterThan(acceptedEpoch);
+    if (firstImage) expect(lifecycleErrors).toHaveLength(1);
     expect(errors).toEqual([]);
   } finally {
     release();

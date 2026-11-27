@@ -5,6 +5,7 @@ import {
   type RenderPublicationIdentity,
   type RenderPublicationMetadata,
 } from './contract';
+import { OwnedDrawParameterColumns } from './draw-parameters';
 
 /**
  * Wire protocol of one source publication. Per-frame facts live in one
@@ -12,8 +13,8 @@ import {
  * object graph crosses only for low-frequency rows that actually exist this
  * frame, so an unchanged frame structured-clones three scalars and a buffer.
  */
-/** v9 admits native feature work and complete scaled/unscaled source time. */
-export const RENDER_PUBLICATION_PROTOCOL = 9;
+/** v12 supports references to an immutable Canvas pixel revision in the same source epoch. */
+export const RENDER_PUBLICATION_PROTOCOL = 12;
 
 /** What crosses the Worker boundary and what a Renderer draws. */
 export interface RenderPublicationMessage extends RenderPublicationIdentity {
@@ -28,6 +29,7 @@ export interface RenderPublicationMessage extends RenderPublicationIdentity {
 export type RenderPublicationSide = {
   readonly [K in SideKey]?: RenderPublication[K];
 } & {
+  readonly drawParameters?: RenderPublication['drawParameters'];
   /** Top-level frame metadata entries that differ from the last accepted publication. */
   readonly metadata?: Partial<RenderPublicationMetadata>;
   /** Metadata entries the accepted publication had and this one omits. */
@@ -285,6 +287,10 @@ export function encodeRenderPublication(
   }
   const metadata = metadataDelta(packet.metadata, accepted, packet.targets.length > 0);
   if (metadata !== undefined) side = { ...side, ...metadata };
+  if (packet.drawParameters !== undefined) {
+    side ??= {};
+    side.drawParameters = packet.drawParameters;
+  }
   return {
     source: packet.source,
     epoch: packet.epoch,
@@ -389,6 +395,7 @@ export function decodeRenderPublication(
     },
     metadata,
     ...renderPublicationRecordColumns(message.record, counts),
+    drawParameters: side.drawParameters,
     materials: side.materials ?? EMPTY,
     retiredMaterials: side.retiredMaterials ?? EMPTY,
     templates: side.templates ?? EMPTY,
@@ -417,40 +424,135 @@ export function renderPublicationTransfers(message: RenderPublicationMessage): A
 
 /**
  * Bytes one publication carries across the Worker boundary: the logical record
- * (header and change columns) and the transferred asset buffers. Structured-cloned
- * side rows (objects, materials, programs, features, changed metadata) are not counted.
+ * and draw parameter columns, plus transferred asset buffers. Other
+ * structured-cloned side rows are not counted.
  */
 export function renderPublicationBytes(message: RenderPublicationMessage): {
   readonly columns: number;
   readonly assets: number;
 } {
   let assets = 0;
-  if (message.side?.assets !== undefined || message.side?.assetPatches !== undefined)
-    for (const buffer of renderPublicationAssetTransfers(message)) assets += buffer.byteLength;
-  return { columns: renderPublicationRecordLength(message), assets };
+  for (const buffer of renderPublicationAssetTransfers(message)) assets += buffer.byteLength;
+  for (const program of message.side?.programs ?? EMPTY)
+    assets += program.artifact?.bytes.byteLength ?? 0;
+  const parameters = message.side?.drawParameters;
+  const parameterBytes =
+    parameters === undefined
+      ? 0
+      : parameters.entities.byteLength +
+        parameters.values.byteLength +
+        parameters.removed.byteLength;
+  return { columns: renderPublicationRecordLength(message) + parameterBytes, assets };
+}
+
+function collectPublicationBuffers(value: unknown, buffers: Set<ArrayBuffer>): void {
+  if (value instanceof ArrayBuffer) buffers.add(value);
+  else if (ArrayBuffer.isView(value)) {
+    if (value.buffer instanceof ArrayBuffer) buffers.add(value.buffer);
+  } else if (value !== null && typeof value === 'object') {
+    for (const child of Object.values(value)) collectPublicationBuffers(child, buffers);
+  }
+}
+
+/** Caller owns the copied payload. Its views move together, once per buffer. */
+export function publicationAssetPayloadTransfers(
+  value: import('@forgeax/engine-types').Asset,
+): ArrayBuffer[] {
+  const buffers = new Set<ArrayBuffer>();
+  collectPublicationBuffers(value, buffers);
+  return [...buffers];
 }
 
 /** Mesh copies stay with the receiver; only the record is recycled. */
 export function renderPublicationAssetTransfers(message: RenderPublicationMessage): ArrayBuffer[] {
-  const side = message.side;
-  if (side?.assets === undefined && side?.assetPatches === undefined) return [];
-  const buffers = new Set<ArrayBuffer>();
-  const collect = (value: unknown): void => {
-    if (value instanceof ArrayBuffer) {
-      buffers.add(value);
-    } else if (ArrayBuffer.isView(value)) {
-      if (value.buffer instanceof ArrayBuffer) buffers.add(value.buffer);
-    } else if (value !== null && typeof value === 'object') {
-      for (const child of Object.values(value)) collect(child);
-    }
+  return collectAssetTransfers(message, false);
+}
+
+/** Owned buffers for the source-to-render handoff. Only the record is returned on completion. */
+export function renderPublicationSendTransfers(message: RenderPublicationMessage): ArrayBuffer[] {
+  return collectAssetTransfers(message, true);
+}
+
+/** A registry artifact may be one view into a whole shader library. Move only its declared bytes. */
+export function prepareRenderPublicationTransfer(
+  message: RenderPublicationMessage,
+  budget: number,
+) {
+  const transfers = renderPublicationSendTransfers(message);
+  let bytes = 0;
+  const charge = (length: number) => {
+    bytes += length;
+    if (bytes > budget)
+      throw new RenderPublicationError({
+        reason: 'unsupported',
+        subject: `draw publication needs ${bytes} transfer bytes, above renderPublicationTransferBudgetBytes=${budget}`,
+      });
   };
-  for (const row of side.assets ?? EMPTY) collect(row.value);
+  for (const buffer of transfers) charge(buffer.byteLength);
+  const programs = message.side?.programs;
+  let ownedPrograms: RenderPublication['programs'][number][] | undefined;
+  if (programs !== undefined) {
+    for (let index = 0; index < programs.length; index++) {
+      const row = programs[index];
+      if (row?.artifact === undefined) continue;
+      const { key, digest, metadata, bytes: source } = row.artifact;
+      charge(source.byteLength);
+      const payload = new Uint8Array(source);
+      transfers.push(payload.buffer);
+      ownedPrograms ??= programs.slice();
+      ownedPrograms[index] = {
+        ...row,
+        artifact: {
+          key,
+          bytes: payload,
+          ...(digest === undefined ? {} : { digest }),
+          ...(metadata === undefined ? {} : { metadata }),
+        },
+      };
+    }
+  }
+  return {
+    message:
+      ownedPrograms === undefined
+        ? message
+        : { ...message, side: { ...message.side, programs: ownedPrograms } },
+    transfers,
+    bytes,
+  };
+}
+
+function collectAssetTransfers(
+  message: RenderPublicationMessage,
+  includeRecord: boolean,
+): ArrayBuffer[] {
+  const side = message.side;
+  const parameters =
+    includeRecord && side?.drawParameters instanceof OwnedDrawParameterColumns
+      ? side.drawParameters.entities.buffer
+      : undefined;
+  if (
+    side?.assets === undefined &&
+    side?.assetVersions === undefined &&
+    side?.assetPatches === undefined
+  )
+    return parameters !== undefined
+      ? [message.record, parameters]
+      : includeRecord
+        ? [message.record]
+        : [];
+  const buffers = new Set<ArrayBuffer>();
+  if (includeRecord) buffers.add(message.record);
+  if (parameters !== undefined) buffers.add(parameters);
+  for (const row of side.assets ?? EMPTY) collectPublicationBuffers(row.value, buffers);
+  for (const row of side.assetVersions ?? EMPTY) {
+    if (row.value?.kind === 'mesh') collectPublicationBuffers(row.value, buffers);
+  }
   for (const patch of side.assetPatches ?? EMPTY) {
-    collect(patch.fields);
-    for (const range of patch.ranges) collect(range.bytes);
+    collectPublicationBuffers(patch.fields, buffers);
+    for (const range of patch.ranges) collectPublicationBuffers(range.bytes, buffers);
   }
   // The record is recycled separately and is never an asset buffer.
-  buffers.delete(message.record);
+  if (!includeRecord) buffers.delete(message.record);
   return [...buffers];
 }
 

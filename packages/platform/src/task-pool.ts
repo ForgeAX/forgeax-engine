@@ -9,6 +9,7 @@ import {
   type TaskSubmitOptions,
   taskAbortError,
 } from '@forgeax/engine-types';
+import { nowMs } from './clock.js';
 import {
   awaitSlices,
   createSliceControl,
@@ -134,10 +135,6 @@ export function defaultTaskWorkerCount(
   return Math.max(1, Math.min(hardwareConcurrency - 3, 4));
 }
 
-function defaultNow(): number {
-  return globalThis.performance?.now() ?? Date.now();
-}
-
 function defaultYield(resume: () => void): void {
   setTimeout(resume, 0);
 }
@@ -231,7 +228,7 @@ export function createTaskPool(options: TaskPoolOptions): TaskPool {
   const factory = options.workerFactory;
   const size = factory === undefined ? 1 : Math.max(1, options.workers ?? defaultTaskWorkerCount());
   const crashLimit = Math.max(1, options.crashLimit ?? 3);
-  const now = options.now ?? defaultNow;
+  const now = options.now ?? nowMs;
   const yieldTask = options.yieldTask ?? defaultYield;
   const slicer = createSlicer(now, options.sliceMs ?? 8, yieldTask);
   const queues: Record<TaskPriority, Task[]> = { critical: [], normal: [], background: [] };
@@ -271,6 +268,11 @@ export function createTaskPool(options: TaskPoolOptions): TaskPool {
     kinds.set(kind, state);
     return state;
   };
+
+  const taskFailure = (kind: string, state: KindState): unknown =>
+    state.degraded && options.kinds[kind]?.workerOnly
+      ? new Error(`task kind '${kind}' requires a Worker`)
+      : state.failure;
 
   const settle = (task: Task): boolean => {
     if (task.settled) return false;
@@ -549,9 +551,10 @@ export function createTaskPool(options: TaskPoolOptions): TaskPool {
           continue;
         }
         const state = kindState(task.kind);
-        if (state.failure !== undefined) {
+        const failure = taskFailure(task.kind, state);
+        if (failure !== undefined) {
           queue.splice(index--, 1);
-          fail(task, state.failure);
+          fail(task, failure);
           continue;
         }
         if (state.module === undefined || state.degraded !== inlineOnly) continue;
@@ -697,8 +700,14 @@ export function createTaskPool(options: TaskPoolOptions): TaskPool {
           () => signal.removeEventListener('abort', onAbort),
         );
       }
+      const state = kindState(kind);
+      const failure = taskFailure(kind, state);
+      if (failure !== undefined) {
+        fail(task, failure);
+        return handle;
+      }
       queues[task.priority].push(task);
-      load(kind, kindState(kind));
+      load(kind, state);
       pump();
       return handle;
     },
@@ -764,7 +773,7 @@ export function serveTaskWorker(
   options: ServeTaskWorkerOptions = {},
 ): void {
   const slices = options.slices ?? {};
-  const now = options.now ?? defaultNow;
+  const now = options.now ?? nowMs;
   const slicer = createSlicer(now, options.sliceMs ?? 8, options.yieldTask ?? defaultYield);
   // biome-ignore lint/suspicious/noExplicitAny: kinds are heterogeneous.
   const ready = new Map<string, Promise<TaskModule<any, any, any>>>();

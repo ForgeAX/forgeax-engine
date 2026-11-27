@@ -10,7 +10,6 @@ import type { RenderError } from '../errors/render';
 import { projectRenderFeaturePlans } from '../features/render-graph-contribution';
 import type { RenderPipelineFeatureTarget, RenderPipelineFrame } from '../render-pipeline';
 import type { TypedShadowTargets } from '../typed-shadow-passes';
-import { resolveLightingBinding } from './standard-feature-contribution';
 import type { CubeCaptureGraphWork } from './target-capture-graph';
 import { resolveTargetBindings, targetResolver } from './typed-frame-graph-bindings';
 
@@ -63,7 +62,6 @@ export function addCaptureFaceFeaturePasses(
   return projectRenderFeaturePlans(builder, executions, {
     resolveTarget: targetResolver(targets),
     resolveBindings: (binding) => resolveTargetBindings(binding),
-    resolveStandardLighting: resolveLightingBinding,
     standardSurfaceAccesses: input.lighting?.accesses ?? [],
   });
 }

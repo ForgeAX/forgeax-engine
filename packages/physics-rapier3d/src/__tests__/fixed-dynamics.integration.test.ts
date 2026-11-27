@@ -1,6 +1,6 @@
 import { vec3 } from '@forgeax/engine-math';
 import type { ColliderSnapshot } from '@forgeax/engine-physics';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createRapier3DPhysicsWorld } from '../rapier-physics-world-3d.js';
 import { loadRapier3D } from '../wasm-loader.js';
 
@@ -190,6 +190,55 @@ describe('ordinary committed dynamics and fixed forces', () => {
         stale: [],
       });
     } finally {
+      physics.dispose();
+    }
+  });
+
+  it('keeps completed empty sensor receipts without querying the ordinary body roster', async () => {
+    const physics = await fixture();
+    const intersection = vi.spyOn(Reflect.get(physics, 'raw'), 'intersectionPairsWith');
+    try {
+      physics.step(1 / 60);
+      expect(intersection).not.toHaveBeenCalled();
+      expect(physics.getSensorOverlaps(1).unwrap()).toMatchObject({
+        completedStep: 1,
+        current: [],
+        entered: [],
+        exited: [],
+        stale: [],
+      });
+      physics.ensureBody(2, pose(), body(0), collider(true));
+      expect(physics.getSensorOverlaps(2)).toMatchObject({
+        ok: false,
+        error: { code: 'fixed-operation-unavailable' },
+      });
+      physics.step(1 / 60);
+      const previous = physics.getSensorOverlaps(1).unwrap().current;
+      expect(previous).toHaveLength(1);
+      physics.removeEntity(2);
+      expect(physics.getSensorOverlaps(1).unwrap().stale).toEqual(previous);
+      intersection.mockClear();
+      physics.step(1 / 60);
+      expect(intersection).not.toHaveBeenCalled();
+      expect(physics.getSensorOverlaps(1).unwrap()).toMatchObject({
+        completedStep: 3,
+        current: [],
+        exited: previous,
+        stale: [],
+      });
+      physics.step(1 / 60);
+      expect(physics.getSensorOverlaps(1).unwrap()).toMatchObject({
+        completedStep: 4,
+        exited: [],
+      });
+      physics.removeEntity(1);
+      physics.ensureBody(1, pose(), body(), collider());
+      expect(physics.getSensorOverlaps(1)).toMatchObject({
+        ok: false,
+        error: { code: 'fixed-operation-unavailable' },
+      });
+    } finally {
+      intersection.mockRestore();
       physics.dispose();
     }
   });

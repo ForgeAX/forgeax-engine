@@ -911,6 +911,44 @@ impl UiDocument {
         self.dirty |= accepted;
         Ok(accepted)
     }
+    /// Native keyboard editing and the rendered caret borrow the same editor.
+    pub fn input_selection(&mut self, id: u64) -> Result<Vec<u32>, String> {
+        self.element(id)?;
+        self.resolve();
+        let mut selection = Vec::new();
+        self.document
+            .with_text_input(NodeId::from_u64(id), |driver| {
+                let raw = driver.editor.raw_text();
+                let cursor = driver.editor.raw_selection();
+                selection.extend(
+                    [cursor.anchor(), cursor.focus()]
+                        .map(|cursor| raw[..cursor.index()].encode_utf16().count() as u32),
+                );
+            });
+        Ok(selection)
+    }
+    pub fn set_input_selection(&mut self, id: u64, anchor: u32, caret: u32) -> Result<(), String> {
+        self.element(id)?;
+        self.resolve();
+        self.document
+            .with_text_input(NodeId::from_u64(id), |mut driver| {
+                let raw = driver.editor.raw_text();
+                let byte_index = |units: u32| {
+                    let mut position = 0;
+                    for (index, scalar) in raw.char_indices() {
+                        position += scalar.len_utf16() as u32;
+                        if position > units {
+                            return index;
+                        }
+                    }
+                    raw.len()
+                };
+                let (anchor, caret) = (byte_index(anchor), byte_index(caret));
+                driver.select_byte_range(anchor, caret);
+            });
+        self.dirty = true;
+        Ok(())
+    }
     pub fn input_bad_input(&self, id: u64) -> Result<bool, String> {
         self.input_value(id)?;
         Ok(self.document.input_bad_input(NodeId::from_u64(id)))

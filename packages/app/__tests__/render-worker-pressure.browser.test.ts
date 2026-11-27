@@ -6,7 +6,7 @@ declare module 'vitest/browser' {
   }
 }
 
-import { type BrowserFrameCompleted, type ExecutionRendererInspectionResult, FORGEAX_FRAME_COMPLETED_EVENT } from '@forgeax/engine-app';
+import { type BrowserFrameCompleted, type BrowserFrameSubmitted, type ExecutionRendererInspectionResult, FORGEAX_FRAME_COMPLETED_EVENT, FORGEAX_FRAME_SUBMITTED_EVENT } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import { expect, it } from 'vitest';
 import { DEFAULT_RENDER_PIPELINE_CAPACITY } from '../src/execution/protocol';
@@ -49,11 +49,33 @@ it.each([
   const samples: number[] = [];
   const errors: unknown[] = [];
   let presentationReady = false;
+  const intervals = new Float64Array(32768);
+  const drawCpu = new Float64Array(intervals.length);
+  let timedDraws = 0;
+  let measuring = false;
+  const onSubmitted = (event: Event) => {
+    if (!measuring) return;
+    const submitted = (event as CustomEvent<BrowserFrameSubmitted>).detail;
+    if (submitted.presentation === 'ready' && submitted.renderDrawCpuMs !== undefined) {
+      if (timedDraws < drawCpu.length) drawCpu[timedDraws] = submitted.renderDrawCpuMs;
+      timedDraws++;
+    }
+  };
+  let readyFrames = 0;
+  let previousReady = 0;
   const onCompleted = (event: Event) => {
-    if ((event as CustomEvent<BrowserFrameCompleted>).detail.presentation === 'ready')
-      presentationReady = true;
+    if ((event as CustomEvent<BrowserFrameCompleted>).detail.presentation !== 'ready') return;
+    presentationReady = true;
+    if (measuring) {
+      const now = performance.now();
+      if (readyFrames > 0 && readyFrames <= intervals.length)
+        intervals[readyFrames - 1] = now - previousReady;
+      previousReady = now;
+      readyFrames++;
+    }
   };
   canvas.addEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
+  canvas.addEventListener(FORGEAX_FRAME_SUBMITTED_EVENT, onSubmitted);
   const completed = () =>
     tier === 'render-worker'
       ? (execution.report().render?.completedFrame ?? 0)
@@ -79,6 +101,7 @@ it.each([
     await request('reset-metrics');
     const initial = execution.report();
     const started = performance.now();
+    measuring = true;
     let previousCompleted = completed();
     let rendered = 0;
     for (let index = 0; index < PING_SAMPLES || rendered < 2; index++) {
@@ -105,6 +128,7 @@ it.each([
         previousCompleted = completed();
       }
     }
+    measuring = false;
     expect(errors).toEqual([]);
     expect(lastTicks).toBeGreaterThan(1);
     const elapsedMs = performance.now() - started;
@@ -113,9 +137,7 @@ it.each([
       expect(final.frame.completed).toBeGreaterThan(initial.frame.completed);
       // The default render pipeline admits this many sealed pictures before
       // GPU completion; the measured window must never exceed it.
-      expect(
-        (final.render?.submittedFrame ?? 0) - (final.render?.completedFrame ?? 0),
-      ).toBeLessThanOrEqual(DEFAULT_RENDER_PIPELINE_CAPACITY);
+      expect(final.frame.highWater).toBeLessThanOrEqual(DEFAULT_RENDER_PIPELINE_CAPACITY);
     }
     const phaseTimings = await request('metrics');
     const rawPingMs = [...samples];
@@ -153,7 +175,23 @@ it.each([
     else expect(rendererRead.ownerKeys).toBeNull();
     expect(() => JSON.stringify(inspection.value)).not.toThrow();
     expect(errors).toEqual([]);
+    const distribution = (storage: Float64Array, total: number) => {
+      const recorded = storage.subarray(0, total).sort();
+      const percentile = (fraction: number) =>
+        recorded.length === 0 ? null : recorded[Math.ceil(recorded.length * fraction) - 1];
+      return {
+        samples: recorded.length,
+        omitted: total - recorded.length,
+        p50: percentile(0.5),
+        p95: percentile(0.95),
+        p99: percentile(0.99),
+        max: percentile(1),
+      };
+    };
     await commands.recordRenderWorkerEvidence(tier, {
+      readyFrames,
+      hostReadyIntervalMs: distribution(intervals, Math.max(0, readyFrames - 1)),
+      drawCpuMs: distribution(drawCpu, timedDraws),
       kind: 'render-publication-pressure',
       tier,
       entities: PRESSURE_ENTITIES,
@@ -172,6 +210,7 @@ it.each([
     });
   } finally {
     canvas.removeEventListener(FORGEAX_FRAME_COMPLETED_EVENT, onCompleted);
+    canvas.removeEventListener(FORGEAX_FRAME_SUBMITTED_EVENT, onSubmitted);
     await app.dispose();
     channel.port1.close();
     app.canvas?.remove();

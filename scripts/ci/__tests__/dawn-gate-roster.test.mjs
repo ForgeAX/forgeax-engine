@@ -22,6 +22,7 @@ import {
   DAWN_ORDINARY_FILE_FAMILIES,
   DAWN_VITEST_CONFIG,
 } from '../dawn-gate-roster.mjs';
+import { nativeValidationLanes } from '../native-validation-scope.mjs';
 import {
   dawnGroupEnvironment,
   dawnVitestArgs,
@@ -31,7 +32,12 @@ import {
 } from '../run-dawn-gate.mjs';
 
 const root = resolve('.');
-const selectors = ['FORGEAX_DAWN_ISOLATED', 'FORGEAX_DAWN_COMPACT', 'FORGEAX_DAWN_PARTITION'];
+const selectors = [
+  'FORGEAX_DAWN_ISOLATED',
+  'FORGEAX_DAWN_COMPACT',
+  'FORGEAX_DAWN_PARTITION',
+  'FORGEAX_DAWN_SERIAL_ORDINARY',
+];
 const nativeVitest = await createVitest('test', { project: ['dawn'], watch: false });
 let nativeSpecifications;
 let configuredSequencer;
@@ -148,17 +154,35 @@ test('the opt-in ordinary pool is bounded and retains separate native forks', ()
     const args = dawnVitestArgs(group, { ordinaryWorkers: 2 });
     const ordinary = group.vitestShard !== undefined;
     const env = dawnGroupEnvironment(group, { LP_NUM_THREADS: '8' }, 2);
-    assert.equal(env.LP_NUM_THREADS, ordinary ? '4' : '8');
-    assert.equal(env.FORGEAX_SHADER_COMPILE_WORKERS, ordinary ? '1' : undefined);
-    assert.ok(args.includes(`--maxWorkers=${ordinary ? 2 : 1}`));
-    assert.equal(args.includes('--pool=forks'), ordinary);
-    assert.equal(args.includes('--fileParallelism=true'), ordinary);
+    const bounded = ordinary || group.limitSoftwareGpuWorkers;
+    const rasterThreads = group.softwareGpuHeapRasterThreads ?? (bounded ? 4 : 8);
+    assert.equal(env.LP_NUM_THREADS, String(rasterThreads));
+    assert.equal(
+      env.MALLOC_ARENA_MAX,
+      group.softwareGpuHeapRasterThreads !== undefined ? '2' : undefined,
+    );
+    assert.equal(
+      env.MALLOC_TRIM_THRESHOLD_,
+      group.softwareGpuHeapRasterThreads !== undefined ? '131072' : undefined,
+    );
+    assert.equal(env.FORGEAX_SHADER_COMPILE_WORKERS, bounded ? '1' : undefined);
+    assert.equal(
+      env.GALLIVM_PERF,
+      ['default-gbuffer-gi', 'screen-probe-support', 'world-card-bounds'].includes(group.id)
+        ? 'nopt'
+        : undefined,
+    );
+    const parallel = ordinary && !group.serialOrdinary;
+    assert.ok(args.includes(`--maxWorkers=${parallel ? 2 : 1}`));
+    assert.equal(args.includes('--pool=forks'), parallel);
+    assert.equal(args.includes('--fileParallelism=true'), parallel);
+    assert.equal(env.FORGEAX_DAWN_SERIAL_ORDINARY, group.serialOrdinary ? '2' : undefined);
     assert.equal(args.includes('--reporter=default'), ordinary);
     assert.equal(
-      args.some((arg) => arg.endsWith('/modeling-file-phase-reporter.mjs')),
+      args.some((arg) => arg.replaceAll('\\', '/').endsWith('/modeling-file-phase-reporter.mjs')),
       ordinary,
     );
-    assert.equal(args.includes('--no-file-parallelism'), !ordinary);
+    assert.equal(args.includes('--no-file-parallelism'), !parallel);
     assert.equal(args.includes('--no-isolate'), group.id.startsWith('heavy-'));
   }
 });
@@ -359,10 +383,12 @@ test('the CI matrix and Dawn gate command match the authoritative lane count', (
   );
   assert.ok(job.includes(`name: vitest-dawn-\${{ matrix.shard }}-of-${laneCount}`));
   assert.ok(job.includes(`--shard "\${{ matrix.shard }}/${laneCount}"`));
-  const matrix = /\n\s+shard:\s*\[([^\]]+)\]/.exec(job);
-  assert.ok(matrix, 'the CI job must declare its complete shard matrix');
+  assert.match(
+    parse(workflow).jobs['vitest-dawn'].strategy.matrix.shard,
+    /core-build.outputs.dawn_shards/,
+  );
   assert.deepEqual(
-    JSON.parse(`[${matrix[1]}]`),
+    nativeValidationLanes.dawn,
     Array.from({ length: laneCount }, (_, index) => index + 1),
   );
 });
@@ -448,7 +474,7 @@ test('local, PR and Linux nightly execute the same complete gate', () => {
   assert.ok(ci.on.workflow_call, 'Nightly must execute the same-commit CI workflow');
   assert.equal(ci.on.workflow_call.inputs.nightly_full_profile.default, false);
   const dawn = ci.jobs['vitest-dawn'];
-  assert.deepEqual(dawn.strategy.matrix.shard, [1, 2, 3, 4]);
+  assert.match(dawn.strategy.matrix.shard, /core-build.outputs.dawn_shards/);
   const step = dawn.steps.find((candidate) =>
     candidate.run?.includes('node scripts/ci/run-dawn-gate.mjs --shard'),
   );
@@ -580,10 +606,17 @@ test('ordinary backfill honors native-owner placement reserves without losing fi
   );
   const mostReserved = nativeLoads.indexOf(Math.max(...nativeLoads));
   const leastReserved = nativeLoads.indexOf(Math.min(...nativeLoads));
+  // Historical owners backfill around native reserves before new owners enter
+  // the remaining capacity at their full conservative forecast.
+  const measuredBackfill = configuredPartitions.map((partition) =>
+    partition.reduce((sum, specification) => {
+      const file = relative(root, specification.moduleId).replaceAll('\\', '/');
+      return sum + (timings.planningFiles[file] === undefined ? 0 : fileCost(file));
+    }, 0),
+  );
   assert.ok(
-    loads[mostReserved] - nativeLoads[mostReserved] <
-      loads[leastReserved] - nativeLoads[leastReserved],
-    `ordinary backfill must compensate for unequal complete native-owner reserves; native=${nativeLoads.join(', ')} total=${loads.join(', ')}`,
+    measuredBackfill[mostReserved] < measuredBackfill[leastReserved],
+    `measured backfill must compensate for unequal native-owner reserves; native=${nativeLoads.join(', ')} backfill=${measuredBackfill.join(', ')}`,
   );
   assert.ok(
     Math.max(...loads) - Math.min(...loads) <= largest + 1e-6,
@@ -1232,10 +1265,13 @@ test('run 44113035424 conserves complete workers and excludes interrupted VFX ti
 });
 
 test('actual core discovery uses matching costs and conserves every ordinary file', () => {
-  // Case deadlines plus 30 s process startup reserve are forecasts, never measurements.
+  // Provisional file forecasts include startup allowance.
   const unmeasured = [
+    'packages/render/src/__tests__/raytracing/world-bounds-index.dawn.test.ts',
+    'packages/render/src/__tests__/raytracing/world-card-bounds.dawn.test.ts',
     'packages/render/src/__tests__/target-environment.dawn.test.ts',
     'packages/render/src/__tests__/target-subresources.dawn.test.ts',
+    'packages/runtime/src/__tests__/default-gbuffer-gi.dawn.test.ts',
     'packages/three/src/__tests__/procedural-addons-render.dawn.test.ts',
     'packages/three/src/__tests__/surface-expression.dawn.test.ts',
     'packages/three/src/__tests__/target-surface.dawn.test.ts',
@@ -1251,8 +1287,8 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
       import { readFileSync } from 'node:fs';
       import { createVitest } from 'vitest/node';
       import ledger from './scripts/ci/dawn-file-seconds.json' with { type: 'json' };
-      import { planDawnShards } from './config/vitest-dawn-sequencer.ts';
-      import { DAWN_GATE_SHARDS, DAWN_GATE_GROUPS } from './scripts/ci/dawn-gate-roster.mjs';
+      import { DawnSequencer, planDawnShards } from './config/vitest-dawn-sequencer.ts';
+      import { DAWN_GATE_SHARDS, DAWN_GATE_GROUPS, dawnNativeLaneReserve } from './scripts/ci/dawn-gate-roster.mjs';
       import { coreValidationFiles } from './scripts/ci/core-validation.mjs';
       import { dawnFileOwnerCosts, dawnPlanningFileCosts, dawnPlanningOwnerCosts } from './config/dawn-timings.ts';
       const v = await createVitest('test', { project: ['dawn'], watch: false });
@@ -1266,12 +1302,50 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
         // also admits new files, charged at the sequencer's conservative fallback.
         const measured = Object.keys(ledger.coreProfile.files);
         const native = new Set(DAWN_GATE_GROUPS.flatMap(({ files }) => files));
+        const retired = new Set([
+          'packages/render/src/__tests__/ssr-hit-color.dawn.test.ts',
+          'packages/render/src/__tests__/ssr-texel-crossing.dawn.test.ts',
+          'packages/render/src/__tests__/ssr-trace-pyramid-rescue.dawn.test.ts',
+          'packages/shader/src/__tests__/ssao-cluster-pack.dawn.test.ts',
+        ]);
+        for (const file of retired) {
+          assert.ok(measured.includes(file));
+          assert.ok(!paths.includes(file));
+        }
         const declared = coreValidationFiles([...measured, ...Object.keys(ledger.fileReserves)])
+          .filter((path) => !retired.has(path))
           .filter((path) => !native.has(path));
         assert.deepEqual(declared.filter((path) => !paths.includes(path)), []);
+        for (const file of [
+          'packages/render/src/__tests__/depth-pyramid-odd-reduction.dawn.test.ts',
+          'packages/render/src/__tests__/ssr-roughness-mip.dawn.test.ts',
+          'packages/shader/src/__tests__/ssr-ray.dawn.test.ts',
+        ]) {
+          assert.ok(paths.includes(file), file);
+        }
         const added = paths.filter((path) => !declared.includes(path));
+        const quick = files.find(({ moduleId }) => moduleId.endsWith('/integer-readback.dawn.test.ts'));
+        const lighting = files.find(({ moduleId }) => moduleId.endsWith('/lighting-channels.dawn.test.ts'));
+        assert.ok(quick && lighting);
+        const context = { config: { ...v.config, shard: { index: 2, count: 4 } }, cache: v.cache };
+        assert.deepEqual(await new DawnSequencer(context).sort([quick, lighting]), [lighting, quick]);
         const lanes = planDawnShards(files, process.cwd(), 2);
         assert.equal(lanes.length, 4);
+        const serialFiles = files.map(({ moduleId, project }) => ({
+          moduleId,
+          project: { name: project.name, config: { maxWorkers: 1 } },
+        }));
+        process.env.FORGEAX_DAWN_SERIAL_ORDINARY = '2';
+        const gbuffer = 'packages/runtime/src/__tests__/default-gbuffer-gi.dawn.test.ts';
+        assert.ok(native.has(gbuffer));
+        assert.ok(!paths.includes(gbuffer));
+        try {
+          const serialContext = { ...context, config: { ...context.config, shard: { index: 4, count: 4 } } };
+          const serialLane = await new DawnSequencer(serialContext).shard(serialFiles);
+          assert.deepEqual(serialLane.map(({ moduleId }) => moduleId), lanes[3].map(({ moduleId }) => moduleId));
+        } finally {
+          delete process.env.FORGEAX_DAWN_SERIAL_ORDINARY;
+        }
         assert.equal(new Set(lanes.flat().map(({ moduleId }) => moduleId)).size, files.length);
         assert.deepEqual(lanes.flat().map(({ moduleId }) =>
           relative(process.cwd(), moduleId).replaceAll('\\\\', '/')).sort(), paths.sort());
@@ -1283,17 +1357,22 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
           'packages/three/src/__tests__/node-optical-inputs.dawn.test.ts',
           'packages/three/src/__tests__/node-primitive-inputs.dawn.test.ts',
         ]);
+        const nativeReserves = new Map(DAWN_GATE_GROUPS.filter(({ files }) => files.length > 0)
+          .map(group => {
+            const selected = coreValidationFiles(group.files);
+            const history = owners.get(group.id) ??
+              selected.reduce((seconds, path) => seconds + (costs.get(path) ?? fallback), 0);
+            return [group.id, selected.length === 0 ? 0 :
+              Math.max(history, group.placementReserveSeconds ?? 0)];
+          }));
         const loads = lanes.map((lane, index) =>
           lane.reduce((sum, { moduleId }) => {
             const path = relative(process.cwd(), moduleId).replaceAll('\\\\', '/');
             return sum + (children.has(path) ? 0 : (costs.get(path) ?? fallback) / 2);
-          }, 0) + DAWN_GATE_SHARDS[index].reduce((sum, id) => {
-            const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
-            return sum + (id.startsWith('ordinary-') || coreValidationFiles(group.files).length === 0
-              ? 0 : Math.max(owners.get(id) ?? 0, group.placementReserveSeconds ?? 0));
-          }, 0));
-        assert.ok(Math.max(...loads) - Math.min(...loads) <= Math.max(...costs.values()) / 2 + 1e-6);
-        // Replay the original measured population; additions have forecasts, not old observations.
+          }, 0) + dawnNativeLaneReserve(DAWN_GATE_GROUPS.filter(group => DAWN_GATE_SHARDS[index].includes(group.id)),
+            nativeReserves, 2));
+        assert.ok(Math.max(...loads) - Math.min(...loads) <= Math.max(...costs.values()) / 2 + 1e-6, 'complete core loads: ' + loads + ', allowed spread: ' + (Math.max(...costs.values()) / 2));
+        // Replay the retained measured population; new files still use forecasts.
         const historical = files.filter(({ moduleId }) =>
           Object.hasOwn(ledger.coreProfile.files, relative(process.cwd(), moduleId).replaceAll('\\\\', '/')));
         const historicalLanes = planDawnShards(historical, process.cwd(), 2);
@@ -1311,8 +1390,12 @@ test('actual core discovery uses matching costs and conserves every ordinary fil
               return sum + (children.has(path) ? 0 : (fileCosts.get(path) ?? 0) / 2);
             }, 0) + DAWN_GATE_SHARDS[index].reduce((sum, id) => {
             const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
-            // Count files that moved out of ordinary discovery exactly once.
-            return sum + (tails[id] ?? 0) + group.files.reduce(
+            // Archived owner timings remain immutable. Charge a partial owner
+            // its whole historical tail, and drop owners absent from current core.
+            const selected = coreValidationFiles(group.files);
+            if (group.files.length > 0 && selected.length === 0) return sum;
+            // Count retained files that moved out of ordinary discovery exactly once.
+            return sum + (tails[id] ?? 0) + selected.reduce(
               (seconds, path) => seconds + (fileCosts.get(path) ?? 0), 0);
           }, 0));
           // Two minutes of the 30-minute target remain for preparation. Older
@@ -1343,6 +1426,7 @@ test('planar capture and low-limit transmission share serial Surface admission',
     'packages/runtime/src/__tests__/planar-reflection.dawn.test.ts',
     'packages/runtime/src/__tests__/standard-planar-reflection.dawn.test.ts',
     'packages/runtime/src/__tests__/cooked-transmission-low-limit.dawn.test.ts',
+    'packages/render/src/__tests__/standard-lean-inputs.dawn.test.ts',
   ]) {
     assert.ok(owner.files.includes(file), file);
     assert.equal(DAWN_GATE_GROUPS.filter((group) => group.files.includes(file)).length, 1);
@@ -1361,19 +1445,26 @@ test('planar capture and low-limit transmission share serial Surface admission',
 });
 
 test('long native capture journeys start before ordinary backfill', () => {
+  const minimumReserveSeconds = new Map([
+    ['direct-light', 219.011],
+    ['gi-2', 534.117],
+    ['path-tracer', 355.022],
+    ['transmission', 294.878],
+  ]);
   for (const id of [
     'modeling-s6',
     'modeling-show',
     'gi-5',
+    'gi-2',
     'surface-pipelines',
     'direct-light',
+    'path-tracer',
     'transmission',
   ]) {
     const lane = DAWN_GATE_SHARDS.findIndex((owners) => owners.includes(id));
     const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
     assert.ok(
-      group.placementReserveSeconds >=
-        (id === 'direct-light' ? 219.011 : id === 'transmission' ? 294.878 : 600),
+      group.placementReserveSeconds >= (minimumReserveSeconds.get(id) ?? 600),
       'retain measured capture headroom without changing the case deadline',
     );
     const selected = selectDawnShard(`${lane + 1}/4`);
@@ -1395,6 +1486,10 @@ test('long native capture journeys start before ordinary backfill', () => {
     lanes.length,
     'independent long capture journeys must not accumulate on one slow runner',
   );
+  const coldLanes = ['surface-pipelines', 'three-surface-expression', 'gi-4'].map((id) =>
+    DAWN_GATE_SHARDS.findIndex((owners) => owners.includes(id)),
+  );
+  assert.equal(new Set(coldLanes).size, coldLanes.length);
 });
 
 test('run 43718751716 preserves interrupted-owner forecasts', () => {
@@ -1436,52 +1531,63 @@ test('completed cohorts distribute complete native tails before ordinary backfil
   assert.deepEqual(DAWN_GATE_SHARDS, [
     [
       'ordinary-1',
+      'compact-1',
       'direct-light',
-      'gi-1',
-      'heavy-4',
+      'shadow-quality',
+      'nested-discard',
+      'heavy-3',
       'modeling-s6',
       'path-tracer',
-      'rect-source',
-      'three-surface-expression',
+      'surface-pipelines',
+      'heavy-2',
+      'screen-probe-support',
     ],
     [
       'ordinary-2',
       'compact-2',
-      'gi-4',
+      'gi-2',
+      'alpha-hash',
+      'feature-depth',
+      'renderer',
+      'rect-source',
+      'three-surface-expression',
+      'shadow-fields',
+      'world-card-bounds',
       'gi-6',
-      'heavy-2',
-      'specular-aa',
-      'shadow-quality',
-      'surface-pipelines',
-      'transmission',
     ],
     [
       'ordinary-3',
-      'alpha-hash',
+      'gi-3',
       'compact-3',
-      'feature-depth',
-      'gi-2',
+      'gi-4',
       'heavy-1',
-      'heavy-3',
       'modeling-show',
+      's6c-capture',
       'screen-probe',
     ],
     [
       'ordinary-4',
-      'compact-1',
-      'gi-3',
       'gi-5',
-      'nested-discard',
-      'shadow-fields',
-      'renderer',
+      'heavy-4',
+      'gi-1',
+      'transmission',
       'vfx-depth',
+      'default-gbuffer-gi',
+      'specular-aa',
     ],
   ]);
 });
 
-test('Alpha Hash and Three Surface each reserve a fresh serial Dawn fork', () => {
+test('Heavy standalone Dawn files each reserve a fresh serial fork', () => {
   for (const [id, file, forecast] of [
+    ['s6c-capture', 'packages/modeling/examples/mech-gt/__tests__/s6c.case.dawn.test.ts', 930],
     ['alpha-hash', 'packages/runtime/src/__tests__/alpha-hash.dawn.test.ts', 186.15],
+    ['default-gbuffer-gi', 'packages/runtime/src/__tests__/default-gbuffer-gi.dawn.test.ts', 750],
+    [
+      'screen-probe-support',
+      'packages/render/src/__tests__/raytracing/screen-probe-support.dawn.test.ts',
+      240,
+    ],
     [
       'three-surface-expression',
       'packages/three/src/__tests__/surface-expression.dawn.test.ts',
@@ -1497,18 +1603,16 @@ test('Alpha Hash and Three Surface each reserve a fresh serial Dawn fork', () =>
   }
 });
 
-test('measured heavy ordinary files spread without extra owners', (t) => {
+test('measured heavy ordinary files spread across the existing lanes', (t) => {
   const currentPartitions = shippingPartitions;
   const locations = new Map(
     currentPartitions.flatMap((partition, lane) =>
       partition.map(({ moduleId }) => [relative(root, moduleId).replaceAll('\\', '/'), lane + 1]),
     ),
   );
-  // Whole-file swaps must spread the three heavy consumers that previously
-  // accumulated in ordinary-2; destinations derive from measured capacity.
+  // The remaining heavy ordinary consumers retain separate capacity.
   const heavy = [
     'packages/modeling/examples/body-panels/__tests__/panels.case.dawn.test.ts',
-    'packages/modeling/examples/mech-gt/__tests__/s6c.case.dawn.test.ts',
     'packages/devkit/src/tools/__tests__/model-views.dawn.test.ts',
   ];
   for (const file of heavy) assert.ok(locations.has(file), file);
@@ -1610,7 +1714,8 @@ test('run 43819262879 retains all completed work and positive unfinished-owner f
 
 function nodeInputMatrix(node) {
   if (node === undefined) return null;
-  if (ts.isAsExpression(node)) return nodeInputMatrix(node.expression);
+  if (ts.isAsExpression(node) || ts.isParenthesizedExpression(node))
+    return nodeInputMatrix(node.expression);
   if (ts.isIdentifier(node)) return node.text;
   assert.ok(ts.isArrayLiteralExpression(node));
   return node.elements.map((element) => {
@@ -1623,13 +1728,25 @@ function nodeInputMatrix(node) {
 }
 
 // Preserve the case inputs and oracle delegation, independent of Renderer allocation.
-function nodeInputContracts(file) {
+function nodeInputContracts(file, core = false) {
   const source = ts.createSourceFile(
     file,
     readFileSync(file, 'utf8'),
     ts.ScriptTarget.Latest,
     true,
   );
+  const profiles = new Map();
+  for (const statement of source.statements.filter(ts.isVariableStatement)) {
+    for (const declaration of statement.declarationList.declarations) {
+      const choice = declaration.initializer;
+      if (!choice || !ts.isConditionalExpression(choice)) continue;
+      assert.equal(choice.condition.getText(source), 'core');
+      profiles.set(
+        declaration.name.getText(source),
+        nodeInputMatrix(core ? choice.whenTrue : choice.whenFalse),
+      );
+    }
+  }
   return source.statements.filter(ts.isExpressionStatement).map(({ expression: call }) => {
     assert.ok(ts.isCallExpression(call));
     const [title, options, callback] = call.arguments;
@@ -1663,8 +1780,9 @@ function nodeInputContracts(file) {
       each?.expression.getText(source) ?? call.expression.getText(source),
       each ? 'it.each' : 'it',
     );
+    const matrix = nodeInputMatrix(each?.arguments[0]);
     return [
-      nodeInputMatrix(each?.arguments[0]),
+      profiles.get(matrix) ?? matrix,
       title.text,
       callback.parameters.map((parameter) => parameter.name.getText(source)),
       factory.expression.getText(source),
@@ -1674,14 +1792,18 @@ function nodeInputContracts(file) {
   });
 }
 
-test('split node-input files retain all original cases and one measured physical owner', () => {
+test('split node-input files retain the full and Core contracts and one measured physical owner', () => {
   const receipt = JSON.parse(
     readFileSync('scripts/ci/__tests__/fixtures/dawn-node-inputs-43823116760.json', 'utf8'),
   );
   const family = DAWN_ORDINARY_FILE_FAMILIES[0];
   assert.equal(family.anchor, receipt.uncompletedFile);
   const members = [family.anchor, ...family.children];
-  const contracts = members.flatMap(nodeInputContracts);
+  assert.match(
+    readFileSync(family.anchor, 'utf8'),
+    /const core = process\.env\.FORGEAX_CI_CORE_VALIDATION === '1'/,
+  );
+  const contracts = members.flatMap((file) => nodeInputContracts(file));
   assert.deepEqual(contracts, [
     [
       ['uniform', 'vec4', 'texture'],
@@ -1732,6 +1854,22 @@ test('split node-input files retain all original cases and one measured physical
       ['renderer', 'mode'],
     ],
   ]);
+  const coreContracts = members.flatMap((file) => nodeInputContracts(file, true));
+  const coreMatrices = new Map([
+    ['verifyNodeInputs', ['uniform', 'texture']],
+    ['verifyNodeInputPrimitive', ['dashed', 'sprite']],
+  ]);
+  assert.deepEqual(
+    coreContracts,
+    contracts.map(([matrix, title, params, factory, verify, args]) => [
+      coreMatrices.get(verify) ?? matrix,
+      title,
+      params,
+      factory,
+      verify,
+      args,
+    ]),
+  );
   // The historical whole-body hashes remain untouched in their original receipt.
   // These unchanged helpers own all original frames, pixels and fresh-device replays.
   for (const [file, digest] of [

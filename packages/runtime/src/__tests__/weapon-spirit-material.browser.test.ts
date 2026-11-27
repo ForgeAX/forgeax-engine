@@ -1,6 +1,8 @@
+import type { AssetRegistry, MaterialRenderProjection } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { createMaterialArtifactDigest } from '@forgeax/engine-pack/material-cook';
 import {
   Camera,
   DirectionalLight,
@@ -98,6 +100,29 @@ function assertToonAndShadowPixels(shadowed: ImageData, unshadowed: ImageData) {
   }
 }
 
+function assertRuntimeShadowPipeline(
+  assets: AssetRegistry,
+  projection: MaterialRenderProjection,
+  sources: readonly string[],
+): void {
+  const caster = projection.passes.find((pass) => pass.name === 'ShadowCaster');
+  if (caster === undefined) throw new Error('ShadowCaster is missing from the material template');
+
+  const encoder = new TextEncoder();
+  const submittedDigests = new Set(
+    sources.map((wgsl) => createMaterialArtifactDigest(encoder.encode(wgsl))),
+  );
+  const matched = [...assets.shaderRegistry.materialShaderIdentifiers()].some((key) => {
+    const artifact = assets.getMaterialArtifact(key);
+    return (
+      artifact?.metadata?.templateIdentity === projection.specializationKey &&
+      artifact.metadata.module === caster.module &&
+      submittedDigests.has(artifact.digest)
+    );
+  });
+  expect(matched, 'the selected ShadowCaster program must reach a real depth-only PSO').toBe(true);
+}
+
 async function readPresentedPixels(canvas: HTMLCanvasElement) {
   const shot = await page.elementLocator(canvas).screenshot({ base64: true });
   const base64 = typeof shot === 'string' ? shot : shot.base64;
@@ -127,6 +152,7 @@ it.each([
   const pipelineLabels: string[] = [];
   const shaderSources = new WeakMap<GPUShaderModule, string>();
   const shadowPipelineSources: string[] = [];
+  const expectedShadowEntry = engineShadow ? 'vs_main' : 'vs_shadow';
   const devices: GPUDevice[] = [];
   const attempts: PipelineAttempt[] = [];
   const shaderAttempts: ShaderAttempt[] = [];
@@ -189,6 +215,7 @@ it.each([
       };
       const observeShadow = (descriptor: GPURenderPipelineDescriptor) => {
         if (
+          descriptor.vertex.entryPoint === expectedShadowEntry &&
           descriptor.depthStencil?.format === 'depth32float' &&
           Array.from(descriptor.fragment?.targets ?? []).length === 0
         ) {
@@ -264,13 +291,12 @@ it.each([
     if (!child.ok) throw child.error;
     const childContent = runtimeAssets(assets).borrow<MaterialAsset>(child.value).unwrap();
     const projection = assets.getMaterialProjectionForPayload(childContent);
-    const shadowProgram = projection?.passes.find((pass) => pass.name === 'ShadowCaster')
-      ?.programs[0];
-    if (shadowProgram === undefined) throw new Error('published shadow program missing');
-    const shadowArtifact = assets.getMaterialArtifact(shadowProgram.specializationKey);
-    if (shadowArtifact === undefined) throw new Error('installed shadow artifact missing');
-    const expectedShadowSource = new TextDecoder().decode(shadowArtifact.bytes);
-    expect(projection?.specializationKey).toBeTruthy();
+    if (projection === undefined) throw new Error('Pack material projection missing');
+    expect(projection.specializationKey).toBeTruthy();
+    expect(projection.sourceTemplate?.publication.guid).toBe(
+      '4846fa5b-8f80-57c0-9cdc-e345102fdb6b',
+    );
+    expect(projection.passes.every((pass) => pass.programs.length === 0)).toBe(true);
     expect(childContent.values).toMatchObject({
       emissionStrength: 0,
       pigmentStrength: 0,
@@ -407,11 +433,8 @@ it.each([
     expect(
       pipelineEntries,
       `the authored shadow vertex entry must reach a real PSO: ${JSON.stringify(pipelineLabels)}`,
-    ).toContain(engineShadow ? 'vs_main' : 'vs_shadow');
-    expect(
-      shadowPipelineSources,
-      'the published shadow program must reach a depth-only PSO',
-    ).toContain(expectedShadowSource);
+    ).toContain(expectedShadowEntry);
+    assertRuntimeShadowPipeline(assets, projection, shadowPipelineSources);
     await saveDiagnostic(`success-${engineShadow}`, {
       source: import.meta.env.VITE_FORGEAX_EVIDENCE_SOURCE_SHA,
       adapters,

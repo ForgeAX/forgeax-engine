@@ -1,6 +1,8 @@
 // @ts-nocheck — remaining legacy assertions are migrated separately.
 // biome-ignore-all lint/complexity/noUselessLoneBlockStatements: source test block isolation
+import { ok } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { projectViewLayout } from '../../../render/src/environment/bindings';
 import { buildPbrPipelineLayouts, buildUnlitMaterialBgl } from '../../../render/src/pbr-pipeline';
 
 afterEach(() => vi.restoreAllMocks());
@@ -41,7 +43,7 @@ afterEach(() => vi.restoreAllMocks());
         capturedBgls.push(captured);
         // Return an opaque BindGroupLayout handle (the captured descriptor) so
         // downstream `createPipelineLayout` calls can refer to it by identity.
-        return { ok: true, value: captured };
+        return ok(captured);
       },
     );
     const createPipelineLayout = vi.fn(
@@ -77,48 +79,40 @@ afterEach(() => vi.restoreAllMocks());
       expect(layout?.label).toBe('pbr-pl');
     });
 
-    it('(b) PBR material BGL has 32 entries with independent maps and shared backdrop sampling', () => {
+    it('keeps the material slots and Scene material row without environment inputs', () => {
       const device = makeMockDevice();
-      // biome-ignore lint/suspicious/noExplicitAny: structural mock
-      buildPbrPipelineLayouts(device as any, STORAGE_CAPS);
-      const materialBgl = device.capturedBgls.find((b) => b.label === 'pbr-material-skylight-bgl');
-      expect(materialBgl).toBeDefined();
-      expect(materialBgl?.entries).toHaveLength(32);
-      expect(materialBgl?.entries[30]).toMatchObject({
+      buildPbrPipelineLayouts(device, STORAGE_CAPS);
+      const entries = device.capturedBgls.find(
+        (b) => b.label === 'pbr-material-skylight-bgl',
+      )?.entries;
+      const surface = Array.from({ length: 25 }, (_, binding) => binding).filter(
+        (binding) => binding !== 15 && binding !== 16,
+      );
+      expect(entries?.map(({ binding }) => binding)).toEqual([...surface, 46]);
+      expect(entries?.at(-1)).toMatchObject({
         binding: 46,
         buffer: { type: 'read-only-storage', hasDynamicOffset: false },
       });
     });
 
-    it('(c) preserves user/IBL binding order and omits the redundant backdrop sampler', () => {
+    it('projects the sky and transmission backdrop through View', () => {
       const device = makeMockDevice();
-      // biome-ignore lint/suspicious/noExplicitAny: structural mock
-      buildPbrPipelineLayouts(device as any, STORAGE_CAPS);
-      const materialBgl = device.capturedBgls.find((b) => b.label === 'pbr-material-skylight-bgl');
-      expect(materialBgl).toBeDefined();
-      const entries = materialBgl?.entries ?? [];
-      // Logical slots 15/16 share the normal input pair; displacement occupies 23/24.
-      expect(entries.slice(0, 29).map((entry) => entry.binding)).toEqual(
-        Array.from({ length: 31 }, (_, binding) => binding).filter(
-          (binding) => ![15, 16].includes(binding),
-        ),
-      );
-      // Skylight texture, sampler, texture, sampler, LUT, uniform.
-      expect((entries[23] as { texture?: { viewDimension: string } }).texture?.viewDimension).toBe(
-        'cube',
-      );
-      expect((entries[24] as { sampler?: { type: string } }).sampler?.type).toBe('filtering');
-      expect((entries[25] as { texture?: { viewDimension: string } }).texture?.viewDimension).toBe(
-        '2d',
-      );
-      expect((entries[26] as { sampler?: { type: string } }).sampler?.type).toBe('filtering');
-      expect((entries[27] as { texture?: { viewDimension: string } }).texture?.viewDimension).toBe(
-        '2d',
-      );
-      expect((entries[28] as { buffer?: { type: string } }).buffer?.type).toBe('uniform');
-      // Standard reuses the IBL sampler; the backdrop texture retains binding 32.
-      expect(entries.some((entry) => entry.binding === 31)).toBe(false);
-      expect(entries[29]).toMatchObject({ binding: 32, texture: { viewDimension: '2d' } });
+      const { viewBgl } = buildPbrPipelineLayouts(device, STORAGE_CAPS);
+      const reads = new Map([34, 35, 38, 39].map((binding) => [binding, 2]));
+      const view = projectViewLayout(device, viewBgl, reads);
+      expect(view.entries).toEqual([
+        expect.objectContaining({ binding: 0 }),
+        expect.objectContaining({ binding: 34, buffer: { type: 'uniform', minBindingSize: 112 } }),
+        expect.objectContaining({ binding: 35, buffer: { type: 'uniform' } }),
+        expect.objectContaining({
+          binding: 38,
+          texture: { sampleType: 'float', viewDimension: '2d' },
+        }),
+        expect.objectContaining({
+          binding: 39,
+          texture: { sampleType: 'float', viewDimension: '2d' },
+        }),
+      ]);
     });
 
     it('(d) bindGroupLayouts[0..3] order matches [view, material, meshArray, instances]', () => {

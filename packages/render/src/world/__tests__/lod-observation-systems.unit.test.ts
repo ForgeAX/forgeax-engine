@@ -1,7 +1,10 @@
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
+import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import { viewSourceFixture } from '../../__tests__/view-source.fixture';
+import { Camera } from '../../components/camera';
 import type { CameraSnapshot } from '../../render-contract';
+import type { ExtractedFrame } from '../../render-system-extract';
 import {
   LodObservationKey,
   RENDER_LOD_OBSERVATION_SYSTEM,
@@ -20,6 +23,7 @@ import {
   endRenderFrame,
   publishRenderSubmission,
 } from '../render-world';
+import { viewFrameOf } from '../view-frame-systems';
 import {
   registerViewOutputSystems,
   registerViewRecorderSystem,
@@ -85,7 +89,7 @@ function fixture() {
       output: undefined,
       viewport,
       captureSize: { width: 1, height: 1 },
-      picture: { texture: undefined, viewport, channels: 'all' },
+      picture: { source: undefined, viewport, channels: 'all' },
       renderedFrames: 0,
       lastFrame: Number.NEGATIVE_INFINITY,
       rendered: false,
@@ -106,11 +110,14 @@ function fixture() {
   world.insertResource(RenderViewInput, viewSourceFixture(source));
   const plan = viewComposition(world);
   let frame = 0;
-  const begin = () => {
+  const begin = (
+    cameras: readonly CameraSnapshot[] = [camera(1), camera(2)],
+    owner = new World(),
+  ) => {
     source.stage(
-      [camera(1), camera(2)],
+      cameras,
       [],
-      new World(),
+      owner,
       {},
       { worldIdentity: 'world-a', generation: 2 } as never,
       undefined,
@@ -135,7 +142,7 @@ function fixture() {
     });
   };
   const state = () => world.getResource(LodObservationKey);
-  return { world, recorders, begin, submit, end: () => endRenderFrame(world), state };
+  return { world, views, recorders, begin, submit, end: () => endRenderFrame(world), state };
 }
 
 describe('LOD observation commit system', () => {
@@ -164,6 +171,36 @@ describe('LOD observation commit system', () => {
     });
     expect(capture?.source?.worldIdentity).toBe('world-a');
     expect(state().failure).toBeUndefined();
+  });
+
+  it('attributes a submitted primary view to its recorded camera after the source changes', () => {
+    const { world, views, begin, submit, end, state } = fixture();
+    const owner = new World();
+    const entity = owner
+      .spawn(
+        { component: Transform, data: {} },
+        { component: Camera, data: { fov: 1, near: 0.1, far: 100, aspect: 2, historyVersion: 7 } },
+      )
+      .unwrap();
+    propagateTransforms(owner).unwrap();
+    begin([], owner);
+    const recorded = world.getResource(RenderViewInput).primaryCamera;
+    if (recorded === undefined) throw new Error('Expected a primary camera');
+    const staged = viewFrameOf(world, views.primary);
+    if (staged === undefined) throw new Error('Expected a staged primary view');
+    staged.result = { ok: true, value: { cameras: [recorded] } as unknown as ExtractedFrame };
+    recordViewSubmission(world, views.primary, {
+      accepted: true,
+      attempt: 1,
+      scene: true,
+      temporal: false,
+    });
+    submit(true);
+    owner.set(entity, Camera, { historyVersion: 8 }).unwrap();
+    end();
+    expect(state().capture?.views).toMatchObject([
+      { entityKey: Number(entity), viewGeneration: 7, primary: true },
+    ]);
   });
 
   it('lists a held view that recorded no attempt as held', () => {

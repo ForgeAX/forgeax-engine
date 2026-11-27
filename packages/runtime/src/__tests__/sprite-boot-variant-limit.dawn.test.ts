@@ -34,8 +34,10 @@ const MAP_MODE_READ = 0x0001;
 
 const ENGINE_MANIFEST_URL = shaderManifestUrl(
   await (async () => {
-    const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-    return buildEngineShaderManifest();
+    const { buildEngineShaderTemplateManifest } = await import(
+      '@forgeax/engine-vite-plugin-shader'
+    );
+    return buildEngineShaderTemplateManifest();
   })(),
 );
 

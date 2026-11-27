@@ -1,10 +1,15 @@
 import type { RenderSceneResyncReason } from '../inspection-types';
 import type { InstanceBoundsCacheInspection } from '../instances-derived-bounds';
 import type { MaterialResource } from '../material-resource';
-import type { RenderableSnapshot } from '../render-system-extract';
-import type { MeshFrame } from './mesh-frame';
+import type { RenderableSnapshot, RenderableTemporalSnapshot } from '../render-system-extract';
+import type { MeshFrame, MeshGeometry } from './mesh-frame';
 
 export type { RenderSceneResyncReason } from '../inspection-types';
+
+/** The three temporal fields a synchronous GPU row writer consumes. */
+export type GpuSceneMotion = {
+  -readonly [K in 'motionValid' | 'reactive' | 'previousInstances']: RenderableTemporalSnapshot[K];
+};
 
 export interface RenderSceneIdentity {
   readonly entityKey: number;
@@ -27,6 +32,17 @@ export interface RenderSceneRecord extends RenderSceneIdentity {
   readonly generation: number;
 }
 
+/** Final owner-issued identity and owned source facts, still absent from active Scene rows. */
+export interface ReservedSceneRow extends RenderSceneRecord {
+  readonly snapshot: RenderableSnapshot;
+}
+
+/** Captured geometry for the exact reserved identity; authored row data stays with Scene. */
+export interface SceneRowGeometry {
+  readonly source: ReservedSceneRow;
+  readonly geometry: MeshGeometry;
+}
+
 export interface RenderSceneSlot extends RenderSceneRecord {
   /** Changes with every write of this row; equal versions read equal facts. */
   readonly version: number;
@@ -45,9 +61,9 @@ export interface RenderSceneApplyResult {
   readonly ignoredLateUpdates: number;
   readonly createdSlots: readonly RenderSceneSlot[];
   readonly updatedSlots: readonly RenderSceneSlot[];
-  /** Full retained-snapshot updates; transform spans stay in updatedSlots only. */
+  /** One final row per full content update, including any instance edits to that slot. */
   readonly contentUpdatedSlots: readonly RenderSceneSlot[];
-  /** Retained snapshots with changed instance payloads; root transforms may change too. */
+  /** Instance edits for slots outside the content lane. Root transforms may change too. */
   readonly instanceUpdatedSlots: readonly RenderSceneSlot[];
   /** Pre-apply records of the removed rows. */
   readonly removedSlots: readonly RenderSceneSlot[];
@@ -69,6 +85,8 @@ export interface RenderSceneInspection {
   readonly records: readonly RenderSceneRecord[];
   readonly slotCapacity: number;
   readonly freeSlots: number;
+  /** Physical numeric storage held for the active culling bounds. */
+  readonly cullingBoundsBackingBytes?: number;
   readonly revision: number;
   readonly noChangeFrames: number;
   readonly deltaFrames: number;

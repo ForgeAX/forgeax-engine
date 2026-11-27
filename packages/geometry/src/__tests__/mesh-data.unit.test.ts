@@ -1,6 +1,9 @@
 import { MESH_BIN_HEADER_BYTES } from '@forgeax/engine-pack/mesh-bin-contract';
 import { describe, expect, it } from 'vitest';
+import { unpackMeshBin } from '../assets/unpack-mesh-bin.js';
+import { createMeshBuilder } from '../mesh-builder.js';
 import { packMeshBin } from '../mesh-data.js';
+import { copyMeshAttribute, meshAttributeWindow } from '../mesh-storage.js';
 import { deriveVertexLayoutProjection } from '../vertex-attribute-layout.js';
 
 describe('canonical mesh Cook bytes', () => {
@@ -60,4 +63,39 @@ describe('canonical mesh Cook bytes', () => {
       expect(packMeshBin({ vertices, attributes: { position } }, 'invalid').ok).toBe(false);
     }
   });
+});
+
+it.each([
+  [Uint8Array, 'unorm8x4', 255],
+  [Uint16Array, 'unorm16x4', 65535],
+] as const)('round trips physical %s skin weights without expanding the mesh wire', (ArrayType, format, unit) => {
+  const attributes = {
+    position: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    skinIndex: new Uint16Array(12),
+    skinWeight: new ArrayType([unit, unit, unit, unit, 3, 6, 7, 0, 1, 0, 0, 0]),
+  };
+  const builder = createMeshBuilder({ attributes, submeshes: [{ topology: 'point-list' }] });
+  expect(builder.appendVertices({ ...attributes, skinWeight: new Float32Array(12) }).ok).toBe(
+    false,
+  );
+  builder.appendVertices(attributes).unwrap();
+  const mesh = builder.build().unwrap();
+  const bytes = packMeshBin(mesh, 'packed weights').unwrap();
+  const decoded = unpackMeshBin(bytes, 'packed weights', 'interleaved').unwrap();
+  expect(decoded.version).toBe(8);
+  expect(decoded.projection.attributes.find(({ key }) => key === 'skinWeight')?.format).toBe(
+    format,
+  );
+  expect(decoded.projection.arrayStride).toBe(20 + 4 * ArrayType.BYTES_PER_ELEMENT);
+  expect(decoded.vertices.byteLength).toBe(decoded.projection.arrayStride * 6);
+  expect(meshAttributeWindow(decoded, 'skinWeight')?.data).toBeInstanceOf(ArrayType);
+  const repeated = [...attributes.skinWeight, ...attributes.skinWeight];
+  expect(copyMeshAttribute(decoded, 'skinWeight')).toEqual(
+    Float32Array.from(repeated, (w) => w / unit),
+  );
+  expect(unpackMeshBin(bytes).unwrap().attributes.skinWeight).toEqual(new ArrayType(repeated));
+
+  // The new mask semantics must never silently change the version 7 interpretation.
+  new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(0, 7, true);
+  expect(unpackMeshBin(bytes).ok).toBe(false);
 });

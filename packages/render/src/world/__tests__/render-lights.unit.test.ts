@@ -211,6 +211,85 @@ describe('RenderLights', () => {
     expect(spies.alloc).not.toHaveBeenCalled();
   });
 
+  it('publishes only the changed light families during motion, including warning-only edits', () => {
+    const { frame, owner } = fixture();
+    const first = frame(lights([10, 11], [20]));
+    const previousViews = owner.shadowViews;
+    const moved = frame(lights([10, 11], [20], { 11: 7 }));
+    expect(moved.point).not.toBe(first.point);
+    expect(moved.pointShadow).not.toBe(first.pointShadow);
+    expect(moved.spot).toBe(first.spot);
+    expect(moved.rect).toBe(first.rect);
+    expect(moved.point[0]).toBe(first.point[0]);
+    expect(moved.point[1]?.position[0]).toBe(7);
+    expect(first.point[1]?.position[0]).toBe(11);
+    expect(owner.shadowViews.at(-1)).toBe(previousViews.at(-1));
+    const warnings = [37 as EntityHandle];
+    const warning = frame({
+      ...lights([10, 11], [20], { 11: 7 }),
+      ignoredDirectionalShadowCasters: warnings,
+    });
+    expect(warning.ignoredDirectionalShadowCasters).toEqual(warnings);
+    expect(warning.ignoredDirectionalShadowCasters).not.toBe(warnings);
+    expect(warning.spot).toBe(first.spot);
+    expect(warning.point).toBe(moved.point);
+    expect(
+      frame(lights([10, 11], [20], { 11: 7 })).ignoredDirectionalShadowCasters,
+    ).toBeUndefined();
+  });
+
+  it('publishes the unshadowed point facts when a live caster gives up its layer', () => {
+    const { frame } = fixture();
+    const source = lights([10, 11]);
+    const old = frame(source);
+    expect(old.point[0]?.shadowAtlasLayer).toBe(0);
+    const changed = frame({ ...source, pointShadow: source.pointShadow.slice(1) });
+    expect(changed.point[0]).not.toHaveProperty('shadowAtlasLayer');
+    expect(changed.point[1]).toBe(old.point[1]);
+    expect(old.point[0]?.shadowAtlasLayer).toBe(0);
+    expect(frame(source).point[0]?.shadowAtlasLayer).toBe(0);
+  });
+
+  it('publishes a moving light directly to the roster and ECS with one immutable value', () => {
+    const { world, owner } = fixture();
+    const source = lights([10, 11], [20]);
+    owner.adopt(source);
+    const previous = owner.roster;
+    const next = lights([10, 11], [20], { 11: 37 });
+    const resolve = vi.spyOn(world, 'resolveUniqueRef');
+    owner.adopt(next);
+    expect(resolve).not.toHaveBeenCalled();
+    resolve.mockRestore();
+    const issued = owner.roster;
+    const rows: unknown[] = [];
+    for (const row of world.query({ read: [RenderLight] }).unwrap()) {
+      const address = world.get(row.entity, RenderLight).unwrap().facts;
+      rows.push(world.resolveUniqueRef(address).unwrap());
+    }
+    expect(rows).toContain(issued.point[1]);
+    expect(rows).toContain(issued.spot[0]);
+    expect(issued.point[0]).toBe(previous.point[0]);
+    expect(issued.point[1]).not.toBe(previous.point[1]);
+    expect(previous.point[1]?.position[0]).toBe(11);
+  });
+
+  it('reads reused roster columns and joins reordered cube rows only to their current lights', () => {
+    const { frame } = fixture();
+    const points = [point(10), point(20), point(30)];
+    const cubes = [pointShadow(20), pointShadow(10)];
+    const source = { ...lights([]), point: points, pointShadow: cubes };
+    const before = frame(source);
+    expect(before.point.map((p) => p.shadowAtlasLayer)).toEqual([1, 0, undefined]);
+    points[0] = point(10, 42);
+    cubes.splice(0, cubes.length, pointShadow(91), pointShadow(30), pointShadow(20));
+    const after = frame(source);
+    expect(after.point[0]?.position[0]).toBe(42);
+    expect(after.point.map((p) => p.shadowAtlasLayer)).toEqual([undefined, 0, 1]);
+    expect(after.pointShadow.map((s) => s.entity)).toEqual([30, 20]);
+    expect(before.point[0]?.position[0]).toBe(0);
+    expect(before.pointShadow.map((s) => s.entity)).toEqual([20, 10]);
+  });
+
   it('keeps every other light shadow identity when a light arrives or leaves', () => {
     const { world, owner, spies, reset, layers, frame } = fixture();
     frame(lights([10, 11, 12], [20, 21]));
@@ -232,6 +311,28 @@ describe('RenderLights', () => {
     for (const view of kept) expect(owner.shadowViews).toContain(view);
     // One light entity plus its six face views.
     expect(spies.spawn).toHaveBeenCalledTimes(7);
+  });
+
+  it('publishes only the changed cube face and preserves previously issued matrices', () => {
+    const { owner, reset, frame, spies } = fixture();
+    frame(lights([10], [20]));
+    const previous = owner.shadowViews;
+    const next = lights([10], [20]);
+    const face = 3;
+    const old = previous[face]?.matrix[12];
+    const projection = next.pointShadow[0];
+    if (projection === undefined) throw Error('point shadow missing');
+    projection.shadowMatrices[face * 16 + 12] = 91;
+    reset();
+    frame(next);
+    expect(spies.set.mock.calls.filter(([, component]) => component === ShadowView)).toHaveLength(
+      1,
+    );
+    expect(previous[face]?.matrix[12]).toBe(old);
+    expect(owner.shadowViews[face]?.matrix[12]).toBe(91);
+    owner.shadowViews.forEach((view, index) => {
+      if (index !== face) expect(view).toBe(previous[index]);
+    });
   });
 
   it('rewrites only the moved light and its views', () => {

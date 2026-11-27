@@ -1,10 +1,17 @@
+import { validateAssetPublication } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, FixedTime, World } from '@forgeax/engine-ecs';
 import {
   createBoxGeometry,
   createMeshBuilder,
+  deriveVertexBufferLayoutFromProjection,
+  deriveVertexCount,
+  deriveVertexLayoutProjection,
   meshFromInterleaved,
+  projectStaticMeshVertexStreams,
 } from '@forgeax/engine-geometry';
+import { prepareRuntimePackContent, RuntimePackProducer } from '@forgeax/engine-import';
 import { vec3 } from '@forgeax/engine-math';
+import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { PhysicsWorldResource, RigidBody, RigidBodyTypeValue } from '@forgeax/engine-physics';
 import {
   createRapier3DPhysicsWorld,
@@ -12,8 +19,11 @@ import {
   registerPhysicsSystems,
 } from '@forgeax/engine-physics-rapier3d';
 import {
+  ANTIALIAS_NONE,
   ANTIALIAS_TAA,
+  BLOOM_DISABLED,
   Camera,
+  createAsyncDynamicGeometryHost,
   DirectionalLight,
   type DynamicGeometryCandidate,
   Materials,
@@ -22,7 +32,7 @@ import {
   PointLight,
 } from '@forgeax/engine-render';
 import { ChildOf, propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-scene';
-import { err, type MeshAsset, ok } from '@forgeax/engine-types';
+import { type AssetHandle, err, type MeshAsset, ok } from '@forgeax/engine-types';
 import { expect, it, onTestFailed, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { boxPoints } from '../../../../scripts/test/convex-geometry-fixture.mjs';
@@ -243,13 +253,12 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
       .unwrap();
     world.update(1 / 60).unwrap();
     expect(centerHit()?.entity).toBe(parent);
-    const draw = async (geometryLane?: 'direct', label = 'draw') => {
+    const draw = async (label: string) => {
       stage = `${label}:propagate-transforms`;
       propagateTransforms(world).unwrap();
       stage = `${label}:draw-ready:pending`;
       const receipt = await drawReadyFrame(renderer, {
         source: lease,
-        ...(geometryLane === undefined ? {} : { geometryLane }),
       });
       lastReadyReceipt = receipt;
       stage = `${label}:raf:pending`;
@@ -265,30 +274,48 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
       stage = `shot:${name}:done`;
       return typeof value === 'string' ? value : value.base64;
     };
-    for (let i = 0; i < 12; i++) await draw(undefined, `initial:${i + 1}`);
+    for (let i = 0; i < 12; i++) await draw(`initial:${i + 1}`);
     const descriptors = [...pipelines.mock.calls, ...asyncPipelines.mock.calls].map(
       ([descriptor]) => descriptor,
     );
+    const sourceLayout = deriveVertexLayoutProjection(closedMesh.attributes);
+    const count = deriveVertexCount(closedMesh.vertices, sourceLayout);
+    const projected =
+      count === undefined ? undefined : projectStaticMeshVertexStreams(sourceLayout, count);
+    if (projected === undefined) throw new Error('Expected a split layout for the colored mesh');
+    const streams = deriveVertexBufferLayoutFromProjection(projected.layout);
+    const color = { shaderLocation: 13, offset: 0, format: 'float32x4' };
     const coloredPbr = descriptors.filter(
       (descriptor) =>
         descriptor.label?.includes('default-standard-pbr') &&
-        Array.from(descriptor.vertex.buffers ?? []).some((buffer) => buffer?.arrayStride === 64),
+        Array.from(descriptor.vertex.buffers ?? []).some(
+          (buffer) =>
+            buffer !== null &&
+            Array.from(buffer.attributes).some(
+              (attribute) => attribute.shaderLocation === color.shaderLocation,
+            ),
+        ),
     );
     expect(coloredPbr.length).toBeGreaterThan(0);
     for (const descriptor of coloredPbr) {
+      const buffers = Array.from(descriptor.vertex.buffers ?? []);
+      expect(buffers).toMatchObject(
+        streams.map(({ arrayStride, attributes }) => ({
+          arrayStride,
+          attributes: expect.arrayContaining(attributes),
+        })),
+      );
+      expect(Array.from(buffers[3]?.attributes ?? [])).toEqual([color]);
       const moduleIndex = modules.mock.results.findIndex(
         (result) => result.type === 'return' && result.value === descriptor.vertex.module,
       );
       expect(moduleIndex).toBeGreaterThanOrEqual(0);
       expect(modules.mock.calls[moduleIndex]?.[0].code).toMatch(/@location\(13\)\s+color/);
     }
-    expect(
-      descriptors.some(
-        (descriptor) =>
-          descriptor.label?.includes('default-shadow-caster') &&
-          Array.from(descriptor.vertex.buffers ?? []).some((buffer) => buffer?.arrayStride === 64),
-      ),
-    ).toBe(true);
+    const casterInputs = descriptors
+      .filter((descriptor) => descriptor.label?.includes('default-shadow-caster'))
+      .map((descriptor) => Array.from(descriptor.vertex.buffers ?? []));
+    expect(casterInputs).toContainEqual(streams.slice(0, 2));
     const closed = await shot('closed');
     stage = 'revision2:prepare-candidate';
     const candidate = renderer
@@ -301,7 +328,7 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
       })
       .unwrap();
     expect(world.get(entity, MeshFilter).unwrap().assetHandle).toBe(closedHandle);
-    await draw(undefined, 'revision2-prepared');
+    await draw('revision2-prepared');
     expect(await shot('prepared')).toBe(closed);
     stage = 'revision2:admit-candidate';
     let accepted: DynamicGeometryCandidate | undefined;
@@ -333,13 +360,7 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     expect(accepted).toBeDefined();
     if (accepted === undefined) throw new Error('paired admission did not run');
     expect(centerHit()).toBeUndefined();
-    const directFrame = await draw('direct', 'revision2-direct');
-    expect(renderer.dynamicGeometryReceipt(accepted)).toMatchObject({
-      frameId: directFrame.frameId,
-      recordStageConsumed: true,
-      recordStageLane: 'cpu',
-    });
-    const frame = await draw(undefined, 'revision2-gpu');
+    const frame = await draw('revision2-gpu');
     expect(renderer.dynamicGeometryReceipt(accepted)).toMatchObject({
       frameId: frame.frameId,
       recordStageConsumed: true,
@@ -348,12 +369,12 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     const opened = await shot('open');
     expect(opened).not.toBe(closed);
     world.set(light, DirectionalLight, { castShadow: false }).unwrap();
-    await draw(undefined, 'shadow-disabled');
+    await draw('shadow-disabled');
     expect(await shot('no-shadow')).not.toBe(opened);
     world.set(light, DirectionalLight, { castShadow: true }).unwrap();
     world.set(parent, Transform, { pos: [0.75, 0, 0] }).unwrap();
     world.update(1 / 60).unwrap();
-    await draw(undefined, 'parent-moved');
+    await draw('parent-moved');
     expect(await shot('moved')).not.toBe(opened);
     stage = 'revision3:prepare-replacement';
     const replacement = renderer
@@ -411,11 +432,11 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     stage = 'revision4:publish-step';
     world.update(1 / 60).unwrap();
     expect(physics.getDerivedPublication(parent)?.revision).toBe(4);
-    await draw(undefined, 'revision4-sealed');
+    await draw('revision4-sealed');
     renderer.retireDynamicGeometry(accepted as DynamicGeometryCandidate).unwrap();
     await shot('sealed');
     world.set(camera, Camera, { antialias: ANTIALIAS_TAA }).unwrap();
-    for (let i = 0; i < 8; i++) await draw(undefined, `taa-sealed:${i + 1}`);
+    for (let i = 0; i < 8; i++) await draw(`taa-sealed:${i + 1}`);
     await shot('taa-sealed');
     expect(renderer.inspect().temporal.mode).toBe('taa');
     expect(renderer.inspect().temporal.historyValid).toBe(true);
@@ -445,7 +466,7 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
       .unwrap();
     stage = 'revision5:publish-step';
     world.update(1 / 60).unwrap();
-    await draw(undefined, 'revision5-taa-open');
+    await draw('revision5-taa-open');
     expect(renderer.inspect().temporal.frameIndex).toBe(beforeTaaGeometry + 1);
     expect(renderer.inspect().temporal.historyValid).toBe(true);
     await shot('taa-open-first');
@@ -537,7 +558,7 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     expect(parentHit()?.entity).toBe(parent);
     expect(peerHit()).toBeUndefined();
     const beforeGroupFrame = renderer.inspect().temporal.frameIndex;
-    const groupFrame = await draw(undefined, 'group-accepted');
+    const groupFrame = await draw('group-accepted');
     expect(groupAccepted).toHaveLength(2);
     for (const candidate of groupAccepted)
       expect(renderer.dynamicGeometryReceipt(candidate)?.frameId).toBe(groupFrame.frameId);
@@ -571,12 +592,12 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     expect(world.get(peerMesh, MeshFilter).unwrap().assetHandle).toBe(openHandle);
     expect(parentHit()?.entity).toBe(parent);
     expect(peerHit()).toBeUndefined();
-    await draw(undefined, 'group-refused');
+    await draw('group-refused');
     world.set(peerMesh, MeshRenderer, { materials: [material] }).unwrap();
     world.set(camera, Camera, { historyVersion: 1 }).unwrap();
-    await draw(undefined, 'post-mutation-512');
+    await draw('post-mutation-512');
     expect(renderer.inspect().temporal.frameIndex).toBe(0);
-    await draw(undefined, 'post-mutation-514');
+    await draw('post-mutation-514');
     expect(renderer.inspect().temporal.frameIndex).toBe(1);
     expect(renderer.inspect().temporal.historyValid).toBe(true);
     stage = 'uncertain-group:prepare';
@@ -627,5 +648,247 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     pipelines.mockRestore();
     modules.mockRestore();
     stage = 'cleanup:done';
+  }
+}, 60000);
+
+it('adopts Runtime Pack mesh siblings and their colliders in the same fixed step', async () => {
+  let stage = 'setup';
+  onTestFailed(() => console.error(`[runtime-pack-scene-group] ${stage}`));
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 128;
+  document.body.appendChild(canvas);
+  const renderer = (
+    await createRenderer(canvas, {}, { shaderManifestUrl: '/shaders/manifest.json' })
+  ).unwrap();
+  const world = new World();
+  const scene = await createWorldContext(world, [scenePlugin()]);
+  const rapier = await loadRapier3D();
+  if ('code' in rapier) throw rapier;
+  const physics = createRapier3DPhysicsWorld(rapier);
+  world.insertResource(PhysicsWorldResource, physics);
+  const releasePhysics = registerPhysicsSystems(world);
+  const assets = testAssets(world);
+  const producer = new RuntimePackProducer({
+    scopeId: 'wave1-scene-replacement',
+    validate: (state, fetcher, dependencies) =>
+      validateAssetPublication(state.rows, fetcher, undefined, {
+        registry: assets,
+        pack: state.publication?.pack,
+        retainProducerArtifacts: true,
+        dependencies,
+      }),
+  });
+  const buildMesh = (width: number) => createBoxGeometry(width, 1, 0.5).unwrap();
+  const members = [
+    { x: -1.3, mesh: assets.create(buildMesh(0.6)).unwrap() },
+    { x: 1.3, mesh: assets.create(buildMesh(0.6)).unwrap() },
+  ] as const;
+  const initialMeshes = members.map(({ mesh }) => mesh);
+  let generated: readonly AssetHandle<'mesh'>[] = [];
+  try {
+    const material = assets.create(Materials.unlit([0.14, 0.68, 0.22, 1])).unwrap();
+    const entities = members.map(({ x, mesh }) =>
+      world
+        .spawn(
+          { component: Transform, data: { pos: [x, 0, 0] } },
+          { component: RigidBody, data: { type: RigidBodyTypeValue.static } },
+          { component: MeshFilter, data: { assetHandle: mesh } },
+          { component: MeshRenderer, data: { materials: [material] } },
+        )
+        .unwrap(),
+    );
+    world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, 5] } },
+        {
+          component: Camera,
+          data: {
+            fov: Math.PI / 3,
+            aspect: 1,
+            near: 0.1,
+            far: 20,
+            antialias: ANTIALIAS_NONE,
+            bloom: BLOOM_DISABLED,
+            tonemap: 0,
+            clearColor: [0, 0, 0, 1],
+          },
+        },
+      )
+      .unwrap();
+    const attached = renderer.attach(world);
+    if (!attached.ok) throw attached.error;
+    const source = attached.value;
+    const render = () => drawReadyFrame(renderer, { source });
+    const screenshot = async () => {
+      const value = await page.elementLocator(canvas).screenshot({ base64: true });
+      return typeof value === 'string' ? value : value.base64;
+    };
+    const bindings = () =>
+      entities.map((entity) => world.get(entity, MeshFilter).unwrap().assetHandle);
+    const castNearEdges = () =>
+      members.map(
+        ({ x }) => physics.raycast(vec3.create(x + 0.63, 0, 4), vec3.create(0, 0, -1), 8)?.entity,
+      );
+    const prepareShapes = (revision: number, width: number) =>
+      physics
+        .prepareDerivedShapeCandidates(
+          entities.map((entity) => ({
+            entity,
+            revision,
+            sourceKey: `runtime-pack:scene-group:${entity}`,
+            worldIdentity: world,
+            bodyType: 'static' as const,
+            shapes: [
+              {
+                id: 'surface',
+                revision,
+                kind: 'convex-compound' as const,
+                pieces: [boxPoints([-width / 2, -0.5, -0.25], [width / 2, 0.5, 0.25])],
+              },
+            ],
+          })),
+        )
+        .unwrap();
+
+    world.update(1 / 60).unwrap();
+    physics.admitDerivedShapeCandidates(prepareShapes(1, 0.6), () => ok(undefined)).unwrap();
+    world.update(1 / 60).unwrap();
+    stage = 'old group draw';
+    await render();
+    const oldPixels = await screenshot();
+    expect(castNearEdges()).toEqual([undefined, undefined]);
+
+    stage = 'Runtime Pack commit and load';
+    const id = '01900000-0000-7000-8000-ffffff000109';
+    const namespace = PackageId.parse(id);
+    if (!namespace.ok) throw namespace.error;
+    assets.setCatalogSource(producer.catalog, producer.fetch);
+    const wide = 1.6;
+    const contents = (
+      await prepareRuntimePackContent(id, {
+        left: buildMesh(wide),
+        right: buildMesh(wide),
+      })
+    ).unwrap();
+    const receipt = (await producer.admit(contents)).unwrap();
+    const publication = receipt.publication;
+    if (publication === undefined) throw new Error('Missing Runtime Pack publication');
+    expect(receipt.rows).toHaveLength(2);
+    generated = (
+      await assets.loadMany(
+        [AssetGuid.derive(namespace.value, 'left'), AssetGuid.derive(namespace.value, 'right')],
+        'mesh',
+      )
+    ).unwrap();
+    expect(generated).toHaveLength(2);
+    for (const mesh of generated) {
+      expect(assets.source(mesh).unwrap()?.publication).toMatchObject({
+        digest: publication.digest,
+        generation: publication.generation,
+        outputSetDigest: publication.outputSetDigest,
+      });
+    }
+
+    const geometry = createAsyncDynamicGeometryHost(renderer);
+    const prepareGeometry = async (meshes: readonly AssetHandle<'mesh'>[], revision: number) => {
+      const accepted = bindings();
+      const controller = new AbortController();
+      const pending = geometry.prepareDynamicGeometryCandidates(
+        entities.map((entity, index) => {
+          const meshHandle = meshes[index];
+          if (meshHandle === undefined) throw new Error('Missing scene group Mesh');
+          return { world, entity, physicsEntity: entity, meshHandle, revision };
+        }),
+        { signal: controller.signal },
+      );
+      let settled = false;
+      const settle = () => {
+        settled = true;
+      };
+      void pending.then(settle, settle);
+      try {
+        do {
+          // The manual frame owner keeps running Record while candidate PSOs warm.
+          await render();
+          expect(bindings()).toEqual(accepted);
+        } while (!settled);
+        return (await pending).unwrap();
+      } finally {
+        controller.abort();
+        await Promise.allSettled([pending]);
+      }
+    };
+    let adopted: readonly DynamicGeometryCandidate[] = [];
+    let adoptedStep: number | undefined;
+    const stageCommit = (
+      candidates: readonly DynamicGeometryCandidate[],
+      revision: number,
+      width: number,
+    ) => {
+      physics
+        .admitDerivedShapeCandidates(prepareShapes(revision, width), () => {
+          const fixedStep = world.getResource(FixedTime).tick;
+          const result = geometry.acceptDynamicGeometryCandidates(candidates, { world, fixedStep });
+          if (!result.ok) return err(result.error);
+          adopted = result.value;
+          adoptedStep = fixedStep;
+          return ok(undefined);
+        })
+        .unwrap();
+    };
+
+    stage = 'new group pipelines';
+    const prepared = await prepareGeometry(generated, 2);
+    stageCommit(prepared, 2, wide);
+    world.update(0).unwrap();
+    expect(adopted).toHaveLength(0);
+    expect(bindings()).toEqual(initialMeshes);
+    expect(castNearEdges()).toEqual([undefined, undefined]);
+    await render();
+    expect(await screenshot()).toBe(oldPixels);
+
+    stage = 'new group fixed step and first frame';
+    world.update(1 / 60).unwrap();
+    expect(adopted).toHaveLength(2);
+    expect(adoptedStep).toBe(world.getResource(FixedTime).tick);
+    expect(bindings()).toEqual(generated);
+    expect(castNearEdges()).toEqual(entities);
+    const first = await render();
+    for (const candidate of adopted)
+      expect(geometry.dynamicGeometryReceipt(candidate)).toMatchObject({
+        fixedStep: adoptedStep,
+        frameId: first.frameId,
+        recordStageConsumed: true,
+      });
+    stage = '60 completed group frames';
+    for (let frame = 1; frame < 60; frame++) await render();
+    const newPixels = await screenshot();
+    expect(newPixels).not.toBe(oldPixels);
+
+    stage = 'reject stale candidate and preserve adopted group';
+    const stale = await prepareGeometry(initialMeshes, 3);
+    assets.replace(members[0].mesh, buildMesh(0.7)).unwrap();
+    stageCommit(stale, 3, 0.6);
+    world.update(1 / 60).unwrap();
+    for (const entity of entities) {
+      expect(physics.getDerivedPublication(entity)?.revision).toBe(2);
+      expect(physics.getDerivedFailure(entity)?.recovery).toBe('old-state-retained');
+    }
+    expect(bindings()).toEqual(generated);
+    expect(castNearEdges()).toEqual(entities);
+    await render();
+    expect(await screenshot()).toBe(newPixels);
+  } finally {
+    await renderer.dispose();
+    releasePhysics();
+    const entities = [...world.query({ read: [Transform] }).unwrap()].map((row) => row.entity);
+    for (const entity of entities.reverse()) world.despawn(entity).unwrap();
+    for (const mesh of generated) assets.release(mesh).unwrap();
+    for (const mesh of initialMeshes) assets.release(mesh).unwrap();
+    assets.clearCatalogSource();
+    producer.dispose();
+    await scene.fiber.dispose();
+    physics.dispose();
+    canvas.remove();
   }
 }, 60000);

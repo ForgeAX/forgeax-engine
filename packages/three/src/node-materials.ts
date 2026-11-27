@@ -14,6 +14,7 @@ import { unsupported } from './errors';
 import { admitSurfaceInput, type InputField, SURFACE_INPUTS } from './node-inputs';
 import { instanceShaderOverride, nodeDefinition } from './node-material-instance';
 import { boundSurfaceRoot, SURFACE_ROOTS, validateSurfaceBinding } from './node-surface';
+import { hasSourceField } from './source-fields';
 
 export { default as NodeMaterial } from 'three/src/materials/nodes/NodeMaterial.js';
 export {
@@ -134,6 +135,28 @@ const models = new Map<object, ReturnType<typeof model>>([
   ],
 ]);
 
+/** Original Basic/Standard node models backed entirely by ordinary material fields. */
+export function plainNodeMaterial(material: Material): boolean {
+  const prototype = Object.getPrototypeOf(material);
+  const source = material as unknown as Record<string, unknown>;
+  if (
+    prototype !== MeshBasicNodeMaterial.prototype &&
+    prototype !== MeshStandardNodeMaterial.prototype
+  )
+    return false;
+  return NODE_MATERIAL_INPUTS.every(
+    (key) => source[key] === null || (source[key] === undefined && !hasSourceField(source, key)),
+  );
+}
+
+/** A resident node material invalidates admission when its source hooks are replaced. */
+export function watchNodeMaterialHooks(
+  material: Material,
+  watch: (key: string) => boolean,
+): boolean {
+  return models.get(material.constructor)?.hooks.every(([key]) => watch(key)) ?? false;
+}
+
 /** Ordinary leaves keep native projection; expressions require an explicit cooked binding. */
 export function admitNodeMaterial(
   material: Material,
@@ -167,7 +190,7 @@ export function admitNodeMaterial(
     }
     if (
       value !== null &&
-      (value !== undefined || model.requiredInputs.has(field) || field in source)
+      (value !== undefined || model.requiredInputs.has(field) || hasSourceField(source, field))
     )
       return unsupported(`NodeMaterial.${field} requires native graph conversion`, material.uuid);
   }

@@ -35,7 +35,9 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function fixture(options: { externalEngine?: boolean } = {}) {
+async function fixture(
+  options: { externalEngine?: boolean; occupyTarget?: boolean; linkedCarrier?: boolean } = {},
+) {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-install-test-'));
   roots.push(root);
   const sdk = resolve(root, 'carrier');
@@ -92,7 +94,7 @@ async function fixture(options: { externalEngine?: boolean } = {}) {
   await writeFile(
     clientScript,
     `${[
-      "import { cp, link, mkdir, readdir, symlink } from 'node:fs/promises';",
+      "import { cp, link, mkdir, readdir, rename, symlink, writeFile } from 'node:fs/promises';",
       "import { resolve } from 'node:path';",
       'const args = process.argv.slice(2);',
       "const prefixIndex = args.indexOf('--prefix');",
@@ -109,6 +111,18 @@ async function fixture(options: { externalEngine?: boolean } = {}) {
         : "await cp(resolve(source, '../engine'), resolve(args[prefixIndex + 1], 'node_modules/@forgeax/engine'), { recursive: true });",
       "await link(resolve(target, 'bin/forgeax.mjs'), resolve(target, 'bin/forgeax-linked.mjs'));",
       "if (process.platform !== 'win32') await symlink('forgeax.mjs', resolve(target, 'bin/forgeax-alias.mjs'));",
+      ...(options.linkedCarrier
+        ? [
+            "await rename(target, resolve(target, '../carrier'));",
+            "const windows = process.platform === 'win32';",
+            "await symlink(windows ? resolve(target, '../carrier') : 'carrier', target, windows ? 'junction' : 'dir');",
+          ]
+        : []),
+      ...(options.occupyTarget
+        ? [
+            `await writeFile(${JSON.stringify(resolve(root, 'installed-sdk/owner.txt'))}, 'caller bytes');`,
+          ]
+        : []),
     ].join('\n')}\n`,
   );
   if (process.platform === 'win32') {
@@ -173,9 +187,14 @@ describe('sdkInstallCommand', () => {
     }
   });
 
-  it('installs an exact npm SDK carrier into an absent target', async () => {
+  it.each([
+    'absent',
+    'empty',
+  ])('installs an exact npm SDK carrier into an %s target', async (occupancy) => {
     const root = await fixture();
     const target = resolve(root, 'installed-sdk');
+
+    if (occupancy === 'empty') await mkdir(target);
 
     const result = await sdkInstallCommand({ root: target, version: '1.2.3' });
 
@@ -196,6 +215,28 @@ describe('sdkInstallCommand', () => {
       'source input\n',
     );
     expect(await readFile(resolve(target, 'bin', 'forgeax.mjs'), 'utf8')).toBe('export {};\n');
+    expect((await readdir(root)).filter((name) => name.includes('forgeax-sdk-'))).toEqual([]);
+  });
+
+  it('leaves a target untouched when it becomes occupied during the download', async () => {
+    const root = await fixture({ occupyTarget: true });
+    const target = resolve(root, 'installed-sdk');
+    await mkdir(target);
+    expect(await sdkInstallCommand({ root: target, version: '1.2.3' })).toMatchObject({
+      ok: false,
+      error: { code: 'sdk-install-failed' },
+    });
+    expect(await readdir(target)).toEqual(['owner.txt']);
+    expect(await readFile(resolve(target, 'owner.txt'), 'utf8')).toBe('caller bytes');
+    expect((await readdir(root)).filter((name) => name.includes('forgeax-sdk-'))).toEqual([]);
+  });
+
+  it('publishes a real SDK root when a custom installer provides a linked carrier', async () => {
+    const root = await fixture({ linkedCarrier: true });
+    const target = resolve(root, 'installed-sdk');
+    expect(await sdkInstallCommand({ root: target, version: '1.2.3' })).toMatchObject({ ok: true });
+    expect(await readFile(resolve(target, 'bin', 'forgeax.mjs'), 'utf8')).toBe('export {};\n');
+    await expect(readlink(target)).rejects.toThrow();
     expect((await readdir(root)).filter((name) => name.includes('forgeax-sdk-'))).toEqual([]);
   });
 

@@ -1,12 +1,9 @@
 {
-  "schemaVersion": "2.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "7e43f472-4c4d-4ee3-9aa1-bc89e7402811",
+  "schemaVersion": "3.0.0",
+  "packageId": "c91961a1-e0d3-521f-b82b-dc939e15c77f",
+  "assets": {
+    "arc-nova-sigil.wgsl": {
       "kind": "material",
-      "sourceKey": "arc-nova-sigil.wgsl",
-      "execution": "cooked",
       "payload": {
         "kind": "material",
         "passes": [
@@ -60,5 +57,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

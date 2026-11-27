@@ -16,8 +16,10 @@ describe('vite-plugin-pack public type surface', () => {
     expectTypeOf(pluginPack().rebind).toBeFunction();
     expectTypeOf<keyof PluginPackOptions>().toEqualTypeOf<
       | 'roots'
+      | 'enginePackageRoot'
       | 'takeInitialSourceSnapshot'
       | 'producerReadiness'
+      | 'onProgress'
       | 'importers'
       | 'cookers'
       | 'refresh'
@@ -25,11 +27,12 @@ describe('vite-plugin-pack public type surface', () => {
       | 'ignorePath'
       | 'sourceIdentityFor'
       | 'runtimeBinding'
+      | 'materialProgramTransport'
       | 'ddc'
       | 'producerIdentity'
     >();
     expectTypeOf<keyof PluginPackDdcOptions>().toEqualTypeOf<
-      'buildCacheRoot' | 'projectDdcRoot' | 'identityRoot'
+      'buildCacheRoot' | 'buildCacheSeedRoot' | 'projectDdcRoot' | 'identityRoot'
     >();
     expectTypeOf<AssetHostRefreshPolicy>().toBeFunction();
   });

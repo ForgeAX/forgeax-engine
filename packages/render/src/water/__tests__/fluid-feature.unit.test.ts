@@ -34,6 +34,7 @@ import {
   createWaterFluidFeature,
   type WaterFluidFeatureFrame,
   waterFluidRenderFrame,
+  waterFluidSimulationKey,
 } from '../fluid-feature';
 import { prepareWaterFluidFoamFrame, type WaterFluidFoamMaterial } from '../fluid-foam';
 import { addWaterFluidSharedGraph, type WaterFluidGraphFrame } from '../fluid-graph';
@@ -1301,9 +1302,38 @@ it.each([
   previous.execute({ encoder: initialEncoder, runtime }).unwrap();
   device.queue.submit([initialEncoder.finish().unwrap()]).unwrap();
   previous.commitExecution();
+  const heldEntry = { worldIndex: 0, worldIdentity, frame: initial };
+  const heldFrame = {
+    ...render,
+    simulations: [heldEntry],
+    required: new Set<string>(),
+    encoded: new Set<string>(),
+  };
+  const holdBuilder = new RenderGraphBuilder<WaterFluidGraphFrame>();
+  addWaterFluidSharedGraph({
+    graph: holdBuilder,
+    waterFluid: heldFrame,
+    waterInfoPublication: undefined,
+    heldSimulations: new Set([waterFluidSimulationKey(heldEntry)]),
+  }).unwrap();
+  const held = holdBuilder
+    .compile({ device, surfaceSize: { width: 16, height: 16 }, reuseResourcesFrom: previous })
+    .unwrap();
+  const heightLabel = previous
+    .inspect()
+    .resources.find((resource) => resource.label.endsWith('-normal-height'))?.label;
+  if (heightLabel === undefined) throw new Error('Missing accepted normal-height resource');
+  expect(held.getColorTargetTexture(heightLabel)).toBe(previous.getColorTargetTexture(heightLabel));
+  const holdEncoder = device.createCommandEncoder().unwrap();
+  held.execute({ encoder: holdEncoder, runtime }).unwrap();
+  device.queue.submit([holdEncoder.finish().unwrap()]).unwrap();
+  held.commitExecution();
+  expect(heldFrame.required.size).toBe(0);
+  expect(heldFrame.encoded.size).toBe(0);
+  expect(held.inspect().passes.some((pass) => pass.name.includes('-tick-'))).toBe(false);
   uploads.clear();
   const graph = builder
-    .compile({ device, surfaceSize: { width: 16, height: 16 }, reuseResourcesFrom: previous })
+    .compile({ device, surfaceSize: { width: 16, height: 16 }, reuseResourcesFrom: held })
     .unwrap();
   try {
     const encoder = device.createCommandEncoder().unwrap();
@@ -1321,6 +1351,7 @@ it.each([
     expect(graph.inspect().passes.some((pass) => pass.name.includes('-initialize-'))).toBe(false);
   } finally {
     await graph.retire();
+    await held.retire();
     await previous.retire();
   }
 });

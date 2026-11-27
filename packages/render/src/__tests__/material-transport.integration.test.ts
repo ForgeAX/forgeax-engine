@@ -118,22 +118,24 @@ it.each([
 });
 
 it('restores every compact program sharing one verified external read', async () => {
-  const original = materialRecordFixture({
-    contexts: [MATERIAL_CONTEXT, { ...MATERIAL_CONTEXT, geometry: 'skinned' }],
+  const fixture = await materialProductionFixture(true, (guid) => {
+    const original = materialRecordFixture({
+      guid,
+      contexts: [MATERIAL_CONTEXT, { ...MATERIAL_CONTEXT, geometry: 'skinned' }],
+    });
+    const programs = original.programs.map((program, index) => ({
+      ...program,
+      specializationKey: `${program.specializationKey}/${index}`,
+    }));
+    const artifactDigest = createMaterialProgramSetDigest(programs, original.resolved.passes);
+    return {
+      ...original,
+      programs,
+      artifactDigest,
+      receipt: { ...original.receipt, identity: { ...original.receipt.identity, artifactDigest } },
+    };
   });
-  const programs = original.programs.map((program, index) => ({
-    ...program,
-    specializationKey: `${program.specializationKey}/${index}`,
-  }));
-  const artifactDigest = createMaterialProgramSetDigest(programs, original.resolved.passes);
-  const record = {
-    ...original,
-    programs,
-    artifactDigest,
-    receipt: { ...original.receipt, identity: { ...original.receipt.identity, artifactDigest } },
-  };
-  const fixture = await materialProductionFixture(true, record);
   const loaded = await load(fixture);
-  expectPublished(loaded, record);
+  expectPublished(loaded, fixture.record);
   expect(loaded.fetcher.mock.calls.filter(([url]) => String(url).endsWith('.bin'))).toHaveLength(1);
 });

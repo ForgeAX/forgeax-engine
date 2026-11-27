@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserCarrierAdapter } from '../display-carrier.js';
 
 const fixtures = vi.hoisted(() => {
@@ -114,8 +114,8 @@ const fixtures = vi.hoisted(() => {
     launchCount = 0;
     borrowedSelected = false;
     browserServers.length = 0;
+    capturePage.on.mockReset();
     for (const mock of [
-      capturePage.on,
       capturePage.off,
       capturePage.goto,
       capturePage.waitForFunction,
@@ -193,6 +193,11 @@ vi.mock('@forgeax/engine-tool-runtime', () => ({
 
 import { runBrowserPreviewHost } from '../browser-host.js';
 
+beforeEach(() => {
+  // These protocol fixtures represent the ordinary unprivileged owner.
+  if (process.platform === 'linux') vi.spyOn(process, 'geteuid').mockReturnValue(1000);
+});
+
 afterEach(() => {
   fixtures.reset();
   vi.restoreAllMocks();
@@ -268,6 +273,63 @@ describe('one-shot Browser Host borrowed carrier boundary', () => {
       );
       expect(fixtures.browserServers).toHaveLength(2);
       for (const server of fixtures.browserServers) expect(server.kill).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not launch replay after cancellation during capture retirement', async () => {
+    const root = await fixtureRoot();
+    const controller = new AbortController();
+    fixtures.captureBrowser.close.mockImplementationOnce(async () => {
+      controller.abort();
+    });
+    try {
+      const result = await runBrowserPreviewHost(
+        root,
+        recipe,
+        snapshot,
+        'preview-1',
+        controller.signal,
+        'project-bootstrap',
+        undefined,
+        { publish: false },
+      );
+      expect(result.ok).toBe(false);
+      expect(fixtures.launchServer).toHaveBeenCalledOnce();
+      expect(fixtures.browserServers[0]?.kill).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('retires the native owner and closes a late browser connection once', async () => {
+    const root = await fixtureRoot();
+    const controller = new AbortController();
+    fixtures.connect.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          queueMicrotask(() => {
+            resolve(fixtures.captureBrowser);
+            controller.abort();
+          });
+        }),
+    );
+    try {
+      const result = await runBrowserPreviewHost(
+        root,
+        recipe,
+        snapshot,
+        'preview-1',
+        controller.signal,
+        'project-bootstrap',
+        undefined,
+        { publish: false },
+      );
+      expect(result.ok).toBe(false);
+      expect(fixtures.launchServer).toHaveBeenCalledOnce();
+      expect(fixtures.captureBrowser.close).toHaveBeenCalledOnce();
+      expect(fixtures.browserServers[0]?.kill).toHaveBeenCalledOnce();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -420,11 +482,11 @@ describe('one-shot Browser Host borrowed carrier boundary', () => {
     }
   });
 
-  it('keeps the complete capture when a skinned material capability is reported as a page error', async () => {
+  it('keeps the complete capture when a skinned material capability is logged as an error', async () => {
     const root = await fixtureRoot();
-    fixtures.capturePage.on.mockImplementationOnce(() => undefined);
-    fixtures.capturePage.on.mockImplementationOnce(
-      (_event: string, listener: (message: unknown) => void) => {
+    fixtures.capturePage.on.mockImplementation(
+      (event: string, listener: (message: unknown) => void) => {
+        if (event !== 'console') return;
         listener({
           type: () => 'error',
           text: () =>
@@ -433,7 +495,6 @@ describe('one-shot Browser Host borrowed carrier boundary', () => {
         });
       },
     );
-    fixtures.capturePage.on.mockImplementationOnce(() => undefined);
     fixtures.capturePage.evaluate.mockImplementationOnce(async () => ({
       ok: true,
       result: {
@@ -478,11 +539,11 @@ describe('one-shot Browser Host borrowed carrier boundary', () => {
     }
   });
 
-  it('keeps unrelated page errors fatal beside a known skin capability error', async () => {
+  it('keeps unrelated console errors fatal beside a known skin capability error', async () => {
     const root = await fixtureRoot();
-    fixtures.capturePage.on.mockImplementationOnce(() => undefined);
-    fixtures.capturePage.on.mockImplementationOnce(
-      (_event: string, listener: (message: unknown) => void) => {
+    fixtures.capturePage.on.mockImplementation(
+      (event: string, listener: (message: unknown) => void) => {
+        if (event !== 'console') return;
         const makeMessage = (text: string) => ({
           type: () => 'error',
           text: () => text,
@@ -496,7 +557,6 @@ describe('one-shot Browser Host borrowed carrier boundary', () => {
         listener(makeMessage('unrelated preview page failure'));
       },
     );
-    fixtures.capturePage.on.mockImplementationOnce(() => undefined);
     try {
       const result = await runBrowserPreviewHost(
         root,

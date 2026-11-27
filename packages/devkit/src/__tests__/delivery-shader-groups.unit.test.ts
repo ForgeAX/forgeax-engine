@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 import { decompressZstd } from '@forgeax/engine-codec';
 import { expect, it } from 'vitest';
-import { compressShaderGroups, SHADER_GROUP_TARGET_BYTES } from '../delivery-shader-groups';
+import { compressShaderGroups, SHADER_GROUP_TARGET_BYTES } from '../delivery-bundles';
 
 it('bounds compression groups without splitting programs and preserves input order', async () => {
   const entries = [600_000, 600_000, SHADER_GROUP_TARGET_BYTES + 1, 400_000, 400_000].map(

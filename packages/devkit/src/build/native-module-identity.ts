@@ -4,6 +4,7 @@ import { readFile, realpath } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { sha256 } from '@forgeax/engine-types';
 import {
   filesystemPathKey,
   filesystemPathSegments,
@@ -99,9 +100,7 @@ export async function nativeModuleIdentity(url: string): Promise<string> {
     }
     graph.push([manifest.name, manifest.version, hash.digest('hex'), dependencies]);
   }
-  return `sha256:${createHash('sha256')
-    .update(JSON.stringify([process.versions.node, relative(root, entry), graph]))
-    .digest('hex')}`;
+  return `sha256:${sha256(JSON.stringify([process.versions.node, relative(root, entry), graph]))}`;
 }
 
 /** Locate the actual resolved instance through dependency edges, independently of installation layout. */

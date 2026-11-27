@@ -221,6 +221,8 @@ function toGpuVertexFormat(
     case 'float32x3':
     case 'float32x4':
     case 'uint16x4':
+    case 'unorm8x4':
+    case 'unorm16x4':
     case 'uint32':
       return format;
     default:
@@ -303,18 +305,4 @@ function resolveGeometryVertexBufferLayouts(options: {
             ),
           )
         : toGpuVertexBufferLayouts(deriveVertexBufferLayout(DEFAULT_VERTEX_ATTRIBUTE_MAP));
-}
-
-const colorAttributes = new WeakMap<object, boolean>();
-
-/** Vertex layout projections are immutable; answer each one's color input once. */
-export function hasColorAttribute(projection: {
-  readonly attributes: readonly { readonly key: string }[];
-}): boolean {
-  let color = colorAttributes.get(projection);
-  if (color === undefined) {
-    color = projection.attributes.some((attribute) => attribute.key === 'color');
-    colorAttributes.set(projection, color);
-  }
-  return color;
 }

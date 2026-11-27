@@ -30,8 +30,9 @@ async function storageLightDataBytes(code: string): Promise<number> {
   const module = (await validate((await parse(code)).unwrap())).unwrap();
   try {
     const reflection = parseReflectionWire((await emit_reflection(module, '{}')).unwrap());
-    const bytes = reflection.boundGlobals.find(({ group, binding }) => group === 2 && binding === 3)
-      ?.typeDescriptor?.byteSize;
+    const bytes = reflection.boundGlobals.find(
+      ({ group, binding }) => group === 0 && binding === 30,
+    )?.typeDescriptor?.byteSize;
     if (bytes === undefined) throw new Error('Missing reflected storage light-data size');
     return bytes;
   } finally {
@@ -128,7 +129,10 @@ function assertDirectSplitPixels(
   return frameCalls;
 }
 
-function directSplitOracleSource(output: 'diffuse' | 'radiance' | 'solar'): string {
+function directSplitOracleSource(
+  output: 'diffuse' | 'radiance' | 'solar',
+  projected: boolean,
+): string {
   return `
 #import forgeax_standard::cluster::{clusterLookupCount, cluster_uniform}
 #import test::direct_split::{evaluateStandardDirectSplit, evaluateStandardDirect}
@@ -157,10 +161,12 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
   view.viewportHeight = 4.0;
   view.lightDir = vec3<f32>(0.0, 0.0, -1.0);
   view.lightColor = vec3<f32>(1.0, 2.0, 3.0);
-  view.lightingChannels = ${output === 'solar' ? '1u' : '0u'};
+  view.lightingChannels = ${output === 'solar' && !projected ? '1u' : '0u'};
   let right = p.x >= 8.0;
   let far = p.y >= 2.0;
   let channels = select(1u, 2u, u32(p.y) % 2u != 0u);
+  let receiver = ${projected ? 'select(1u << 12u, 1u << 31u, channels == 2u)' : 'channels'};
+  let projection = ${projected ? '12u | (31u << 5u) | (2u << 15u) | (1u << 17u)' : '0u'};
   let ndc = vec3(((p.x / 16.0) * 2.0 - 1.0), 0.0, 0.5);
   let worldPos = vec3((p.x - 8.0) / 16.0, 0.0, 0.0);
   let normal = normalize(vec3(0.2, 0.0, 1.0));
@@ -168,7 +174,7 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
   let baseColor = vec3(0.4, 0.6, 0.8) * select(1.0, 0.00000001, u32(p.x) % 2u != 0u);
   let f0 = vec3(0.06);
   let actual = ${output === 'radiance' ? 'evaluateStandardDirect' : 'evaluateStandardDirectSplit'}(worldPos, ndc, select(-2.0, -8.0, far), p.xy,
-    normal, viewDir, baseColor, vec3(0.0), 0.3, 0.25, f0, 0.5, false, channels, ${output === 'radiance' ? '' : 'true, '}false).${output === 'radiance' ? 'radiance' : 'diffuse'};
+    normal, viewDir, baseColor, vec3(0.0), 0.3, 0.25, f0, 0.5, false, receiver, ${output === 'radiance' ? '' : 'true, projection, false, '}false).${output === 'radiance' ? 'radiance' : 'diffuse'};
   var expected = vec3(0.0);
   ${
     output === 'solar'
@@ -207,13 +213,15 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
 }
 
 it.each([
-  [true, 'diffuse'],
-  [false, 'diffuse'],
-  [true, 'radiance'],
-  [false, 'radiance'],
-  [true, 'solar'],
-  [false, 'solar'],
-] as const)('Standard direct storage=%s output=%s traverses membership once and preserves its components', async (storage, output) => {
+  [true, 'diffuse', false],
+  [false, 'diffuse', false],
+  [true, 'radiance', false],
+  [false, 'radiance', false],
+  [true, 'solar', false],
+  [false, 'solar', false],
+  [true, 'solar', true],
+  [false, 'solar', true],
+] as const)('Standard direct storage=%s output=%s projected=%s traverses membership once and preserves its components', async (storage, output, projected) => {
   const adapter = await navigator.gpu.requestAdapter();
   if (adapter === null) throw new Error('Dawn cluster regression requires a GPU adapter');
   const device = await adapter.requestDevice();
@@ -234,7 +242,7 @@ it.each([
   try {
     const defines = { CLUSTER_FORWARD_AVAILABLE: true, STORAGE_BUFFER_AVAILABLE: storage };
     const code = await composeShader(
-      directSplitOracleSource(output),
+      directSplitOracleSource(output, projected),
       reachableImports(
         Object.fromEntries(
           Object.entries({
@@ -298,14 +306,6 @@ fn view_apply_direct_solar(v: View, radiance: vec3<f32>, position: vec3<f32>) ->
       format: 'depth32float',
       usage: GPUTextureUsage.TEXTURE_BINDING,
     });
-    const shadows = device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: depth.createView({ dimension: '2d-array' }) },
-        { binding: 1, resource: device.createSampler({ compare: 'greater' }) },
-      ],
-    });
-    const empty = device.createBindGroup({ layout: pipeline.getBindGroupLayout(1), entries: [] });
     const actual = texture({
       size: [16, 4],
       format: 'rgba32float',
@@ -326,10 +326,27 @@ fn view_apply_direct_solar(v: View, radiance: vec3<f32>, position: vec3<f32>) ->
     lightFloats.set([-0.5, 0, 2, 0.01, 4, 2, 1, 2]);
     lightFloats.set([0.5, 0, 3, 0.01, 1, 3, 5, 2], 24);
     for (let i = 0; i < 2; i++) {
-      lightWords.set([0, 0xffffffff, 0xffffffff, 0xffffffff, 1 << i, 0, 0, 0], i * 24 + 16);
+      // Poison the raw mask when exercising the projected slot lane.
+      lightWords.set(
+        [
+          0,
+          0xffffffff,
+          0xffffffff,
+          0xffffffff,
+          projected ? 0 : 1 << i,
+          0,
+          projected ? 1 << i : 0,
+          0,
+        ],
+        i * 24 + 16,
+      );
     }
     const indices = new Uint32Array([0, 1, 0, 1]);
-    const entries: GPUBindGroupEntry[] = [{ binding: 6, resource: { buffer: uniform } }];
+    const entries: GPUBindGroupEntry[] = [
+      { binding: 0, resource: depth.createView({ dimension: '2d-array' }) },
+      { binding: 1, resource: device.createSampler({ compare: 'greater' }) },
+      { binding: 33, resource: { buffer: uniform } },
+    ];
     let gridBuffer: GPUBuffer | undefined;
     let dataTexture: GPUTexture | undefined;
     if (storage) {
@@ -342,9 +359,9 @@ fn view_apply_direct_solar(v: View, radiance: vec3<f32>, position: vec3<f32>) ->
       device.queue.writeBuffer(lights, 0, lightData);
       device.queue.writeBuffer(indexList, 0, indices);
       entries.push(
-        { binding: 3, resource: { buffer: lights } },
-        { binding: 4, resource: { buffer: gridBuffer } },
-        { binding: 5, resource: { buffer: indexList } },
+        { binding: 30, resource: { buffer: lights } },
+        { binding: 31, resource: { buffer: gridBuffer } },
+        { binding: 32, resource: { buffer: indexList } },
       );
     } else {
       dataTexture = texture({
@@ -352,9 +369,9 @@ fn view_apply_direct_solar(v: View, radiance: vec3<f32>, position: vec3<f32>) ->
         format: 'rgba32uint',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
-      entries.push({ binding: 3, resource: dataTexture.createView() });
+      entries.push({ binding: 30, resource: dataTexture.createView() });
     }
-    const clusters = device.createBindGroup({ layout: pipeline.getBindGroupLayout(2), entries });
+    const clusters = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries });
     const calls: number[][] = [];
     for (const lightCount of [0, 2, 0]) {
       const payload = new ArrayBuffer(96);
@@ -390,9 +407,7 @@ fn view_apply_direct_solar(v: View, radiance: vec3<f32>, position: vec3<f32>) ->
         })),
       });
       pass.setPipeline(pipeline);
-      pass.setBindGroup(0, shadows);
-      pass.setBindGroup(1, empty);
-      pass.setBindGroup(2, clusters);
+      pass.setBindGroup(0, clusters);
       pass.draw(3);
       pass.end();
       encoder.copyTextureToBuffer(

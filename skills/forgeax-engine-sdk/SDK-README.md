@@ -42,16 +42,17 @@ the same locked Engine versions from npm. Both surfaces share the pnpm lockfile 
 pnpm-workspace.yaml allowBuilds policy. sdk-manifest.json records the store layout
 created by the pinned pnpm release.
 
-View is optional and owns its startup file. From a generated game's root, run
-`node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .`.
-The game's installed Engine includes the matching built View; no global SDK,
-separate View package, Engine build or manual Backend startup is required.
-For the SDK-wide project chooser use `node /path/to/forgeax-sdk/tools/view/start.mjs`.
+View is optional and ships only in the SDK, outside the game's npm dependencies.
+From a generated game's root, run
+`node /absolute/forgeax-sdk/tools/view/start.mjs --project .`.
+The launcher initializes the SDK's `.forgeax/cli-runtime` on first use and resolves
+its matching Engine and View there; it does not use the game's Engine to host View.
+For the SDK-wide project chooser omit `--project`.
 Keep that terminal open and open the returned URL; project readiness appears in
-the page. Read `skills/forgeax-view-start/SKILL.md` for instance and shutdown rules.
-New games receive this View-owned skill through the SDK skill inventory.
-Existing games can read the current copy under their Engine's `tools/view/skills/`;
-installing or upgrading npm dependencies does not overwrite their agent prompts.
+the page. Read the SDK's `tools/view/skills/forgeax-view-start/SKILL.md` for instance
+and shutdown rules. New games also receive this View-owned skill through the SDK
+skill inventory. Existing games can read the SDK copy; dependency upgrades do not
+overwrite their agent prompts.
 
 game-3d is a content-bearing reference, not production artwork. Original/high-fidelity games replace
 visible content and forge.json/package/GUID/sourceKey/plugin identity, while reusing runtime code according to

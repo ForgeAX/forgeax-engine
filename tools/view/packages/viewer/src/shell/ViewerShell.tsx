@@ -92,6 +92,7 @@ import {
   type WorkspaceRecoveryClient,
 } from './WorkspaceProjectRecovery';
 import { WorkspaceCommandErrorHost } from './WorkspaceCommandErrorHost';
+import { WorkspacePreparationStatus } from './WorkspacePreparationStatus';
 
 const EMPTY_CLAIMS: readonly SlotClaim[] = [];
 const EMPTY_PAGE_TYPES: readonly PageType[] = [];
@@ -930,6 +931,7 @@ function ShellBottomDock({
 }
 
 export function ViewerShell({
+  engineVersion,
   slotRegistry,
   pageRegistry,
   pageHost,
@@ -941,6 +943,7 @@ export function ViewerShell({
   onSelectPageType,
   responsiveAutoTuck = true,
 }: {
+  engineVersion?: string;
   slotRegistry: SlotRegistry;
   pageRegistry: PageRegistry;
   pageHost?: PageHost;
@@ -1421,6 +1424,7 @@ export function ViewerShell({
   return (
     <div className="fx-view-app" data-forgeax-view="shell">
       {!projectSession.restoring && <WorkspaceCommandErrorHost />}
+      <WorkspacePreparationStatus client={workspaceClient} connection={hostConnection} />
 
       <PageTabStrip
         leading={(<div className="fx-view-brand">
@@ -1541,6 +1545,7 @@ export function ViewerShell({
         resolveDropDock={resolveDropDock}
         onCrossDockDrop={onCrossDockDrop}
       />
+      {engineVersion && <footer className="fx-view-version" aria-label={`Engine ${engineVersion}`}>Engine {engineVersion}</footer>}
     </div>
   );
 }

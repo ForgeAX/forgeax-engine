@@ -1,5 +1,7 @@
 import type { OutgoingHttpHeader, OutgoingHttpHeaders } from 'node:http';
+import { sha256 } from '@forgeax/engine-types';
 import type { Plugin, ViteDevServer } from 'vite';
+import type { StartupCacheIdentity } from './startup-cache-source.js';
 
 /** Cache-only reset: never clear storage, cookies, settings, or Service Workers.
  * Browsers apply Clear-Site-Data on secure origins, including localhost. */
@@ -26,5 +28,21 @@ export function startupCacheHttp(): Plugin {
     name: 'forgeax:startup-cache-http',
     configureServer: configure,
     configurePreviewServer: configure,
+  };
+}
+
+/** Node generation owns hashing; the shared startup source also runs in browser tests. */
+export function createStartupCacheIdentity(
+  facts: Omit<StartupCacheIdentity, 'version'>,
+): StartupCacheIdentity {
+  const identity = {
+    project: facts.project,
+    game: facts.game,
+    engine: facts.engine,
+    ...(facts.revision === undefined ? {} : { revision: facts.revision }),
+  };
+  return {
+    ...identity,
+    version: sha256(JSON.stringify(identity)),
   };
 }

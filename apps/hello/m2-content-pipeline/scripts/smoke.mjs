@@ -66,7 +66,7 @@ const sidecars = entries.map((entry) => JSON.parse(readFileSync(resolve(root, en
 const importers = new Set(sidecars.map((entry) => entry.importer).filter((importer) => typeof importer === 'string'));
 if (!importers.has('gltf') || !importers.has('reel-game-blob')) fail(`expected gltf + host importer entries, got ${[...importers].join(', ')}`);
 const fbxEntries = sidecars.filter((entry) => entry.importer === 'fbx');
-const fontPack = sidecars.find((entry) => entry.kind === 'internal-text-package' && entry.assets?.some((asset) => asset.kind === 'font'));
+const fontPack = sidecars.find((entry) => entry.schemaVersion === '3.0.0' && Object.values(entry.assets ?? {}).some((asset) => asset.kind === 'font'));
 if (fbxEntries.length !== 2 || fontPack === undefined) fail(`expected 2 FBX sidecars + one font pack, got fbx=${fbxEntries.length}, fontPack=${fontPack !== undefined}`);
 console.log(`[m2-content] sidecar scan: PASS entries=${entries.length} importers=${[...importers].sort().join(',')}`);
 

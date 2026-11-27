@@ -7,6 +7,10 @@ import {
 import { type EntityHandle, Time, type World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { readPresentationWorldMatrix } from '@forgeax/engine-scene';
+import {
+  collectPresentationTransformSpans,
+  type PresentationSpan,
+} from '@forgeax/engine-scene/internal';
 import { type Asset, err, ok, type Result } from '@forgeax/engine-types';
 import { planarCaptureDemanded } from '../capture/planar-material';
 import { MeshFilter } from '../components/mesh-filter';
@@ -32,7 +36,7 @@ import type {
   RenderFeatureSubmission,
 } from '../features/types';
 import { MaterialResource, materialResource } from '../material-resource';
-import { materialSourceMatchesCurrent, materialSourceReferences } from '../material-source';
+import { materialSourceReferences } from '../material-source';
 import type { FeatureTextureReadbackResult } from '../render-contract';
 import {
   createWorldInternalView,
@@ -47,6 +51,7 @@ import {
   type WaterMeshViewFacts,
 } from '../render-system-extract';
 import { extractSource } from '../render-system-extract-tail';
+import { CapturedSceneTransform, copyScenePose } from '../scene/captured-transform';
 import {
   createGlobalTransformChangeQuery,
   createRenderSourceState,
@@ -62,7 +67,7 @@ import { type CanvasTextureSource, isCanvasTextureSource } from '../textures/can
 import { isExternalTextureSource } from '../textures/external-texture';
 import { renderTextureSourceKey } from '../textures/source-token';
 import { PublishedAssetClosure } from './asset-closure';
-import { type PublishedCanvasFrame, publicationCanvasFrames } from './canvas';
+import { CanvasFramePublisher, type PublishedCanvasFrame } from './canvas';
 import {
   type RenderPublication,
   RenderPublicationError,
@@ -70,7 +75,12 @@ import {
   type RenderPublicationMetadata,
   type RenderPublicationTemplate,
 } from './contract';
-import { publicationFrameDependencies, renderableAssetRoots } from './dependencies';
+import {
+  PublishedAssetConsumers,
+  publicationFrameDependencies,
+  renderableAssetRoots,
+} from './dependencies';
+import { DrawParameterPublisher, drawParameterComponent } from './draw-parameters';
 import { MAX_RENDER_FRAMES_IN_FLIGHT } from './frame-limits';
 import { EntityMaterialLists } from './material-lists';
 import { PublishedMaterialProjections, ReceivingMaterialProjections } from './material-projections';
@@ -82,14 +92,11 @@ import {
   renderPublicationRecordBytes,
   renderPublicationRecordColumns,
 } from './record';
+import { renderableTemplateSnapshot } from './renderable-template';
 import { worldRenderResources } from './resource-scope';
 import { SkinJointReferences } from './skin-joints';
 import { publicationTargetSources, type RenderPublicationTargetOwner } from './targets';
-import {
-  materialCanvasSources,
-  materialVideoClips,
-  projectTextureConsumers,
-} from './texture-consumers';
+import { projectTextureConsumers, TextureConsumerEdits } from './texture-consumers';
 import { publicationVideoFrames } from './video';
 
 const EMPTY_ASSET_ROWS: readonly (readonly [number, Asset, number])[] = Object.freeze([]);
@@ -251,9 +258,12 @@ export function createRenderPublisher(
    * payload crosses once through the preparation instead of a second clone.
    */
   preparingMesh?: (handle: number) => boolean,
+  /** These newly materialized renderables are owned by the closed Level lane. */
+  ownsClosedLevelRow?: (entity: number) => boolean,
 ) {
   world.bindAssets(assets).unwrap();
   const assetObserver = assets.observe().unwrap();
+  const sourceRecords = runtimeAssets(world.assets);
   const assetClosure = new PublishedAssetClosure();
   const materialIds = new WeakMap<MaterialResource, number>();
   const materialRecords = new Map<
@@ -278,9 +288,11 @@ export function createRenderPublisher(
   const source = createRenderSourceState(world);
   const transforms = createGlobalTransformChangeQuery(world);
   const caches: MaterialSnapshotContexts = new Map();
+  const changedMaterialSources = new Set<number>();
   // A capture demand flip re-routes cached planar receivers.
   let planarDemand: boolean | undefined;
   const members = new Set<number>();
+  let drawParameterSource: DrawParameterPublisher | undefined;
   const acceptedWaterMeshOwners = new Set<number>();
   let acceptedWaterMeshSourceState: WaterMeshSourceState | undefined;
   const publishedPrograms = new Set<string>();
@@ -305,10 +317,11 @@ export function createRenderPublisher(
     string,
     { readonly handle: number; readonly revision: number; readonly value: Asset }
   >();
-  const dependencies = new Map<number, readonly number[]>();
+  const dependencies = new PublishedAssetConsumers();
   const pending = new Set<number>();
-  let canvasConsumers = new Map<number, readonly CanvasTextureSource[]>();
-  let videoConsumers = new Map<number, readonly number[]>();
+  const canvasPublication = new CanvasFramePublisher();
+  const canvasConsumers = new Map<number, readonly CanvasTextureSource[]>();
+  const videoConsumers = new Map<number, readonly number[]>();
   // One consuming frame and a bounded number of sealed successors.
   const flights = new Map<number, SourceFeatureFlight>();
   const skinJoints = new SkinJointReferences();
@@ -327,19 +340,22 @@ export function createRenderPublisher(
   // returns with the frame completion, so slots never allocate in steady state.
   let storage: ArrayBuffer | undefined;
   const spareStorage: ArrayBuffer[] = [];
+  let discardStorageThrough = 0;
   // Metadata of the last accepted publication; the next message omits unchanged entries.
   let acceptedMetadata: RenderPublicationMetadata | undefined;
   // Camera, light and environment entries re-extract only when their inputs change.
   const environmentGate = new EnvironmentFrameGate();
   const record = (bytes: number): ArrayBuffer => {
-    let value = storage ?? new ArrayBuffer(0);
+    let value = storage;
     // A baseline-sized record must not keep crossing the Worker boundary: every
     // transfer re-registers its full capacity as external memory in both
     // realms, and that pressure forces whole-heap GC proportional to N.
     const oversized =
-      value.byteLength > STORAGE_SHRINK_FLOOR && value.byteLength > bytes * STORAGE_SHRINK_RATIO;
-    if (value.byteLength < bytes || oversized) {
-      let capacity = oversized ? 256 : Math.max(256, value.byteLength);
+      value !== undefined &&
+      value.byteLength > STORAGE_SHRINK_FLOOR &&
+      value.byteLength > bytes * STORAGE_SHRINK_RATIO;
+    if (value === undefined || value.byteLength < bytes || oversized) {
+      let capacity = oversized ? 256 : Math.max(256, value?.byteLength ?? 0);
       while (capacity < bytes) capacity *= 2;
       value = new ArrayBuffer(capacity);
       allocations++;
@@ -395,7 +411,14 @@ export function createRenderPublisher(
     readonly removed = new Set<number>();
     readonly invalidated = new Set<number>();
     readonly assetBatch: ReturnType<ReturnType<typeof assetObserver.read>['unwrap']>;
-    readonly matrixRows = new Map<number, ArrayLike<number>>();
+    readonly observedAssetRevision: number;
+    // Numeric entries address the ordered changed spans. An upsert replaces its
+    // value in place with the producer's matrix, preserving packet order.
+    private readonly matrixRows = new Map<
+      number,
+      number | ArrayLike<number> | CapturedSceneTransform
+    >();
+    private readonly transformSpans: PresentationSpan[] = [];
     canvasFrames: readonly PublishedCanvasFrame[] = [];
     videoFrames: RenderPublication['videoFrames'] = [];
     // Dispatch entries share their material's parameter snapshot. Intern
@@ -442,17 +465,30 @@ export function createRenderPublisher(
       observation?.fact('membershipChanged', batch.membershipChanged);
       observation?.fact('pending', pending.size);
       this.assetBatch = assetObserver.read().unwrap();
+      this.observedAssetRevision = sourceRecords.currentRevision;
       observation?.fact('assetChanges', this.assetBatch.changes.length);
       for (const change of this.assetBatch.changes)
         if (!change.removed) this.invalidated.add(change.handle as unknown as number);
       this.collectSourceChanges();
       if (baseline) this.addBaselineMembers();
+      this.excludeClosedLevelRows();
       this.collectTransformRows();
       observation?.fact('changed', this.changed.size);
       observation?.fact('removed', this.removed.size);
       observation?.fact('invalidated', this.invalidated.size);
       observation?.fact('matrixRows', this.matrixRows.size);
       for (const entity of this.changed) pending.add(entity);
+    }
+
+    private excludeClosedLevelRows(): void {
+      if (ownsClosedLevelRow === undefined) return;
+      for (const entity of this.changed) {
+        if (!ownsClosedLevelRow(entity)) continue;
+        if (members.has(entity))
+          throw new Error('A closed Level cannot claim an already published renderable');
+        this.changed.delete(entity);
+        pending.delete(entity);
+      }
     }
 
     private templateWorkspace(): ReturnType<typeof createTemplateWorkspace> {
@@ -462,8 +498,7 @@ export function createRenderPublisher(
 
     private collectSourceChanges(): void {
       const changes = this.sourceChanges.changes;
-      for (const entity of changes.retiredTransforms)
-        if (skinJoints.has(entity)) skinJoints.mark(entity);
+      for (const entity of changes.retiredTransforms) skinJoints.mark(entity);
       if (this.observation !== undefined)
         for (let index = 0; index < changes.meshFilterWrites; index++)
           this.observation.count('mesh-filter-write');
@@ -477,15 +512,22 @@ export function createRenderPublisher(
     }
 
     private collectTransformRows(): void {
-      transforms.forEach((row) => {
-        const entity = row.entity;
-        skinJoints.mark(entity);
-        if (members.has(entity) && !this.removed.has(entity)) {
-          const matrix = readPresentationWorldMatrix(world, entity);
-          if (matrix !== undefined) this.matrixRows.set(entity, matrix);
-          pending.add(entity);
-        }
-      });
+      collectPresentationTransformSpans(
+        world,
+        transforms,
+        this.transformSpans,
+        (entities, firstMatrix) => {
+          for (let i = 0; i < entities.length; i++) {
+            const entity = entities[i] as number;
+            const joint = skinJoints.mark(entity);
+            if (this.removed.has(entity)) continue;
+            const member = members.has(entity);
+            if (member) pending.add(entity);
+            if ((member || joint) && firstMatrix !== undefined)
+              this.matrixRows.set(entity, firstMatrix + i);
+          }
+        },
+      );
     }
 
     private readonly keyValue = (key: string, value: unknown): unknown =>
@@ -578,36 +620,22 @@ export function createRenderPublisher(
       const observation = this.observation;
       observation?.phase('extract');
       const extracted = new Set(this.withoutPreparingRenderables());
-      const collectRemovedWaterOwners = () => {
-        for (const entity of acceptedWaterMeshOwners)
-          if (this.removed.has(entity)) extracted.add(entity);
-      };
-      collectRemovedWaterOwners();
-      const captureInvalidatedSourceEntities = () => {
-        const invalidatedSources = new Set<number>();
-        for (const { cache } of caches.values())
-          for (const [handle, entry] of cache)
-            if (
-              entry.snapshot.sourceAssets !== undefined &&
-              (entry.retry !== undefined ||
-                !materialSourceMatchesCurrent(
-                  worldRenderResources(world),
-                  entry.snapshot.sourceAssets,
-                ))
-            )
-              invalidatedSources.add(handle);
-        if (this.invalidated.size > 0 || invalidatedSources.size > 0)
-          for (const [entity, handles] of dependencies)
-            if (
-              handles.some(
-                (handle) =>
-                  invalidatedSources.has(handle) ||
-                  (acceptedWaterMeshOwners.has(entity) && this.invalidated.has(handle)),
-              )
-            )
-              extracted.add(entity);
-      };
-      captureInvalidatedSourceEntities();
+      for (const entity of this.removed)
+        if (acceptedWaterMeshOwners.has(entity)) extracted.add(entity);
+      changedMaterialSources.clear();
+      const resources = worldRenderResources(world);
+      for (const { cache } of caches.values())
+        cache.collectSourceChanges(
+          resources,
+          this.assetBatch.changes,
+          changedMaterialSources,
+          'source',
+        );
+      for (const handle of changedMaterialSources) dependencies.collect(handle, extracted);
+      changedMaterialSources.clear();
+      if (acceptedWaterMeshOwners.size !== 0)
+        for (const handle of this.invalidated)
+          dependencies.collect(handle, extracted, acceptedWaterMeshOwners);
       environmentGate.assetsChanged = this.baseline || this.assetBatch.changes.length > 0;
       const frame = extractSource(world, assets, caches, {
         ...(capabilities === undefined ? {} : renderMaterialContext(capabilities, limits)),
@@ -669,20 +697,14 @@ export function createRenderPublisher(
           this.removed.add(entity);
       for (const entity of this.removed) this.matrixRows.delete(entity);
       this.prepareJointUpdates(frame);
-      const nextVideoConsumers = projectTextureConsumers(
+      const consumers = projectTextureConsumers(
         videoConsumers,
-        this.removed,
-        frame.renderables,
-        materialVideoClips,
-      );
-      this.videoFrames = publicationVideoFrames(world, nextVideoConsumers);
-      const nextCanvasConsumers = projectTextureConsumers(
         canvasConsumers,
         this.removed,
         frame.renderables,
-        materialCanvasSources,
       );
-      this.canvasFrames = publicationCanvasFrames(nextCanvasConsumers);
+      this.videoFrames = publicationVideoFrames(world, consumers.videos);
+      this.canvasFrames = canvasPublication.prepare(consumers.canvases);
       const {
         renderables: _rows,
         waterMeshOwnerRefreshes: _waterMeshOwnerRefreshes,
@@ -694,7 +716,11 @@ export function createRenderPublisher(
       const metadata = retainStatistics(extractedMetadata, acceptedMetadata);
       const removedConsumers = new Set([...this.removed, ...this.nextDependencies.keys()]);
       this.updateAssetClosure(removedConsumers, nextFrameDependencies);
-      const assetRows = this.closure?.rows() ?? EMPTY_ASSET_ROWS;
+      const preparedRows: PreparedAssetRow[] = [];
+      const assetRows =
+        this.closure?.rows((handle, revision) =>
+          this.referencePreparedMesh(handle, revision, preparedRows),
+        ) ?? EMPTY_ASSET_ROWS;
       const retired = this.closure?.retired() ?? EMPTY_IDENTITIES;
       const materialProjections = this.collectMaterialProjections(assetRows);
       this.holdMaterials();
@@ -702,10 +728,9 @@ export function createRenderPublisher(
       this.referenceMaterialSources(referencedMaterials);
       const retiredMaterials = retiredMaterialIds();
       const publishedMaterials = publishedMaterialRows();
-      const preparedRows: PreparedAssetRow[] = [];
-      const sentAssetRows = this.unpreparedAssetRows(assetRows, preparedRows);
       observation?.fact('preparedAssets', preparedRows.length);
       const columns = this.recordColumns();
+      const drawParameters = this.prepareDrawParameters(removedConsumers);
       observation?.phase('packet');
       const surfaceInput = surfaceDynamicInputOf(world);
       const surfaceDynamicInputs =
@@ -737,12 +762,13 @@ export function createRenderPublisher(
         targetSources: publicationTargetSources(referencedMaterials),
         features: featureRows,
         ...(surfaceDynamicInputs.length ? { surfaceDynamicInputs } : {}),
+        drawParameters: drawParameters?.packet,
         assetVersions: this.addedAssetVersions(),
         retiredAssetVersions: this.retiredAssetVersions(),
         programs: [...this.programs.values()],
         ...columns,
         ...(preparedRows.length === 0 ? {} : { preparedAssets: preparedRows }),
-        assets: sentAssetRows.map(([handle, value, revision]) =>
+        assets: assetRows.map(([handle, value, revision]) =>
           this.packetAsset(handle, value, revision, materialProjections, retired),
         ),
         retiredAssets: retired as number[],
@@ -754,6 +780,7 @@ export function createRenderPublisher(
       const message = encodeRenderPublication(packet, acceptedMetadata);
       observation?.phase('candidate');
       this.sourceChanges.validate();
+      drawParameters?.validate();
       preparationPhase = 'candidate';
       let closed = false;
       return ok({
@@ -766,7 +793,9 @@ export function createRenderPublisher(
           preparationPhase = 'settling';
           try {
             observation?.phase('accept');
+            drawParameters?.validate();
             this.sourceChanges.accept();
+            drawParameters?.accept();
             this.assetBatch.accept();
             assetVersions = this.nextAssetVersions;
             commitMaterialProjections(retired, materialProjections);
@@ -788,10 +817,11 @@ export function createRenderPublisher(
             });
             storage = spareStorage.pop();
             closeFrames(this.videoFrames, this.canvasFrames);
-            videoConsumers = nextVideoConsumers;
-            canvasConsumers = nextCanvasConsumers;
+            if (consumers.videos instanceof TextureConsumerEdits) consumers.videos.accept();
+            canvasPublication.accept(this.canvasFrames, revision);
+            if (consumers.canvases instanceof TextureConsumerEdits) consumers.canvases.accept();
             frameDependencies = nextFrameDependencies;
-            this.commitMembership(removedConsumers);
+            this.commitMembership();
             if (this.nextWaterMeshOwners !== undefined) {
               acceptedWaterMeshOwners.clear();
               for (const entity of this.nextWaterMeshOwners) acceptedWaterMeshOwners.add(entity);
@@ -829,6 +859,22 @@ export function createRenderPublisher(
       });
     }
 
+    private prepareDrawParameters(membershipChanges: ReadonlySet<number>) {
+      if (drawParameterSource === undefined) {
+        const component = drawParameterComponent(world);
+        if (component === undefined) return undefined;
+        drawParameterSource = new DrawParameterPublisher(world, component);
+      }
+      const candidate = drawParameterSource.prepare(
+        (entity) =>
+          !this.removed.has(entity) && (this.nextDependencies.has(entity) || members.has(entity)),
+        membershipChanges,
+      );
+      this.observation?.fact('drawParameterRows', candidate?.packet?.entities.length ?? 0);
+      this.observation?.fact('retiredDrawParameters', candidate?.packet?.removed.length ?? 0);
+      return candidate;
+    }
+
     /**
      * Adding or removing a PlanarReflection capture changes no entity or
      * asset, yet planar receivers drop or regain their Deferred pass with it.
@@ -838,30 +884,20 @@ export function createRenderPublisher(
       const demanded = planarCaptureDemanded(world);
       if (planarDemand === demanded) return;
       planarDemand = demanded;
-      for (const { cache } of caches.values())
-        for (const [handle, cached] of cache)
-          if (cached.planarRouted !== undefined && cached.planarRouted !== demanded)
-            this.invalidated.add(handle);
+      for (const { cache } of caches.values()) cache.collectPlanarReceivers(this.invalidated);
     }
 
     private republishInvalidatedMaterials(): void {
-      const handles = new Set([
-        ...this.invalidated,
-        ...[...caches.values()].flatMap(({ cache }) =>
-          [...cache]
-            .filter(
-              ([, entry]) =>
-                entry.retry !== undefined ||
-                (entry.snapshot.sourceAssets !== undefined &&
-                  !materialSourceMatchesCurrent(
-                    worldRenderResources(world),
-                    entry.snapshot.sourceAssets,
-                  )),
-            )
-            .map(([handle]) => handle),
-        ),
-      ]);
-      for (const handle of handles) {
+      // Source extraction can admit new closures or edit assets after the opening observation.
+      // Keep the original acceptance cursor so a late publication also reaches the following frame.
+      const changes =
+        this.observedAssetRevision === sourceRecords.currentRevision
+          ? this.assetBatch.changes
+          : assetObserver.read().unwrap().changes;
+      const resources = worldRenderResources(world);
+      for (const { cache } of caches.values())
+        cache.collectSourceChanges(resources, changes, this.invalidated, 'all');
+      for (const handle of this.invalidated) {
         for (const { cache, geometry, vertexColor } of caches.values()) {
           if (!cache.has(handle)) continue;
           const previous = cache.get(handle);
@@ -874,7 +910,7 @@ export function createRenderPublisher(
           try {
             const snapshot = resolveMaterialSnapshot(
               handle,
-              worldRenderResources(world),
+              resources,
               assets,
               undefined,
               cache,
@@ -990,22 +1026,7 @@ export function createRenderPublisher(
       let template: RenderPublicationTemplate | undefined;
       let key: string | undefined;
       if (known === undefined) {
-        const {
-          entityKey: _entity,
-          transform: _transform,
-          material: _material,
-          materials: _materials,
-          materialOverrides: _overrides,
-          ...content
-        } = row;
-        snapshot = {
-          ...content,
-          material: references.material,
-          materials: references.materials,
-          ...(references.overrides === undefined
-            ? {}
-            : { materialOverrides: references.overrides }),
-        };
+        snapshot = renderableTemplateSnapshot(row, references);
         template = { snapshot, dispatch: strippedDispatch(rowDispatch) };
         if (shareable) {
           key = this.templateKey(template);
@@ -1029,7 +1050,7 @@ export function createRenderPublisher(
       }
       if (known === undefined) throw new Error('renderable template was not published');
       this.upserts.push(entityKey, known.index);
-      this.matrixRows.set(entityKey, transform.world);
+      this.matrixRows.set(entityKey, CapturedSceneTransform.storage(transform));
       this.nextDependencies.set(entityKey, known.dependencies);
     }
 
@@ -1373,7 +1394,7 @@ export function createRenderPublisher(
       const value =
         prior === undefined
           ? captured === undefined
-            ? records.borrow<Asset>(handle)
+            ? records.resolveStoredAsset<Asset>(handle)
             : ok(captured.value)
           : ok(prior.value);
       if (!value.ok) return value;
@@ -1441,6 +1462,13 @@ export function createRenderPublisher(
       const references =
         referenceEdits === undefined ? undefined : skinJoints.prepare(referenceEdits);
       this.references = references;
+      // A joint-only address came from the same ordered pose spans as mesh rows.
+      // A binding can retire in this very packet. Keep independent mesh/upsert ownership.
+      if (references !== undefined) {
+        for (const joint of references.retired)
+          if (!members.has(joint) && typeof this.matrixRows.get(joint) === 'number')
+            this.matrixRows.delete(joint);
+      }
       const jointChanges =
         skinJoints.changes.size > 0 || (references?.first.size ?? 0) > 0
           ? new Set(skinJoints.changes)
@@ -1456,8 +1484,8 @@ export function createRenderPublisher(
 
     private updateJointMatrix(joint: number): void {
       if (!(this.references?.has(joint) ?? skinJoints.has(joint))) return;
-      const matrix =
-        this.matrixRows.get(joint) ?? readPresentationWorldMatrix(world, joint as EntityHandle);
+      if (this.matrixRows.has(joint)) return;
+      const matrix = readPresentationWorldMatrix(world, joint as EntityHandle);
       if (matrix === undefined) {
         this.retiredJoints ??= new Set();
         this.retiredJoints.add(joint);
@@ -1480,10 +1508,23 @@ export function createRenderPublisher(
       let index = 0;
       for (const entity of this.removed) columns.removed[index++] = entity;
       index = 0;
+      let spanIndex = 0;
+      let spanStart = 0;
       this.matrixRows.forEach((matrix, entity) => {
         columns.transformEntities[index] = entity;
-        columns.transforms.set(matrix, 16 * index++);
+        if (typeof matrix === 'number') {
+          // Changed identities were inserted in span order. Replacements and
+          // removals keep the remaining numeric addresses monotonic.
+          let span = this.transformSpans[spanIndex] as PresentationSpan;
+          while (matrix >= spanStart + span.entities.length) {
+            spanStart += span.entities.length;
+            span = this.transformSpans[++spanIndex] as PresentationSpan;
+          }
+          copyScenePose(columns.transforms, index * 16, span.worlds, (matrix - spanStart) * 16);
+        } else CapturedSceneTransform.writeStorage(columns.transforms, index * 16, matrix);
+        index++;
       });
+      this.transformSpans.length = 0;
       index = 0;
       for (const joint of this.retiredJoints ?? EMPTY_IDENTITIES)
         columns.retiredJoints[index++] = joint;
@@ -1558,9 +1599,21 @@ export function createRenderPublisher(
     }
 
     private addedAssetVersions(): NonNullable<RenderPublication['assetVersions']> {
-      return [...this.nextAssetVersions].flatMap(([key, version]) =>
-        assetVersions.has(key) ? [] : [{ ...version, value: structuredClone(version.value) }],
-      );
+      const rows: Array<NonNullable<RenderPublication['assetVersions']>[number]> = [];
+      const records = runtimeAssets(assets);
+      for (const [key, { handle, revision, value }] of this.nextAssetVersions) {
+        if (assetVersions.has(key)) continue;
+        const preparedRevision =
+          value.kind === 'mesh' && preparedMesh !== undefined
+            ? records.fixedContentRevision(handle, revision, value)
+            : undefined;
+        rows.push(
+          preparedRevision !== undefined && preparedMesh?.(handle, preparedRevision)
+            ? { handle, revision, preparedRevision }
+            : { handle, revision, value: structuredClone(value) },
+        );
+      }
+      return rows;
     }
 
     private retiredAssetVersions(): NonNullable<RenderPublication['retiredAssetVersions']> {
@@ -1573,23 +1626,23 @@ export function createRenderPublisher(
      * A mesh revision the receiver already holds from a ready preparation
      * crosses once: send its identity, not a second cloned payload.
      */
-    private unpreparedAssetRows(
-      assetRows: Iterable<readonly [number, Asset, number]>,
+    private referencePreparedMesh(
+      handle: number,
+      revision: number,
       preparedRows: PreparedAssetRow[],
-    ): (readonly [number, Asset, number])[] {
-      if (preparedMesh === undefined) return [...assetRows];
-      return [...assetRows].filter(([handle, value, revision]) => {
-        if (value.kind !== 'mesh' || !preparedMesh(handle as number, revision)) return true;
-        const guid = runtimeAssetSource(assets, handle);
-        const sourceKey = guid === undefined ? undefined : assets.sourceKeyOf(guid);
-        preparedRows.push({
-          handle: handle as number,
-          revision,
-          ...(guid === undefined ? {} : { guid }),
-          ...(sourceKey === undefined ? {} : { sourceKey }),
-        });
-        return false;
+    ): boolean {
+      if (!preparedMesh?.(handle, revision)) return false;
+      const kind = runtimeAssets(assets).kind(handle);
+      if (!kind.ok || kind.value !== 'mesh') return false;
+      const guid = runtimeAssetSource(assets, handle);
+      const sourceKey = guid === undefined ? undefined : assets.sourceKeyOf(guid);
+      preparedRows.push({
+        handle,
+        revision,
+        ...(guid === undefined ? {} : { guid }),
+        ...(sourceKey === undefined ? {} : { sourceKey }),
       });
+      return true;
     }
 
     private assetPatches(): NonNullable<RenderPublication['assetPatches']> {
@@ -1637,8 +1690,9 @@ export function createRenderPublisher(
       };
     }
 
-    private commitMembership(removedConsumers: ReadonlySet<number>): void {
-      for (const entity of removedConsumers) dependencies.delete(entity);
+    private commitMembership(): void {
+      for (const entity of this.removed)
+        if (!this.nextDependencies.has(entity)) dependencies.delete(entity);
       this.references?.commit();
       if (this.jointChanges !== undefined) skinJoints.acknowledged(this.jointChanges);
       for (const entity of this.removed) members.delete(entity);
@@ -1721,6 +1775,7 @@ export function createRenderPublisher(
     >,
   ): void => {
     publishedMaterialProjections.accept(retired, materialProjections);
+    for (const handle of retired) for (const { cache } of caches.values()) cache.delete(handle);
   };
   const commitMaterialRecords = (publishedMaterials: RenderPublication['materials']): void => {
     for (const [id, holds] of materialHolds) {
@@ -1903,6 +1958,12 @@ export function createRenderPublisher(
       }
       return ok(undefined);
     },
+    trimStorage(): void {
+      spareStorage.length = 0;
+      // The candidate owns its record independently, including while waiting for credit.
+      storage = undefined;
+      discardStorageThrough = revision + (phaseIs('idle') ? 0 : 1);
+    },
     recycle(
       acceptedRevision: number,
       buffers: readonly ArrayBuffer[],
@@ -1914,8 +1975,10 @@ export function createRenderPublisher(
       const returned = buffers[0];
       if (buffers.length !== 1 || !(returned instanceof ArrayBuffer))
         return fail('shape', 'returned storage');
-      if (!phaseIs('idle') || storage !== undefined) spareStorage.push(returned);
-      else storage = returned;
+      if (acceptedRevision > discardStorageThrough) {
+        if (!phaseIs('idle') || storage !== undefined) spareStorage.push(returned);
+        else storage = returned;
+      }
       flights.delete(acceptedRevision);
       return ok(undefined);
     },
@@ -1932,10 +1995,12 @@ export function createRenderPublisher(
       assetVersions.clear();
       publishedMaterialProjections.clear();
       materialRecords.clear();
+      caches.clear();
       materialsByEntity.clear();
       pending.clear();
       videoConsumers.clear();
       canvasConsumers.clear();
+      canvasPublication.clear();
       flights.clear();
       spareStorage.length = 0;
       storage = undefined;

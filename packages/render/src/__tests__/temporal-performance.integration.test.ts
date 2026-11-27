@@ -68,18 +68,6 @@ describe('temporal motion blur performance evidence', () => {
     accelerationAttestation: { kind: 'direct-device' },
   } as const;
 
-  it('reports 8WH bytes for each bounded resolution', () => {
-    expect([
-      ['1080p', 1920 * 1080 * 8],
-      ['1440p', 2560 * 1440 * 8],
-      ['4K', 3840 * 2160 * 8],
-    ]).toEqual([
-      ['1080p', 16_588_800],
-      ['1440p', 29_491_200],
-      ['4K', 66_355_200],
-    ]);
-  });
-
   it('derives one stable runner class from actual runner facts', () => {
     const first = runnerProvenanceFromEnv({
       RUNNER_NAME: 'runner-a',
@@ -212,21 +200,15 @@ describe('temporal motion blur performance evidence', () => {
         backend: 'webgpu',
         framesObserved: 60,
         temporal: { status: 'stable', historyValid: true, historyAttempt: 'committed', epoch: 300 },
-        temporalTarget: {
-          identity: 'standard-scene-temporal',
-          producerId: 'forgeax::standard::scene-data',
-          schema: 'forgeax::scene-data::temporal-v1',
-          targetCount: 1,
-          descriptor: {
-            format: 'rgba16float',
-            width: 200,
-            height: 150,
-            sampleCount: 1,
-            bytes: 240000,
-          },
+        temporalInputRoute: 'depth-velocity',
+        resolution: { width: 200, height: 150 },
+        resourceProbe: {
+          velocityTargets: [
+            { label: 'scene-velocity', format: 'r32uint', width: 200, height: 150, sampleCount: 1 },
+          ],
         },
         creation: { texture: 0, buffer: 0, pipeline: 0 },
-        passes: ['standard-scene-data', 'taa-resolve', 'motion-blur'],
+        passes: ['standard-depth-prepass', 'standard-depth-velocity', 'taa-resolve', 'motion-blur'],
       },
       {
         testedRevision: 'abc123',
@@ -237,6 +219,21 @@ describe('temporal motion blur performance evidence', () => {
       },
     );
     expect(validateCorrectnessEvidence(evidence)).toEqual({ ok: true, errors: [] });
+    expect(evidence.observed.temporalTarget).toEqual({
+      label: 'scene-velocity',
+      format: 'r32uint',
+      width: 200,
+      height: 150,
+      sampleCount: 1,
+      bytes: 120_000,
+    });
+    expect(
+      evidence.resolutions.map(({ name, temporalTarget }) => [name, temporalTarget.bytes]),
+    ).toEqual([
+      ['1080p', 8_294_400],
+      ['1440p', 14_745_600],
+      ['4K', 33_177_600],
+    ]);
     expect(evidence.observed.creation).toEqual({ texture: 0, buffer: 0, pipeline: 0 });
   });
 

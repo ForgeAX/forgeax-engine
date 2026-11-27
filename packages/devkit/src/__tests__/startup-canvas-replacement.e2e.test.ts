@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_LOAD_PROGRESS_LABELS } from '@forgeax/engine-types';
 import { chromium } from 'playwright';
 import { build } from 'vite';
 import { expect, it } from 'vitest';
@@ -142,7 +143,7 @@ it('keeps the ordinary guide inert while keyboard users enter slow Reload and fa
     await page.keyboard.press('Enter');
     await expect
       .poll(() => page.locator('#forgeax-fatal-copy-status').textContent())
-      .toBe('Diagnostics copied.');
+      .toBe(DEFAULT_LOAD_PROGRESS_LABELS.host.diagnosticsCopied);
     expect(
       await page.evaluate(() => Reflect.get(globalThis, '__startupKeyboard').copied),
     ).toContain('plugin-startup-failed');

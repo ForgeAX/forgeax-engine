@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import type { Importer } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
+import { metaFixture } from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
+import { recordNamedBundle } from './vite-fixtures.js';
 
 const encoder = new TextEncoder();
 const programKey = (source: string) =>
@@ -42,23 +44,16 @@ const programImporter: Importer = {
 type Emitted = { fileName?: string; name?: string; source?: string | Uint8Array };
 
 describe('imported material programs in one production output', () => {
-  const roots: string[] = [];
-  afterEach(async () => {
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-  });
+  const scratch = temporaryDirectories();
+  afterEach(scratch.clear);
 
   async function writeSource(assets: string, name: string, guid: string, program: string) {
     await writeFile(resolve(assets, `${name}.fixture`), program);
     await writeFile(
       resolve(assets, `${name}.fixture.meta.json`),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'program-fixture',
-        source: `${name}.fixture`,
-        importSettings: {},
-        subAssets: [{ guid, sourceIndex: 0, sourceKey: 'material/main', kind: 'fixture-material' }],
-      }),
+      metaFixture(`${name}.fixture`, 'program-fixture', [
+        { guid, sourceIndex: 0, sourceKey: 'material/main', kind: 'fixture-material' },
+      ]),
     );
   }
 
@@ -71,13 +66,7 @@ describe('imported material programs in one production output', () => {
     });
     const emitted: Emitted[] = [];
     try {
-      await plugin.generateBundle.call({
-        emitFile(asset) {
-          emitted.push(asset);
-          return asset.fileName ?? asset.name ?? 'asset';
-        },
-        getFileName: (referenceId) => referenceId,
-      });
+      await plugin.generateBundle.call(recordNamedBundle(emitted));
     } finally {
       await plugin.closeBundle();
     }
@@ -85,7 +74,7 @@ describe('imported material programs in one production output', () => {
   }
 
   function packArtifacts(emitted: readonly Emitted[], guid: string): Record<string, string> {
-    const pack = emitted.find((asset) => asset.fileName === `assets/${guid}.pack.json`);
+    const pack = emitted.find((asset) => asset.fileName === `assets/${guid}.runtime-pack.json`);
     if (pack === undefined) throw new Error(`missing Pack for ${guid}`);
     const text =
       typeof pack.source === 'string' ? pack.source : new TextDecoder().decode(pack.source);
@@ -98,8 +87,7 @@ describe('imported material programs in one production output', () => {
   }
 
   it('writes one file per identical program and a new file when a material changes', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-shared-programs-'));
-    roots.push(root);
+    const root = await scratch.make('forgeax-shared-programs-');
     const assets = resolve(root, 'assets');
     await mkdir(assets);
     const guids = [

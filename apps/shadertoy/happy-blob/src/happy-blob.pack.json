@@ -1,12 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "4c5b8451-d0c5-5afe-ba38-12009e00334e",
+  "schemaVersion": "3.0.0",
+  "packageId": "7a8e520a-c9e5-5255-bfc4-706170c80c91",
+  "assets": {
+    "happy-blob.wgsl": {
       "kind": "material",
-      "execution": "cooked",
-      "sourceKey": "happy-blob.wgsl",
       "payload": {
         "kind": "material",
         "passes": [
@@ -21,7 +18,9 @@
               "cullMode": "none",
               "depthCompare": "always",
               "depthWriteEnabled": false,
-              "tags": { "LightMode": "Forward" },
+              "tags": {
+                "LightMode": "Forward"
+              },
               "queue": 2000
             }
           }
@@ -39,5 +38,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

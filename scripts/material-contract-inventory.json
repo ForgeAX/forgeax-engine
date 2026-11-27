@@ -3,8 +3,7 @@
     "apps/game-capability-lab/assets/shaders/animated-target.wgsl.meta.json",
     "apps/game-capability-lab/assets/shaders/chromatic-aberration.wgsl.meta.json",
     "apps/game-capability-lab/assets/shaders/depth-of-field.wgsl.meta.json",
-    "apps/game-capability-lab/assets/shaders/hit-flash.wgsl.meta.json",
-    "apps/hello/custom-shader/src/pulse-material.wgsl.meta.json"
+    "apps/game-capability-lab/assets/shaders/hit-flash.wgsl.meta.json"
   ],
   "materialPackages": [
     "apps/bevy/animate-shader/src/animate-shader.pack.json",
@@ -23,7 +22,6 @@
     "apps/hello-multi-uv/src/multi-uv-demo.pack.json",
     "apps/hello/boss-lightning/assets/arc-nova-sigil.shader.pack.json",
     "apps/hello/boss-lightning/assets/arc-nova-violet-sigil.shader.pack.json",
-    "apps/hello/custom-shader/src/pulse-material.shader.pack.json",
     "apps/hello/foliage-transmission/src/leaf-diffuse-transmission.pack.json",
     "apps/hello/m8-integrated-capstone/src/pulse-material.pack.json",
     "apps/hello/physical-material/src/skin-clearcoat-factor-r.pack.json",
@@ -43,8 +41,6 @@
     "apps/learn-render/5.advanced-lighting/1.advanced-lighting/src/blinn-phong.pack.json",
     "apps/learn-render/5.advanced-lighting/5.parallax-mapping/src/parallax.pack.json",
     "apps/learn-render/6.pbr/4.render-target-reflection/src/cube-reflection.pack.json",
-    "apps/learn-render/6.pbr/4.transmission-refraction/assets/material-transmission-gltf.pack.json",
-    "apps/learn-render/6.pbr/4.transmission-refraction/assets/material-transmission.pack.json",
     "apps/shadertoy/fractal-pyramid/src/fractal-pyramid.pack.json",
     "apps/shadertoy/happy-blob/src/happy-blob.pack.json",
     "packages/preview/dist/texture-view/2d-array.pack.json",

@@ -52,3 +52,19 @@ export async function* orderedPackPreparation<T, R>(
     await Promise.all(pending.values());
   }
 }
+
+/** A serial producer is a barrier between bounded runs of parallel producers. */
+export async function* orderedPackProduction<T, R>(
+  inputs: readonly T[],
+  parallel: (input: T) => boolean,
+  produce: (input: T) => Promise<R>,
+  failed: (result: R) => boolean,
+): AsyncGenerator<PromiseSettledResult<R>> {
+  for (let start = 0; start < inputs.length; ) {
+    let end = start + 1;
+    const overlaps = parallel(inputs[start] as T);
+    if (overlaps) while (end < inputs.length && parallel(inputs[end] as T)) end++;
+    yield* orderedPackPreparation(inputs.slice(start, end), overlaps ? 4 : 1, produce, failed);
+    start = end;
+  }
+}

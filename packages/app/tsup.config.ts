@@ -3,16 +3,18 @@ import { baseTsupConfig } from '../../config/tsup.base';
 
 export default defineConfig({
   ...baseTsupConfig,
+  loader: { '.svg': 'text' },
   // Root workspace tools and browser construction share private frame state
   // and error classes. Separate entry bundles would duplicate those owners.
   splitting: true,
   entry: {
     index: 'src/index.ts',
     configuration: 'src/configuration.ts',
+    internal: 'src/internal.ts',
     browser: 'src/browser.ts',
     'host-adapter': 'src/host-adapter.ts',
     'engine-worker-runtime': 'src/execution/engine-worker-runtime.ts',
-    'render-worker-runtime': 'src/execution/render-worker-runtime.ts',
+    'render-worker-runtime': 'src/execution/render-worker-entry.ts',
     'task-worker-runtime': 'src/execution/task-worker-runtime.ts',
   },
   external: [

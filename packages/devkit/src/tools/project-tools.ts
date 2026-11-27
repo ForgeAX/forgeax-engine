@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import {
   commandContribution,
@@ -7,6 +6,7 @@ import {
   type ToolContribution,
   type ToolRealm,
 } from '@forgeax/engine-tool-runtime';
+import { sha256 } from '@forgeax/engine-types';
 import {
   assertPluginSourceInputs,
   capturePluginProgramInputs,
@@ -55,11 +55,13 @@ async function createModuleLoader(root: string): Promise<ProjectToolModuleLoader
 export async function discoverProjectTools(
   rootInput: string,
   options: ProjectToolDiscoveryOptions = {},
+  retainInventory?: (inventory: PluginSourceInventory) => void,
 ): Promise<readonly ProjectToolBinding[]> {
   const root = resolve(rootInput);
   const facts = await readProjectFacts(root);
   if (!facts.ok) throw facts.error;
   const inventory = options.inventory ?? (await discoverPluginAssets(facts.value));
+  retainInventory?.(inventory);
   if (inventory.deferred.length)
     throw {
       code: 'plugin-tool-discovery-deferred',
@@ -126,7 +128,7 @@ async function readProjectToolContracts(
       }
       if (!isToolCommandContract(contract))
         throw new TypeError(`${moduleName}: invalid tool contract or duplicate command ID`);
-      const contractDigest = `sha256:${createHash('sha256').update(JSON.stringify(contract)).digest('hex')}`;
+      const contractDigest = `sha256:${sha256(JSON.stringify(contract))}`;
       for (const declaration of contract.commands) {
         const executor = declaration.executor?.startsWith('.')
           ? resolve(dirname(moduleName), declaration.executor)

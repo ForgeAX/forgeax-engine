@@ -28,7 +28,9 @@ const imports = Object.fromEntries(
     'lighting-spot-modifiers',
     'lighting-spot-projector',
     'shadow-pcf',
+    'standard-gbuffer',
     'standard-lighting',
+    'sky-sh-polynomial',
     'standard-cluster',
     'view-atmosphere',
     'common',
@@ -77,6 +79,7 @@ async function dispatch(
   entries: GPUBindGroupEntry[],
   count: number,
   vectors: number,
+  constants?: Record<string, number>,
 ): Promise<Float32Array> {
   const size = count * vectors * 16;
   const output = device.createBuffer({
@@ -95,7 +98,7 @@ async function dispatch(
     ).toEqual([]);
     const pipeline = await device.createComputePipelineAsync({
       layout: 'auto',
-      compute: { module, entryPoint: 'main' },
+      compute: { module, entryPoint: 'main', ...(constants === undefined ? {} : { constants }) },
     });
     const group = device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
@@ -119,6 +122,129 @@ async function dispatch(
     expect((await device.popErrorScope())?.message).toBeUndefined();
   }
 }
+
+it.each([
+  false,
+  true,
+])('keeps both velocity axes and reserves clear velocity (extended=%s)', async (extended) => {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter === null) throw new Error('Dawn adapter unavailable');
+  const device = await adapter.requestDevice();
+  const temporal = readFileSync(new URL('scene-temporal.wgsl', root), 'utf8')
+    .split('\n')
+    .slice(1)
+    .join('\n');
+  try {
+    const result = await dispatch(
+      device,
+      `
+      ${temporal}
+      @group(0) @binding(100) var<storage, read_write> output: array<vec4f>;
+      @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3u) {
+        let motion = array<vec2f, 4>(vec2f(0.0), vec2f(0.00013, -0.00035),
+          vec2f(0.37, -0.52), vec2f(-8.0, 8.0))[id.x];
+        let packed = encodeSceneVelocityWithDepth(vec4f(motion, 0.0, 1.0), vec4f(0.0, 0.0, 0.42, 1.0));
+        let fallback = encodeSceneVelocityWithDepth(vec4f(motion, 0.0, 2.0), vec4f(0.0, 0.0, 0.42, 1.0));
+        let raster = encodeSceneVelocityRaster(vec4f(motion, 0.0, 2.0), vec4f(0.0, 0.0, 0.42, 1.0));
+        let expectedX = select(SCENE_VELOCITY_INVALID_MOTION, packed.x, sceneVelocityWithDepthOutput);
+        let saturated = encodeSceneVelocity(vec2f(8.0, -8.0));
+        output[id.x * 2u] = vec4f(decodeSceneVelocity(packed.x), f32(packed.x & 65535u), f32(packed.x >> 16u));
+        output[id.x * 2u + 1u] = vec4f(f32(packed.x != 0u && packed.x != SCENE_VELOCITY_INVALID_MOTION),
+          sceneVelocityPreviousDepth(packed.y), sceneVelocityReactive(packed.y),
+          f32(fallback.x == packed.x && fallback.y == SCENE_VELOCITY_INVALID_DEPTH &&
+            raster.x == expectedX && saturated != SCENE_VELOCITY_INVALID_MOTION));
+      }
+    `,
+      [],
+      4,
+      2,
+      extended ? { '64009': 1 } : undefined,
+    );
+    for (const [i, [x, y]] of [
+      [0, 0],
+      [0.00013, -0.00035],
+      [0.37, -0.52],
+    ].entries()) {
+      expect(result[i * 8]).toBeCloseTo(x, 4);
+      expect(result[i * 8 + 1]).toBeCloseTo(y, 4);
+    }
+    expect(Array.from(result.slice(2, 4))).toEqual([32767, 32767]);
+    expect(Array.from(result.slice(26, 28))).toEqual([1, 0]);
+    for (let i = 0; i < 4; i++) {
+      expect(result[i * 8 + 4]).toBe(1);
+      expect(result[i * 8 + 5]).toBeCloseTo(0.42, 6);
+      expect(result[i * 8 + 6]).toBe(1);
+      expect(result[i * 8 + 7]).toBe(1);
+    }
+  } finally {
+    device.destroy();
+  }
+});
+
+it('Water temporal entries distinguish animated shading normals from a frozen or static Surface', async () => {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error('Water shading history requires a Dawn adapter');
+  const device = await adapter.requestDevice();
+  const entry = (name: string) =>
+    functionSource(water, name)
+      .replace('@builtin(front_facing) ', '')
+      .replace('@location(0) ', '')
+      // This compute probe covers every sample; fragment discard is outside its contract.
+      .replace('if (!waterCoverage(input, surface)) { discard; }', '')
+      .replace(/^#.*$/gm, '');
+  const helper = water.includes('fn waterShadingReactivity(')
+    ? functionSource(water, 'waterShadingReactivity')
+    : '';
+  try {
+    const values = await dispatch(
+      device,
+      `
+struct SingleLayerWaterSurfaceInput { frameTime: f32, normalRate: f32 }
+struct SingleLayerWaterSurfaceData { normalWS: vec3<f32>, roughness: f32, coverage: f32 }
+struct WaterVertexOutput {
+  bodyIndex: u32, maskAndVertexFlow: vec3<f32>, currentClip: vec4<f32>, previousClip: vec4<f32>,
+}
+struct WaterPrepassOutput { normalRoughness: u32, coverage: vec4<f32>, temporal: vec4<f32> }
+struct Body { timeAndMask: vec4<f32> }
+struct View { temporalProjection: vec4<f32> }
+const view = View(vec4<f32>(0.1, 100.0, 0.0, 0.0));
+const waterBodyData = array<Body, 3>(
+  Body(vec4<f32>(1.0, 0.984375, 0.1, 0.0)),
+  Body(vec4<f32>(1.0, 1.0, 0.1, 0.0)),
+  Body(vec4<f32>(1.0, 0.984375, 0.0, 0.0)),
+);
+fn waterSurfaceInput(input: WaterVertexOutput, frontFacing: bool) -> SingleLayerWaterSurfaceInput {
+  let sample = waterBodyData[input.bodyIndex].timeAndMask;
+  return SingleLayerWaterSurfaceInput(sample.x, sample.z);
+}
+fn evaluate_surface(input: SingleLayerWaterSurfaceInput) -> SingleLayerWaterSurfaceData {
+  return SingleLayerWaterSurfaceData(normalize(vec3<f32>(input.frameTime * input.normalRate, 1.0, 0.0)), 0.05, 1.0);
+}
+fn waterCoverage(input: WaterVertexOutput, surface: SingleLayerWaterSurfaceData) -> bool { return true; }
+fn encodeStandardNormalRoughness(normal: vec3<f32>, roughness: f32) -> u32 { return 0u; }
+fn packSceneTemporalV1(current: vec4<f32>, previous: vec4<f32>, projection: vec4<f32>, reactive: f32) -> vec4<f32> {
+  return vec4<f32>(0.0, 0.0, 1.0, reactive);
+}
+${helper}
+${entry('fs_water_prepass')}
+${entry('fs_water_velocity')}
+@group(0) @binding(100) var<storage, read_write> result: array<vec4<f32>>;
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+  let input = WaterVertexOutput(id.x, vec3<f32>(1.0), vec4<f32>(0.0), vec4<f32>(0.0));
+  result[id.x * 2u] = fs_water_prepass(input, true).temporal;
+  result[id.x * 2u + 1u] = fs_water_velocity(input, true);
+}`,
+      [],
+      3,
+      2,
+    );
+    expect(values[3], 'animated shading must not look stationary to TAA').toBeGreaterThan(0);
+    expect(values[7]).toBe(values[3]);
+    expect(Array.from(values.slice(8)).filter((_, index) => index % 4 === 3)).toEqual([0, 0, 0, 0]);
+  } finally {
+    device.destroy();
+  }
+});
 
 function directionAtlas(device: GPUDevice, blueOffset: number): GPUTexture {
   const width = 336;
@@ -163,7 +289,9 @@ function directionAtlas(device: GPUDevice, blueOffset: number): GPUTexture {
   return texture;
 }
 
-it('SLW hit history uses motion only from the opaque hit layer', async () => {
+it.each([
+  0, 0.03125, -0.03125,
+])('SLW hit history uses unjittered coordinates and opaque-layer motion (jitter=%f)', async (jitterUv) => {
   const trace = readFileSync(new URL('ssr-trace.wgsl', root), 'utf8');
   const temporal = readFileSync(new URL('scene-temporal.wgsl', root), 'utf8').replace(
     /^#define_import_path[^\n]*\n/m,
@@ -242,6 +370,8 @@ fn rawDepth(distance: f32) -> f32 {
         ? [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, far - near, 0, 0, 0, -far, 1]
         : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, (far - near) / (near * far), 0, 0, -1, 1 / far];
       const previous = [...projection];
+      inverse[12] = -2 * jitterUv;
+      inverse[13] = 2 * jitterUv;
       if (orthographic) {
         previous[12] = 0.125;
         previous[13] = -0.25;
@@ -329,17 +459,21 @@ struct Seed { @location(0) temporal: vec4<f32>, @builtin(frag_depth) depth: f32 
 ${declarations}
 ${temporal}
 ${depth}
-struct WaterSsrHit { found: bool, uv: vec2<f32>, depth: f32 }
+struct SsrRayHit { found: bool, uv: vec2<f32>, depth: f32 }
 @group(0) @binding(1) var sceneTemporal: texture_2d<f32>;
 @group(0) @binding(2) var sceneDepth: texture_depth_2d;
 @group(0) @binding(3) var<storage, read> samples: array<Sample>;
 @group(0) @binding(100) var<storage, read_write> result: array<vec4<f32>>;
 ${functionSource(trace, 'isFinite')}
-${functionSource(trace, 'waterHitPreviousScreen')}
+${functionSource(trace, 'reconstructWorldPosition')}
+${functionSource(trace, 'ssrPreviousHitUv')}
+fn ssrClipUv(clip: vec4f) -> vec2f {
+  return clip.xy / clip.w * vec2f(0.5, -0.5) + 0.5;
+}
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let uv = vec2<f32>((f32(id.x) + 0.5) / f32(arrayLength(&samples)), 0.5);
-  let hit = WaterSsrHit(true, uv, rawDepth(samples[id.x].depths.z));
-  result[id.x] = vec4<f32>(waterHitPreviousScreen(hit), textureLoad(sceneDepth, vec2<i32>(i32(id.x), 0), 0), 1.0);
+  let hit = SsrRayHit(true, uv, rawDepth(samples[id.x].depths.z));
+  result[id.x] = vec4<f32>(ssrPreviousHitUv(hit, vec2<i32>(i32(id.x), 0)), textureLoad(sceneDepth, vec2<i32>(i32(id.x), 0), 0), 1.0);
 }`,
           [
             { binding: 0, resource: { buffer: viewBuffer } },
@@ -353,13 +487,13 @@ ${functionSource(trace, 'waterHitPreviousScreen')}
         for (const [index, sample] of cases.entries()) {
           const uv = (index + 0.5) / cases.length;
           expect(result[index * 4], `orthographic=${orthographic}, case=${index}, x`).toBeCloseTo(
-            uv + (sample.acceptsMotion ? -0.125 : 0.0625),
+            uv - jitterUv + (sample.acceptsMotion ? -0.125 : 0.0625),
             5,
           );
           expect(
             result[index * 4 + 1],
             `orthographic=${orthographic}, case=${index}, y`,
-          ).toBeCloseTo(0.5 + (sample.acceptsMotion ? 0.0625 : 0.125), 5);
+          ).toBeCloseTo(0.5 - jitterUv + (sample.acceptsMotion ? 0.0625 : 0.125), 5);
         }
       } finally {
         sceneTemporal.destroy();
@@ -380,18 +514,17 @@ it('SLW capture selects its source direction through real PMREM and probe fallba
   const capture = color.slice(captureStart, captureEnd);
   expect(capture.length).toBeGreaterThan(100);
   const standardEnvironment = functionSource(standard, 'evaluateStandardEnvironment');
-  const standardStart = standardEnvironment.indexOf('  let specular =');
-  const standardEnd = standardEnvironment.indexOf('  let fresnel =', standardStart);
-  const standardDirection =
-    / {2}let reflectionDirection =[^;]+;/s.exec(standardEnvironment.slice(0, standardStart))?.[0] ??
-    '';
+  // Compare the radiance lookup before the Standard BRDF weights its result.
+  const standardLookup = /^ {2}let reflectionDirection =[^;]+;\s+let specular =[^;]+;/m.exec(
+    standardEnvironment,
+  )?.[0];
+  if (standardLookup === undefined) throw new Error('Missing Standard reflection radiance lookup');
   const standardImport = /#import forgeax_pbr::standard_lighting::\{([^}]+)\}/.exec(water)?.[1];
   const code = await compose(`
 #import forgeax_pbr::standard_lighting::{${standardImport}}
 #import forgeax_pbr::ibl_sampling::{environmentReflectionDirection}
 #import forgeax_pbr::pmrem::{samplePmrem}
 @group(0) @binding(101) var mediumPrefilterMap: texture_2d<f32>;
-@group(0) @binding(102) var skylightPrefilterMap: texture_2d<f32>;
 @group(0) @binding(103) var mediumPrefilterSampler: sampler;
 @group(0) @binding(100) var<storage, read_write> result: array<vec4<f32>>;
 struct Input { positionWS: vec3<f32> }
@@ -405,9 +538,8 @@ fn capture(sky: SkylightUniforms, normal: vec3<f32>, toCamera: vec3<f32>, roughn
 ${capture}
   return vec4<f32>(captureSky, reflectionWeight);
 }
-fn standardCapture(sky: SkylightUniforms, normal: vec3<f32>, direction: vec3<f32>, roughness: f32, worldPosition: vec3<f32>, prefilterMap: texture_2d<f32>, prefilterSampler: sampler, skylightPrefilterMap: texture_2d<f32>) -> vec3<f32> {
-${standardDirection}
-${standardEnvironment.slice(standardStart, standardEnd)}
+fn standardCapture(sky: SkylightUniforms, normal: vec3<f32>, direction: vec3<f32>, roughness: f32, worldPosition: vec3<f32>, prefilterMap: texture_2d<f32>, prefilterSampler: sampler) -> vec3<f32> {
+${standardLookup}
   return specular;
 }
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -429,15 +561,12 @@ ${standardEnvironment.slice(standardStart, standardEnd)}
   // Water golden directions at r=0, 0.6, 1. Standard retains its separate direction.
   let waterDirection = array<vec3<f32>, 3>(vec3<f32>(-0.8, 0.6, 0.0), vec3<f32>(-0.59392, 0.70304, 0.0), normal)[select(index, 1u, probe)];
   let standardGolden = array<vec3<f32>, 3>(vec3<f32>(-0.8, 0.6, 0.0), normalize(vec3<f32>(-0.69632, 0.65184, 0.0)), normal)[select(index, 1u, probe)];
-  let weight = select(1.0, array<f32, 3>(1.0, 0.5, 0.0)[index], probe);
   let skyScale = select(vec3<f32>(1.6, 1.2, 0.8), sky.diffuseScale.xyz, probe);
   result[id.x * 4u] = capture(sky, normal, toCamera, roughness, position);
-  result[id.x * 4u + 1u] = vec4<f32>(standardCapture(sky, normal, toCamera, roughness, position, mediumPrefilterMap, mediumPrefilterSampler, skylightPrefilterMap), 1.0);
+  result[id.x * 4u + 1u] = vec4<f32>(standardCapture(sky, normal, toCamera, roughness, position, mediumPrefilterMap, mediumPrefilterSampler), 1.0);
   var waterGlobal = samplePmrem(mediumPrefilterMap, mediumPrefilterSampler, vec3<f32>(-waterDirection.z, -waterDirection.y, waterDirection.x), roughness) * skyScale;
   var standardGlobal = samplePmrem(mediumPrefilterMap, mediumPrefilterSampler, vec3<f32>(-standardGolden.z, -standardGolden.y, standardGolden.x), roughness) * skyScale;
   if (probe) {
-    waterGlobal = samplePmrem(skylightPrefilterMap, mediumPrefilterSampler, vec3<f32>(-waterDirection.z, -waterDirection.y, waterDirection.x), roughness) * skyScale;
-    standardGlobal = samplePmrem(skylightPrefilterMap, mediumPrefilterSampler, vec3<f32>(-standardGolden.z, -standardGolden.y, standardGolden.x), roughness) * skyScale;
     var waterLocal = waterDirection;
     var standardLocal = standardGolden;
     if (mode == 2u && index < 2u) {
@@ -445,8 +574,8 @@ ${standardEnvironment.slice(standardStart, standardEnd)}
       waterLocal = position + waterDirection * (2.0 / waterDirection.y);
       standardLocal = position + standardGolden * (2.0 / standardGolden.y);
     }
-    waterGlobal = mix(waterGlobal, samplePmrem(mediumPrefilterMap, mediumPrefilterSampler, waterLocal, roughness), weight);
-    standardGlobal = mix(standardGlobal, samplePmrem(mediumPrefilterMap, mediumPrefilterSampler, standardLocal, roughness), weight);
+    waterGlobal = samplePmrem(mediumPrefilterMap, mediumPrefilterSampler, waterLocal, roughness);
+    standardGlobal = samplePmrem(mediumPrefilterMap, mediumPrefilterSampler, standardLocal, roughness);
   }
   result[id.x * 4u + 2u] = vec4<f32>(waterGlobal, 0.075);
   result[id.x * 4u + 3u] = vec4<f32>(standardGlobal, 1.0);
@@ -454,15 +583,15 @@ ${standardEnvironment.slice(standardStart, standardEnd)}
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('Water optical regression requires Dawn');
   const device = await adapter.requestDevice();
+  const view = device.createBuffer({ size: 1392, usage: GPUBufferUsage.UNIFORM });
   const local = directionAtlas(device, 0);
-  const global = directionAtlas(device, 0.1);
   try {
     const actual = await dispatch(
       device,
       code,
       [
+        { binding: 0, resource: { buffer: view } },
         { binding: 101, resource: local.createView() },
-        { binding: 102, resource: global.createView() },
         {
           binding: 103,
           resource: device.createSampler({ minFilter: 'linear', magFilter: 'linear' }),
@@ -482,8 +611,8 @@ ${standardEnvironment.slice(standardStart, standardEnd)}
       }
     }
   } finally {
+    view.destroy();
     local.destroy();
-    global.destroy();
     device.destroy();
   }
 });
@@ -499,7 +628,7 @@ it('SLW volume uses fixed ground solar and an independent surface cloud sample o
   const code = await compose(
     `
 #import forgeax_view::common::{View, AtmosphereMedium, atmosphereTransmittance}
-#import forgeax_cloud::layer::{cloud_direct_solar_factor, cloudShadowSampler}
+#import forgeax_cloud::layer::{cloud_direct_solar_factor, viewLinearSampler}
 #import forgeax_atmosphere::optics::{atmosphere_solar_transmittance}
 ${solarNames.length === 0 ? '' : `#import forgeax_view::atmosphere::{${solarNames.join(', ')}}`}
 @group(0) @binding(100) var<storage, read_write> result: array<vec4<f32>>;
@@ -523,7 +652,7 @@ struct Input { positionWS: vec3<f32> }
   let integral = vec3<f32>(0.7);
   let ambient = vec3<f32>(0.03);
 ${solar}
-  let ground = atmosphere_solar_transmittance(view.atmosphere, vec3<f32>(0.0, 6360.5, 0.0), vec3<f32>(0.8, 0.6, 0.0), atmosphereTransmittance, cloudShadowSampler);
+  let ground = atmosphere_solar_transmittance(view.atmosphere, vec3<f32>(0.0, 6360.5, 0.0), vec3<f32>(0.8, 0.6, 0.0), atmosphereTransmittance, viewLinearSampler);
   let expectedAtmosphere = select(vec3<f32>(1.0), ground, atmosphereEnabled);
   let expectedCloud = cloud_direct_solar_factor(input.positionWS, view.cloudShadowOrigin.xyz, view.cloudShadowRight.xyz, view.cloudShadowUp.xyz, view.cloudShadowProjection);
   result[id.x * 2u] = vec4<f32>(scattered, 1.0);

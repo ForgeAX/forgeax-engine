@@ -88,12 +88,18 @@ export const DEFAULT_RENDER_PIPELINE_CAPACITY = 3;
 
 type ResourceBudgets = Pick<
   ExecutionInitMessage,
-  'dynamicGeometryMeshBudgetBytes' | 'assetBudgetBytes' | 'textureMipSkip'
+  | 'dynamicGeometryMeshBudgetBytes'
+  | 'staticShadowBudgetBytes'
+  | 'assetBudgetBytes'
+  | 'textureMipSkip'
 >;
 
 /** Forward present Renderer budgets while preserving omitted defaults. */
 export function forwardResourceBudgets(options: ResourceBudgets): ResourceBudgets {
   return {
+    ...(options.staticShadowBudgetBytes === undefined
+      ? {}
+      : { staticShadowBudgetBytes: options.staticShadowBudgetBytes }),
     ...(options.dynamicGeometryMeshBudgetBytes === undefined
       ? {}
       : { dynamicGeometryMeshBudgetBytes: options.dynamicGeometryMeshBudgetBytes }),
@@ -104,18 +110,24 @@ export function forwardResourceBudgets(options: ResourceBudgets): ResourceBudget
   };
 }
 
-type PipelineLibraries = Pick<
+type PipelinePreparationOptions = Pick<
   ExecutionInitMessage,
-  'pipelineLibrary' | 'backgroundPipelineLibrary' | 'backgroundPipelineLibraryConcurrency'
+  | 'pipelineLibrary'
+  | 'backgroundPipelineLibrary'
+  | 'backgroundPipelineLibraryConcurrency'
+  | 'viewportHitWarmup'
 >;
 
-/** Host and Worker startup messages carry the same explicit library policy. */
-export function forwardPipelineLibraries(options: PipelineLibraries): PipelineLibraries {
+/** Host and Worker startup messages carry the same explicit pipeline preparation policy. */
+export function forwardPipelinePreparation(
+  options: PipelinePreparationOptions,
+): PipelinePreparationOptions {
   return {
     ...(options.pipelineLibrary === undefined ? {} : { pipelineLibrary: options.pipelineLibrary }),
     ...(options.backgroundPipelineLibrary === undefined
       ? {}
       : { backgroundPipelineLibrary: options.backgroundPipelineLibrary }),
+    ...(options.viewportHitWarmup === true ? { viewportHitWarmup: true } : {}),
     ...(options.backgroundPipelineLibraryConcurrency === undefined
       ? {}
       : { backgroundPipelineLibraryConcurrency: options.backgroundPipelineLibraryConcurrency }),
@@ -254,8 +266,10 @@ export interface ExecutionInitMessage {
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
   /** Captured recipes compiled after renderer readiness without blocking it. */
   readonly backgroundPipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryManifest;
+  readonly viewportHitWarmup?: boolean;
   readonly backgroundPipelineLibraryConcurrency?: number;
   readonly dynamicGeometryMeshBudgetBytes?: number;
+  readonly staticShadowBudgetBytes?: number;
   readonly assetBudgetBytes?: number;
   /** Explicit aggregate in-flight cap for Worker feature-texture readbacks. */
   readonly featureTextureReadbackBudgetBytes?: number;
@@ -387,6 +401,7 @@ export type HostToEngineMessage =
   | ExecutionProfileFinishMessage
   /** A page-owned pool Worker failed; the dispatcher replaces it. */
   | { readonly kind: 'task-worker-error'; readonly workerId: number; readonly message: string }
+  | { readonly kind: 'browser-render-error'; readonly workerId: number; readonly message: string }
   | { readonly kind: 'dispose' };
 /** Plain public error data; native Error cloning drops producer guidance. */
 export interface SerializedRenderError {
@@ -423,6 +438,8 @@ export type EngineToHostMessage =
   /** A pool Worker for the Engine Worker's task dispatcher; the page creates it. */
   | { readonly kind: 'task-worker'; readonly workerId: number; readonly port: MessagePort }
   | { readonly kind: 'task-retire'; readonly workerId: number }
+  | { readonly kind: 'browser-render-open'; readonly workerId: number; readonly port: MessagePort }
+  | { readonly kind: 'browser-render-retire'; readonly workerId: number }
   /**
    * The Render Worker session posts its render-submitted / render-complete
    * notices on this port, so Host credit never queues behind an Engine World tick.

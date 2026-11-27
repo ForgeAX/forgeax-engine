@@ -1,5 +1,14 @@
 import { constants, rmSync } from 'node:fs';
-import { access, chmod, mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -22,13 +31,14 @@ import {
   sdkResourceManifest,
   sdkTemplateResourceManifest,
   sha256,
+  verifySdkArchiveInventory,
   verifySdkViewRuntime,
 } from './sdk-lib.mjs';
-import { SDK_ARCHIVE_VERIFY_GROUPS } from './sdk-pr-preflight.mjs';
+import { SDK_ARCHIVE_VERIFY_GROUPS, SDK_COMPACT_PREVIEW_FRAMES } from './sdk-pr-preflight.mjs';
 import { verifyProjectIdentityReconcile } from './sdk-project-identity.mjs';
 import { assertSourceDependencyInventory } from './sdk-source.mjs';
 import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
-import { buildCacheEntries } from './sdk-template-cache.mjs';
+import { buildCacheEntries, SDK_BUILD_CACHE_SEED } from './sdk-template-cache.mjs';
 import { verifySdkModeling } from './verify-sdk-modeling.mjs';
 import { createSdkVerifierProcess, readSdkProjectDocument } from './verify-sdk-process.mjs';
 import { verifySdkSourceEdit } from './verify-sdk-source-edit.mjs';
@@ -52,7 +62,13 @@ if (group !== 'all' && !SDK_ARCHIVE_VERIFY_GROUPS.includes(group))
   throw new Error(`sdk-verify-unknown-group:${group}`);
 const profileIndex = args.indexOf('--profile');
 const profile = profileIndex < 0 ? 'full' : args[profileIndex + 1];
-if (!['core', 'full'].includes(profile)) throw new Error(`sdk-verify-unknown-profile:${profile}`);
+const prPreflight = profile === 'pr-consumer' || profile === 'pr-expanded';
+if (
+  !['core', 'full', 'pr-consumer', 'pr-expanded'].includes(profile) ||
+  (prPreflight && group === 'all')
+)
+  throw new Error(`sdk-verify-unknown-profile:${profile}`);
+const expandedArchive = profile !== 'pr-consumer';
 const selected = (owner) => group === 'all' || group === owner;
 let projectEvidence = {};
 let sourceTemplateEvidence;
@@ -91,47 +107,39 @@ if (manifest.schemaVersion !== SDK_MANIFEST_VERSION) throw new Error('sdk-manife
 if (JSON.stringify(manifest.capabilities) !== JSON.stringify(SDK_CAPABILITIES))
   throw new Error('sdk-capability-closure');
 await sdkStage('verifySdkArtifactInventory', () =>
-  mapConcurrent(manifest.artifacts, async (expected) => {
-    const actual = await artifact(sdkRoot, resolve(sdkRoot, expected.path));
-    if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256)
-      throw new Error(`sdk-artifact-mismatch: ${expected.path}`);
-  }),
+  verifySdkArchiveInventory(sdkRoot, manifest.artifacts),
 );
 
-const files = await filesUnder(sdkRoot);
-if (files.length !== manifest.artifacts.length + 1) throw new Error('sdk-unmanifested-artifact');
-if ((await filesUnder(resolve(sdkRoot, 'packages'))).some((path) => path.endsWith('.tgz')))
-  throw new Error('sdk-package-archive-leaked');
 for (const entry of manifest.packages) {
   const packageRoot = resolve(sdkRoot, entry.root);
   if (!contained(sdkRoot, packageRoot)) throw new Error(`sdk-package-path: ${entry.name}`);
-  const packageManifest = JSON.parse(await readFile(resolve(packageRoot, 'package.json'), 'utf8'));
+  const prefix = `${entry.root}/`;
+  const packageFiles = manifest.artifacts.filter((file) => file.path.startsWith(prefix));
+  const manifestFile = packageFiles.find((file) => file.path === `${prefix}package.json`);
+  if (manifestFile === undefined) throw new Error(`sdk-package-manifest: ${entry.name}`);
+  const packageManifest = JSON.parse(
+    await readFile(
+      resolve(
+        sdkRoot,
+        manifestFile.sourceCopy === true
+          ? `${manifest.source.root}/${manifestFile.path}`
+          : manifestFile.path,
+      ),
+      'utf8',
+    ),
+  );
   if (packageManifest.name !== entry.name || packageManifest.version !== entry.version)
     throw new Error(`sdk-package-identity: ${entry.name}`);
-  try {
-    await readFile(resolve(packageRoot, 'package', 'package.json'));
+  const packagePaths = packageFiles.map(({ path }) => path.slice(prefix.length));
+  if (packagePaths.includes('package/package.json'))
     throw new Error(`sdk-package-wrapper-leaked: ${entry.name}`);
-  } catch (cause) {
-    if (cause instanceof Error && cause.message.startsWith('sdk-package-wrapper-leaked'))
-      throw cause;
-  }
-  const packageFiles = await filesUnder(packageRoot);
-  assertNoRetiredPackageFiles(
-    entry.name,
-    packageFiles.map((path) => relative(packageRoot, path).split(sep).join('/')),
-  );
+  if (packagePaths.some((path) => path.endsWith('.tgz')))
+    throw new Error('sdk-package-archive-leaked');
+  assertNoRetiredPackageFiles(entry.name, packagePaths);
   if (packageFiles.length !== entry.fileCount)
     throw new Error(`sdk-package-file-count: ${entry.name}`);
-  const byteCount = (
-    await Promise.all(packageFiles.map(async (path) => (await readFile(path)).byteLength))
-  ).reduce((sum, bytes) => sum + bytes, 0);
-  if (byteCount !== entry.byteCount) throw new Error(`sdk-package-byte-count: ${entry.name}`);
-  const prefix = `${entry.root}/`;
-  if (
-    manifest.artifacts.filter((artifactEntry) => artifactEntry.path.startsWith(prefix)).length !==
-    entry.fileCount
-  )
-    throw new Error(`sdk-package-artifact-closure: ${entry.name}`);
+  if (packageFiles.reduce((sum, file) => sum + file.bytes, 0) !== entry.byteCount)
+    throw new Error(`sdk-package-byte-count: ${entry.name}`);
 }
 const tool = manifest.packages.find((entry) => entry.name === '@forgeax/view');
 if (
@@ -264,8 +272,10 @@ for (const resource of manifest.resources) {
   const packageResourceRoot = resolve(packageArchive, resource.packageRoot);
   if (!contained(packageArchive, packageResourceRoot))
     throw new Error(`sdk-resource-package-path: ${resource.id}`);
-  const listing = (await filesUnder(packageResourceRoot))
-    .map((path) => relative(packageResourceRoot, path).split(sep).join('/'))
+  const packageResourcePrefix = `${packageEntry.root}/${resource.packageRoot}/`;
+  const listing = manifest.artifacts
+    .filter(({ path }) => path.startsWith(packageResourcePrefix))
+    .map(({ path }) => path.slice(packageResourcePrefix.length))
     .sort();
   if (JSON.stringify(listing) !== JSON.stringify(expectedFiles))
     throw new Error(`sdk-resource-package-drift: ${resource.id}`);
@@ -419,6 +429,7 @@ if (selected('source')) {
     await sdkStage('verify single-module source editing', () =>
       verifySdkSourceEdit({ sdkRoot, output: resolve(unpackRoot, 'source-edit'), env: sourceEnv }),
     );
+    if (profile === 'pr-consumer') return;
     // Keep the independent cold source-build proof after the seeded-package journey.
     await execFileAsync(process.execPath, ['scripts/clean-build-outputs.mjs'], {
       cwd: sourceRoot,
@@ -442,9 +453,10 @@ const initializedSdk = await execFileAsync(
   },
 );
 const initializedSdkEnvelope = JSON.parse(initializedSdk.stdout.trim());
+const authoringGuide = 'skills/forgeax-engine-authoring';
 if (
   initializedSdkEnvelope.value?.onboarding?.read?.join('\n') !==
-  [resolve(sdkRoot, 'AGENTS.md'), resolve(sdkRoot, 'skills/forgeax-engine-sdk/SKILL.md')].join('\n')
+  [resolve(sdkRoot, 'AGENTS.md'), resolve(sdkRoot, authoringGuide, 'SKILL.md')].join('\n')
 ) {
   throw new Error('sdk-init-agent-onboarding');
 }
@@ -506,29 +518,35 @@ if (selected('project')) {
   const createdProjectEnvelope = JSON.parse(createdProject.stdout.trim());
   if (
     createdProjectEnvelope.value?.onboarding?.read?.join('\n') !==
-    [resolve(project, 'AGENTS.md'), resolve(project, 'skills/forgeax-engine-sdk/SKILL.md')].join(
-      '\n',
-    )
+    [resolve(project, 'AGENTS.md'), resolve(project, authoringGuide, 'SKILL.md')].join('\n')
   ) {
     throw new Error('sdk-new-agent-onboarding');
   }
   if (createdProjectEnvelope.value?.sdkUpdate?.status !== 'skipped')
     throw new Error('sdk-new-update-check-offline');
-  // The template ships its cooked Pack products; the project's first cook must
-  // reuse them instead of writing its own (checked after the first build).
-  const shippedBuildCache = await buildCacheEntries(project);
-  if (!shippedBuildCache.some((entry) => entry.startsWith('scriptable-pack-products/')))
-    throw new Error('sdk-new-template-build-cache-missing');
+  const sharedBuildCache = resolve(sdkRoot, SDK_BUILD_CACHE_SEED);
+  const shippedBuildCache = await buildCacheEntries(sharedBuildCache);
+  const projectBuildCache = resolve(project, '.forgeax/ddc/build-cache');
+  const buildCacheReference = JSON.parse(
+    await readFile(resolve(project, '.forgeax/sdk-build-cache.json'), 'utf8'),
+  );
+  if (
+    buildCacheReference !== (await realpath(sharedBuildCache)) ||
+    !shippedBuildCache.some((entry) => entry.startsWith('scriptable-pack-products/')) ||
+    (await buildCacheEntries(projectBuildCache)).length !== 0
+  ) {
+    throw new Error('sdk-new-shared-build-cache-missing');
+  }
   // The API directory links one file per domain; every link must resolve in the project.
-  const apiReferenceRoot = resolve(project, 'skills/forgeax-engine-sdk/references');
+  const apiReferenceRoot = resolve(project, authoringGuide, 'references');
   const apiDirectory = await readFile(resolve(apiReferenceRoot, 'api-index.md'), 'utf8');
   const apiDomainFiles = [...apiDirectory.matchAll(/\]\((api\/[a-z0-9-]+\.md)\)/g)].map(
     (match) => match[1],
   );
   if (apiDomainFiles.length === 0) throw new Error('sdk-api-index-domains-missing');
   for (const file of apiDomainFiles) await readFile(resolve(apiReferenceRoot, file));
-  await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/feature-catalog.md'));
-  await readFile(resolve(project, 'skills/forgeax-engine-sdk/SKILL.md'));
+  await readFile(resolve(apiReferenceRoot, 'feature-catalog.md'));
+  await readFile(resolve(project, authoringGuide, 'SKILL.md'));
   const projectWorkspace = await readFile(resolve(project, 'pnpm-workspace.yaml'), 'utf8');
   if (!projectWorkspace.includes('trustLockfile: true'))
     throw new Error('sdk-game-lockfile-trust-missing');
@@ -566,15 +584,14 @@ if (selected('project')) {
   ) {
     throw new Error('sdk-empty-source-layout-manifest');
   }
-  const emptyScenePackage = JSON.parse(
-    await readFile(resolve(project, 'assets', 'world', 'world.scene.pack.json'), 'utf8'),
+  const emptyScenePackage = await readSdkProjectDocument(
+    execFileAsync,
+    project,
+    resolve(project, 'assets', 'world', 'world.scene.pack.json'),
+    'direct-pack',
   );
-  const emptySceneAsset = Array.isArray(emptyScenePackage.assets)
-    ? emptyScenePackage.assets.find(
-        (asset) => asset?.guid === defaultSceneGuid && asset?.kind === 'scene',
-      )
-    : undefined;
-  const emptySceneEntities = emptyScenePackage.assets?.[0]?.payload?.entities;
+  const emptySceneAsset = emptyScenePackage.assets[0];
+  const emptySceneEntities = emptySceneAsset?.payload?.entities;
   const emptySceneEntityValues =
     emptySceneEntities !== null &&
     typeof emptySceneEntities === 'object' &&
@@ -582,9 +599,9 @@ if (selected('project')) {
       ? Object.values(emptySceneEntities)
       : [];
   if (
-    !Array.isArray(emptyScenePackage.assets) ||
     emptyScenePackage.assets.length !== 1 ||
-    emptySceneAsset === undefined ||
+    emptySceneAsset?.guid !== defaultSceneGuid ||
+    emptySceneAsset.kind !== 'scene' ||
     emptySceneAsset.refs?.length !== 0 ||
     emptySceneEntities === null ||
     typeof emptySceneEntities !== 'object' ||
@@ -672,11 +689,13 @@ if (selected('project')) {
       maxBuffer: 128 * 1024 * 1024,
     },
   );
-  const cookedBuildCache = (await buildCacheEntries(project)).filter(
-    (entry) => !shippedBuildCache.includes(entry),
-  );
+  const cookedBuildCache = await buildCacheEntries(projectBuildCache);
   if (cookedBuildCache.length > 0)
-    throw new Error(`sdk-new-template-build-cache-miss: ${cookedBuildCache.join(', ')}`);
+    throw new Error(`sdk-new-shared-build-cache-miss: ${cookedBuildCache.join(', ')}`);
+  if (
+    JSON.stringify(await buildCacheEntries(sharedBuildCache)) !== JSON.stringify(shippedBuildCache)
+  )
+    throw new Error('sdk-new-shared-build-cache-mutated');
   const staticManifest = JSON.parse(
     await readFile(resolve(staticOutput, 'forgeax-dist.json'), 'utf8'),
   );
@@ -930,7 +949,11 @@ if (selected('project')) {
       const html = await response.text();
       if (!response.ok || !html.includes('<canvas id="app"'))
         throw new Error('sdk-preview-static-closure');
-      return url;
+      if (expandedArchive) return { previewUrl: url };
+      const previewBrowser = await sdkGpuStage('verifyCompactPreview', () =>
+        verifyCompactPreview(url),
+      );
+      return { previewUrl: url, previewBrowser };
     } finally {
       if (child.exitCode === null) {
         if (detached && child.pid !== undefined) process.kill(-child.pid, 'SIGTERM');
@@ -939,8 +962,6 @@ if (selected('project')) {
       await exited;
     }
   }
-
-  const previewUrl = await sdkStage('verifyPreview', () => verifyPreview());
 
   async function verifySelectedTemplate() {
     const selectedProject = resolve(unpackRoot, 'game-3d');
@@ -1066,28 +1087,9 @@ if (selected('project')) {
         throw new Error(`sdk-selected-dev-url-missing: ${stdout}\n${stderr}`);
       await sdkStage('selectedBrowser.catalog', () => waitForProjectPackCatalog(url, scopeId));
       const chromeChannel = process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome';
-      const chromeArgs = [
-        '--disable-features=MacAppCodeSignClone',
-        '--enable-unsafe-webgpu',
-        '--ignore-gpu-blocklist',
-      ];
-      // Hosted Linux runners have no physical display/GPU. Match the repository's
-      // proven Chrome Beta + lavapipe/Xvfb lane so the SDK template smoke checks
-      // the real WebGPU compositor instead of silently accepting a static canvas.
-      if (process.platform === 'linux' && chromeChannel === 'chrome-beta') {
-        chromeArgs.push(
-          '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',
-          '--use-vulkan=swiftshader',
-          '--use-angle=swiftshader',
-          '--enable-pointer-lock',
-          '--disable-gpu-driver-bug-workarounds',
-          '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits',
-          '--autoplay-policy=no-user-gesture-required',
-        );
-      }
       const startup = await startSelectedProjectBrowser(
         chromeChannel,
-        chromeArgs,
+        selectedBrowserArgs(chromeChannel),
         url,
         diagnostics,
         resources,
@@ -1380,6 +1382,74 @@ if (selected('project')) {
     }
   }
 
+  function selectedBrowserArgs(chromeChannel) {
+    const chromeArgs = [
+      '--disable-features=MacAppCodeSignClone',
+      '--enable-unsafe-webgpu',
+      '--ignore-gpu-blocklist',
+    ];
+    // Hosted Linux runners have no physical display/GPU. Match the repository's
+    // proven Chrome Beta + lavapipe/Xvfb lane so the SDK template smoke checks
+    // the real WebGPU compositor instead of silently accepting a static canvas.
+    if (process.platform === 'linux' && chromeChannel === 'chrome-beta') {
+      chromeArgs.push(
+        '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',
+        '--use-vulkan=swiftshader',
+        '--use-angle=swiftshader',
+        '--enable-pointer-lock',
+        '--disable-gpu-driver-bug-workarounds',
+        '--disable-dawn-features=disallow_unsafe_apis,tiered_adapter_limits',
+        '--autoplay-policy=no-user-gesture-required',
+      );
+    }
+    return chromeArgs;
+  }
+
+  async function verifyCompactPreview(url) {
+    const channel = process.env.FORGEAX_CHROME_CHANNEL ?? 'chrome';
+    const browser = await launchSelectedBrowser(channel, selectedBrowserArgs(channel));
+    const errors = [];
+    try {
+      const page = await createProjectPage(browser, 'compactPreview');
+      page.on('pageerror', (error) => appendDiagnostic(errors, error.stack ?? String(error)));
+      await page.addInitScript(observeCompactPreviewFrames);
+      await page.bringToFront();
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      const observed = await page.waitForFunction(
+        (minimum) => {
+          const canvas = document.getElementById('app');
+          const readyFrames = globalThis.__forgeaxSdkPreviewFrames.get(canvas)?.size ?? 0;
+          return readyFrames >= minimum ? readyFrames : false;
+        },
+        SDK_COMPACT_PREVIEW_FRAMES,
+        { timeout: 120_000 },
+      );
+      if (errors.length > 0) throw new Error('sdk-compact-preview-page-errors');
+      return { readyFrames: await observed.jsonValue() };
+    } catch (cause) {
+      throw new Error(`sdk-compact-preview-browser: ${JSON.stringify(errors)}`, { cause });
+    } finally {
+      await closeSelectedBrowser(browser);
+    }
+  }
+
+  function observeCompactPreviewFrames() {
+    const framesByCanvas = new WeakMap();
+    globalThis.__forgeaxSdkPreviewFrames = framesByCanvas;
+    window.addEventListener(
+      'forgeax:frame-completed',
+      (event) => {
+        const canvas = event.target;
+        const { frameId, presentation } = event.detail;
+        if (canvas !== document.getElementById('app') || presentation !== 'ready') return;
+        const frames = framesByCanvas.get(canvas) ?? new Set();
+        frames.add(frameId);
+        framesByCanvas.set(canvas, frames);
+      },
+      { capture: true },
+    );
+  }
+
   async function launchSelectedBrowser(channel, args) {
     return chromium.launch({
       headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0',
@@ -1649,9 +1719,10 @@ if (selected('project')) {
     return { position, fixedTick };
   }
 
-  const selectedTemplateEvidence = await sdkStage('verifySelectedTemplate', () =>
-    verifySelectedTemplate(),
-  );
+  const previewEvidence = await sdkStage('verifyPreview', () => verifyPreview());
+  const selectedTemplateEvidence = expandedArchive
+    ? { selectedTemplate: await sdkStage('verifySelectedTemplate', () => verifySelectedTemplate()) }
+    : {};
 
   projectEvidence = {
     offlineProject: project,
@@ -1683,14 +1754,14 @@ if (selected('project')) {
       build: { packageUrl: defaultSceneEntry.packageUrl },
       dev: devEvidence,
     },
-    selectedTemplate: selectedTemplateEvidence,
+    ...selectedTemplateEvidence,
     staticBuild: {
       output: staticOutput,
       base: staticManifest.base,
       artifacts: staticManifest.artifacts.length,
       documentScriptsWithoutNavigation: staticDocumentScripts,
     },
-    previewUrl,
+    ...previewEvidence,
   };
 }
 
@@ -1706,12 +1777,6 @@ async function verifySourceTemplate() {
       ...sourceEnv,
       FORGEAX_TEMPLATE_SMOKE_DIR: sourceSmokeDir,
       FORGEAX_TEMPLATE_SMOKE_PORT: '5287',
-      // `build:engine` already materializes the trusted shared shader
-      // manifest. Reuse it for the source-snapshot browser journey instead
-      // of recompiling the full engine shader graph during Vite cold start.
-      // The archive intentionally has no `.git`, so the source smoke must be
-      // self-contained and cannot rely on contributor-checkout state.
-      FORGEAX_SHARED_APP_INPUTS_MANIFEST: resolve(sourceRoot, 'shared-build-inputs/manifest.json'),
       FORGEAX_TEMPLATE_SMOKE_SLUGS: SDK_TEMPLATES.map((entry) => basename(entry.sourceRoot)).join(
         ',',
       ),
@@ -1747,7 +1812,7 @@ async function verifySourceTemplate() {
   return JSON.parse(await readFile(resolve(sourceSmokeDir, 'report.json'), 'utf8'));
 }
 
-if (selected('source')) {
+if (selected('source') && expandedArchive) {
   sourceTemplateEvidence = await sdkStage('verifySourceTemplate', () => verifySourceTemplate());
   for (const entry of SDK_TEMPLATES) {
     const slug = basename(entry.sourceRoot);
@@ -1823,18 +1888,6 @@ if (selected('source')) {
   // PR core already proves source edits through the embedded View Host and
   // independent cold Engine templates; full/release additionally rebuild View.
   if (profile === 'full') {
-    await sdkStage('preparePublicSourceViewProfile', () =>
-      sourceBuildPnpm([
-        'exec',
-        'node',
-        'scripts/forgeax/prepare-shader-release-inputs.mjs',
-        '--build',
-        '--profile',
-        'base-ssao',
-        '--shared-input-manifest',
-        'shared-build-inputs/manifest.json',
-      ]),
-    );
     await sdkGpuStage('verifyPublicSourceViewTool', () =>
       execFileAsync(
         process.execPath,
@@ -1850,10 +1903,6 @@ if (selected('source')) {
             FORGEAX_VIEW_ENGINE_PACKAGE: resolve(sourceRoot, 'packages/engine'),
             FORGEAX_VIEW_TEMPLATE_ROOT: resolve(sourceRoot, 'templates/game-3d'),
             FORGEAX_VIEW_EVIDENCE_ROOT: resolve(dirname(archive), 'view-source'),
-            FORGEAX_SHARED_APP_INPUTS_MANIFEST: resolve(
-              sourceRoot,
-              'shared-build-inputs/manifest.json',
-            ),
             DEBUG: [sourceEnv.DEBUG, 'pw:browser', 'pw:api'].filter(Boolean).join(','),
           },
           maxBuffer: 64 * 1024 * 1024,
@@ -1863,7 +1912,10 @@ if (selected('source')) {
   }
 }
 
-if (selected('project')) {
+// PRs prove a real clean source template launch and a packaged View consumer.
+// The independent full CLI lifecycle belongs to release verification.
+const ownsIndependentRun = !prPreflight && selected('project');
+if (ownsIndependentRun && expandedArchive) {
   await sdkGpuStage('verifyIndependentRun', () =>
     execFileAsync(
       process.execPath,
@@ -1885,6 +1937,9 @@ if (selected('project')) {
       return result;
     }),
   );
+}
+
+if (selected('project') && expandedArchive) {
   // Partitioned release gates retain installed diagnostics with npm. The ZIP
   // checks both installed View languages and reopens a saved JavaScript publication.
   // A standalone, unpartitioned archive verification keeps full diagnostics.
@@ -1918,7 +1973,7 @@ if (selected('project')) {
         },
       ),
     );
-  if (group !== 'all')
+  if (group !== 'all' && !prPreflight)
     await sdkStage('verifyInstalledViewRuntimeJS', () =>
       verifySdkViewRuntime({
         sdkRoot,
@@ -1931,7 +1986,7 @@ if (selected('project')) {
 
 // Keep the live TypeScript publication alongside the JavaScript recovery witness.
 // Default release qualification retains the original complete serial order.
-if (selected('project')) {
+if (selected('project') && expandedArchive) {
   await sdkStage('verifyInstalledViewRuntime', () =>
     verifySdkViewRuntime({
       sdkRoot,
@@ -1942,7 +1997,7 @@ if (selected('project')) {
   );
 }
 
-if (selected('project') && process.platform === 'linux') {
+if (selected('project') && expandedArchive && process.platform === 'linux') {
   projectEvidence.modeling = await sdkGpuStage('verifyInstalledModelingCli', () =>
     verifySdkModeling({
       sdkRoot,
@@ -1971,8 +2026,16 @@ const result = {
   ok: true,
   group,
   profile,
-  deferredValidation:
-    profile === 'core' && selected('source') ? ['cold-source-view-diagnostics'] : [],
+  deferredValidation: [
+    ...(profile !== 'full' && selected('source') ? ['cold-source-view-diagnostics'] : []),
+    ...(prPreflight && selected('project') ? ['zip-javascript-view-owned-by-npm'] : []),
+    ...(!expandedArchive && selected('source')
+      ? ['cold-source-fleet', 'source-template-browser']
+      : []),
+    ...(!expandedArchive && selected('project')
+      ? ['zip-game-3d-owned-by-npm', 'independent-run', 'installed-view', 'installed-modeling']
+      : []),
+  ],
   archive,
   sha256: digest,
   sdkVersion: manifest.sdkVersion,

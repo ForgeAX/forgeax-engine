@@ -122,7 +122,7 @@ it.each([
     const before = f.draw();
     const content = f.scene.shadowCasterProjection()?.content;
     assert(content);
-    expect(content.subsurface.admitted).toBe(16);
+    expect(content.subsurface.admitted).toHaveLength(16);
     const work = f.work();
     const membership = vi.spyOn(SubsurfaceSelection.prototype, 'add');
     try {
@@ -137,10 +137,10 @@ it.each([
       const demand = f.scene.shadowCasterProjection()?.content.subsurface.admitted;
       assert(demand !== undefined);
       expect(() => subsurfaceDemand(demand)).toThrow('at most 16');
-      expect(content.subsurface.admitted).toBe(16);
+      expect(content.subsurface.admitted).toHaveLength(16);
       f.assets.update(edited, { values: { subsurfaceRadius: [1, 2, 1] } }).unwrap();
       f.draw();
-      expect(f.scene.shadowCasterProjection()?.content.subsurface.admitted).toBe(16);
+      expect(f.scene.shadowCasterProjection()?.content.subsurface.admitted).toHaveLength(16);
       expect(membership).not.toHaveBeenCalled();
     } finally {
       membership.mockRestore();
@@ -160,14 +160,16 @@ it('keeps independent camera selections and the full capture source range', () =
     const leftContent = f.scene.shadowCasterProjection()?.content;
     assert(leftContent);
     expect(left.renderables).toHaveLength(16);
-    expect(leftContent.subsurface).toEqual({ admitted: 16, authorVisible: 32, source: 32 });
+    expect(leftContent.subsurface.admitted).toHaveLength(16);
+    expect(leftContent.subsurface.authorVisible).toHaveLength(32);
+    expect(leftContent.subsurface.source).toHaveLength(32);
     expect(subsurfaceDemand(leftContent.subsurface.admitted)).toBe(true);
     f.world.set(f.camera, Transform, { pos: [100, 0, 5] }).unwrap();
     const right = f.draw();
     const projection = f.scene.shadowCasterProjection();
     assert(projection);
     expect(right.renderables).toHaveLength(16);
-    expect(projection.content.subsurface.admitted).toBe(16);
+    expect(projection.content.subsurface.admitted).toHaveLength(16);
     // Captures draw every author-visible retained row, not the display's selection.
     let authorVisible = 0;
     for (const [, row] of projection.renderables.entries())
@@ -176,7 +178,7 @@ it('keeps independent camera selections and the full capture source range', () =
     expect(() => subsurfaceDemand(projection.content.subsurface.authorVisible)).toThrow(
       'at most 16',
     );
-    expect(leftContent.subsurface.admitted).toBe(16);
+    expect(leftContent.subsurface.admitted).toHaveLength(16);
   } finally {
     f.dispose();
   }
@@ -199,8 +201,8 @@ it('keeps hidden unsupported materials out of display and author-visible capture
     assert(projection);
     expect(frame.renderables).toHaveLength(1);
     expect(projection.content.subsurface).toEqual({
-      admitted: 1,
-      authorVisible: 1,
+      admitted: [expect.any(Number)],
+      authorVisible: [expect.any(Number)],
       source: 'invalid-surface',
     });
     expect(subsurfaceDemand(projection.content.subsurface.admitted)).toBe(true);
@@ -220,30 +222,30 @@ it.each([
     const hidden = f.bind(f.create(2), 0, true);
     f.draw();
     expect(f.scene.shadowCasterProjection()?.content.subsurface).toEqual({
-      source: 1,
-      authorVisible: 1,
-      admitted: 1,
+      source: [expect.any(Number)],
+      authorVisible: [expect.any(Number)],
+      admitted: [expect.any(Number)],
     });
     f.world.set(hidden, MeshRenderer, { materials: [f.create(3)] }).unwrap();
     f.draw();
     expect(f.scene.shadowCasterProjection()?.content.subsurface).toEqual({
-      source: 2,
-      authorVisible: 1,
-      admitted: 1,
+      source: [expect.any(Number), expect.any(Number)],
+      authorVisible: [expect.any(Number)],
+      admitted: [expect.any(Number)],
     });
     f.world.set(hidden, Visibility, { state: VisibilityStateValue.visible }).unwrap();
     f.draw();
     expect(f.scene.shadowCasterProjection()?.content.subsurface).toEqual({
-      source: 2,
-      authorVisible: 2,
-      admitted: 2,
+      source: [expect.any(Number), expect.any(Number)],
+      authorVisible: [expect.any(Number), expect.any(Number)],
+      admitted: [expect.any(Number), expect.any(Number)],
     });
     f.world.set(hidden, Visibility, { state: VisibilityStateValue.hidden }).unwrap();
     f.draw();
     expect(f.scene.shadowCasterProjection()?.content.subsurface).toEqual({
-      source: 2,
-      authorVisible: 1,
-      admitted: 1,
+      source: [expect.any(Number), expect.any(Number)],
+      authorVisible: [expect.any(Number)],
+      admitted: [expect.any(Number)],
     });
   } finally {
     f.dispose();

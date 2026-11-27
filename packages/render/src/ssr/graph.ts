@@ -7,10 +7,9 @@ import type {
   RenderGraphFrame,
 } from '@forgeax/engine-render-graph';
 import { RenderGraphError } from '@forgeax/engine-render-graph';
-import { err, mipDimension, numMipLevels, ok, type Result } from '@forgeax/engine-types';
+import { err, ok, type Result } from '@forgeax/engine-types';
 import {
   computeBindGroup,
-  computePipelineError,
   createComputeStatePreparation,
   resolvedGraphBuffer,
   resolvedGraphView,
@@ -20,7 +19,6 @@ import { GPU_SHADER_STAGE_COMPUTE } from '../gpu-stage';
 import { registerScenePipelinePreparation } from '../record/scene-pipeline-preparation';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
-import { STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS } from '../standard-attachments';
 import type { SsrSpatialAdmission } from './admission';
 import { addSsrFragmentStages } from './raster';
 import {
@@ -28,6 +26,11 @@ import {
   estimateSsrSpatialMemory,
   type SsrSpatialResources,
 } from './resources';
+import {
+  type SsrGBufferInput,
+  ssrGBufferConstants,
+  ssrShaderGBufferMismatch,
+} from './shader-layout';
 import { WATER_SSR_DEFAULT_PROFILE } from './water-profile';
 
 interface SsrTracePlan {
@@ -37,11 +40,10 @@ interface SsrTracePlan {
   readonly refineSteps: number;
 }
 
-interface WaterSsrTracePlan {
+interface WaterSsrTracePlan extends SsrTracePlan {
   readonly resolution: 'full';
-  readonly algorithm: 'furthest-hzb-screen-ray';
-  readonly groupSize: 4;
-  readonly refinement: 'adjacent-depth-difference';
+  readonly algorithm: 'furthest-hzb-fixed-steps';
+  readonly refinement: 'depth-crossing';
   readonly profile: typeof WATER_SSR_DEFAULT_PROFILE;
 }
 
@@ -56,7 +58,7 @@ export function buildSsrTracePlan(
   });
 }
 
-export interface SsrSpatialGraphInputs {
+export interface SsrSpatialGraphInputs extends SsrGBufferInput {
   readonly quality?: import('../quality').RenderQualityBudgets['ssr'] | undefined;
   readonly execution?: 'compute' | 'fragment';
   readonly label?: string;
@@ -65,7 +67,6 @@ export interface SsrSpatialGraphInputs {
     depth: GraphTextureView;
     normal: GraphTextureView;
     coverage: GraphTextureView;
-    temporal: GraphTextureView;
     inputParams?: GraphBuffer;
     sceneColorHistory?: GraphTextureView;
   }>;
@@ -73,31 +74,19 @@ export interface SsrSpatialGraphInputs {
   readonly width: number;
   readonly height: number;
   readonly depth?: GraphTextureView;
-  /** Opaque tracing reads closest depth; the independent Water profile reads furthest depth. */
+  /** Both receiver types trace the furthest bound of opaque scene depth. */
   readonly depthPyramid?: DepthPyramid;
   readonly normal?: GraphTextureView;
-  readonly gbufferV2?: boolean;
-  /** Current-view radiance paired with depth; prior radiance belongs to the temporal resolve. */
+  /** Current radiance is the fallback when temporal scene color is unavailable. */
   readonly scene?: GraphTextureView;
+  readonly sceneColorHistory?: GraphTextureView;
+  readonly forwardSampleCount?: 1 | 4 | undefined;
   /** Standard temporal-v1 source metadata, needed by trace even without history. */
   readonly currentTemporal?: GraphTextureView;
   /** Lighting-owned exact material coverage in alpha; RGB stays with composition. */
   readonly fallback?: GraphTextureView;
   /** Shared Standard View UBO used to reconstruct world-space SSR rays. */
   readonly view?: GraphBuffer;
-  /** Shared Standard temporal-v1 target plus the SSR-owned history write. */
-  readonly temporal?: {
-    readonly previousHistory: GraphTextureView;
-    readonly outputHistory: GraphTextureView;
-    readonly params: GraphBuffer;
-  } & (
-    | {
-        readonly profile: 'opaque';
-        readonly previousSurface: GraphTextureView;
-        readonly outputSurface: GraphTextureView;
-      }
-    | { readonly profile: 'single-layer-water' }
-  );
 }
 
 export interface SsrSpatialGraphProjection {
@@ -135,23 +124,22 @@ function missingInput(field: string, actual = 'missing'): Result<never, RenderGr
 
 function shaderSource(
   frame: RenderGraphFrame,
-  stage: Exclude<keyof NonNullable<RenderPipelineFrame['ssrShaders']>, 'gbuffer'>,
-  gbufferV2 = false,
+  input: SsrGBufferInput = {},
 ): string | import('@forgeax/engine-types').ShaderSource | undefined {
   const sources = (frame as RenderPipelineFrame).ssrShaders;
-  if (gbufferV2 && sources?.gbuffer !== 'standard-gbuffer/2')
+  const mismatch = ssrShaderGBufferMismatch(sources, input);
+  if (mismatch !== undefined)
     throw new RenderGraphError({
       code: 'resource-descriptor-invalid',
-      expected: 'standard-gbuffer/2 SSR readers',
+      expected: `${mismatch.expected} SSR readers`,
       hint: 'Rebuild the Engine shader manifest.',
       detail: {
         resourceLabel: 'ssr',
         field: 'gbuffer',
-        expected: 'standard-gbuffer/2',
-        actual: sources?.gbuffer ?? 'missing',
+        ...mismatch,
       },
     });
-  return sources?.[stage];
+  return sources?.trace;
 }
 
 function addPass<FrameCtx extends RenderGraphFrame>(
@@ -171,28 +159,37 @@ function addPass<FrameCtx extends RenderGraphFrame>(
  * queue submission, public handle, or second renderer.
  */
 function requiredSsrInputs(input: SsrSpatialGraphInputs) {
-  const depth = input.depth;
-  const normal = input.normal;
-  const scene = input.scene;
-  const fallback = input.fallback;
+  const { depth, normal, scene, fallback, currentTemporal, depthPyramid, origin } = input;
+  if (scene === undefined) return missingInput('scene');
+  if (depthPyramid === undefined) return missingInput('depthPyramid');
   if (depth === undefined) return missingInput('depth');
   if (normal === undefined) return missingInput('normal');
-  if (scene === undefined) return missingInput('scene');
   if (fallback === undefined) return missingInput('fallback');
-  const currentTemporal = input.currentTemporal;
   if (currentTemporal === undefined) return missingInput('currentTemporal');
-  const depthPyramid = input.depthPyramid;
-  if (depthPyramid === undefined) return missingInput('depthPyramid');
-
-  return ok({ depth, normal, scene, fallback, currentTemporal, depthPyramid });
+  return ok({
+    scene,
+    depthPyramid,
+    opaque: { depth, normal, fallback, currentTemporal },
+    waterHistory:
+      origin?.sceneColorHistory === undefined
+        ? undefined
+        : { color: origin.sceneColorHistory, depth, currentTemporal },
+  });
 }
 
 function admitSsrDescriptorCapacity(input: SsrSpatialGraphInputs) {
   const memory = estimateSsrSpatialMemory(input, {
-    temporal: input.temporal !== undefined,
     resolutionScale: input.origin === undefined ? input.quality?.resolutionScale : 1,
+    water: input.origin !== undefined,
     execution: input.execution ?? 'compute',
+    depthPyramidBytes: input.depthPyramid?.plan.levels.reduce(
+      (bytes, level) => bytes + level.width * level.height * Float32Array.BYTES_PER_ELEMENT,
+      0,
+    ),
     forward: input.admission.lane === 'forward' || input.admission.lane === 'cpu-webgl2',
+    ...(input.forwardSampleCount === undefined
+      ? {}
+      : { forwardSampleCount: input.forwardSampleCount }),
   });
   if (!memory.withinBudget)
     return err(
@@ -211,20 +208,6 @@ function admitSsrDescriptorCapacity(input: SsrSpatialGraphInputs) {
   return ok(undefined);
 }
 
-function resolvedSsrResources(
-  base: SsrSpatialResources,
-  resolved: SsrSpatialResources['resolved'],
-  radiancePyramid: GraphTextureView | undefined,
-  mipLevelCount: number,
-): SsrSpatialResources {
-  return {
-    ...base,
-    mipLevelCount,
-    ...(resolved === undefined ? {} : { resolved }),
-    ...(radiancePyramid === undefined ? {} : { radiancePyramid }),
-  };
-}
-
 /** Water keeps its own full-density receiver; opaque SSR uses its declared trace lattice. */
 function createTraceResources<FrameCtx extends RenderGraphFrame>(
   graph: RenderGraphBuilder<FrameCtx>,
@@ -236,20 +219,8 @@ function createTraceResources<FrameCtx extends RenderGraphFrame>(
     { width: input.width, height: input.height },
     label,
     input.origin === undefined ? input.quality?.resolutionScale : 1,
+    input.origin !== undefined,
   );
-}
-
-/** The temporal surface stays full-size; trace-only reactivity follows the trace descriptor. */
-function reactivitySurfaceFor(
-  input: SsrSpatialGraphInputs,
-  trace: SsrSpatialResources['trace'],
-): NonNullable<SsrSpatialGraphProjection['reactivitySurface']> {
-  const full = input.temporal?.profile === 'opaque';
-  return {
-    width: full ? Math.max(1, Math.floor(input.width)) : trace.width,
-    height: full ? Math.max(1, Math.floor(input.height)) : trace.height,
-    format: full ? 'rgba8unorm' : 'r32float',
-  };
 }
 
 export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
@@ -268,284 +239,103 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
   }
   const required = requiredSsrInputs(input);
   if (!required.ok) return required;
-  const { depth, normal, scene, fallback, currentTemporal, depthPyramid } = required.value;
-  const temporal = input.temporal;
+  const { scene, depthPyramid, opaque, waterHistory } = required.value;
   const capacity = admitSsrDescriptorCapacity(input);
   if (!capacity.ok) return capacity;
   const label = input.label ?? 'ssr';
   const origin = input.origin;
-  const receiverDepth = origin?.depth ?? depth;
-  const receiverNormal = origin?.normal ?? normal;
-  if (depthPyramid.reduction !== (origin === undefined ? 'closest' : 'furthest'))
-    return missingInput(
-      origin === undefined ? 'closest depthPyramid' : 'furthest depthPyramid',
-      depthPyramid.reduction,
-    );
+  const compactMaterial = input.compactMaterial;
+  if (compactMaterial !== undefined && input.gbufferV2 !== true)
+    return missingInput('Default GBuffer B with its matching normal layout');
+  const gbuffer = input;
+  if (depthPyramid.reduction !== 'furthest')
+    return missingInput('furthest depthPyramid', depthPyramid.reduction);
 
   const resources = createTraceResources(graph, input, label);
   if (!resources.ok) return resources;
   const { trace, hitReactivity } = resources.value;
-  const reactivity = temporal?.profile === 'opaque' ? temporal.outputSurface : hitReactivity;
-  if (
-    temporal !== undefined &&
-    (temporal.profile === 'single-layer-water') !== (origin !== undefined)
-  )
-    return missingInput('matching receiver and temporal profile');
-  let resolved: SsrSpatialResources['resolved'];
-  let radiancePyramid: GraphTextureView | undefined;
-  const reflectionLevels: GraphTextureView[] = [];
-  const createSsrResolvedSurfaces = () => {
-    if (temporal !== undefined) {
-      const width = Math.max(1, Math.floor(input.width));
-      const height = Math.max(1, Math.floor(input.height));
-      const resolvedTexture = graph.createTexture(`${label}-resolved`, {
-        format: 'rgba16float',
-        size: { width, height },
-        domain: 'linear-hdr',
-        mipLevelCount: origin === undefined ? numMipLevels({ width, height }) : 1,
-      });
-      if (!resolvedTexture.ok) return resolvedTexture;
-      const resolvedView = graph.view(resolvedTexture.value, {
-        label: `${label}-resolved.view`,
-        dimension: '2d',
-        baseMipLevel: 0,
-        mipLevelCount: 1,
-      });
-      if (!resolvedView.ok) return resolvedView;
-      reflectionLevels.push(resolvedView.value);
-      for (
-        let level = 1;
-        origin === undefined && level < numMipLevels({ width, height });
-        level++
-      ) {
-        const view = graph.view(resolvedTexture.value, {
-          label: `${label}-resolved.mip-${level}.view`,
-          dimension: '2d',
-          baseMipLevel: level,
-          mipLevelCount: 1,
-        });
-        if (!view.ok) return view;
-        reflectionLevels.push(view.value);
-      }
-      const pyramid = graph.view(resolvedTexture.value, {
-        label: `${label}-resolved.pyramid.view`,
-        dimension: '2d',
-      });
-      if (!pyramid.ok) return pyramid;
-      radiancePyramid = pyramid.value;
-      resolved = {
-        texture: resolvedTexture.value,
-        view: resolvedView.value,
-        width,
-        height,
-        format: 'rgba16float',
-      };
-    }
-    return undefined;
-  };
-  const resolvedSurfaceFailure = createSsrResolvedSurfaces();
-  if (resolvedSurfaceFailure !== undefined) return resolvedSurfaceFailure;
   const passNames: string[] = [];
   if (input.execution === 'fragment') {
+    if (hitReactivity === undefined) return missingInput('compute execution for Water SSR');
     const added = addSsrFragmentStages(
       graph,
-      { ...input, depth, normal, scene, fallback, currentTemporal, depthPyramid },
-      resources.value,
-      resolved,
-      reflectionLevels,
+      { ...input, ...opaque, scene, depthPyramid },
+      { trace, hitReactivity },
     );
     if (!added.ok) return added;
     return ok({
       enabled: true,
       passNames: added.value,
-      resources: resolvedSsrResources(
-        resources.value,
-        resolved,
-        radiancePyramid,
-        Math.max(1, reflectionLevels.length),
-      ),
+      resources: resources.value,
       trace: buildSsrTracePlan(input.quality),
-      reactivity,
-      reactivitySurface: reactivitySurfaceFor(input, trace),
+      reactivity: hitReactivity,
+      reactivitySurface: { width: trace.width, height: trace.height, format: 'r32float' },
     });
   }
+  const traceTextures: {
+    binding: number;
+    view: GraphTextureView;
+    sampleType: 'depth' | 'uint' | 'unfilterable-float';
+  }[] = [
+    { binding: 2, view: scene, sampleType: 'unfilterable-float' },
+    { binding: 3, view: depthPyramid.pyramid, sampleType: 'unfilterable-float' },
+  ];
+  if (opaque !== undefined)
+    traceTextures.push(
+      { binding: 0, view: opaque.depth, sampleType: 'depth' },
+      { binding: 1, view: opaque.normal, sampleType: 'uint' },
+      { binding: 6, view: opaque.fallback, sampleType: 'unfilterable-float' },
+      { binding: 7, view: opaque.currentTemporal, sampleType: 'unfilterable-float' },
+    );
+  if (compactMaterial !== undefined)
+    traceTextures.push({ binding: 14, view: compactMaterial, sampleType: 'uint' });
+  if (origin !== undefined)
+    traceTextures.push(
+      { binding: 9, view: origin.depth, sampleType: 'depth' },
+      { binding: 10, view: origin.normal, sampleType: 'uint' },
+      { binding: 11, view: origin.coverage, sampleType: 'unfilterable-float' },
+    );
+  traceTextures.push({
+    binding: 13,
+    view: waterHistory?.color ?? input.sceneColorHistory ?? scene,
+    sampleType: 'unfilterable-float',
+  });
   const createSsrComputeEntries = () => {
     const computeEntries = {
       trace: [
-        {
-          binding: 0,
+        ...traceTextures.map(({ binding, sampleType }) => ({
+          binding,
           visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'depth', viewDimension: '2d' },
-        },
-        {
-          binding: 1,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'uint', viewDimension: '2d' },
-        },
-        {
-          binding: 2,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-        {
-          binding: 3,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
+          texture: { sampleType, viewDimension: '2d' as const },
+        })),
         {
           binding: 4,
           visibility: GPU_SHADER_STAGE_COMPUTE,
           storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '2d' },
         },
         { binding: 5, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'uniform' } },
-        {
-          binding: 6,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-        {
-          binding: 7,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-        {
-          binding: 8,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          storageTexture: { access: 'write-only', format: 'r32float', viewDimension: '2d' },
-        },
-        ...(origin === undefined
+        ...(hitReactivity === undefined
           ? []
           : [
               {
-                binding: 9,
+                binding: 8,
                 visibility: GPU_SHADER_STAGE_COMPUTE,
-                texture: { sampleType: 'depth' as const, viewDimension: '2d' as const },
-              },
-              {
-                binding: 10,
-                visibility: GPU_SHADER_STAGE_COMPUTE,
-                texture: { sampleType: 'uint' as const, viewDimension: '2d' as const },
-              },
-              {
-                binding: 11,
-                visibility: GPU_SHADER_STAGE_COMPUTE,
-                texture: {
-                  sampleType: 'unfilterable-float' as const,
+                storageTexture: {
+                  access: 'write-only' as const,
+                  format: 'r32float' as const,
                   viewDimension: '2d' as const,
                 },
               },
+            ]),
+        ...(origin === undefined
+          ? []
+          : [
               {
                 binding: 12,
                 visibility: GPU_SHADER_STAGE_COMPUTE,
                 buffer: { type: 'uniform' as const },
               },
-              ...(origin.sceneColorHistory === undefined
-                ? []
-                : [
-                    {
-                      binding: 13,
-                      visibility: GPU_SHADER_STAGE_COMPUTE,
-                      texture: {
-                        sampleType: 'unfilterable-float' as const,
-                        viewDimension: '2d' as const,
-                      },
-                    },
-                  ]),
             ]),
-      ],
-      temporal: [
-        {
-          binding: 0,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-        {
-          binding: 1,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'depth', viewDimension: '2d' },
-        },
-        {
-          binding: 2,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'uint', viewDimension: '2d' },
-        },
-        {
-          binding: 3,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-        {
-          binding: 4,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-        {
-          binding: 5,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '2d' },
-        },
-        { binding: 6, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'uniform' } },
-        {
-          binding: 7,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '2d' },
-        },
-        { binding: 8, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'uniform' } },
-        {
-          binding: 9,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-        {
-          binding: 10,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          storageTexture: { access: 'write-only', format: 'rgba8unorm', viewDimension: '2d' },
-        },
-        {
-          binding: 11,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-      ],
-      waterTemporal: [
-        {
-          binding: 0,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-        {
-          binding: 1,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'depth', viewDimension: '2d' },
-        },
-        {
-          binding: 3,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-        {
-          binding: 4,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-        {
-          binding: 5,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '2d' },
-        },
-        { binding: 6, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'uniform' } },
-        {
-          binding: 7,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '2d' },
-        },
-        { binding: 8, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'uniform' } },
-        {
-          binding: 12,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-        { binding: 13, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'uniform' } },
       ],
     } as const;
 
@@ -557,91 +347,48 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
       (frame) =>
         input.view === undefined || (origin !== undefined && origin.inputParams === undefined)
           ? undefined
-          : shaderSource(frame, 'trace', input.gbufferV2),
+          : shaderSource(frame, gbuffer),
       'ssr_trace',
       computeEntries.trace,
       origin === undefined
-        ? 'ssr_trace'
+        ? compactMaterial === undefined
+          ? 'ssr_trace'
+          : 'ssr_trace_compact'
         : origin.sceneColorHistory === undefined
           ? 'ssr_water_trace'
           : 'ssr_water_trace_history',
-      input.gbufferV2 === true ? STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS : undefined,
-    );
-    const prepareTemporal = createComputeStatePreparation(
-      (frame) =>
-        input.view === undefined || (origin !== undefined && origin.inputParams === undefined)
-          ? undefined
-          : shaderSource(frame, 'temporal', input.gbufferV2),
-      'ssr_temporal',
-      temporal?.profile === 'opaque' ? computeEntries.temporal : computeEntries.waterTemporal,
-      origin === undefined ? 'ssr_temporal' : 'ssr_water_temporal',
-      input.gbufferV2 === true ? STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS : undefined,
-    );
-    const prepareReflectionMip = createComputeStatePreparation(
-      (frame) => shaderSource(frame, 'temporal'),
-      'ssr_temporal',
-      [
-        {
-          binding: 0,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
-        },
-        {
-          binding: 7,
-          visibility: GPU_SHADER_STAGE_COMPUTE,
-          storageTexture: {
-            access: 'write-only',
-            format: 'rgba16float',
-            viewDimension: '2d',
-          },
-        },
-      ],
-      'ssr_reflection_mip',
+      gbuffer === undefined ? undefined : ssrGBufferConstants(gbuffer),
     );
     registerScenePipelinePreparation(
       graph as unknown as RenderGraphBuilder<RenderPipelineFrame>,
       (frame) => {
         prepareTrace(frame);
-        if (temporal !== undefined) prepareTemporal(frame);
-        if (reflectionLevels.length > 1 && resolved !== undefined) prepareReflectionMip(frame);
         return false;
       },
       'utility',
     );
-    return { prepareTrace, prepareTemporal, prepareReflectionMip };
+    return prepareTrace;
   };
-  const { prepareTrace, prepareTemporal, prepareReflectionMip } = createSsrProgramPreparations();
+  const prepareTrace = createSsrProgramPreparations();
   const addSsrTraceProjection = () => {
     const added = addPass(
       graph,
       `${label}-trace`,
       [
-        { resource: depth, usage: 'sampled-read' },
-        { resource: normal, usage: 'sampled-read' },
-        { resource: scene, usage: 'sampled-read' },
-        { resource: fallback, usage: 'sampled-read' },
-        { resource: depthPyramid.pyramid, usage: 'sampled-read' },
+        ...traceTextures.map(({ view }) => ({ resource: view, usage: 'sampled-read' as const })),
         { resource: trace.view, usage: 'storage-write' },
-        { resource: currentTemporal, usage: 'sampled-read' },
-        { resource: hitReactivity, usage: 'storage-write' },
-        ...(origin === undefined
+        ...(hitReactivity === undefined
           ? []
-          : [origin.depth, origin.normal, origin.coverage].map((resource) => ({
-              resource,
-              usage: 'sampled-read' as const,
-            }))),
+          : [{ resource: hitReactivity, usage: 'storage-write' as const }]),
         ...(origin?.inputParams === undefined
           ? []
           : [{ resource: origin.inputParams, usage: 'uniform-read' as const }]),
-        ...(origin?.sceneColorHistory === undefined
-          ? []
-          : [{ resource: origin.sceneColorHistory, usage: 'sampled-read' as const }]),
         ...(input.view === undefined
           ? []
           : [{ resource: input.view, usage: 'uniform-read' as const }]),
       ],
       ({ pass, frame, resources: resolver }) => {
-        const source = shaderSource(frame, 'trace', input.gbufferV2);
+        const source = shaderSource(frame, gbuffer);
         // Structural callers may omit the shared View buffer when they only
         // inspect topology. A real shader execution must bind it because the
         // trace reconstructs world position and reads the validated SSR tail.
@@ -653,87 +400,32 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
         pass.setBindGroup(
           0,
           computeBindGroup(frame, traceState, [
-            ...(origin === undefined
+            ...traceTextures.map(({ binding, view }) => ({
+              binding,
+              resource: { kind: 'textureView' as const, value: resolvedGraphView(resolver, view) },
+            })),
+            ...(origin?.inputParams === undefined
               ? []
               : [
                   {
-                    binding: 9,
+                    binding: 12,
                     resource: {
-                      kind: 'textureView' as const,
-                      value: resolvedGraphView(resolver, origin.depth),
+                      kind: 'buffer' as const,
+                      value: { buffer: resolvedGraphBuffer(resolver, origin.inputParams) },
                     },
                   },
-                  {
-                    binding: 10,
-                    resource: {
-                      kind: 'textureView' as const,
-                      value: resolvedGraphView(resolver, origin.normal),
-                    },
-                  },
-                  {
-                    binding: 11,
-                    resource: {
-                      kind: 'textureView' as const,
-                      value: resolvedGraphView(resolver, origin.coverage),
-                    },
-                  },
-                  ...(origin.inputParams === undefined
-                    ? []
-                    : [
-                        {
-                          binding: 12,
-                          resource: {
-                            kind: 'buffer' as const,
-                            value: { buffer: resolvedGraphBuffer(resolver, origin.inputParams) },
-                          },
-                        },
-                      ]),
-                  ...(origin.sceneColorHistory === undefined
-                    ? []
-                    : [
-                        {
-                          binding: 13,
-                          resource: {
-                            kind: 'textureView' as const,
-                            value: resolvedGraphView(resolver, origin.sceneColorHistory),
-                          },
-                        },
-                      ]),
                 ]),
-            {
-              binding: 7,
-              resource: {
-                kind: 'textureView',
-                value: resolvedGraphView(resolver, currentTemporal),
-              },
-            },
-            {
-              binding: 8,
-              resource: { kind: 'textureView', value: resolvedGraphView(resolver, hitReactivity) },
-            },
-            {
-              binding: 6,
-              resource: { kind: 'textureView', value: resolvedGraphView(resolver, fallback) },
-            },
-            {
-              binding: 0,
-              resource: { kind: 'textureView', value: resolvedGraphView(resolver, depth) },
-            },
-            {
-              binding: 1,
-              resource: { kind: 'textureView', value: resolvedGraphView(resolver, normal) },
-            },
-            {
-              binding: 2,
-              resource: { kind: 'textureView', value: resolvedGraphView(resolver, scene) },
-            },
-            {
-              binding: 3,
-              resource: {
-                kind: 'textureView',
-                value: resolvedGraphView(resolver, depthPyramid.pyramid),
-              },
-            },
+            ...(hitReactivity === undefined
+              ? []
+              : [
+                  {
+                    binding: 8,
+                    resource: {
+                      kind: 'textureView' as const,
+                      value: resolvedGraphView(resolver, hitReactivity),
+                    },
+                  },
+                ]),
             {
               binding: 4,
               resource: { kind: 'textureView', value: resolvedGraphView(resolver, trace.view) },
@@ -755,271 +447,27 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
     );
     return added;
   };
-  let added = addSsrTraceProjection();
+  const added = addSsrTraceProjection();
   if (!added.ok) return added;
   passNames.push(`${label}-trace`);
-  const addSsrTemporalProjection = () => {
-    if (temporal !== undefined) {
-      added = addPass(
-        graph,
-        `${label}-temporal`,
-        [
-          { resource: trace.view, usage: 'sampled-read' },
-          { resource: receiverDepth, usage: 'sampled-read' },
-          ...(temporal.profile === 'opaque'
-            ? [{ resource: receiverNormal, usage: 'sampled-read' as const }]
-            : []),
-          { resource: temporal.previousHistory, usage: 'sampled-read' },
-          { resource: origin?.temporal ?? currentTemporal, usage: 'sampled-read' },
-          ...(temporal.profile === 'opaque'
-            ? [{ resource: hitReactivity, usage: 'sampled-read' as const }]
-            : []),
-          ...(origin === undefined
-            ? []
-            : [{ resource: origin.coverage, usage: 'sampled-read' as const }]),
-          { resource: temporal.outputHistory, usage: 'storage-write' },
-          ...(temporal.profile === 'opaque'
-            ? [
-                { resource: temporal.previousSurface, usage: 'sampled-read' as const },
-                { resource: temporal.outputSurface, usage: 'storage-write' as const },
-              ]
-            : []),
-          { resource: temporal.params, usage: 'uniform-read' },
-          ...(origin?.inputParams === undefined
-            ? []
-            : [{ resource: origin.inputParams, usage: 'uniform-read' as const }]),
-          ...(input.view === undefined
-            ? []
-            : [{ resource: input.view, usage: 'uniform-read' as const }]),
-          ...(resolved === undefined
-            ? []
-            : [{ resource: resolved.view, usage: 'storage-write' as const }]),
-        ],
-        ({ pass, frame, resources: resolver }) => {
-          const source = shaderSource(frame, 'temporal');
-          if (source === undefined || input.view === undefined) return;
-          if (origin !== undefined && origin.inputParams === undefined) return;
-          const temporalState = prepareTemporal(frame);
-          if (temporalState === undefined) return;
-          pass.setPipeline(temporalState.pipeline);
-          pass.setBindGroup(
-            0,
-            computeBindGroup(frame, temporalState, [
-              ...(origin === undefined
-                ? []
-                : [
-                    {
-                      binding: 12,
-                      resource: {
-                        kind: 'textureView' as const,
-                        value: resolvedGraphView(resolver, origin.coverage),
-                      },
-                    },
-                  ]),
-              ...(origin?.inputParams === undefined
-                ? []
-                : [
-                    {
-                      binding: 13,
-                      resource: {
-                        kind: 'buffer' as const,
-                        value: { buffer: resolvedGraphBuffer(resolver, origin.inputParams) },
-                      },
-                    },
-                  ]),
-              ...(temporal.profile === 'opaque'
-                ? [
-                    {
-                      binding: 11,
-                      resource: {
-                        kind: 'textureView' as const,
-                        value: resolvedGraphView(resolver, hitReactivity),
-                      },
-                    },
-                    {
-                      binding: 9,
-                      resource: {
-                        kind: 'textureView' as const,
-                        value: resolvedGraphView(resolver, temporal.previousSurface),
-                      },
-                    },
-                    {
-                      binding: 10,
-                      resource: {
-                        kind: 'textureView' as const,
-                        value: resolvedGraphView(resolver, temporal.outputSurface),
-                      },
-                    },
-                  ]
-                : []),
-              {
-                binding: 8,
-                resource: {
-                  kind: 'buffer',
-                  value: {
-                    buffer: resolvedGraphBuffer(resolver, input.view),
-                    size: VIEW_UNIFORM_BYTES,
-                  },
-                },
-              },
-              {
-                binding: 0,
-                resource: { kind: 'textureView', value: resolvedGraphView(resolver, trace.view) },
-              },
-              {
-                binding: 1,
-                resource: {
-                  kind: 'textureView',
-                  value: resolvedGraphView(resolver, receiverDepth),
-                },
-              },
-              ...(temporal.profile === 'opaque'
-                ? [
-                    {
-                      binding: 2,
-                      resource: {
-                        kind: 'textureView' as const,
-                        value: resolvedGraphView(resolver, receiverNormal),
-                      },
-                    },
-                  ]
-                : []),
-              {
-                binding: 3,
-                resource: {
-                  kind: 'textureView',
-                  value: resolvedGraphView(resolver, temporal.previousHistory),
-                },
-              },
-              {
-                binding: 4,
-                resource: {
-                  kind: 'textureView',
-                  value: resolvedGraphView(resolver, origin?.temporal ?? currentTemporal),
-                },
-              },
-              {
-                binding: 5,
-                resource: {
-                  kind: 'textureView',
-                  value: resolvedGraphView(resolver, temporal.outputHistory),
-                },
-              },
-              {
-                binding: 6,
-                resource: {
-                  kind: 'buffer',
-                  value: { buffer: resolvedGraphBuffer(resolver, temporal.params) },
-                },
-              },
-              ...(resolved === undefined
-                ? []
-                : [
-                    {
-                      binding: 7,
-                      resource: {
-                        kind: 'textureView' as const,
-                        value: resolvedGraphView(resolver, resolved.view),
-                      },
-                    },
-                  ]),
-            ]),
-          );
-          pass.dispatchWorkgroups(
-            Math.ceil(Math.max(1, input.width) / 8),
-            Math.ceil(Math.max(1, input.height) / 8),
-            1,
-          );
-        },
-      );
-      if (!added.ok) return added;
-      passNames.push(`${label}-temporal`);
-    }
-    return undefined;
-  };
-  const temporalProjectionFailure = addSsrTemporalProjection();
-  if (temporalProjectionFailure !== undefined) return temporalProjectionFailure;
-  const addSsrReflectionMipProjection = () => {
-    if (reflectionLevels.length > 1 && resolved !== undefined) {
-      const output = resolved;
-      const name = `${label}-reflection-mip-chain`;
-      const added = addPass(
-        graph,
-        name,
-        reflectionLevels.map((resource, level) => ({
-          resource,
-          usage:
-            level === 0
-              ? 'sampled-read'
-              : level === reflectionLevels.length - 1
-                ? 'storage-write'
-                : 'sampled-storage-write',
-        })),
-        ({ pass, frame, resources: resolver }) => {
-          const source = shaderSource(frame, 'temporal');
-          if (source === undefined) return;
-          const reflectionMipState = prepareReflectionMip(frame);
-          if (reflectionMipState === undefined) return;
-          pass.setPipeline(reflectionMipState.pipeline);
-          for (let level = 1; level < reflectionLevels.length; level++) {
-            const previous = reflectionLevels[level - 1];
-            const target = reflectionLevels[level];
-            if (previous === undefined || target === undefined)
-              throw computePipelineError('SSR reflection mip chain');
-            pass.setBindGroup(
-              0,
-              computeBindGroup(frame, reflectionMipState, [
-                {
-                  binding: 0,
-                  resource: {
-                    kind: 'textureView',
-                    value: resolvedGraphView(resolver, previous),
-                  },
-                },
-                {
-                  binding: 7,
-                  resource: {
-                    kind: 'textureView',
-                    value: resolvedGraphView(resolver, target),
-                  },
-                },
-              ]),
-            );
-            pass.dispatchWorkgroups(
-              Math.ceil(mipDimension(output.width, level) / 8),
-              Math.ceil(mipDimension(output.height, level) / 8),
-              1,
-            );
-          }
-        },
-      );
-      if (!added.ok) return added;
-      passNames.push(name);
-    }
-    return undefined;
-  };
-  const reflectionMipFailure = addSsrReflectionMipProjection();
-  if (reflectionMipFailure !== undefined) return reflectionMipFailure;
   return ok({
     enabled: true,
     passNames: Object.freeze(passNames),
-    resources: resolvedSsrResources(
-      resources.value,
-      resolved,
-      radiancePyramid,
-      Math.max(1, reflectionLevels.length),
-    ),
+    resources: resources.value,
     trace:
       origin === undefined
         ? buildSsrTracePlan(input.quality)
         : {
+            ...buildSsrTracePlan(input.quality),
             resolution: 'full',
-            algorithm: 'furthest-hzb-screen-ray',
-            groupSize: 4,
-            refinement: 'adjacent-depth-difference',
+            algorithm: 'furthest-hzb-fixed-steps',
+            refinement: 'depth-crossing',
             profile: WATER_SSR_DEFAULT_PROFILE,
           },
-    reactivity,
-    reactivitySurface: reactivitySurfaceFor(input, trace),
+    reactivity: hitReactivity,
+    reactivitySurface:
+      hitReactivity === undefined
+        ? undefined
+        : { width: trace.width, height: trace.height, format: 'r32float' },
   });
 }

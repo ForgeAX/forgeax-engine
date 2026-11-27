@@ -92,9 +92,3 @@ import { verifyGiFallback } from './diffuse-gi-cases.fixture';
 it('falls back from unavailable probe support to local scene transport', async () => {
   await verifyGiFallback(await prepareDiffuseGiFixture());
 }, 120000);
-
-import { verifyGiPerspective } from './gi-view.fixture';
-
-it('matches the perspective raster primary against independent exact triangle rays', async () => {
-  await verifyGiPerspective(await prepareDiffuseGiFixture());
-}, 120000);

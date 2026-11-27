@@ -41,6 +41,33 @@ describe('optional Pack live parameter bindings', () => {
     ]);
   });
 
+  it('enforces deferred output ownership and verifies the runtime result contract', async () => {
+    const output = scene();
+    const runtime = {
+      export: 'generate',
+      outputs: { 'scene/main': 'scene' },
+      dependencies: [],
+    } as const;
+    const definition = definePack({
+      schemaVersion: '2.0.0',
+      packageId,
+      runtime,
+      build: () => ok(output),
+    });
+    const context = { packageId, readByGuid: vi.fn() };
+    const badOutput = { ...definition, build: () => ok({}) };
+
+    expect(await executePackBuild(definition, context)).toMatchObject({
+      ok: false,
+      error: { detail: { sourceKey: 'scene/main', phase: 'build' } },
+    });
+    expect((await executePackBuild(definition, context, 'runtime')).unwrap()).toBe(output);
+    expect(await executePackBuild(badOutput, context, 'runtime')).toMatchObject({
+      ok: false,
+      error: { detail: { sourceKey: 'scene/main', phase: 'runtime' } },
+    });
+  });
+
   it('keeps inherited and overridden values while withholding live values from generation', async () => {
     const output = scene();
     const build = vi.fn((_context: { values: Readonly<Record<string, unknown>> }) => ok(output));

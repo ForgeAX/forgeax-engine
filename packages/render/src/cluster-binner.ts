@@ -32,8 +32,8 @@ import { ok, type Result } from '@forgeax/engine-rhi';
 
 /**
  * View-space NDC axis-aligned bounding box.
- * `min` and `max` are NDC coordinates clamped to [-1, 1] for XY;
- * Z may extend to projection-space depth values.
+ * XY is the intersection with the NDC screen interval; a reversed interval is empty.
+ * Z holds the far and near edges in camera space.
  */
 interface ClusterAabb {
   readonly min: Vec3;
@@ -74,6 +74,7 @@ export interface ClusterBinScratch {
   clusterEntryCapK: number | undefined;
   /** Entries the last `bin` dropped under `clusterEntryCapK`. */
   droppedClusterEntries: number;
+  occupiedClusterCount: number;
 }
 
 /**
@@ -121,6 +122,7 @@ export function createClusterBinScratch(): ClusterBinScratch {
     },
     clusterEntryCapK: undefined,
     droppedClusterEntries: 0,
+    occupiedClusterCount: 0,
   };
 }
 
@@ -354,38 +356,47 @@ function sphereReachesFroxel(
 }
 
 /**
- * Cone (apex, unit axis, half-angle < 90 deg, slant `range`) against the
- * froxel's bounding sphere (Wronski, "Cull that cone"). Conservative.
+ * Use the tangent plane facing the cell center (UE LightGridInjection).
+ * A rejected box is wholly outside the emitting cone or hemisphere.
  */
-function coneReachesFroxel(
+function emissionReachesFroxel(
   box: Float64Array,
-  apexX: number,
-  apexY: number,
-  apexZ: number,
-  range: number,
-  axisX: number,
-  axisY: number,
-  axisZ: number,
-  cos: number,
+  words: Float32Array,
+  at: number,
+  rect: boolean,
 ): boolean {
-  const cxm = ((box[0] ?? 0) + (box[3] ?? 0)) * 0.5;
-  const cym = ((box[1] ?? 0) + (box[4] ?? 0)) * 0.5;
-  const czm = ((box[2] ?? 0) + (box[5] ?? 0)) * 0.5;
-  const rr =
-    0.5 *
-    Math.hypot(
-      (box[3] ?? 0) - (box[0] ?? 0),
-      (box[4] ?? 0) - (box[1] ?? 0),
-      (box[5] ?? 0) - (box[2] ?? 0),
-    );
-  const vx = cxm - apexX;
-  const vy = cym - apexY;
-  const vz = czm - apexZ;
-  const lenSq = vx * vx + vy * vy + vz * vz;
-  const along = vx * axisX + vy * axisY + vz * axisZ;
-  const sin = Math.sqrt(Math.max(0, 1 - cos * cos));
-  const closest = cos * Math.sqrt(Math.max(0, lenSq - along * along)) - along * sin;
-  return !(closest > rr || along > rr + range || along < -rr);
+  const x = (box[0] as number) + (box[3] as number);
+  const y = (box[1] as number) + (box[4] as number);
+  const z = (box[2] as number) + (box[5] as number);
+  const vx = x * 0.5 - (words[at + 12] as number);
+  const vy = y * 0.5 - (words[at + 13] as number);
+  const vz = z * 0.5 - (words[at + 14] as number);
+  const ax = words[at + 16] as number;
+  const ay = words[at + 17] as number;
+  const az = words[at + 18] as number;
+  let nx = -ax;
+  let ny = -ay;
+  let nz = -az;
+  if (!rect) {
+    const along = vx * ax + vy * ay + vz * az;
+    const rx = vx - along * ax;
+    const ry = vy - along * ay;
+    const rz = vz - along * az;
+    const length = Math.sqrt(rx * rx + ry * ry + rz * rz);
+    const cos = words[at + 19] as number;
+    const sin = Math.sqrt(Math.max(0, 1 - cos * cos));
+    if (length > 1e-6) {
+      const scale = cos / length;
+      nx = rx * scale - ax * sin;
+      ny = ry * scale - ay * sin;
+      nz = rz * scale - az * sin;
+    }
+  }
+  const extent =
+    Math.abs(nx) * ((box[3] as number) - (box[0] as number)) * 0.5 +
+    Math.abs(ny) * ((box[4] as number) - (box[1] as number)) * 0.5 +
+    Math.abs(nz) * ((box[5] as number) - (box[2] as number)) * 0.5;
+  return vx * nx + vy * ny + vz * nz <= extent;
 }
 
 /**
@@ -417,7 +428,7 @@ export function froxelSphereOverlaps(
 
 /**
  * Producer payload (`light_bounds` binding) layout, in 32-bit words:
- *   header (8): f32 p00, p11, p20, p21, p23; u32 exact (1 = froxel tests on); 0; 0
+ *   header (8): f32 p00, p11, p20, p21, p23; u32 exact (1 = froxel tests on); u32 reserved index count; 0
  *   per light (20), at header + index * 20:
  *     i32 min x/y/z, max x/y/z cell box (min x < 0 = culled);
  *     u32 flags (bit 0: unbounded sphere, bit 1: cone valid); 0;
@@ -426,9 +437,12 @@ export function froxelSphereOverlaps(
  *     f32 view cone axis xyz, cos(half-angle).
  */
 export const PRODUCER_BOUNDS_HEADER_WORDS = 8;
+/** Filled from the reserved CPU runs after encoding the individual lights. */
+export const PRODUCER_RESERVATION_END_WORD = 6;
 export const PRODUCER_BOUNDS_STRIDE_WORDS = 20;
 const PRODUCER_FLAG_UNBOUNDED = 1;
 const PRODUCER_FLAG_CONE = 2;
+const PRODUCER_FLAG_RECT = 4;
 
 export function producerBoundsInt32Length(lightSlots: number): number {
   return PRODUCER_BOUNDS_HEADER_WORDS + lightSlots * PRODUCER_BOUNDS_STRIDE_WORDS;
@@ -451,32 +465,61 @@ export function encodeProducerBounds(
     readonly position: Vec3;
     readonly range: number;
     readonly cone?: BinningCone | undefined;
+    readonly rectNormal?: Vec3 | undefined;
   }>,
   lightBounds: Int32Array,
   view: Mat4,
   proj: Mat4,
   output: Int32Array,
+  lightCount = lights.length,
+  words = new Float32Array(output.buffer, output.byteOffset, output.length),
+  centre = vec3.create(0, 0, 0),
 ): void {
-  const words = new Float32Array(output.buffer, output.byteOffset, output.length);
-  output.fill(0);
+  output.fill(0, 0, producerBoundsInt32Length(lightCount));
   const projection = froxelProjection(proj);
-  if (projection !== undefined) {
-    words.set([projection.p00, projection.p11, projection.p20, projection.p21, projection.p23], 0);
+  const scale = viewAxisScale(view);
+  const exact = projection !== undefined && scale > 0 && viewPreservesAngles(view, scale);
+  if (exact) {
+    words[0] = projection.p00;
+    words[1] = projection.p11;
+    words[2] = projection.p20;
+    words[3] = projection.p21;
+    words[4] = projection.p23;
     output[5] = 1;
   }
-  const centre = vec3.create(0, 0, 0);
-  for (let index = 0; index < lights.length; index++) {
+  if (lightCount === 0) return;
+  for (let index = 0; index < lightCount; index++) {
     const light = lights[index];
     const at = PRODUCER_BOUNDS_HEADER_WORDS + index * PRODUCER_BOUNDS_STRIDE_WORDS;
-    for (let k = 0; k < 6; k++) output[at + k] = lightBounds[index * 6 + k] ?? -1;
-    if (light === undefined) {
+    const cellAt = index * 6;
+    if (light === undefined || (lightBounds[cellAt] ?? -1) < 0) {
       output[at] = -1;
       continue;
     }
-    const sphereFlags = encodeLightSphere(light.position, light.range, view, centre, words, at);
+    for (let k = 0; k < 6; k++) output[at + k] = lightBounds[cellAt + k] ?? 0;
+    // A scaled or sheared view changes cone angles and turns spheres into ellipsoids.
+    // A non-perspective producer also consumes just the conservative cell box.
+    if (!exact) {
+      output[at + 6] = PRODUCER_FLAG_UNBOUNDED;
+      continue;
+    }
+    const sphereFlags = encodeLightSphere(
+      light.position,
+      light.range,
+      view,
+      centre,
+      words,
+      at,
+      scale,
+    );
     const coneFlags =
-      light.cone === undefined ? 0 : encodeLightCone(light.cone, view, centre, words, at);
-    output[at + 6] = sphereFlags | coneFlags;
+      light.cone === undefined ? 0 : encodeLightCone(light.cone, view, centre, words, at, scale);
+    const rectFlags =
+      light.rectNormal !== undefined && encodeEmissionAxis(light.rectNormal, view, words, at)
+        ? PRODUCER_FLAG_RECT
+        : 0;
+    if (rectFlags !== 0) words.set(centre, at + 12);
+    output[at + 6] = sphereFlags | coneFlags | rectFlags;
   }
 }
 
@@ -488,8 +531,9 @@ function encodeLightSphere(
   centre: Vec3,
   words: Float32Array,
   at: number,
+  scale: number,
 ): number {
-  const radius = viewSpaceBinningSphere(position, range, view, centre);
+  const radius = viewSpaceBinningSphere(position, range, view, centre, scale);
   if (!Number.isFinite(radius)) return PRODUCER_FLAG_UNBOUNDED;
   words[at + 8] = entry(centre, 0);
   words[at + 9] = entry(centre, 1);
@@ -505,43 +549,64 @@ function encodeLightCone(
   centre: Vec3,
   words: Float32Array,
   at: number,
+  scale: number,
 ): number {
   if (cone.cosOuter <= 0 || !Number.isFinite(cone.range)) return 0;
-  const apexRange = viewSpaceBinningSphere(cone.apex, cone.range, view, centre);
-  const axis = transformDirection(view, cone.direction);
-  const length = Math.hypot(axis[0], axis[1], axis[2]);
-  if (length <= 1e-8 || viewAxisScale(view) <= 0) return 0;
-  words[at + 12] = entry(centre, 0);
-  words[at + 13] = entry(centre, 1);
-  words[at + 14] = entry(centre, 2);
-  // Relative pad mirrors spotBinningSphere: boundary fragments stay in.
+  const apexRange = viewSpaceBinningSphere(cone.apex, cone.range, view, centre, scale);
+  if (!encodeEmissionAxis(cone.direction, view, words, at)) return 0;
+  words.set(centre, at + 12);
+  // The bounding sector is the broad phase. The apex sphere clips the actual range.
   words[at + 15] = apexRange * (1 + 1e-4);
-  words[at + 16] = axis[0] / length;
-  words[at + 17] = axis[1] / length;
-  words[at + 18] = axis[2] / length;
   // Widen the half-angle slightly (cos down) for the same reason.
   words[at + 19] = Math.max(0, Math.min(1, cone.cosOuter) - 1e-4);
   return PRODUCER_FLAG_CONE;
 }
 
-/** Upper 3x3 of `view` applied to a direction (no translation). */
-function transformDirection(view: Mat4, direction: Vec3): [number, number, number] {
-  const dx = entry(direction, 0);
-  const dy = entry(direction, 1);
-  const dz = entry(direction, 2);
-  return [
-    entry(view, 0) * dx + entry(view, 4) * dy + entry(view, 8) * dz,
-    entry(view, 1) * dx + entry(view, 5) * dy + entry(view, 9) * dz,
-    entry(view, 2) * dx + entry(view, 6) * dy + entry(view, 10) * dz,
-  ];
+function encodeEmissionAxis(axis: Vec3, view: Mat4, words: Float32Array, at: number): boolean {
+  const dx = entry(axis, 0);
+  const dy = entry(axis, 1);
+  const dz = entry(axis, 2);
+  const ax = rotatedLane(view, dx, dy, dz, 0);
+  const ay = rotatedLane(view, dx, dy, dz, 1);
+  const az = rotatedLane(view, dx, dy, dz, 2);
+  const length = Math.hypot(ax, ay, az);
+  if (!(length > 1e-8)) return false;
+  words[at + 16] = ax / length;
+  words[at + 17] = ay / length;
+  words[at + 18] = az / length;
+  return true;
+}
+
+/** One lane of the view rotation, retaining double precision through normalization. */
+function rotatedLane(view: Mat4, x: number, y: number, z: number, lane: number): number {
+  return entry(view, lane) * x + entry(view, 4 + lane) * y + entry(view, 8 + lane) * z;
 }
 
 /** Largest axis scale of the view matrix's upper 3x3. */
 function viewAxisScale(view: Mat4): number {
-  return Math.max(
-    Math.hypot(entry(view, 0), entry(view, 1), entry(view, 2)),
-    Math.hypot(entry(view, 4), entry(view, 5), entry(view, 6)),
-    Math.hypot(entry(view, 8), entry(view, 9), entry(view, 10)),
+  return Math.max(cameraAxisLength(view, 0), cameraAxisLength(view, 1), cameraAxisLength(view, 2));
+}
+
+// A rigid or uniformly scaled view preserves the shape used by the exact GPU test.
+function viewPreservesAngles(view: Mat4, scale: number): boolean {
+  const xx = entry(view, 0),
+    xy = entry(view, 4),
+    xz = entry(view, 8);
+  const yx = entry(view, 1),
+    yy = entry(view, 5),
+    yz = entry(view, 9);
+  const zx = entry(view, 2),
+    zy = entry(view, 6),
+    zz = entry(view, 10);
+  const squared = scale * scale,
+    tolerance = squared * 1e-6;
+  return (
+    Math.abs(xx * yx + xy * yy + xz * yz) <= tolerance &&
+    Math.abs(xx * zx + xy * zy + xz * zz) <= tolerance &&
+    Math.abs(yx * zx + yy * zy + yz * zz) <= tolerance &&
+    Math.abs(xx * xx + xy * xy + xz * xz - squared) <= tolerance &&
+    Math.abs(yx * yx + yy * yy + yz * yz - squared) <= tolerance &&
+    Math.abs(zx * zx + zy * zy + zz * zz - squared) <= tolerance
   );
 }
 
@@ -570,17 +635,19 @@ function producerKeeps(
     )
   )
     return false;
-  if ((flags & PRODUCER_FLAG_CONE) === 0 || !bounded) return true;
-  return coneReachesFroxel(
-    box,
-    words[at + 12] ?? 0,
-    words[at + 13] ?? 0,
-    words[at + 14] ?? 0,
-    words[at + 15] ?? 0,
-    words[at + 16] ?? 0,
-    words[at + 17] ?? 0,
-    words[at + 18] ?? 0,
-    words[at + 19] ?? 0,
+  if (!bounded || (flags & (PRODUCER_FLAG_CONE | PRODUCER_FLAG_RECT)) === 0) return true;
+  const rect = (flags & PRODUCER_FLAG_RECT) !== 0;
+  return (
+    (rect ||
+      sphereReachesFroxel(
+        box,
+        true,
+        words[at + 12] as number,
+        words[at + 13] as number,
+        words[at + 14] as number,
+        words[at + 15] as number,
+      )) &&
+    emissionReachesFroxel(box, words, at, rect)
   );
 }
 
@@ -593,12 +660,15 @@ export function viewSpaceBinningSphere(
   range: number,
   view: Mat4,
   output: Vec3,
+  scale = viewAxisScale(view),
 ): number {
-  const rotated = transformDirection(view, position);
-  output[0] = rotated[0] + entry(view, 12);
-  output[1] = rotated[1] + entry(view, 13);
-  output[2] = rotated[2] + entry(view, 14);
-  return range * viewAxisScale(view);
+  const x = entry(position, 0),
+    y = entry(position, 1),
+    z = entry(position, 2);
+  output[0] = rotatedLane(view, x, y, z, 0) + entry(view, 12);
+  output[1] = rotatedLane(view, x, y, z, 1) + entry(view, 13);
+  output[2] = rotatedLane(view, x, y, z, 2) + entry(view, 14);
+  return range * scale;
 }
 
 /** Lights-per-cell distribution of one membership derivation. */
@@ -681,6 +751,119 @@ function forEachBoxCell(
   }
 }
 
+export interface TextureClusterMembershipScratch {
+  runs?: Uint32Array;
+  slots?: Uint32Array;
+  box?: Float64Array;
+}
+
+/** Build compact CPU texture runs with the same cell tests and ordering as the GPU. */
+export function refineTextureClusterMembership(
+  payload: Int32Array,
+  lightCount: number,
+  grid: ClusterGridSize,
+  reservation: Uint32Array,
+  capacity: number,
+  near: number,
+  far: number,
+  uncapped: Uint32Array | undefined,
+  scratch: TextureClusterMembershipScratch = {},
+): { readonly grid: Uint32Array; readonly indices: Uint32Array } {
+  const words = new Float32Array(payload.buffer, payload.byteOffset, payload.length);
+  const projection = payloadProjection(words);
+  if (scratch.runs?.length !== reservation.length)
+    scratch.runs = new Uint32Array(reservation.length);
+  if (scratch.slots === undefined || scratch.slots.length < capacity)
+    scratch.slots = new Uint32Array(capacity);
+  scratch.box ??= new Float64Array(6);
+  const { runs, slots, box } = scratch;
+  let end = 0;
+  for (let z = 0; z < grid.z; z++) {
+    for (let y = 0; y < grid.y; y++) {
+      for (let x = 0; x < grid.x; x++) {
+        const offset = ((z * grid.y + y) * grid.x + x) * 2;
+        const limit = reservation[offset + 1] as number;
+        runs[offset] = end;
+        runs[offset + 1] = 0;
+        if (limit === 0) continue;
+        const bounded = froxelViewAabb(x, y, z, projection, grid.x, grid.y, grid.z, near, far, box);
+        const count =
+          uncapped === undefined
+            ? writeRefinedCell(payload, words, lightCount, box, bounded, x, y, z, slots, end, limit)
+            : filterReservedCell(
+                payload,
+                words,
+                uncapped,
+                reservation[offset] as number,
+                limit,
+                box,
+                bounded,
+                slots,
+                end,
+              );
+        runs[offset + 1] = count;
+        end += count;
+      }
+    }
+  }
+  return { grid: runs, indices: slots.subarray(0, end) };
+}
+
+function filterReservedCell(
+  payload: Int32Array,
+  words: Float32Array,
+  candidates: Uint32Array,
+  offset: number,
+  count: number,
+  box: Float64Array,
+  bounded: boolean,
+  slots: Uint32Array,
+  start: number,
+): number {
+  let end = start;
+  for (let i = 0; i < count; i++) {
+    const light = candidates[offset + i] as number;
+    if (producerKeeps(payload, words, light, box, bounded)) slots[end++] = light;
+  }
+  return end - start;
+}
+
+// A capped reservation stores only a prefix of the broad candidates. Visit the
+// whole list so a rejected candidate does not consume the slot of a later light.
+function writeRefinedCell(
+  payload: Int32Array,
+  words: Float32Array,
+  lightCount: number,
+  box: Float64Array,
+  bounded: boolean,
+  x: number,
+  y: number,
+  z: number,
+  slots: Uint32Array,
+  start: number,
+  limit: number,
+): number {
+  let count = 0;
+  for (let light = 0; light < lightCount && count < limit; light++) {
+    const at = PRODUCER_BOUNDS_HEADER_WORDS + light * PRODUCER_BOUNDS_STRIDE_WORDS;
+    const left = payload[at] as number;
+    if (
+      left >= 0 &&
+      left <= x &&
+      x <= (payload[at + 3] as number) &&
+      (payload[at + 1] as number) <= y &&
+      y <= (payload[at + 4] as number) &&
+      (payload[at + 2] as number) <= z &&
+      z <= (payload[at + 5] as number) &&
+      producerKeeps(payload, words, light, box, bounded)
+    ) {
+      slots[start + count] = light;
+      count++;
+    }
+  }
+  return count;
+}
+
 /**
  * Measure lights per cluster cell for the cell boxes and for the cells the
  * GPU producer keeps after its froxel tests, from one producer payload
@@ -740,10 +923,16 @@ export function measureClusterOccupancy(
  * Clamped to [0, gridZ - 1].
  */
 export function viewZToZSlice(viewZ: number, gridZ: number, near: number, far: number): number {
-  if (viewZ >= -near) {
-    return 0;
-  }
-  const logFarOverNear = Math.log(far / near);
+  return clusterDepthSlice(viewZ, gridZ, near, Math.log(far / near));
+}
+
+function clusterDepthSlice(
+  viewZ: number,
+  gridZ: number,
+  near: number,
+  logFarOverNear: number,
+): number {
+  if (viewZ >= -near) return 0;
   const slice = Math.floor((Math.log(-viewZ / near) / logFarOverNear) * gridZ);
   if (slice < 0) return 0;
   if (slice >= gridZ) return gridZ - 1;
@@ -761,7 +950,7 @@ export function viewZToZSlice(viewZ: number, gridZ: number, near: number, far: n
  *   1. Transform sphere center to view space via view matrix.
  *   2. Expand by radius to get view-AABB corners.
  *   3. Project 4 key corners to NDC.
- *   4. Clamp to [-1, 1] for XY ; Z is kept as projected depth.
+ *   4. Intersect XY with the screen interval and keep view-space depth.
  */
 export function clusterSpaceObjectAabb(
   center: Vec3,
@@ -776,6 +965,33 @@ export function clusterSpaceObjectAabb(
       min: vec3.create(0, 0, 0),
       max: vec3.create(0, 0, 0),
     } satisfies ClusterAabb);
+  return projectSphereAabb(
+    center,
+    radius,
+    view,
+    proj,
+    result,
+    cameraAxisLength(view, 0),
+    cameraAxisLength(view, 1),
+    cameraAxisLength(view, 2),
+  );
+}
+
+// The support radius along one view coordinate is the norm of its matrix row.
+function cameraAxisLength(view: Mat4, row: number): number {
+  return Math.hypot(entry(view, row), entry(view, row + 4), entry(view, row + 8));
+}
+
+function projectSphereAabb(
+  center: Vec3,
+  radius: number,
+  view: Mat4,
+  proj: Mat4,
+  result: ClusterAabb,
+  viewScaleX: number,
+  viewScaleY: number,
+  viewScaleZ: number,
+): ClusterAabb {
   const cx = center[0] ?? 0;
   const cy = center[1] ?? 0;
   const cz = center[2] ?? 0;
@@ -796,10 +1012,6 @@ export function clusterSpaceObjectAabb(
   const vx = v00 * cx + v10 * cy + v20 * cz + v30;
   const vy = v01 * cx + v11 * cy + v21 * cz + v31;
   const vz = v02 * cx + v12 * cy + v22 * cz + v32;
-
-  const viewScaleX = Math.hypot(v00, v01, v02);
-  const viewScaleY = Math.hypot(v10, v11, v12);
-  const viewScaleZ = Math.hypot(v20, v21, v22);
 
   const rx = radius * viewScaleX;
   const ry = radius * viewScaleY;
@@ -860,10 +1072,7 @@ export function clusterSpaceObjectAabb(
   // The XY extrema of each z face are therefore the interval of one linear
   // form, avoiding eight corner projections and their temporary tuples.
   const perspectiveWOnlyZ =
-    Math.abs(proj[3] ?? 0) < 1e-8 &&
-    Math.abs(proj[7] ?? 0) < 1e-8 &&
-    Math.abs(proj[15] ?? 0) < 1e-8 &&
-    Math.abs(p23) >= 1e-5;
+    (proj[3] ?? 0) === 0 && (proj[7] ?? 0) === 0 && (proj[15] ?? 0) === 0 && Math.abs(p23) >= 1e-5;
 
   if (perspectiveWOnlyZ) {
     const xExtent = Math.abs(p00) * rx + Math.abs(p10) * ry;
@@ -886,25 +1095,35 @@ export function clusterSpaceObjectAabb(
       ndcMaxY = Math.max(ndcMaxY, y0, y1);
     }
   } else {
-    const corners: Array<[number, number]> = [
-      [vMinX, vMinY],
-      [vMinX, vMaxY],
-      [vMaxX, vMinY],
-      [vMaxX, vMaxY],
-    ];
-
-    for (const zTest of [minViewZ, maxViewZ]) {
-      if (zTest <= 0) {
-        for (const corner of corners) {
-          const sx = corner[0];
-          const sy = corner[1];
-          const ndc = projectToNdc(sx, sy, zTest, proj);
-          ndcMinX = Math.min(ndcMinX, ndc[0]);
-          ndcMaxX = Math.max(ndcMaxX, ndc[0]);
-          ndcMinY = Math.min(ndcMinY, ndc[1]);
-          ndcMaxY = Math.max(ndcMaxY, ndc[1]);
-        }
+    let minW = Infinity,
+      maxW = -Infinity;
+    const p03 = proj[3] ?? 0,
+      p13 = proj[7] ?? 0,
+      p33 = proj[15] ?? 0;
+    for (let face = 0; face < 2; face++) {
+      const z = face === 0 ? minViewZ : maxViewZ;
+      if (z > 0) continue;
+      for (let corner = 0; corner < 4; corner++) {
+        const x = corner < 2 ? vMinX : vMaxX;
+        const y = (corner & 1) === 0 ? vMinY : vMaxY;
+        const cw = p03 * x + p13 * y + p23 * z + p33;
+        minW = Math.min(minW, cw);
+        maxW = Math.max(maxW, cw);
+        const singular = Math.abs(cw) < 1e-10;
+        const invW = 1 / cw;
+        const nx = singular ? (x < 0 ? -1 : 1) : (p00 * x + p10 * y + p20 * z + p30) * invW;
+        const ny = singular ? (y < 0 ? -1 : 1) : (p01 * x + p11 * y + p21 * z + p31) * invW;
+        ndcMinX = Math.min(ndcMinX, nx);
+        ndcMaxX = Math.max(ndcMaxX, nx);
+        ndcMinY = Math.min(ndcMinY, ny);
+        ndcMaxY = Math.max(ndcMaxY, ny);
       }
+    }
+    // A custom projective matrix can put a pole inside the sphere's view-space box.
+    // Its corner samples cannot bound the interior across that pole.
+    if (minW <= 1e-10 && maxW >= -1e-10) {
+      ndcMinX = ndcMinY = -1;
+      ndcMaxX = ndcMaxY = 1;
     }
   }
 
@@ -927,41 +1146,6 @@ export function clusterSpaceObjectAabb(
   return result;
 }
 
-/**
- * Project a view-space point to NDC via the perspective projection matrix.
- * Returns [ndc_x, ndc_y, ndc_z].
- */
-function projectToNdc(vx: number, vy: number, vz: number, proj: Mat4): [number, number, number] {
-  const p00 = proj[0] ?? 0;
-  const p10 = proj[4] ?? 0;
-  const p20 = proj[8] ?? 0;
-  const p30 = proj[12] ?? 0;
-  const p01 = proj[1] ?? 0;
-  const p11 = proj[5] ?? 0;
-  const p21 = proj[9] ?? 0;
-  const p31 = proj[13] ?? 0;
-  const p02 = proj[2] ?? 0;
-  const p12 = proj[6] ?? 0;
-  const p22 = proj[10] ?? 0;
-  const p32 = proj[14] ?? 0;
-  const p03 = proj[3] ?? 0;
-  const p13 = proj[7] ?? 0;
-  const p23 = proj[11] ?? 0;
-  const p33 = proj[15] ?? 0;
-
-  const cx = p00 * vx + p10 * vy + p20 * vz + p30;
-  const cy = p01 * vx + p11 * vy + p21 * vz + p31;
-  const cz = p02 * vx + p12 * vy + p22 * vz + p32;
-  const cw = p03 * vx + p13 * vy + p23 * vz + p33;
-
-  if (Math.abs(cw) < 1e-10) {
-    return [vx < 0 ? -1 : 1, vy < 0 ? -1 : 1, cz];
-  }
-
-  const invW = 1 / cw;
-  return [cx * invW, cy * invW, cz * invW];
-}
-
 // ── ndc_position_to_cluster ─────────────────────────────────────────────────
 
 /**
@@ -979,20 +1163,15 @@ export function ndcPositionToCluster(
   near: number,
   far: number,
 ): Uvec3 {
-  const ndcX = ndc[0] ?? 0;
-  const ndcY = ndc[1] ?? 0;
+  return {
+    x: clusterAxisCell(ndc[0] ?? 0, gridX),
+    y: clusterAxisCell(ndc[1] ?? 0, gridY),
+    z: viewZToZSlice(viewZ, gridZ, near, far),
+  };
+}
 
-  let cx = Math.floor((ndcX * 0.5 + 0.5) * gridX);
-  let cy = Math.floor((ndcY * 0.5 + 0.5) * gridY);
-
-  if (cx < 0) cx = 0;
-  if (cx >= gridX) cx = gridX - 1;
-  if (cy < 0) cy = 0;
-  if (cy >= gridY) cy = gridY - 1;
-
-  const cz = viewZToZSlice(viewZ, gridZ, near, far);
-
-  return { x: cx, y: cy, z: cz };
+function clusterAxisCell(ndc: number, count: number): number {
+  return Math.min(Math.max(0, Math.floor((ndc * 0.5 + 0.5) * count)), count - 1);
 }
 
 // ── calculate_sphere_cluster_bounds ─────────────────────────────────────────
@@ -1000,11 +1179,8 @@ export function ndcPositionToCluster(
 /**
  * Convert an NDC AABB to a range of cluster cell indices.
  *
- * Computes cluster indices for AABB min and max, then clamps and
- * orders the result so `min <= max` in each axis.
- *
- * If the sphere is entirely behind the camera, returns min > max
- * in at least one axis (cull signal).
+ * Intersect with the visible screen and depth interval before quantization.
+ * A disjoint box returns an empty range (min > max).
  */
 export function calculateSphereClusterBounds(
   aabb: ClusterAabb,
@@ -1021,22 +1197,319 @@ export function calculateSphereClusterBounds(
       min: { x: 0, y: 0, z: 0 },
       max: { x: 0, y: 0, z: 0 },
     } satisfies MutableClusterBounds);
-  const minZ = aabb.min[2] ?? 0;
-  const maxZ = aabb.max[2] ?? 0;
+  return writeSphereCells(aabb, gridX, gridY, gridZ, near, far, Math.log(far / near), result);
+}
 
-  const idxMin = ndcPositionToCluster(aabb.min, minZ, gridX, gridY, gridZ, near, far);
-  const idxMax = ndcPositionToCluster(aabb.max, maxZ, gridX, gridY, gridZ, near, far);
-
-  result.min.x = Math.min(idxMin.x, idxMax.x);
-  result.min.y = Math.min(idxMin.y, idxMax.y);
-  result.min.z = Math.min(idxMin.z, idxMax.z);
-  result.max.x = Math.max(idxMin.x, idxMax.x);
-  result.max.y = Math.max(idxMin.y, idxMax.y);
-  result.max.z = Math.max(idxMin.z, idxMax.z);
+/** Intersect the continuous box before clamping its endpoints into cell addresses. */
+function writeSphereCells(
+  aabb: ClusterAabb,
+  gridX: number,
+  gridY: number,
+  gridZ: number,
+  near: number,
+  far: number,
+  logFarOverNear: number,
+  result: MutableClusterBounds,
+): ClusterBounds {
+  const x0 = aabb.min[0] ?? 0,
+    x1 = aabb.max[0] ?? 0;
+  const y0 = aabb.min[1] ?? 0,
+    y1 = aabb.max[1] ?? 0;
+  const farZ = aabb.min[2] ?? 0,
+    nearZ = aabb.max[2] ?? 0;
+  if (
+    x0 > x1 ||
+    y0 > y1 ||
+    x0 > 1 ||
+    x1 < -1 ||
+    y0 > 1 ||
+    y1 < -1 ||
+    farZ > nearZ ||
+    farZ > -near ||
+    nearZ < -far
+  ) {
+    result.min.x = result.min.y = result.min.z = 1;
+    result.max.x = result.max.y = result.max.z = 0;
+    return result;
+  }
+  result.min.x = clusterAxisCell(x0, gridX);
+  result.max.x = clusterAxisCell(x1, gridX);
+  result.min.y = clusterAxisCell(y0, gridY);
+  result.max.y = clusterAxisCell(y1, gridY);
+  result.min.z = clusterDepthSlice(nearZ, gridZ, near, logFarOverNear);
+  result.max.z = clusterDepthSlice(farZ, gridZ, near, logFarOverNear);
   return result;
 }
 
 // ── bin ─────────────────────────────────────────────────────────────────────
+
+// Consecutive light indices with the same current box can be written contiguously
+// into each destination run. This grouping is computed from this view's projection.
+function endOfLightBoxRun(bounds: Int32Array, first: number, count: number): number {
+  const start = first * 6;
+  let next = first + 1;
+  while (next < count) {
+    const at = next * 6;
+    if (
+      bounds[at] !== bounds[start] ||
+      bounds[at + 1] !== bounds[start + 1] ||
+      bounds[at + 2] !== bounds[start + 2] ||
+      bounds[at + 3] !== bounds[start + 3] ||
+      bounds[at + 4] !== bounds[start + 4] ||
+      bounds[at + 5] !== bounds[start + 5]
+    )
+      break;
+    next++;
+  }
+  return next;
+}
+
+function writeClusterBoxRun(
+  first: number,
+  end: number,
+  bounds: Int32Array,
+  gridX: number,
+  gridY: number,
+  cursors: Uint32Array,
+  indices: Uint32Array,
+): void {
+  const at = first * 6;
+  const x0 = bounds[at] ?? -1,
+    y0 = bounds[at + 1] ?? 0,
+    z0 = bounds[at + 2] ?? 0;
+  const x1 = bounds[at + 3] ?? -1,
+    y1 = bounds[at + 4] ?? -1,
+    z1 = bounds[at + 5] ?? -1;
+  for (let z = z0; z <= z1; z++) {
+    let row = (z * gridY + y0) * gridX;
+    for (let y = y0; y <= y1; y++, row += gridX) {
+      for (let cell = row + x0; cell <= row + x1; cell++) {
+        let cursor = cursors[cell] ?? 0;
+        for (let light = first; light < end; light++) indices[cursor++] = light;
+        cursors[cell] = cursor;
+      }
+    }
+  }
+}
+
+/** Find the first cell at or after index with room in its reserved run. */
+function nextOpenCluster(next: Int32Array, index: number): number {
+  let parent = next[index] ?? index;
+  while (parent !== index) {
+    const sibling = next[parent] ?? parent;
+    next[index] = sibling;
+    index = parent;
+    parent = sibling;
+  }
+  return index;
+}
+
+/** Write exactly the reserved first-K indices. Completed cells link to their successor,
+ * so overlapping light boxes never walk the already-filled part of a row. */
+function writeCappedClusterMembership(
+  lightCount: number,
+  bounds: Int32Array,
+  gridX: number,
+  gridY: number,
+  gridZ: number,
+  grid: Uint32Array,
+  cursors: Uint32Array,
+  indices: Uint32Array,
+  next: Int32Array,
+): void {
+  const cells = gridX * gridY * gridZ;
+  let remaining = (grid[2 * cells - 2] ?? 0) + (grid[2 * cells - 1] ?? 0);
+  if (remaining === 0) return;
+  next[cells] = cells;
+  for (let cell = cells - 1; cell >= 0; cell--)
+    next[cell] = (grid[cell * 2 + 1] ?? 0) === 0 ? (next[cell + 1] ?? cells) : cell;
+  let end = 0;
+  for (let light = 0; light < lightCount && remaining > 0; light = end) {
+    end = endOfLightBoxRun(bounds, light, lightCount);
+    const at = light * 6;
+    const x0 = bounds[at] ?? -1;
+    if (x0 < 0) continue;
+    const y0 = bounds[at + 1] ?? 0,
+      z0 = bounds[at + 2] ?? 0;
+    const x1 = bounds[at + 3] ?? -1,
+      y1 = bounds[at + 4] ?? -1,
+      z1 = bounds[at + 5] ?? -1;
+    for (let z = z0; z <= z1; z++) {
+      let row = (z * gridY + y0) * gridX;
+      for (let y = y0; y <= y1; y++, row += gridX) {
+        const last = row + x1;
+        let cell = nextOpenCluster(next, row + x0);
+        while (cell <= last) {
+          let cursor = cursors[cell] ?? 0;
+          const cellEnd = (grid[cell * 2] ?? 0) + (grid[cell * 2 + 1] ?? 0);
+          const length = Math.min(cellEnd - cursor, end - light);
+          const limit = light + length;
+          for (let index = light; index < limit; index++) indices[cursor++] = index;
+          cursors[cell] = cursor;
+          const successor = nextOpenCluster(next, cell + 1);
+          if (cursor === cellEnd) next[cell] = successor;
+          remaining -= length;
+          cell = successor;
+        }
+      }
+    }
+  }
+}
+
+/** No profiling callbacks or per-light lexical environments in ordinary preparation. */
+function writeClusterMembership(
+  lightCount: number,
+  lightBounds: Int32Array,
+  gridX: number,
+  gridY: number,
+  clusterCursors: Uint32Array,
+  lightIndexList: Uint32Array,
+): void {
+  let end = 0;
+  for (let light = 0; light < lightCount; light = end) {
+    end = endOfLightBoxRun(lightBounds, light, lightCount);
+    if ((lightBounds[light * 6] ?? -1) >= 0)
+      writeClusterBoxRun(light, end, lightBounds, gridX, gridY, clusterCursors, lightIndexList);
+  }
+}
+
+/**
+ * Write the cluster-major light index list that `bin(..., { writeMembership:
+ * false })` reserved: `clusterGrid` holds each cluster's [offset, count] run
+ * and `lightBounds` the per-light cluster boxes from the same call. The result
+ * equals the list `bin` writes with membership enabled; `capped` (the call set
+ * `clusterEntryCapK`) keeps each cluster's first entries within its run. Cursor
+ * scratch belongs to the calling view; detached callers use temporary cursors.
+ */
+export function writeClusterMembershipFromGrid(
+  lightCount: number,
+  lightBounds: Int32Array,
+  grid: { readonly x: number; readonly y: number; readonly z: number },
+  clusterGrid: Uint32Array,
+  lightIndexList: Uint32Array,
+  capped = false,
+  scratch?: ClusterBinScratch,
+): void {
+  const clusterCount = grid.x * grid.y * grid.z;
+  let cursors = scratch?.clusterCursors;
+  if (cursors === undefined || cursors.length < clusterCount) {
+    cursors = new Uint32Array(clusterCount);
+    if (scratch !== undefined) scratch.clusterCursors = cursors;
+  }
+  for (let ci = 0; ci < clusterCount; ci++) cursors[ci] = clusterGrid[ci * 2] ?? 0;
+  if (!capped) {
+    writeClusterMembership(lightCount, lightBounds, grid.x, grid.y, cursors, lightIndexList);
+    return;
+  }
+  let next = scratch?.clusterDeltas;
+  if (next === undefined || next.length <= clusterCount) {
+    next = new Int32Array(clusterCount + 1);
+    if (scratch !== undefined) scratch.clusterDeltas = next;
+  }
+  writeCappedClusterMembership(
+    lightCount,
+    lightBounds,
+    grid.x,
+    grid.y,
+    grid.z,
+    clusterGrid,
+    cursors,
+    lightIndexList,
+    next,
+  );
+}
+
+type ClusterLights = ReadonlyArray<{ readonly position: Vec3; readonly range: number }>;
+type ClusterGridSize = { readonly x: number; readonly y: number; readonly z: number };
+
+/** Project the current ordered light prefix. Each light writes exactly six grid coordinates. */
+export function projectClusterLightBounds(
+  lights: ClusterLights,
+  lightCount: number,
+  view: Mat4,
+  proj: Mat4,
+  grid: ClusterGridSize,
+  near: number,
+  far: number,
+  scratch: ClusterBinScratch,
+): void {
+  if (lightCount === 0) return;
+  if (scratch.lightBounds.length < lightCount * 6)
+    scratch.lightBounds = new Int32Array(lightCount * 6);
+  const lightBounds = scratch.lightBounds;
+  const { x: gridX, y: gridY, z: gridZ } = grid;
+  const scaleX = cameraAxisLength(view, 0),
+    scaleY = cameraAxisLength(view, 1),
+    scaleZ = cameraAxisLength(view, 2);
+  const logFarOverNear = Math.log(far / near);
+  // Unused coordinates of a rejected light cannot retain an earlier box.
+  lightBounds.fill(0, 0, lightCount * 6);
+  for (let lightIdx = 0; lightIdx < lightCount; lightIdx++) {
+    const boundsOffset = lightIdx * 6;
+    lightBounds[boundsOffset] = -1;
+    const light = lights[lightIdx];
+    if (!light) continue;
+    // A no-cutoff source illuminates every visible cluster, including
+    // when the light itself is outside the camera frustum.
+    if (light.range === Number.POSITIVE_INFINITY) {
+      lightBounds[boundsOffset] = 0;
+      lightBounds[boundsOffset + 1] = 0;
+      lightBounds[boundsOffset + 2] = 0;
+      lightBounds[boundsOffset + 3] = gridX - 1;
+      lightBounds[boundsOffset + 4] = gridY - 1;
+      lightBounds[boundsOffset + 5] = gridZ - 1;
+      continue;
+    }
+    const radius = light.range;
+
+    if (radius <= 0) {
+      continue;
+    }
+
+    const aabb = projectSphereAabb(
+      light.position,
+      radius,
+      view,
+      proj,
+      scratch.aabbOutput,
+      scaleX,
+      scaleY,
+      scaleZ,
+    );
+
+    const bounds = writeSphereCells(
+      aabb,
+      gridX,
+      gridY,
+      gridZ,
+      near,
+      far,
+      logFarOverNear,
+      scratch.boundsOutput,
+    );
+    if (bounds.min.x > bounds.max.x || bounds.min.y > bounds.max.y || bounds.min.z > bounds.max.z) {
+      continue;
+    }
+
+    lightBounds[boundsOffset] = bounds.min.x;
+    lightBounds[boundsOffset + 1] = bounds.min.y;
+    lightBounds[boundsOffset + 2] = bounds.min.z;
+    lightBounds[boundsOffset + 3] = bounds.max.x;
+    lightBounds[boundsOffset + 4] = bounds.max.y;
+    lightBounds[boundsOffset + 5] = bounds.max.z;
+  }
+}
+
+/** Occupied cells and ordered runs depend only on the projected integer boxes. */
+export function reserveProjectedClusterGrid(
+  lightCount: number,
+  grid: ClusterGridSize,
+  clusterGrid: Uint32Array,
+  capacity: number,
+  scratch: ClusterBinScratch,
+): number {
+  return binProjected(lightCount, grid, clusterGrid, undefined, capacity, scratch);
+}
 
 /**
  * Main entry point: assign punctual lights to cluster cells.
@@ -1060,134 +1533,6 @@ export function calculateSphereClusterBounds(
  * @returns `ok(written light-index entry count)`, never above `capacity`. The count lets the
  *   upload owner avoid copying unused capacity.
  */
-/** The common ordered index kernel; profiling and ordinary paths share these writes. */
-function writeClusterLight(
-  lightIdx: number,
-  minX: number,
-  minY: number,
-  minZ: number,
-  maxX: number,
-  maxY: number,
-  maxZ: number,
-  gridX: number,
-  gridY: number,
-  clusterCursors: Uint32Array,
-  lightIndexList: Uint32Array,
-): void {
-  for (let cz = minZ; cz <= maxZ; cz++) {
-    for (let cy = minY; cy <= maxY; cy++) {
-      for (let cx = minX; cx <= maxX; cx++) {
-        const clusterIdx = cz * gridY * gridX + cy * gridX + cx;
-        const cursor = clusterCursors[clusterIdx] ?? 0;
-        lightIndexList[cursor] = lightIdx;
-        clusterCursors[clusterIdx] = cursor + 1;
-      }
-    }
-  }
-}
-
-/**
- * The capped variant: `clusterEnds[i]` is one past cluster i's reserved run,
- * so a cluster stops accepting lights once its K entries are written.
- */
-function writeCappedClusterLight(
-  lightIdx: number,
-  bounds: Int32Array,
-  at: number,
-  gridX: number,
-  gridY: number,
-  clusterCursors: Uint32Array,
-  clusterEnds: Uint32Array,
-  lightIndexList: Uint32Array,
-): void {
-  for (let cz = bounds[at + 2] ?? 0; cz <= (bounds[at + 5] ?? -1); cz++) {
-    for (let cy = bounds[at + 1] ?? 0; cy <= (bounds[at + 4] ?? -1); cy++) {
-      for (let cx = bounds[at] ?? 0; cx <= (bounds[at + 3] ?? -1); cx++) {
-        const clusterIdx = cz * gridY * gridX + cy * gridX + cx;
-        const cursor = clusterCursors[clusterIdx] ?? 0;
-        if (cursor >= (clusterEnds[clusterIdx] ?? 0)) continue;
-        lightIndexList[cursor] = lightIdx;
-        clusterCursors[clusterIdx] = cursor + 1;
-      }
-    }
-  }
-}
-
-/** No profiling callbacks or per-light lexical environments in ordinary preparation. */
-function writeClusterMembership(
-  lightCount: number,
-  lightBounds: Int32Array,
-  gridX: number,
-  gridY: number,
-  clusterCursors: Uint32Array,
-  lightIndexList: Uint32Array,
-): void {
-  for (let lightIdx = 0; lightIdx < lightCount; lightIdx++) {
-    const at = lightIdx * 6;
-    if ((lightBounds[at] ?? -1) < 0) continue;
-    writeClusterLight(
-      lightIdx,
-      lightBounds[at] ?? 0,
-      lightBounds[at + 1] ?? 0,
-      lightBounds[at + 2] ?? 0,
-      lightBounds[at + 3] ?? -1,
-      lightBounds[at + 4] ?? -1,
-      lightBounds[at + 5] ?? -1,
-      gridX,
-      gridY,
-      clusterCursors,
-      lightIndexList,
-    );
-  }
-}
-
-let gridCursorScratch = new Uint32Array(0);
-let gridEndScratch = new Uint32Array(0);
-
-/**
- * Write the cluster-major light index list that `bin(..., { writeMembership:
- * false })` reserved: `clusterGrid` holds each cluster's [offset, count] run
- * and `lightBounds` the per-light cluster boxes from the same call. The result
- * equals the list `bin` writes with membership enabled; `capped` (the call set
- * `clusterEntryCapK`) keeps each cluster's first entries within its run. Cursor
- * scratch is module-owned because the writer is synchronous.
- */
-export function writeClusterMembershipFromGrid(
-  lightCount: number,
-  lightBounds: Int32Array,
-  grid: { readonly x: number; readonly y: number; readonly z: number },
-  clusterGrid: Uint32Array,
-  lightIndexList: Uint32Array,
-  capped = false,
-): void {
-  const clusterCount = grid.x * grid.y * grid.z;
-  if (gridCursorScratch.length < clusterCount) gridCursorScratch = new Uint32Array(clusterCount);
-  const cursors = gridCursorScratch;
-  for (let ci = 0; ci < clusterCount; ci++) cursors[ci] = clusterGrid[ci * 2] ?? 0;
-  if (!capped) {
-    writeClusterMembership(lightCount, lightBounds, grid.x, grid.y, cursors, lightIndexList);
-    return;
-  }
-  if (gridEndScratch.length < clusterCount) gridEndScratch = new Uint32Array(clusterCount);
-  const ends = gridEndScratch;
-  for (let ci = 0; ci < clusterCount; ci++) {
-    ends[ci] = (clusterGrid[ci * 2] ?? 0) + (clusterGrid[ci * 2 + 1] ?? 0);
-  }
-  for (let lightIdx = 0; lightIdx < lightCount; lightIdx++) {
-    const at = lightIdx * 6;
-    if ((lightBounds[at] ?? -1) < 0) continue;
-    writeCappedClusterLight(
-      lightIdx,
-      lightBounds,
-      at,
-      grid.x,
-      grid.y,
-      cursors,
-      ends,
-      lightIndexList,
-    );
-  }
-}
 
 export function bin(
   lights: ReadonlyArray<{ readonly position: Vec3; readonly range: number }>,
@@ -1203,77 +1548,45 @@ export function bin(
   profile?: ClusterBinProfileRunner,
   options: ClusterBinOptions = {},
 ): Result<number, never> {
+  const binScratch = scratch ?? createClusterBinScratch();
+  return ok(
+    binProjected(
+      lights.length,
+      grid,
+      clusterGrid,
+      options.writeMembership === false ? undefined : lightIndexList,
+      capacity,
+      binScratch,
+      profile,
+      () =>
+        projectClusterLightBounds(lights, lights.length, view, proj, grid, near, far, binScratch),
+    ),
+  );
+}
+
+function binProjected(
+  lightCount: number,
+  grid: ClusterGridSize,
+  clusterGrid: Uint32Array,
+  lightIndexList: Uint32Array | undefined,
+  capacity: number,
+  binScratch: ClusterBinScratch,
+  profile?: ClusterBinProfileRunner,
+  project?: () => void,
+): number {
   const gridX = grid.x;
   const gridY = grid.y;
   const gridZ = grid.z;
   const clusterCount = gridX * gridY * gridZ;
-  const binScratch = scratch ?? createClusterBinScratch();
 
-  ensureScratchCapacity(binScratch, clusterCount, lights.length, gridX, gridY, gridZ);
+  ensureScratchCapacity(binScratch, clusterCount, lightCount, gridX, gridY, gridZ);
   const { clusterCounts, clusterCursors, lightBounds, clusterDeltas } = binScratch;
-
-  clusterGrid.fill(0, 0, clusterCount * 2);
-  clusterCounts.fill(0, 0, clusterCount);
 
   let attemptedTotal = 0;
 
   runClusterBinProfilePhase(profile, 'light-bounds-and-occupancy', () => {
-    runClusterBinProfilePhase(profile, 'light-bounds-and-occupancy/light-aabb', () => {
-      for (let lightIdx = 0; lightIdx < lights.length; lightIdx++) {
-        const boundsOffset = lightIdx * 6;
-        lightBounds[boundsOffset] = -1;
-        const light = lights[lightIdx];
-        if (!light) continue;
-        // A no-cutoff source illuminates every visible cluster, including
-        // when the light itself is outside the camera frustum.
-        if (light.range === Number.POSITIVE_INFINITY) {
-          lightBounds[boundsOffset] = 0;
-          lightBounds[boundsOffset + 1] = 0;
-          lightBounds[boundsOffset + 2] = 0;
-          lightBounds[boundsOffset + 3] = gridX - 1;
-          lightBounds[boundsOffset + 4] = gridY - 1;
-          lightBounds[boundsOffset + 5] = gridZ - 1;
-          continue;
-        }
-        const radius = light.range;
-
-        if (radius <= 0) {
-          continue;
-        }
-
-        const aabb = clusterSpaceObjectAabb(
-          light.position,
-          radius,
-          view,
-          proj,
-          binScratch.aabbOutput,
-        );
-
-        const bounds = calculateSphereClusterBounds(
-          aabb,
-          gridX,
-          gridY,
-          gridZ,
-          near,
-          far,
-          binScratch.boundsOutput,
-        );
-        if (
-          bounds.min.x > bounds.max.x ||
-          bounds.min.y > bounds.max.y ||
-          bounds.min.z > bounds.max.z
-        ) {
-          continue;
-        }
-
-        lightBounds[boundsOffset] = bounds.min.x;
-        lightBounds[boundsOffset + 1] = bounds.min.y;
-        lightBounds[boundsOffset + 2] = bounds.min.z;
-        lightBounds[boundsOffset + 3] = bounds.max.x;
-        lightBounds[boundsOffset + 4] = bounds.max.y;
-        lightBounds[boundsOffset + 5] = bounds.max.z;
-      }
-    });
+    if (project !== undefined)
+      runClusterBinProfilePhase(profile, 'light-bounds-and-occupancy/light-aabb', project);
 
     runClusterBinProfilePhase(profile, 'light-bounds-and-occupancy/cluster-occupancy', () => {
       const diffX = gridX + 1;
@@ -1286,7 +1599,7 @@ export function bin(
         clusterDeltas[index] = (clusterDeltas[index] ?? 0) + delta;
       };
 
-      for (let lightIdx = 0; lightIdx < lights.length; lightIdx++) {
+      for (let lightIdx = 0; lightIdx < lightCount; lightIdx++) {
         const boundsOffset = lightIdx * 6;
         if ((lightBounds[boundsOffset] ?? -1) < 0) continue;
         const minX = lightBounds[boundsOffset] ?? 0;
@@ -1307,23 +1620,21 @@ export function bin(
         addDifference(minX, endY, endZ, 1);
         addDifference(endX, endY, endZ, -1);
       }
-      for (let cz = 0; cz < gridZ; cz++) {
-        for (let cy = 0; cy < gridY; cy++) {
-          for (let cx = 0; cx < gridX; cx++) {
-            const diffIdx = cz * diffRow + cy * diffX + cx;
-            let count = clusterDeltas[diffIdx] ?? 0;
-            if (cx > 0) count += clusterDeltas[diffIdx - 1] ?? 0;
-            if (cy > 0) count += clusterDeltas[diffIdx - diffX] ?? 0;
-            if (cz > 0) count += clusterDeltas[diffIdx - diffRow] ?? 0;
-            if (cx > 0 && cy > 0) count -= clusterDeltas[diffIdx - diffX - 1] ?? 0;
-            if (cx > 0 && cz > 0) count -= clusterDeltas[diffIdx - diffRow - 1] ?? 0;
-            if (cy > 0 && cz > 0) count -= clusterDeltas[diffIdx - diffRow - diffX] ?? 0;
-            if (cx > 0 && cy > 0 && cz > 0) {
-              count += clusterDeltas[diffIdx - diffRow - diffX - 1] ?? 0;
-            }
-            clusterDeltas[diffIdx] = count;
-            const clusterIdx = cz * gridY * gridX + cy * gridX + cx;
-            clusterCounts[clusterIdx] = count;
+      // Sum raw X differences along this row. The previous Y and Z faces
+      // already contain their full prefix; subtract their intersection once.
+      let cell = 0;
+      for (let z = 0; z < gridZ; z++) {
+        for (let y = 0; y < gridY; y++) {
+          let index = z * diffRow + y * diffX;
+          let rowSum = 0;
+          for (let x = 0; x < gridX; x++, index++, cell++) {
+            rowSum += clusterDeltas[index] ?? 0;
+            let count = rowSum;
+            if (y > 0) count += clusterDeltas[index - diffX] ?? 0;
+            if (z > 0) count += clusterDeltas[index - diffRow] ?? 0;
+            if (y > 0 && z > 0) count -= clusterDeltas[index - diffRow - diffX] ?? 0;
+            clusterDeltas[index] = count;
+            clusterCounts[cell] = count;
             attemptedTotal += count;
           }
         }
@@ -1341,6 +1652,7 @@ export function bin(
   // one JavaScript array per cluster.
   const writeCount = runClusterBinProfilePhase(profile, 'cluster-reserve', () => {
     let reserved = 0;
+    let occupied = 0;
     for (let ci = 0; ci < clusterCount; ci++) {
       const base = ci * 2;
       const count =
@@ -1349,83 +1661,55 @@ export function bin(
       clusterGrid[base + 1] = count;
       clusterCursors[ci] = reserved;
       reserved += count;
-      // The capped writer reads cluster ends from the counts it no longer needs.
-      if (capK !== undefined) clusterCounts[ci] = reserved;
+      if (count > 0) occupied++;
     }
+    binScratch.occupiedClusterCount = occupied;
     return reserved;
   });
   binScratch.clusterEntryCapK = capK;
   binScratch.droppedClusterEntries = attemptedTotal - writeCount;
 
-  if (capK !== undefined && options.writeMembership !== false) {
-    runClusterBinProfilePhase(profile, 'light-index-write', () => {
-      for (let lightIdx = 0; lightIdx < lights.length; lightIdx++) {
-        const at = lightIdx * 6;
-        if ((lightBounds[at] ?? -1) < 0) continue;
-        writeCappedClusterLight(
-          lightIdx,
-          lightBounds,
-          at,
-          gridX,
-          gridY,
-          clusterCursors,
-          clusterCounts,
-          lightIndexList,
-        );
-      }
-    });
-    return ok(writeCount);
-  }
-
-  if (options.writeMembership !== false && profile === undefined) {
-    writeClusterMembership(
-      lights.length,
-      lightBounds,
-      gridX,
-      gridY,
-      clusterCursors,
-      lightIndexList,
+  if (capK !== undefined && lightIndexList !== undefined) {
+    runClusterBinProfilePhase(profile, 'light-index-write', () =>
+      writeCappedClusterMembership(
+        lightCount,
+        lightBounds,
+        gridX,
+        gridY,
+        gridZ,
+        clusterGrid,
+        clusterCursors,
+        lightIndexList,
+        clusterDeltas,
+      ),
     );
-  } else if (options.writeMembership !== false) {
+    return writeCount;
+  }
+
+  if (lightIndexList !== undefined && profile === undefined) {
+    writeClusterMembership(lightCount, lightBounds, gridX, gridY, clusterCursors, lightIndexList);
+  } else if (lightIndexList !== undefined) {
     runClusterBinProfilePhase(profile, 'light-index-write', () => {
-      for (let lightIdx = 0; lightIdx < lights.length; lightIdx++) {
-        const boundsOffset = lightIdx * 6;
-        let valid = false;
-        let minX = 0;
-        let minY = 0;
-        let minZ = 0;
-        let maxX = -1;
-        let maxY = -1;
-        let maxZ = -1;
-        runClusterBinProfilePhase(profile, 'light-index-write/bounds-read', () => {
-          if ((lightBounds[boundsOffset] ?? -1) < 0) return;
-          valid = true;
-          minX = lightBounds[boundsOffset] ?? 0;
-          minY = lightBounds[boundsOffset + 1] ?? 0;
-          minZ = lightBounds[boundsOffset + 2] ?? 0;
-          maxX = lightBounds[boundsOffset + 3] ?? -1;
-          maxY = lightBounds[boundsOffset + 4] ?? -1;
-          maxZ = lightBounds[boundsOffset + 5] ?? -1;
-        });
-        if (!valid) continue;
-        runClusterBinProfilePhase(profile, 'light-index-write/cluster-write', () => {
-          writeClusterLight(
-            lightIdx,
-            minX,
-            minY,
-            minZ,
-            maxX,
-            maxY,
-            maxZ,
-            gridX,
-            gridY,
-            clusterCursors,
-            lightIndexList,
+      let end = 0;
+      for (let light = 0; light < lightCount; light = end) {
+        end = runClusterBinProfilePhase(profile, 'light-index-write/bounds-read', () =>
+          endOfLightBoxRun(lightBounds, light, lightCount),
+        );
+        if ((lightBounds[light * 6] ?? -1) >= 0)
+          runClusterBinProfilePhase(profile, 'light-index-write/cluster-write', () =>
+            writeClusterBoxRun(
+              light,
+              end,
+              lightBounds,
+              gridX,
+              gridY,
+              clusterCursors,
+              lightIndexList,
+            ),
           );
-        });
       }
     });
   }
 
-  return ok(writeCount);
+  return writeCount;
 }

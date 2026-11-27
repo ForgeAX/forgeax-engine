@@ -43,7 +43,6 @@ const files = [
   'src/field-guids.ts',
   'src/field-scene.ts',
   'assets/fields.pack.ts',
-  'assets/field-effects.pack.json',
   'assets/fields-on.vfx.wgsl',
   'assets/fields-off.vfx.wgsl',
   'assets/fields-boundary-on.vfx.wgsl',

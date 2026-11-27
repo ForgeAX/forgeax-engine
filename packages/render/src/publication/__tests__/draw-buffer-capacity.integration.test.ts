@@ -17,7 +17,10 @@ import * as folds from '../../record/fold-buckets';
 import { createRenderPublisher } from '../publisher';
 import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
-it('submits 50k shared GPU main and shadow candidates with one material slot', async () => {
+it.each([
+  false,
+  true,
+])('submits 50k shared GPU main and shadow candidates with one material slot (retained bundles %s)', async (retainIndirectBundles) => {
   // The real Render Worker publication path admits 50k Mesh consumers.
   // RhiNull observes preparation, physical allocations and encoded submissions;
   // pixel/shader execution remains covered by the Dawn and browser suites.
@@ -62,6 +65,31 @@ it('submits 50k shared GPU main and shadow candidates with one material slot', a
     errors.push(error);
     fire.call(this, error);
   });
+  const directCascades = new Set<string>();
+  const createEncoder = RhiNullDevice.prototype.createCommandEncoder;
+  vi.spyOn(RhiNullDevice.prototype, 'createCommandEncoder').mockImplementation(function (
+    this: RhiNullDevice,
+    ...args
+  ) {
+    const result = createEncoder.apply(this, args);
+    if (result.ok) {
+      const encoder = result.value;
+      const begin = encoder.beginRenderPass.bind(encoder);
+      vi.spyOn(encoder, 'beginRenderPass').mockImplementation((descriptor) => {
+        const pass = begin(descriptor);
+        const name = descriptor.label;
+        if (name !== undefined && /^shadowCascade[0-3]$/.test(name)) {
+          const draw = pass.drawIndexedIndirect.bind(pass);
+          pass.drawIndexedIndirect = (...params) => {
+            directCascades.add(name);
+            draw(...params);
+          };
+        }
+        return pass;
+      });
+    }
+    return result;
+  });
   const identity = { source: 'published-draw-capacity', epoch: 1 };
   const renderer = await createRenderer(
     {
@@ -71,7 +99,7 @@ it('submits 50k shared GPU main and shadow candidates with one material slot', a
       addEventListener() {},
       removeEventListener() {},
     } as unknown as HTMLCanvasElement,
-    { rhi, publicationSource: identity },
+    { rhi, publicationSource: identity, retainIndirectBundles },
     { shaderManifestUrl: renderLifecycleManifestUrl() },
   );
   const assets = new AssetRegistry({
@@ -169,8 +197,16 @@ it('submits 50k shared GPU main and shadow candidates with one material slot', a
     expect(shadows).toHaveLength(4);
     for (const view of shadows) {
       expect(view).toMatchObject({ candidateCount: 50000, batchCount: 1 });
-      expect(view.shadowBundles?.commands).toBeGreaterThan(0);
+      if (retainIndirectBundles) expect(view.shadowBundles?.commands).toBeGreaterThan(0);
+      else expect(view.shadowBundles).toBeUndefined();
     }
+    if (!retainIndirectBundles)
+      expect([...directCascades].sort()).toEqual([
+        'shadowCascade0',
+        'shadowCascade1',
+        'shadowCascade2',
+        'shadowCascade3',
+      ]);
     expect(gpuScene.inspect().tables.instance.capacity).toBeGreaterThanOrEqual(50000);
     expect(gpuScene.inspect().tables.material.bytes).toBeLessThanOrEqual(4096);
     expect(

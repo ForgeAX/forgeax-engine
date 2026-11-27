@@ -15,6 +15,8 @@ import {
   collectSdkRepairReports,
   SDK_NPM_PARTITIONS,
   SDK_PR_CONSUMERS,
+  sdkPrArchiveProfile,
+  sdkPrConsumerMatrix,
   writeSeedChecksums,
 } from '../sdk-pr-preflight.mjs';
 
@@ -40,6 +42,149 @@ const reports = [
     group,
   })),
 ];
+
+test('the SDK only selects compact archive verification for known internal source and reference docs', () => {
+  const file = (filename, status = 'modified') => ({ filename, status });
+  const internal = file('packages/render/src/renderer.ts');
+  const docs = file('skills/forgeax-engine-sdk/SKILL.md');
+  const archiveInput = file('scripts/forgeax/sdk-source.mjs');
+  assert.equal(sdkPrArchiveProfile({ files: [internal, docs] }), 'pr-consumer');
+  assert.equal(
+    sdkPrArchiveProfile({ files: [file('packages/render/src/mesh/__tests__/mesh.dawn.test.ts')] }),
+    'pr-consumer',
+  );
+  assert.equal(
+    sdkPrArchiveProfile({ files: [file('packages/devkit/src/workspace-provider.ts')] }),
+    'pr-consumer',
+  );
+  assert.equal(
+    sdkPrArchiveProfile({ files: [file('packages/devkit/src/build/bundler.ts')] }),
+    'pr-expanded',
+  );
+  assert.equal(
+    sdkPrArchiveProfile({ files: [file('packages/render/src/index.ts')] }),
+    'pr-expanded',
+  );
+  assert.equal(sdkPrArchiveProfile({ files: [{ ...internal, status: 'added' }] }), 'pr-expanded');
+  assert.equal(sdkPrArchiveProfile({ files: [internal, archiveInput] }), 'pr-expanded');
+  assert.equal(
+    sdkPrArchiveProfile({ files: [file('packages/render/package.json')] }),
+    'pr-expanded',
+  );
+  assert.equal(
+    sdkPrArchiveProfile({ files: [file('templates/game-3d/forge.json')] }),
+    'pr-expanded',
+  );
+  assert.equal(
+    sdkPrArchiveProfile({
+      files: [{ ...internal, status: 'renamed', previous_filename: archiveInput.filename }],
+    }),
+    'pr-expanded',
+  );
+  assert.equal(sdkPrArchiveProfile({ files: Array(300).fill(internal) }), 'pr-expanded');
+  assert.equal(sdkPrArchiveProfile(undefined), 'pr-expanded');
+});
+
+const compactNpm = {
+  ...identity,
+  group: 'npm',
+  partition: 'game3d',
+  workloads: ['game3d-installed'],
+  packageCount: 69,
+};
+const archiveProject = reports.find(({ group }) => group === 'project');
+
+test('the SDK requires an expanded receipt on the expanded route', () => {
+  const results = (profile) => reports.map((r) => (r.group === 'npm' ? r : { ...r, profile }));
+  assert.throws(
+    () => aggregateSdkConsumers(results('pr-consumer'), head, version, undefined, 'pr-expanded'),
+    /sdk-pr-archive-profile-evidence/,
+  );
+  assert.equal(
+    aggregateSdkConsumers(
+      [compactNpm, { ...archiveProject, profile: 'pr-expanded' }],
+      head,
+      version,
+      undefined,
+      'pr-consumer',
+    ).archiveProfile,
+    'pr-consumer',
+  );
+});
+
+test('compact SDK conserves real archive and installed Game 3D consumers', () => {
+  const compact = [
+    compactNpm,
+    { ...archiveProject, profile: 'pr-consumer', previewBrowser: { readyFrames: 60 } },
+  ];
+  assert.deepEqual(sdkPrConsumerMatrix('pr-consumer').include, [
+    { group: 'project' },
+    { group: 'npm', partition: 'game3d' },
+  ]);
+  assert.deepEqual(
+    sdkPrConsumerMatrix('pr-expanded').include.map(({ group }) => group),
+    ['project', 'source', 'npm', 'npm'],
+  );
+  assert.deepEqual(aggregateSdkConsumers(compact, head, version, undefined, 'pr-consumer').groups, [
+    'npm',
+    'project',
+  ]);
+  const incomplete = compact.map((report) =>
+    report.group === 'project' ? { ...report, previewBrowser: { readyFrames: 59 } } : report,
+  );
+  assert.throws(
+    () => aggregateSdkConsumers(incomplete, head, version, undefined, 'pr-consumer'),
+    /sdk-pr-compact-preview-evidence/,
+  );
+  assert.throws(
+    () => aggregateSdkConsumers(compact, head, version, undefined, 'pr-expanded'),
+    /sdk-pr-archive-profile-evidence/,
+  );
+  assert.throws(
+    () =>
+      aggregateSdkConsumers(
+        [...compact, { ...reports.at(-1), profile: 'pr-expanded' }],
+        head,
+        version,
+        undefined,
+        'pr-consumer',
+      ),
+    /sdk-pr-consumer-conservation/,
+  );
+});
+
+test('compact ZIP preview counts distinct ready completions for its current canvas', () => {
+  const source = readFileSync('scripts/forgeax/verify-sdk.mjs', 'utf8');
+  const observer = source.slice(
+    source.indexOf('  function observeCompactPreviewFrames('),
+    source.indexOf('  async function launchSelectedBrowser('),
+  );
+  const retired = {};
+  let canvas = retired;
+  let listener;
+  const sandbox = {
+    document: { getElementById: (id) => (id === 'app' ? canvas : null) },
+    window: {
+      addEventListener: (name, callback, options) => {
+        assert.equal(name, 'forgeax:frame-completed');
+        assert.equal(options.capture, true);
+        listener = callback;
+      },
+    },
+  };
+  runInNewContext(`${observer}\nobserveCompactPreviewFrames();`, sandbox);
+  const complete = (target, frameId, presentation = 'ready') =>
+    listener({ target, detail: { frameId, presentation } });
+  complete(retired, 30);
+  canvas = {};
+  complete(retired, 31);
+  complete(canvas, 32, 'pending');
+  complete(canvas, 33);
+  complete(canvas, 33);
+  complete(canvas, 34);
+  assert.deepEqual([...sandbox.__forgeaxSdkPreviewFrames.get(retired)], [30]);
+  assert.deepEqual([...sandbox.__forgeaxSdkPreviewFrames.get(canvas)], [33, 34]);
+});
 
 test('SDK source guards run after the locked workspace dependencies are installed', () => {
   const workflow = parse(
@@ -459,8 +604,8 @@ test('archive group selection is explicit while release qualification retains th
     resolve(import.meta.dirname, '../../../.github/workflows/sdk-pr-preflight.yml'),
     'utf8',
   );
-  assert.match(workflow, /--group.*matrix.group.*--profile core/);
-  assert.match(source, /deferredValidation:\s*profile === 'core'/);
+  assert.match(workflow, /--group.*matrix.group.*--profile "\$SDK_ARCHIVE_PROFILE"/);
+  assert.match(source, /deferredValidation: \[[\s\S]*cold-source-view-diagnostics/);
   assert.match(
     source,
     /if\s*\(selected\('source'\)\)\s*\{\s*await sdkStage\('buildSourceSnapshot'/,
@@ -473,7 +618,7 @@ test('archive group selection is explicit while release qualification retains th
   const publicSource = source.slice(
     source.indexOf("if (selected('source'))"),
     source.indexOf(
-      "if (selected('project'))",
+      'const ownsIndependentRun =',
       source.indexOf("await sdkGpuStage('verifyPublicSourceViewTool'"),
     ),
   );
@@ -481,7 +626,7 @@ test('archive group selection is explicit while release qualification retains th
   assert.match(publicSource, /verifyPublicSourceViewTool/);
   const installed = source.slice(
     source.indexOf(
-      "if (selected('project'))",
+      'const ownsIndependentRun =',
       source.indexOf("await sdkGpuStage('verifyPublicSourceViewTool'"),
     ),
   );
@@ -505,6 +650,7 @@ test('public source preparation completes before consumers start and is absent f
   for (const [group, profile] of [
     ['source', 'full'],
     ['source', 'core'],
+    ['source', 'pr-consumer'],
     ['project', 'core'],
   ]) {
     const commands = [];
@@ -549,8 +695,9 @@ test('public source preparation completes before consumers start and is absent f
         ? [
             ['install', '--frozen-lockfile', '--ignore-scripts'],
             ['source-edit'],
-            ['scripts/clean-build-outputs.mjs'],
-            ['build:engine'],
+            ...(profile === 'pr-consumer'
+              ? []
+              : [['scripts/clean-build-outputs.mjs'], ['build:engine']]),
             ...(profile === 'full' ? [['build:tools']] : []),
           ]
         : [],
@@ -562,10 +709,13 @@ test('public source preparation completes before consumers start and is absent f
   }
 });
 
-test('public source View consumes the independently rebuilt source manifest', async () => {
+test('public source View uses the independently rebuilt Engine packages', async () => {
   const source = readFileSync(resolve(import.meta.dirname, '../verify-sdk.mjs'), 'utf8');
   const start = source.indexOf("await sdkGpuStage('verifyPublicSourceViewTool'");
-  const body = source.slice(start, source.indexOf("\n  }\n}\n\nif (selected('project'))", start));
+  const body = source.slice(
+    start,
+    source.indexOf('\n  }\n}\n\n// PRs prove a real clean source template launch', start),
+  );
   const execute = new (Object.getPrototypeOf(async () => {}).constructor)(
     'context',
     `const { sdkGpuStage, execFileAsync, process, resolve, dirname, sourceRoot,
@@ -588,18 +738,15 @@ test('public source View consumes the independently rebuilt source manifest', as
   assert.equal(options.backendEvidenceDirectory, resolve('/sealed/view-source/backend'));
   assert.equal(options.env.EXISTING_SOURCE_OPTION, 'retained');
   assert.equal(options.env.FORGEAX_VIEW_ENGINE_SOURCE_ROOT, '/fresh-source');
-  assert.equal(
-    options.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
-    resolve('/fresh-source/shared-build-inputs/manifest.json'),
-  );
+  assert.equal(options.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST, undefined);
 });
 
-test('archive project owns independent runs and installed View while source keeps separate inputs', async () => {
+test('expanded PR keeps installed View and reserves independent CLI runs for release', async () => {
   const source = readFileSync(resolve(import.meta.dirname, '../verify-sdk.mjs'), 'utf8');
   const body = source
     .slice(
       source.indexOf(
-        "if (selected('project'))",
+        'const ownsIndependentRun =',
         source.indexOf("await sdkGpuStage('verifyPublicSourceViewTool'"),
       ),
       source.indexOf("\nawait sdkStage('verifyImmutableSdkStore'"),
@@ -623,13 +770,21 @@ test('archive project owns independent runs and installed View while source keep
     'project',
     'projectEvidence',
     'verifySdkModeling',
+    'expandedArchive',
+    'prPreflight',
     body,
   );
   const observed = {};
   const independentCommands = [];
   const viewSourceRoots = [];
   const modelingProbes = [];
-  for (const group of ['project', 'source', 'all']) {
+  for (const [group, prPreflight] of [
+    ['project', false],
+    ['source', false],
+    ['all', false],
+    ['project', true],
+    ['source', true],
+  ]) {
     const stages = [];
     await execute(
       group,
@@ -647,7 +802,7 @@ test('archive project owns independent runs and installed View while source keep
           viewSourceRoots.push({ group, root: options.env.FORGEAX_VIEW_ENGINE_SOURCE_ROOT });
         if (args[0].endsWith('verify-independent-run.mjs'))
           independentCommands.push({
-            group,
+            group: prPreflight ? `pr-${group}` : group,
             executable,
             engine: options.env.FORGEAX_INDEPENDENT_ENGINE_PACKAGE,
           });
@@ -665,10 +820,17 @@ test('archive project owns independent runs and installed View while source keep
       '/project',
       {},
       async ({ sdkRoot, project, evidenceRoot }) => {
-        modelingProbes.push({ group, sdkRoot, project, evidenceRoot });
+        modelingProbes.push({
+          group: prPreflight ? `pr-${group}` : group,
+          sdkRoot,
+          project,
+          evidenceRoot,
+        });
       },
+      true,
+      prPreflight,
     );
-    observed[group] = stages;
+    observed[prPreflight ? `pr-${group}` : group] = stages;
   }
   assert.deepEqual(observed, {
     project: [
@@ -678,6 +840,11 @@ test('archive project owns independent runs and installed View while source keep
       ...(process.platform === 'linux' ? ['verifyInstalledModelingCli'] : []),
     ],
     source: [],
+    'pr-project': [
+      'verifyInstalledViewRuntime',
+      ...(process.platform === 'linux' ? ['verifyInstalledModelingCli'] : []),
+    ],
+    'pr-source': [],
     all: [
       'verifyIndependentRun',
       'verifyPairedViewTool',
@@ -688,7 +855,7 @@ test('archive project owns independent runs and installed View while source keep
   assert.deepEqual(
     modelingProbes,
     process.platform === 'linux'
-      ? ['project', 'all'].map((group) => ({
+      ? ['project', 'all', 'pr-project'].map((group) => ({
           group,
           sdkRoot: '/sdk',
           project: '/project',
@@ -1175,4 +1342,30 @@ test('SDK seed runs source-export regressions after its one prepared workspace i
   ])
     assert.ok(steps[verify].run.includes(`${testFile}.test.mjs`), testFile);
   assert.ok(steps[verify].run.includes('prepare-source-checkout.test.mjs'));
+});
+
+test('SDK consumer failure preserves validation logs and reports cleanup stages', () => {
+  const workflow = parse(readFileSync('.github/workflows/sdk-pr-preflight.yml', 'utf8'));
+  const job = workflow.jobs.consumers;
+  const evidence = job.steps.find((step) => step.name === 'Preserve SDK consumer evidence');
+  const expression = evidence.if.replace('steps.ci-repair.outputs.reused', 'reused');
+  for (const [reused, failed, cancelled, expected] of [
+    ['false', false, true, false],
+    ['false', true, false, true],
+    ['false', false, false, false],
+    ['true', false, true, false],
+  ])
+    assert.equal(
+      runInNewContext(expression, { reused, failure: () => failed, cancelled: () => cancelled }),
+      expected,
+    );
+  assert.equal(evidence.with['retention-days'], 3);
+  const command = job.steps.find((step) =>
+    step.name?.startsWith('Install Engine and SDK through the exact PR consumer route'),
+  );
+  assert.match(command.run, /> artifacts\/sdk\/npm-consumer\.log/);
+  assert.equal(job['timeout-minutes'], "${{ matrix.group == 'source' && 40 || 30 }}");
+  const source = readFileSync('scripts/forgeax/check-sdk-npm-consumer.mjs', 'utf8');
+  assert.match(source, /sdkStage\(\s*'cleanup npm consumer files'/);
+  assert.match(source, /sdkStage\(\s*'close npm consumer registry'/);
 });

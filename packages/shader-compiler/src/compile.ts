@@ -1,5 +1,5 @@
 import { fnv1aUtf16, stripWgslComments } from '@forgeax/engine-types';
-import { projectShaderConditionals } from './conditionals.js';
+import { projectShaderConditionals, shaderDirectiveLines } from './conditionals.js';
 // @forgeax/engine-shader-compiler — compileShader implementation.
 //
 // Top-level surface (charter proposition 1 progressive disclosure / proposition 5 consistent abstraction):
@@ -113,6 +113,8 @@ export interface CompileOptions {
    * hasDynamicOffset:true.
    */
   readonly dynamicOffsets?: readonly { readonly group: number; readonly binding: number }[];
+  /** Opt-in, versioned facts for typed values in each entry's reachable helper closure. */
+  readonly valueMemberReads?: 'shader-value-member-reads/1';
 }
 
 /** Success-branch value of `compileShader`. */
@@ -198,27 +200,26 @@ export function reachableShaderImportIds(
   imports: Readonly<Record<string, string>>,
   defines: Readonly<Record<string, boolean>> = {},
 ): Set<string> {
-  return collectReachableImports(source, imports, (moduleSource) =>
-    specializeConditionalDefines(moduleSource, defines),
+  return collectReachableImports(shaderDirectiveLines(source), imports, (_moduleId, body) =>
+    shaderDirectiveLines(specializeConditionalDefines(body, defines)),
   );
 }
 
 function collectReachableImports(
-  source: string,
+  entryDirectives: readonly string[],
   imports: Readonly<Record<string, string>>,
-  projectModule: (source: string) => string,
+  readDirectives: (moduleId: string, source: string) => readonly string[],
 ): Set<string> {
   const known = new Set(Object.keys(imports));
   const reachable = new Set<string>();
-  const pending = extractImports(source, known);
+  const pending = extractImports(entryDirectives, known);
   while (pending.length > 0) {
     const moduleId = pending.shift();
     if (moduleId === undefined || reachable.has(moduleId)) continue;
     reachable.add(moduleId);
     const moduleSource = imports[moduleId];
     if (moduleSource === undefined) continue;
-    const specialized = projectModule(moduleSource);
-    pending.push(...extractImports(specialized, known));
+    pending.push(...extractImports(readDirectives(moduleId, moduleSource), known));
   }
   return reachable;
 }
@@ -229,7 +230,7 @@ export function shaderImportClosure(
 ): Record<string, string> {
   const known = new Set(Object.keys(imports));
   const selected: Record<string, string> = Object.create(null);
-  const pending = extractImports(source, known);
+  const pending = extractImports(shaderDirectiveLines(source), known);
   const visited = new Set<string>();
   for (let index = 0; index < pending.length; index++) {
     const module = pending[index];
@@ -238,7 +239,7 @@ export function shaderImportClosure(
     const body = imports[module];
     if (body === undefined) continue;
     selected[module] = body;
-    pending.push(...extractImports(body, known));
+    pending.push(...extractImports(shaderDirectiveLines(body), known));
   }
   return selected;
 }
@@ -347,6 +348,35 @@ interface ShaderCompositionInputs {
   readonly fromModuleId: string;
 }
 
+/** Entry-local defines and vertex coverage determine the shared import projection. */
+function projectCompositionEntry(
+  entrySource: string,
+  defines: Readonly<Record<string, boolean>>,
+  requestedVertexColor: boolean,
+) {
+  const entrySourceWithoutPragmas = stripPragmas(entrySource);
+  const originalDirectives = shaderDirectiveLines(entrySourceWithoutPragmas);
+  const entrySourceDefines = extractEntryBooleanDefines(originalDirectives);
+  const vertexProjection = resolveOmittedVertexColorBranch(
+    entrySourceWithoutPragmas,
+    requestedVertexColor,
+  );
+  const sourceForProjection =
+    vertexProjection === entrySourceWithoutPragmas
+      ? vertexProjection
+      : preserveEntryDefineMetadata(originalDirectives, vertexProjection);
+  const effectiveDefines = { ...defines, ...entrySourceDefines };
+  const source = hoistWgslEnables(
+    specializeConditionalDefines(sourceForProjection, effectiveDefines),
+  );
+  return {
+    source,
+    directives:
+      source === entrySourceWithoutPragmas ? originalDirectives : shaderDirectiveLines(source),
+    effectiveDefines,
+  };
+}
+
 function prepareShaderComposition(
   rawSource: string,
   options: CompileOptions,
@@ -408,16 +438,11 @@ function prepareShaderComposition(
     entryImports = lowered.value.imports;
   }
   const defines = { ...(options.defines ?? {}) };
-  const entrySourceWithoutPragmas = stripPragmas(entrySource);
-  const entrySourceDefines = extractEntryBooleanDefines(entrySourceWithoutPragmas);
-  const sourceForProjection = preserveEntryDefineMetadata(
-    entrySourceWithoutPragmas,
-    resolveOmittedVertexColorBranch(entrySourceWithoutPragmas, requestedVertexColor),
-  );
-  const effectiveDefines = { ...defines, ...entrySourceDefines };
-  const source = hoistWgslEnables(
-    specializeConditionalDefines(sourceForProjection, effectiveDefines),
-  );
+  const {
+    source,
+    directives: entryDirectives,
+    effectiveDefines,
+  } = projectCompositionEntry(entrySource, defines, requestedVertexColor);
   const imports = entryImports;
   delete defines.VERTEX_COLOR_AVAILABLE;
   if (requestedVertexColor) defines.VERTEX_COLOR_AVAILABLE = true;
@@ -427,12 +452,18 @@ function prepareShaderComposition(
       stripPragmas(specializeConditionalDefines(moduleSource, effectiveDefines)),
     ]),
   );
-  // Admission and composition share this invocation's projected module bytes.
-  // Reachability must not project the same sources a second time.
+  // Reachability, cycle and diagnostic checks read one lexical snapshot of
+  // the actual projected modules, including import declarations Naga will skip.
+  const importDirectives = Object.fromEntries(
+    Object.entries(specializedImports).map(([moduleId, body]) => [
+      moduleId,
+      shaderDirectiveLines(body),
+    ]),
+  );
   const reachable = collectReachableImports(
-    source,
+    entryDirectives,
     specializedImports,
-    (moduleSource) => moduleSource,
+    (moduleId) => importDirectives[moduleId] ?? [],
   );
   const compositionImports = Object.fromEntries(
     [...reachable].flatMap((moduleId) => {
@@ -442,11 +473,10 @@ function prepareShaderComposition(
   );
   const fromModuleId = options.id ?? `<anonymous-entry-${computeHash(source)}>`;
 
+  const directives = { [fromModuleId]: entryDirectives, ...importDirectives };
+
   // Stage 0a: non-boolean #define value pre-scan (D-05 OOS-1).
-  const nonBooleanErr = findNonBooleanDefine({
-    [fromModuleId]: source,
-    ...specializedImports,
-  });
+  const nonBooleanErr = findNonBooleanDefine(directives);
   if (nonBooleanErr !== null) {
     return err(
       compileFailed({
@@ -457,10 +487,7 @@ function prepareShaderComposition(
   }
 
   // Stage 0b: #define conflict pre-scan (D-07).
-  const conflicts = scanDefineConflicts({
-    [fromModuleId]: source,
-    ...specializedImports,
-  });
+  const conflicts = scanDefineConflicts(directives);
   if (conflicts.length > 0) {
     const first = conflicts[0];
     if (first !== undefined) {
@@ -478,7 +505,7 @@ function prepareShaderComposition(
   }
 
   // Stage 0c: cycle detection (D-04).
-  const graph = buildImportGraph(source, specializedImports, fromModuleId);
+  const graph = buildImportGraph(entryDirectives, importDirectives, fromModuleId);
   const cycle = detectCycle(graph);
   if (cycle !== null) {
     return err(
@@ -503,7 +530,7 @@ function prepareShaderComposition(
   // target module source exists but lacks a `#define_import_path <moduleId>`
   // header, surface the same shader-import-not-found code (the module cannot
   // bind under its declared id).
-  const importResolveErr = checkImportsResolvable(source, specializedImports, fromModuleId);
+  const importResolveErr = checkImportsResolvable(entryDirectives, importDirectives, fromModuleId);
   if (importResolveErr !== null) return err(importResolveErr);
 
   return ok({ source, compositionImports, defines, imports, specializedImports, fromModuleId });
@@ -545,7 +572,10 @@ export async function compileShaderWithComposition(
   return compiled.ok ? ok({ ...compiled.value, deps }) : compiled;
 }
 
-type ProgramOptions = Pick<CompileOptions, 'computeEntry' | 'renderEntries' | 'dynamicOffsets'>;
+type ProgramOptions = Pick<
+  CompileOptions,
+  'computeEntry' | 'renderEntries' | 'dynamicOffsets' | 'valueMemberReads'
+>;
 interface NativeProgram {
   readonly source: string;
   readonly module: ValidatedModule;
@@ -586,7 +616,7 @@ function prepareNativeProgram(
         }),
       );
     }
-    selectedSource = selected.source;
+    selectedSource = canonicalizePortableWgsl(selected.source);
   }
   const parsed = native.parse(selectedSource);
   if (!parsed.ok) return programFailure(parsed.error, 'parse');
@@ -616,6 +646,9 @@ function finishPreparedProgram(
   // Stage 4: emit_reflection.
   const optionsJson = JSON.stringify({
     dynamicOffsets: options.dynamicOffsets ?? [],
+    ...(options.valueMemberReads === undefined
+      ? {}
+      : { valueMemberReads: options.valueMemberReads }),
   });
   const reflectionResult = native.emitReflection(module, optionsJson);
   if (!reflectionResult.ok) {
@@ -754,6 +787,10 @@ export async function prepareShaderCompiler(): Promise<
   const native = await prepareNagaCompiler();
   if (!native.ok) return native;
   const compiler = native.value;
+  // Direct and scene-index programs can share their composed WGSL between
+  // Forward and Deferred. Keep just those two recent compositions and admit
+  // each requested render entry against the real module.
+  const recentRenderCompositions = new Map<string, string>();
   return ok({
     program: (source, options = {}) => compilePreparedProgram(source, options, compiler),
     compile: (source, options = {}) => {
@@ -762,6 +799,17 @@ export async function prepareShaderCompiler(): Promise<
       const input = prepared.value;
       const locate = () =>
         locatePreparedSyntaxError(input.source, input.specializedImports, compiler);
+      const compositionKey =
+        options.renderEntries === undefined || options.computeEntry !== undefined
+          ? undefined
+          : JSON.stringify([input.source, input.compositionImports, input.defines]);
+      if (compositionKey !== undefined) {
+        const reused = recentRenderCompositions.get(compositionKey);
+        if (reused !== undefined) {
+          const result = compilePreparedProgram(reused, options, compiler, locate);
+          return result.ok ? ok({ ...result.value, deps: Object.keys(input.imports) }) : result;
+        }
+      }
       let composedProgram: ReturnType<PreparedNagaCompiler['composeProgram']>;
       try {
         composedProgram = compiler.composeProgram(
@@ -802,6 +850,13 @@ export async function prepareShaderCompiler(): Promise<
         composedProgram.module.free();
         result = compilePreparedProgram(composed, options, compiler, locate);
       }
+      if (result.ok && compositionKey !== undefined) {
+        recentRenderCompositions.set(compositionKey, composed);
+        if (recentRenderCompositions.size > 2) {
+          const oldest = recentRenderCompositions.keys().next().value;
+          if (oldest !== undefined) recentRenderCompositions.delete(oldest);
+        }
+      }
       return result.ok ? ok({ ...result.value, deps: Object.keys(input.imports) }) : result;
     },
   });
@@ -809,32 +864,20 @@ export async function prepareShaderCompiler(): Promise<
 
 // === helpers ========================================================================
 
-/** Preserve directive lines exactly without allocating every ordinary WGSL body line. */
-function directiveLines(source: string): string[] {
-  return Array.from(stripWgslComments(source).matchAll(/(?:^|\n)([^\S\n]*#[^\n]*)/g), (match) => {
-    const line = match[1] ?? '';
-    // Match split(/\r?\n/): remove one CR only when it precedes an actual LF.
-    return line.endsWith('\r') && source[match.index + match[0].length] === '\n'
-      ? line.slice(0, -1)
-      : line;
-  });
-}
-
-function extractEntryBooleanDefines(source: string): Record<string, boolean> {
+function extractEntryBooleanDefines(directives: readonly string[]): Record<string, boolean> {
   const defines: Record<string, boolean> = {};
-  for (const line of directiveLines(source)) {
+  for (const line of directives) {
     const match = /^\s*#\s*define\s+([A-Za-z_]\w*)\s*$/.exec(line);
     if (match?.[1] !== undefined) defines[match[1]] = true;
   }
   return defines;
 }
 
-function preserveEntryDefineMetadata(original: string, projected: string): string {
-  const originalDefines = directiveLines(original).filter((line) =>
-    /^\s*#\s*define\s+\w+\b/.test(line),
-  );
+function preserveEntryDefineMetadata(original: readonly string[], projected: string): string {
+  const originalDefines = original.filter((line) => /^\s*#\s*define\s+\w+\b/.test(line));
+  if (originalDefines.length === 0) return projected;
   const projectedDefines = new Set(
-    directiveLines(projected)
+    shaderDirectiveLines(projected)
       .filter((line) => /^\s*#\s*define\s+\w+\b/.test(line))
       .map((line) => line.trim()),
   );
@@ -850,10 +893,10 @@ function preserveEntryDefineMetadata(original: string, projected: string): strin
  * Returns { moduleId, line } of the first offender, or null.
  */
 function findNonBooleanDefine(
-  modules: Record<string, string>,
+  modules: Readonly<Record<string, readonly string[]>>,
 ): { moduleId: string; line: string } | null {
-  for (const [moduleId, source] of Object.entries(modules)) {
-    for (const line of directiveLines(source)) {
+  for (const [moduleId, directives] of Object.entries(modules)) {
+    for (const line of directives) {
       const match = DEFINE_WITH_VALUE_RE.exec(line);
       if (match) {
         return { moduleId, line: line.trim() };
@@ -875,22 +918,22 @@ function findNonBooleanDefine(
  * scanned under its own moduleId so nested dependencies are traced.
  */
 function buildImportGraph(
-  entry: string,
-  imports: Record<string, string>,
+  entry: readonly string[],
+  imports: Readonly<Record<string, readonly string[]>>,
   fromModuleId: string,
 ): Record<string, string[]> {
   const modules = new Set([fromModuleId, ...Object.keys(imports)]);
   const graph: Record<string, string[]> = {};
   graph[fromModuleId] = extractImports(entry, modules);
-  for (const [moduleId, source] of Object.entries(imports)) {
-    graph[moduleId] = extractImports(source, modules);
+  for (const [moduleId, directives] of Object.entries(imports)) {
+    graph[moduleId] = extractImports(directives, modules);
   }
   return graph;
 }
 
-function extractImports(source: string, modules: ReadonlySet<string>): string[] {
+function extractImports(directives: readonly string[], modules: ReadonlySet<string>): string[] {
   const deps: string[] = [];
-  for (const line of directiveLines(source)) {
+  for (const line of directives) {
     const full = IMPORT_DIRECTIVE_RE.exec(line)?.[1];
     if (full === undefined) continue;
     const segments = full.split('::').filter((segment) => segment.length > 0);
@@ -938,18 +981,18 @@ function longestKnownModulePrefix(
  * #import chain resolves.
  */
 function checkImportsResolvable(
-  entry: string,
-  imports: Record<string, string>,
+  entry: readonly string[],
+  imports: Readonly<Record<string, readonly string[]>>,
   fromModuleId: string,
 ): ShaderError | null {
   // (b) every options.imports entry must declare its moduleId via
   //     #define_import_path; naga_oil throws on add otherwise. The same scan
   //     collects every path some companion module declares for (a).
   const declaredPaths = new Set<string>();
-  for (const [moduleId, src] of Object.entries(imports)) {
+  for (const [moduleId, directives] of Object.entries(imports)) {
     declaredPaths.add(moduleId);
     let hasHeader = false;
-    for (const line of directiveLines(src)) {
+    for (const line of directives) {
       const declared = DEFINE_IMPORT_PATH_RE.exec(line)?.[1];
       if (declared === undefined) continue;
       declaredPaths.add(declared);
@@ -966,12 +1009,12 @@ function checkImportsResolvable(
 
   // (a) walk every #import directive in entry + imports and verify the
   //     leading module segment resolves against declaredPaths.
-  const sources: [callerId: string, source: string][] = [
+  const sources: [callerId: string, directives: readonly string[]][] = [
     [fromModuleId, entry],
     ...Object.entries(imports),
   ];
-  for (const [callerId, source] of sources) {
-    for (const line of directiveLines(source)) {
+  for (const [callerId, directives] of sources) {
+    for (const line of directives) {
       const full = IMPORT_DIRECTIVE_RE.exec(line)?.[1];
       if (full === undefined) continue;
       const prefix = MODULE_ID_PREFIX_RE.exec(full)?.[1] ?? full;

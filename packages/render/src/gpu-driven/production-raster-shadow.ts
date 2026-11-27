@@ -1,5 +1,6 @@
-import type { BindGroup, Buffer, Result, RhiError } from '@forgeax/engine-rhi';
-import { ok } from '@forgeax/engine-rhi';
+import { vertexLayoutHasColor } from '@forgeax/engine-geometry';
+import type { BindGroup, Buffer, Result } from '@forgeax/engine-rhi';
+import { err, ok, RhiError } from '@forgeax/engine-rhi';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type { MaterialRenderState } from '@forgeax/engine-types';
 import type { MeshGpuHandles } from '../device/gpu-residency';
@@ -18,15 +19,42 @@ import { batchLevelStride, batchLodLevelCount } from './batch-layout';
 import type { GpuDrivenBatch, GpuDrivenBatchBinding, SubmissionPlan } from './batch-topology';
 import type { BatchExecutions } from './material-artifacts';
 import { PreparedRasterBundleCache } from './prepared-raster-bundle';
-import type { GpuDrivenShadowBatchProjection, ShadowViewRequest } from './production-raster';
+import type { ShadowViewRequest } from './production-raster';
 import type { MaterialAbiRasterAdapter } from './production-raster-material';
 import { type FilteredProductionPlan, sameMaterialArtifact } from './production-raster-prepare';
 import { type ShadowArtifactObservations, shadowMaterialKey } from './production-raster-support';
-import { ShadowSlotSelection } from './shadow-caster-classes';
+import {
+  restrictShadowCasterClasses,
+  type ShadowCasterClasses,
+  ShadowSlotSelection,
+} from './shadow-caster-classes';
 import { filteredRows, type ShadowProjectionDiffs } from './shadow-projection-diffs';
 import { publishReadonlyMap } from './shadow-projection-publication';
+import { staticShadowViewIdentity } from './shadow-view-identity';
 import type { ShadowViewStatePool } from './shadow-views';
+import { shadowViewHasStaticLayer } from './shadow-views';
 import type { GpuDrivenOcclusionCamera } from './view-gpu';
+
+export interface GpuDrivenShadowBatchProjection {
+  /** Batch-owned command closure; retained projection edits validate its physical inputs. */
+  readonly bundles: PreparedRasterBundleCache;
+  readonly mesh: MeshGpuHandles;
+  readonly meshContentEpoch: number;
+  readonly meshBindGroup: BindGroup;
+  /** One visible-segment window per LOD level command, in level order. */
+  readonly visibleBindGroups: readonly BindGroup[];
+  readonly deformation: 'rigid' | 'skin';
+  /** Actual producer-selected shadow-pass artifact for this batch. */
+  readonly shadowArtifact: MaterialShaderArtifact;
+  /** Pass entry points selected by the authored ShadowCaster dispatch. */
+  readonly shadowVertexEntry?: string;
+  readonly shadowFragmentEntry?: string;
+  readonly shadowRenderState?: MaterialRenderState;
+  /** Material snapshot used to assemble the receipt-owned alpha-mask BG. */
+  readonly material: MaterialSnapshot;
+  /** Geometry-owned COLOR_0 fact shared by main and shadow ABI variants. */
+  readonly vertexColorAvailable: boolean;
+}
 
 export type ShadowBatchProjections = ReadonlyMap<number, GpuDrivenShadowBatchProjection>;
 
@@ -103,7 +131,12 @@ interface ChannelSlots {
 }
 
 function admitsChannels(row: RenderSceneSlot | undefined, mask: number): boolean {
-  return row !== undefined && ((row.snapshot.shadowChannels ?? 0xffffffff) & mask) !== 0;
+  return (
+    row !== undefined &&
+    row.snapshot.shadowCaster !== false &&
+    row.snapshot.authorVisible !== false &&
+    (mask === 0xffffffff || ((row.snapshot.shadowChannels ?? 0xffffffff) & mask) !== 0)
+  );
 }
 
 /**
@@ -129,8 +162,14 @@ export class ShadowChannelSlots {
         })(),
       );
     } else {
-      for (const slot of changed)
-        slots = admitsChannels(source.slotAt(slot), mask) ? slots.with(slot) : slots.without(slot);
+      let edits: Map<number, boolean> | undefined;
+      for (const slot of changed) {
+        const admitted = admitsChannels(source.slotAt(slot), mask);
+        if (slots.has(slot) === admitted) continue;
+        edits ??= new Map();
+        edits.set(slot, admitted);
+      }
+      if (edits !== undefined) slots = slots.edit(edits);
     }
     this.#masks.set(mask, { scene, content, slots });
     return slots;
@@ -150,7 +189,7 @@ export function restrictShadowCasterChannels(
   pass: Pick<ShadowProjectionPass, 'scene' | 'shadowScene'>,
 ): ShadowViewRequest {
   const mask = requested.casterChannels ?? 0xffffffff;
-  if (mask === 0xffffffff) return requested;
+  if (mask === 0xffffffff && requested.staticLayer !== false) return requested;
   const slots = channels.select(mask, pass.scene, pass.shadowScene);
   const restriction = requested.candidatePrimitiveIndices;
   if (restriction === undefined) return { ...requested, candidatePrimitiveIndices: slots };
@@ -167,8 +206,29 @@ export function restrictShadowCasterChannels(
   return { ...requested, candidatePrimitiveIndices: new ShadowSlotSelection(slots, allowed) };
 }
 
+/** Shared pure layer selection; execution/depth publication stays with the ordinary pool. */
+export function shadowLayerRequests(
+  input: ShadowViewRequest,
+  classes: ShadowCasterClasses | undefined,
+) {
+  if (classes === undefined) return { final: input };
+  if (!shadowViewHasStaticLayer(input.identity)) return { final: input };
+  const selected = restrictShadowCasterClasses(classes, input.candidatePrimitiveIndices);
+  if (input.staticLayer === false)
+    return { final: { ...input, candidatePrimitiveIndices: selected.casterSlots } };
+  return {
+    static: {
+      ...input,
+      identity: staticShadowViewIdentity(input.identity),
+      candidatePrimitiveIndices: selected.staticSlots,
+      ignoredChangeSlots: classes.dynamicSlots,
+    },
+    final: { ...input, candidatePrimitiveIndices: selected.dynamicSlots },
+  };
+}
+
 export function preparedShadowRows(
-  pass: ShadowProjectionPass,
+  pass: Pick<ShadowProjectionPass, 'filtered' | 'preparedByBatch'>,
 ): ReadonlyMap<number, FilteredProductionPlan['batches'][number]> {
   pass.preparedByBatch ??= filteredRows(pass.filtered);
   return pass.preparedByBatch;
@@ -342,7 +402,7 @@ export function createShadowBatchProjection(
   batch: GpuDrivenBatch,
   facts: ShadowBatchFacts,
   visibleBuffer: Buffer,
-  previous: GpuDrivenShadowBatchProjection | undefined,
+  bundles: PreparedRasterBundleCache | undefined,
 ): Result<GpuDrivenShadowBatchProjection, RhiError> {
   const visibleBindGroups: BindGroup[] = [];
   const levelStride = batchLevelStride(batch);
@@ -357,7 +417,7 @@ export function createShadowBatchProjection(
   }
   const { shadowEntry, shadowRenderState } = facts;
   return ok({
-    bundles: previous?.bundles ?? new PreparedRasterBundleCache(),
+    bundles: bundles ?? new PreparedRasterBundleCache(),
     mesh: facts.mesh,
     meshContentEpoch: facts.meshContentEpoch,
     meshBindGroup: facts.meshBindGroup,
@@ -372,9 +432,7 @@ export function createShadowBatchProjection(
       ? {}
       : { shadowFragmentEntry: shadowEntry.fragmentEntry }),
     material: facts.material,
-    vertexColorAvailable: facts.mesh.layoutProjection.attributes.some(
-      (attribute) => attribute.key === 'color',
-    ),
+    vertexColorAvailable: vertexLayoutHasColor(facts.mesh.layoutProjection),
   });
 }
 
@@ -385,4 +443,70 @@ export function publishedShadowProjections(
 ): ShadowBatchProjections {
   if (projections === undefined && previous !== undefined) return previous;
   return publishReadonlyMap(projections ?? new Map());
+}
+
+/** One physical shadow recipe shared by ordinary projection and off-frame Source preparation. */
+export function captureShadowBatchFacts(
+  pass: Pick<
+    ShadowProjectionPass,
+    'filtered' | 'preparedByBatch' | 'executions' | 'materialRaster'
+  >,
+  batch: GpuDrivenBatch,
+  viewBindings: ShadowViewBindings,
+  skinRaster: MaterialAbiRasterAdapter | undefined,
+): Result<ShadowBatchFacts, RhiError> {
+  const prepared = preparedShadowRows(pass).get(batch.batchId);
+  if (prepared === undefined) {
+    return err(
+      new RhiError({
+        code: 'internal-error',
+        expected: `prepared shadow mesh batch ${batch.batchId}`,
+        hint: 'keep filtered shadow topology and per-view projection on one frame identity',
+      }),
+    );
+  }
+  const binding = batch.binding;
+  const execution = binding === undefined ? undefined : pass.executions.get(binding)?.shadow;
+  if (binding === undefined || execution?.route !== 'gpu') {
+    return err(
+      new RhiError({
+        code: 'internal-error',
+        expected: `accepted shared material execution for shadow batch ${batch.batchId}`,
+        hint: 'retain the same geometry binding and material frame through shadow projection',
+      }),
+    );
+  }
+  const deformation = batch.prepared?.identity.deformation ?? 'rigid';
+  const skin = deformation === 'skin';
+  const raster = skin ? skinRaster : pass.materialRaster;
+  const meshBindGroup = skin ? viewBindings.skinMeshBinding : viewBindings.meshBinding;
+  const shadowArtifact = execution.artifact;
+  if (
+    raster === undefined ||
+    meshBindGroup === undefined ||
+    prepared.artifact === undefined ||
+    shadowArtifact === undefined
+  ) {
+    return err(
+      new RhiError({
+        code: 'rhi-not-available',
+        expected: `${skin ? 'skinned ' : ''}selected shadow MaterialProgramAbi artifact`,
+        hint: 'publish a matching shadow-pass program before entering the capable shadow lane',
+      }),
+    );
+  }
+  return ok({
+    raster,
+    mesh: prepared.mesh,
+    meshContentEpoch: prepared.meshContentEpoch,
+    meshBindGroup,
+    deformation,
+    shadowArtifact,
+    shadowRenderState: reflectedRenderState(
+      execution.pass.renderState,
+      batch.key.reflected === true,
+    ),
+    shadowEntry: execution.pass,
+    material: execution.material,
+  });
 }

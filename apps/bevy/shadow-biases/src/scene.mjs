@@ -12,10 +12,14 @@
 import { createPlaneGeometry, createSphereGeometry } from '@forgeax/engine-geometry';
 import { quat } from '@forgeax/engine-math';
 import {
-  Camera, DirectionalLight, DirectionalShadowFilterValue, Materials, MeshFilter, MeshRenderer,
+  Camera, DEFAULT_STANDARD_PROFILE, DirectionalLight, DirectionalShadowFilterValue, Materials, MeshFilter, MeshRenderer,
   PointLight, PointLightShadow, perspective,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
+
+// The normal-bias controls demonstrate the receiver's material normal in Deferred lighting.
+/** @type {typeof DEFAULT_STANDARD_PROFILE} */
+export const SHADOW_BIAS_PROFILE = { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' };
 
 const SPAWN_PLANE_DEPTH = 300;
 const SPAWN_HEIGHT = 2;

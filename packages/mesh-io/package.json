@@ -32,12 +32,12 @@
     "@forgeax/engine-import": "workspace:*",
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-types": "workspace:*",
-    "three": "0.184.0",
+    "three": "0.187.0",
     "linkedom": "0.18.13",
     "@forgeax/engine-gltf": "workspace:*"
   },
   "devDependencies": {
-    "@types/three": "0.184.0",
+    "@types/three": "0.187.0",
     "@types/node": "^20.14.0",
     "@webgpu/types": "^0.1.74",
     "gltf-validator": "2.0.0-dev.3.10"

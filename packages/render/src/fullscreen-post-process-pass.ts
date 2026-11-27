@@ -17,6 +17,7 @@ import type {
   BindGroup,
   BindGroupLayout,
   Buffer,
+  RenderPipeline,
   RhiDevice,
   RhiError,
   RhiRenderPassEncoder,
@@ -26,7 +27,7 @@ import type {
 import { GPU_SHADER_STAGE_FRAGMENT } from './gpu-stage';
 import type { BglKind } from './pipeline-spec';
 import { buildBindGroupLayoutDescriptor, type PipelineSpec } from './pipeline-spec';
-import { bindGroupChainLeaf } from './record/mesh-ssbo';
+import { bindGroupChainLeaf, bindGroupChainLeaf6 } from './record/mesh-ssbo';
 import { GenerationalWeakMap } from './scene/generational-weak-map';
 
 // Default fullscreen-post spec stub. The dispatcher's 'fullscreen-post' arm
@@ -98,6 +99,8 @@ export interface PostProcessShaderEntry {
   readonly fragmentEntryPoint?: string | undefined;
   /** Explicit hardware-depth producer; ordinary image effects omit it. */
   readonly depthOutput?: GPUTextureFormat | undefined;
+  /** @internal Fixed reference 1 for the two fullscreen stencil-mask stages. */
+  readonly stencilMask?: 'write' | 'test';
   /**
    * Params UBO schema. When undefined, the generic shader has no uniform buffer
    * and the BGL degrades to 2 entries (texture@0 + sampler@1). When present, the
@@ -106,6 +109,8 @@ export interface PostProcessShaderEntry {
    * (texture@0 + sampler@1 + buffer@2). feat-20260621 M-A2 / D-2.
    */
   readonly params?: PostProcessParamsSchema | undefined;
+  /** @internal Frame-local uniform bytes supplied by the admitted Feature. */
+  readonly frameParams?: Uint8Array | undefined;
   /**
    * Graph resource keys this post-process reads (as input textures).
    * The primitive binds the first read as its input texture at @group(1)
@@ -167,6 +172,7 @@ interface PostProcessSignatureCapture {
   readonly stage: PostProcessShaderEntry['stage'];
   readonly fragmentEntryPoint: string | undefined;
   readonly depthOutput: GPUTextureFormat | undefined;
+  readonly stencilMask: PostProcessShaderEntry['stencilMask'];
   readonly params: PostProcessParamsSchema | undefined;
   readonly byteSize: number | undefined;
   readonly defaultValue: Uint8Array | undefined;
@@ -174,6 +180,7 @@ interface PostProcessSignatureCapture {
   readonly readKeys: readonly (string | undefined)[] | undefined;
   readonly readSampleTypes: readonly (PostProcessReadSampleType | undefined)[] | undefined;
   readonly readStrings: readonly boolean[] | undefined;
+  readonly readPrimary: readonly (true | undefined)[] | undefined;
   readonly usesView: boolean | undefined;
   readonly storageBindings: readonly number[] | undefined;
   readonly storageBindingValues: readonly number[] | undefined;
@@ -205,6 +212,7 @@ function sameSignatureInputs(
     entry.stage === captured.stage &&
     entry.fragmentEntryPoint === captured.fragmentEntryPoint &&
     entry.depthOutput === captured.depthOutput &&
+    entry.stencilMask === captured.stencilMask &&
     entry.usesView === captured.usesView &&
     entry.params === captured.params &&
     entry.reads === captured.reads &&
@@ -257,7 +265,8 @@ function sameRead(
   return (
     captured.readStrings?.[index] === false &&
     read?.key === key &&
-    read?.sampleType === captured.readSampleTypes?.[index]
+    read?.sampleType === captured.readSampleTypes?.[index] &&
+    read?.primary === captured.readPrimary?.[index]
   );
 }
 
@@ -286,6 +295,7 @@ export function postProcessShaderEntrySignature(entry: PostProcessShaderEntry): 
     stage: entry.stage,
     fragmentEntryPoint: entry.fragmentEntryPoint,
     depthOutput: entry.depthOutput,
+    stencilMask: entry.stencilMask,
     params:
       entry.params === undefined
         ? undefined
@@ -306,6 +316,7 @@ export function postProcessShaderEntrySignature(entry: PostProcessShaderEntry): 
     stage: entry.stage,
     fragmentEntryPoint: entry.fragmentEntryPoint,
     depthOutput: entry.depthOutput,
+    stencilMask: entry.stencilMask,
     params: entry.params,
     byteSize: entry.params?.byteSize,
     defaultValue: entry.params === undefined ? undefined : entry.params.defaultValue.slice(),
@@ -313,6 +324,7 @@ export function postProcessShaderEntrySignature(entry: PostProcessShaderEntry): 
     readKeys: reads?.map((read) => (typeof read === 'string' ? read : read.key)),
     readSampleTypes: reads?.map((read) => (typeof read === 'string' ? undefined : read.sampleType)),
     readStrings: reads?.map((read) => typeof read === 'string'),
+    readPrimary: reads?.map((read) => (typeof read === 'string' ? undefined : read.primary)),
     usesView: entry.usesView,
     storageBindings: entry.storageBindings,
     storageBindingValues: entry.storageBindings?.slice(),
@@ -339,6 +351,8 @@ export function isTemporalFullscreenBinding(values: Readonly<Record<string, unkn
 export interface PostProcessReadEntry {
   readonly key: string;
   readonly sampleType?: PostProcessReadSampleType | undefined;
+  /** Use binding 0 for the sole depth input. */
+  readonly primary?: true;
 }
 
 /**
@@ -452,37 +466,19 @@ export function entryHasDepthRead(entry: PostProcessShaderEntry): boolean {
  */
 export const DEPTH_MIN_PARAMS_BYTE_SIZE = 16;
 
-// ─── Public: register / build a fullscreen post-process pass ─────────────
-
-/**
- * State of a registered fullscreen post-process pass.
- *
- * Created by the typed fullscreen feature graph and stored per-pass in the render system.
- * The `draw` method is called by the per-frame execute closure.
- */
-export interface FullscreenPostProcessPassHandle {
-  /** The pass name (same as the `color` target key). */
-  readonly name: string;
-  /** Execute one fullscreen draw: bind input texture, set pipeline, draw 3 vertices. */
-  draw(encoder: RhiRenderPassEncoder, inputView: TextureView): void;
-  /**
-   * The per-frame params UBO this pass binds at group(1) binding(2), or null
-   * when `entry.params === undefined` (param-less consumer, 2-entry BGL). The
-   * dispatcher writes the snapshot bytes into it before draw and composes it
-   * into the bind group via {@link createFullscreenBindGroup}.
-   */
-  readonly paramsBuffer: Buffer | null;
+export function entryUsesPrimaryDepth(entry: PostProcessShaderEntry): boolean {
+  const read = entry.reads?.[0];
+  return (
+    entry.reads?.length === 1 &&
+    typeof read !== 'string' &&
+    read?.sampleType === 'depth' &&
+    read.primary === true
+  );
 }
 
-/**
- * Build a fullscreen post-process pass primitive.
- *
- * Creates BGL, sampler, and pipeline state from the registered shader entry.
- * Returns the pass handle + the BGL + the sampler so the caller can compose
- * bind groups. The BGL + sampler are shared across instances of the same shader.
- *
- * @returns The BGL, sampler, and a factory to create pass handles.
- */
+// ─── Public: register / build a fullscreen post-process pass ─────────────
+
+/** The device and shader declaration own the physical fullscreen binding layout. */
 export function buildFullscreenPostProcessPass(
   ctx: FullscreenPostProcessDeviceContext,
   entry: PostProcessShaderEntry,
@@ -520,13 +516,11 @@ export interface BuiltFullscreenPostProcessPass {
   readonly bindGroupLayout: BindGroupLayout;
   readonly sampler: Sampler | null;
   readonly depthSampler: Sampler | null;
-  readonly extraColorBindings: readonly number[];
+  readonly extraColorBindings: readonly { readonly binding: number; readonly key: string }[];
   readonly extraStorageBindings: readonly number[];
-  readonly createHandle: (
-    name: string,
-    pipeline: unknown,
-    paramsBuffer: Buffer | null,
-  ) => FullscreenPostProcessPassHandle;
+  readonly primaryDepth: boolean;
+  readonly depthKey: string | undefined;
+  draw(encoder: RhiRenderPassEncoder, pipeline: RenderPipeline): void;
 }
 
 const builtFullscreenPasses = new WeakMap<
@@ -600,13 +594,28 @@ function createFullscreenPostProcessPass(
   // texture variant for a 4-sample scene target. params@2 is always present to
   // avoid 2x2 kind explosion.
   const hasDepth = entryHasDepthRead(entry);
-  const bglKind = fullscreenBindGroupKind(entry, hasDepth, depthMultisampled);
+  const primaryDepth = entryUsesPrimaryDepth(entry);
+  const bglKind = primaryDepth
+    ? 'fullscreen-post-with-params'
+    : fullscreenBindGroupKind(entry, hasDepth, depthMultisampled);
   const descriptor = buildBindGroupLayoutDescriptor(FULLSCREEN_DEFAULT_SPEC, { kind: bglKind });
   const colorReads = (entry.reads ?? []).filter(
     (read) => typeof read === 'string' || read.sampleType !== 'depth',
   );
   const extraColorCount = Math.max(0, colorReads.length - 1);
-  const firstExtraBinding = hasDepth ? 5 : entry.params === undefined ? 2 : 3;
+  const firstExtraBinding = primaryDepth ? 3 : hasDepth ? 5 : entry.params === undefined ? 2 : 3;
+  if (primaryDepth) {
+    const texture = descriptor.entries.find((binding) => binding.binding === 0);
+    const sampler = descriptor.entries.find((binding) => binding.binding === 1);
+    if (texture !== undefined) {
+      texture.texture = {
+        sampleType: 'depth',
+        viewDimension: '2d',
+        multisampled: depthMultisampled,
+      };
+    }
+    if (sampler !== undefined) sampler.sampler = { type: 'non-filtering' };
+  }
   const appendFullscreenColorReads = () => {
     const firstRead = colorReads[0];
     if (typeof firstRead !== 'string' && firstRead?.sampleType !== undefined) {
@@ -638,34 +647,40 @@ function createFullscreenPostProcessPass(
   }
 
   // Step 2: Samplers.
-  const sampler = createFullscreenSampler(
-    device,
-    colorReads.some((read) => typeof read !== 'string' && read.sampleType === 'float-3d-repeat'),
-  );
   const depthSampler = hasDepth ? createDepthSampler(device) : null;
+  const sampler = primaryDepth
+    ? depthSampler
+    : createFullscreenSampler(
+        device,
+        colorReads.some(
+          (read) => typeof read !== 'string' && read.sampleType === 'float-3d-repeat',
+        ),
+      );
 
+  const depthRead = entry.reads?.find(
+    (read) => typeof read !== 'string' && read.sampleType === 'depth',
+  );
   return {
     bindGroupLayout: bglRes.value,
     sampler,
     depthSampler,
+    primaryDepth,
+    depthKey: typeof depthRead === 'string' ? undefined : depthRead?.key,
     extraColorBindings: Object.freeze(
-      Array.from({ length: extraColorCount }, (_, index) => firstExtraBinding + index),
+      colorReads.slice(1).map((read, index) => ({
+        binding: firstExtraBinding + index,
+        key: typeof read === 'string' ? read : read.key,
+      })),
     ),
     extraStorageBindings: Object.freeze(
       (entry.storageBindings ?? []).map((binding, index) => binding ?? firstStorageBinding + index),
     ),
-    createHandle: (name, pipeline, paramsBuffer) => ({
-      name,
-      paramsBuffer,
-      draw(encoder, _inputView) {
-        encoder.setPipeline(pipeline as never);
-        if (emptyGroup !== null) encoder.setBindGroup(0, emptyGroup);
-        // The bind group is composed per-frame by the record stage (mirrors
-        // recordFxaaPass's lazy bindgroup compose in render-system-record.ts).
-        // The caller owns group one and any declared View binding at group zero.
-        encoder.draw(3, 1, 0, 0);
-      },
-    }),
+    draw(encoder, pipeline) {
+      encoder.setPipeline(pipeline);
+      if (emptyGroup !== null) encoder.setBindGroup(0, emptyGroup);
+      if (entry.stencilMask !== undefined) encoder.setStencilReference(1);
+      encoder.draw(3, 1, 0, 0);
+    },
   };
 }
 
@@ -706,6 +721,7 @@ const fullscreenBindGroups = new WeakMap<object, unknown>();
 const fullscreenChainKeys: object[] = [];
 const ABSENT_BINDING: object = {};
 const BUFFER_BINDINGS: object = {};
+const NO_EXTRA_BINDINGS = Object.freeze([]);
 
 export function createFullscreenBindGroup(
   device: RhiDevice,
@@ -715,26 +731,46 @@ export function createFullscreenBindGroup(
   paramsBuffer?: Buffer | null,
   depthTexView?: TextureView | null,
   depthSampler?: Sampler | null,
-  additionalViews: readonly { readonly binding: number; readonly view: TextureView }[] = [],
-  additionalBuffers: readonly { readonly binding: number; readonly buffer: Buffer }[] = [],
+  additionalViews: readonly {
+    readonly binding: number;
+    readonly view: TextureView;
+  }[] = NO_EXTRA_BINDINGS,
+  additionalBuffers: readonly {
+    readonly binding: number;
+    readonly buffer: Buffer;
+  }[] = NO_EXTRA_BINDINGS,
 ): BindGroup | null {
   const depthBound = depthTexView && depthSampler;
-  const keys = fullscreenChainKeys;
-  keys.length = 0;
-  keys.push(
-    bgl,
-    inputView,
-    sampler ?? ABSENT_BINDING,
-    paramsBuffer ?? ABSENT_BINDING,
-    depthBound ? depthTexView : ABSENT_BINDING,
-    depthBound ? depthSampler : ABSENT_BINDING,
-  );
-  for (let index = 0; index < additionalViews.length; index++)
-    keys.push((additionalViews[index] as { readonly view: TextureView }).view);
-  keys.push(BUFFER_BINDINGS);
-  for (let index = 0; index < additionalBuffers.length; index++)
-    keys.push((additionalBuffers[index] as { readonly buffer: Buffer }).buffer);
-  const leaf = bindGroupChainLeaf(fullscreenBindGroups, keys);
+  let leaf: Map<string, BindGroup>;
+  if (additionalViews.length === 0 && additionalBuffers.length === 0) {
+    leaf = bindGroupChainLeaf6(
+      fullscreenBindGroups,
+      bgl,
+      inputView,
+      sampler ?? ABSENT_BINDING,
+      paramsBuffer ?? ABSENT_BINDING,
+      depthBound ? depthTexView : ABSENT_BINDING,
+      depthBound ? depthSampler : ABSENT_BINDING,
+    );
+  } else {
+    const keys = fullscreenChainKeys;
+    try {
+      keys.push(
+        bgl,
+        inputView,
+        sampler ?? ABSENT_BINDING,
+        paramsBuffer ?? ABSENT_BINDING,
+        depthBound ? depthTexView : ABSENT_BINDING,
+        depthBound ? depthSampler : ABSENT_BINDING,
+      );
+      for (const additional of additionalViews) keys.push(additional.view);
+      keys.push(BUFFER_BINDINGS);
+      for (const additional of additionalBuffers) keys.push(additional.buffer);
+      leaf = bindGroupChainLeaf(fullscreenBindGroups, keys);
+    } finally {
+      keys.length = 0;
+    }
+  }
   const cached = leaf.get('fullscreen');
   if (cached !== undefined) return cached;
   const entries: { binding: number; resource: { kind: string; value: unknown } }[] = [

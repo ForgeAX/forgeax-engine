@@ -11,6 +11,23 @@ const Values = defineComponent('CopyReadValues', {
 });
 
 describe('World array output reads', () => {
+  it('compares numeric inputs at field precision without exposing storage', () => {
+    const world = new World();
+    const entity = world
+      .spawn({ component: Values, data: { fixed: [1 / 3, -0, 2, 3], dynamic: [1 / 3] } })
+      .unwrap();
+    const read = world[worldRead];
+    expect(read.arrayEquals(entity, Values, 'fixed', [1 / 3, -0, 2, 3])).toBe(true);
+    expect(read.arrayEquals(entity, Values, 'fixed', [1 / 3, 0, 2, 3])).toBe(false);
+    expect(read.arrayEquals(entity, Values, 'dynamic', [Math.fround(1 / 3)])).toBe(false);
+    expect(read.arrayEquals(entity, Values, 'dynamic', [1 / 3])).toBe(true);
+    world.set(entity, Values, { dynamic: [] }).unwrap();
+    expect(read.arrayEquals(entity, Values, 'dynamic', [])).toBe(true);
+    expect(read.arrayEquals(entity, Values, 'scalar', [])).toBe(false);
+    world.despawn(entity).unwrap();
+    expect(read.arrayEquals(entity, Values, 'dynamic', [])).toBe(false);
+  });
+
   it('copies physical inline rows into an existing output without materializing a view', () => {
     const world = new World();
     world.spawn({ component: Values, data: { fixed: [90, 91, 92, 93] } }).unwrap();
@@ -22,6 +39,9 @@ describe('World array output reads', () => {
     const epoch = world.getStructureEpoch();
     expect(read.copyArray(entity, Values, 'fixed', window)).toBe(4);
     expect(Array.from(output)).toEqual([-1, -1, Math.fround(1 / 3), 2, 3, 4, -1, -1]);
+    const plain = [0, 0, 0, 0, -1];
+    expect(read.copyArray(entity, Values, 'fixed', plain)).toBe(4);
+    expect(plain).toEqual([Math.fround(1 / 3), 2, 3, 4, -1]);
     expect(view).not.toHaveBeenCalled();
     expect(world.getStructureEpoch()).toBe(epoch);
     output[2] = 42;

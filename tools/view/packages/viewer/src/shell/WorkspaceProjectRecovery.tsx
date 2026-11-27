@@ -160,17 +160,17 @@ export function WorkspaceProjectChooser({ client, connection, launcher, requires
     catch (cause) { setError(failure(cause)); }
     finally { setBusy(false); }
   };
-  const submit = async (event?: FormEvent<HTMLFormElement>) => {
-    event?.preventDefault();
-    if (loading || (!offline && !path.trim())) return;
+  const submit = async (projectPath = path) => {
+    const selectedPath = projectPath.trim();
+    if (loading || (!offline && !selectedPath)) return;
     setBusy(true); setError(null);
     try {
       if (offline) {
         if (!launcher) throw new Error('This View presentation has no backend launcher.');
-        await launcher.start(path.trim() || undefined);
+        await launcher.start(selectedPath || undefined);
         connection.onReconnect?.();
       } else if (client) {
-        const project = await client.registerProject(path.trim());
+        const project = await client.registerProject(selectedPath);
         if (client.projectSession) await client.projectSession.open(project.root);
         else await client.openProject(project.root, { tabId: VIEW_WORKSPACE_TAB_ID });
         // Session errors remain visible; only an admitted new owner collapses selection.
@@ -183,15 +183,16 @@ export function WorkspaceProjectChooser({ client, connection, launcher, requires
   };
   const visibleProjects = (scope === 'recent' ? projects.slice(0, 8) : projects)
     .filter(project => `${project.name} ${project.root}`.toLowerCase().includes(filter.toLowerCase()));
+  const projectPhase = snapshot.projectStatus?.phase ?? snapshot.projectPhase;
 
   return <>
     {bound && <Button variant="secondary" size="compact" leadingIcon={<FolderOpen className="fx-icon" aria-hidden />}
       onClick={() => { setOpened(true); setError(null); setPath(snapshot.project?.root ?? ''); }}>
-      {snapshot.project?.name} · {snapshot.projectStatus?.phase ?? snapshot.projectPhase ?? ''}
+      {snapshot.project?.name}{projectPhase && <> · {t(`view.projectPhase.${projectPhase}`)}</>}
     </Button>}
-    {show && <Dialog open modal={false} dismissible={bound} onClose={() => { setOpened(false); setListing(undefined); }}
+    {show && <Dialog open modal={false} dismissible={bound} closeLabel={t('view.close')} onClose={() => { setOpened(false); setListing(undefined); }}
       className="fx-view-project-open" title={offline ? t('view.projectChooser.offlineTitle') : t('view.projectOpen.title')} initialFocusRef={inputRef}>
-      <form onSubmit={event => void submit(event)} onKeyDown={event => {
+      <form onSubmit={event => { event.preventDefault(); void submit(); }} onKeyDown={event => {
         if (event.key === 'Enter' && event.target instanceof HTMLInputElement) {
           event.preventDefault();
           void submit();
@@ -207,7 +208,9 @@ export function WorkspaceProjectChooser({ client, connection, launcher, requires
           <div className="fx-view-project-chooser__list" aria-label={t('view.projectChooser.all')}>
             {visibleProjects.length === 0 && <Text tone="secondary">{t('view.projectChooser.empty')}</Text>}
             {visibleProjects.map(project => <button type="button" key={project.root} disabled={loading || project.availability !== 'available'}
-              aria-pressed={path === project.root} onClick={() => setPath(project.root)} title={project.availability === 'unavailable' ? `${project.failure.code}: ${project.failure.hint}` : project.root}>
+              aria-pressed={path === project.root} onClick={() => setPath(project.root)}
+              onDoubleClick={() => void submit(project.root)}
+              title={project.availability === 'unavailable' ? `${project.failure.code}: ${project.failure.hint}` : project.root}>
               <strong>{project.name}</strong><span>{project.root}</span>
               {project.availability === 'unavailable' && <span>{t('view.projectChooser.unavailable')} · {project.failure.code}</span>}
             </button>)}

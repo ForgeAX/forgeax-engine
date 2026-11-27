@@ -4,7 +4,7 @@
 // Prereq: pnpm install && pnpm build (resolves @forgeax/* workspace symlinks
 // when standalone-invoked outside `pnpm lint:grep`).
 //
-// The shared Standard lighting owner must sample diffuse and specular IBL.
+// The shared Standard lighting owner must evaluate diffuse Sky SH and sample specular IBL.
 // Rigid, skin and fullscreen deferred entries must call that same owner.
 // A placeholder ambient term or a detached shared helper fails this gate.
 
@@ -34,12 +34,19 @@ function countCallSites(source, fnName) {
   return n;
 }
 
-if (countCallSites(lighting, 'sampleIblDiffuse') < 1) {
-  failures.push('standard-lighting.wgsl has no non-import non-comment sampleIblDiffuse( call');
+if (
+  countCallSites(lighting, 'evaluateSkyPolynomial') !== 1 ||
+  countCallSites(lighting, 'sampleIblDiffuse') !== 0
+) {
+  failures.push('standard-lighting.wgsl must evaluate the shared Sky SH polynomial exactly once');
 }
-for (const helper of ['sampleIblRadiance', 'sampleReflectionProbeRadiance']) {
+for (const helper of ['sampleIblRadiance', 'samplePmrem']) {
   if (countCallSites(lighting, helper) !== 1)
     failures.push(`standard-lighting.wgsl must sample shared ${helper} exactly once`);
+}
+// The selected environment is sampled once per lobe, including fallback sky.
+if (countCallSites(lighting, 'sampleStandardReflectionRadiance') !== 3) {
+  failures.push('standard-lighting.wgsl must share selected radiance between base and clearcoat');
 }
 // Nonlinear dielectric/metal scattering is evaluated before metalness mixing;
 // radiance selection must not reintroduce a material response inside sampling.
@@ -49,19 +56,26 @@ if (countCallSites(lighting, 'environmentScatteringFromDfg') !== 2) {
   );
 }
 
+// The Forward wrapper and Deferred both reach the same scattering owner.
+if (countCallSites(lighting, 'evaluateStandardEnvironmentFromRadiance') !== 2) {
+  failures.push(
+    'standard-lighting.wgsl must define and call the shared environment scattering owner',
+  );
+}
 for (const entry of [
   'default-standard-pbr.wgsl',
   'default-standard-pbr-skin.wgsl',
   'standard-deferred-lighting.wgsl',
 ]) {
   const source = readFileSync(resolve(shaderRoot, entry), 'utf8');
-  // Deferred lighting needs split diffuse/specular, so it calls the shared
-  // evaluateStandardDirectSplit; Forward entries call evaluateStandardDirect.
-  const direct =
-    entry === 'standard-deferred-lighting.wgsl'
-      ? 'evaluateStandardDirectSplit'
-      : 'evaluateStandardDirect';
-  for (const helper of ['evaluateStandardEnvironment', direct]) {
+  // Deferred selects standalone or array-layer radiance before shared
+  // scattering and requests diffuse separately for subsurface diffusion.
+  const deferred = entry === 'standard-deferred-lighting.wgsl';
+  const environment = deferred
+    ? 'evaluateStandardEnvironmentFromRadiance'
+    : 'evaluateStandardEnvironment';
+  const direct = deferred ? 'evaluateStandardDirectSplit' : 'evaluateStandardDirect';
+  for (const helper of [environment, direct]) {
     if (
       !source.includes('#import forgeax_pbr::standard_lighting::') ||
       countCallSites(source, helper) !== 1 ||
@@ -80,10 +94,7 @@ for (const entry of [
     if (countCallSites(source, helper) !== 0)
       failures.push(`${entry} duplicates base lighting through ${helper}`);
   }
-  if (
-    entry !== 'standard-deferred-lighting.wgsl' &&
-    countCallSites(source, 'encodeStandardGBuffer') !== 1
-  )
+  if (!deferred && countCallSites(source, 'encodeStandardGBuffer') !== 1)
     failures.push(`${entry} must use the shared Standard G-buffer encoder exactly once`);
 }
 

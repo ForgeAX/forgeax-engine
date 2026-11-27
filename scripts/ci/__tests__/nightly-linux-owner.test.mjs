@@ -25,7 +25,9 @@ test('Nightly runs the same-commit full Linux CI instead of serial unsharded cov
   assert.notEqual(nightly.concurrency.group, ci.concurrency.group);
   assert.deepEqual(ci.jobs['coverage-pnpm-shard'].strategy.matrix.shard, [0, 1, 2, 3]);
   assert.ok(ci.jobs['coverage-pnpm'].needs.includes('coverage-pnpm-shard'));
-  assert.deepEqual(ci.jobs['vitest-dawn'].strategy.matrix.shard, [1, 2, 3, 4]);
+  assert.match(ci.jobs['vitest-dawn'].strategy.matrix.shard, /core-build.outputs.dawn_shards/);
+  const nativePlan = ci.jobs['core-build'].steps.find(({ id }) => id === 'native-validation');
+  assert.match(nativePlan.env.FORGEAX_NATIVE_FULL_SCOPE, /inputs.nightly_full_profile/);
   assert.equal(ci.jobs['vitest-dawn'].strategy['max-parallel'], 4);
   for (const id of ['primary-pnpm', 'vitest-browser', 'smoke-fleet', 'portability-bun']) {
     assert.ok(ci.jobs[id], `Linux ${id} acceptance remains owned by CI`);

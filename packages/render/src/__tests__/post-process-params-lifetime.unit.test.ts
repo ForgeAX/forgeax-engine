@@ -159,6 +159,7 @@ it('keeps accepted candidates detached across builtin registration and late disc
   expect(owner.getBuffer('overlay')).toBe(overlay);
   owner.discard(second);
   owner.dispose();
+  await device.queue.onSubmittedWorkDone();
   expect(destroy.mock.calls.filter(([buffer]) => buffer === overlay)).toHaveLength(1);
   expect(destroy.mock.calls.filter(([buffer]) => buffer === builtin)).toHaveLength(1);
 });
@@ -209,5 +210,49 @@ it('reuses the active params map as the steady-state candidate and rebuilds on a
   const removed = owner.prepare(new Map()).unwrap();
   expect(removed.buffers).not.toBe(first.buffers);
   expect(removed.buffers.size).toBe(0);
+  owner.dispose();
+});
+
+it('keeps simultaneous draws distinct, reuses their slots after submission and retires surplus on the owning queue', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const retire: Array<() => void> = [];
+  const owner = createPostProcessParamsOwner(
+    { device, errorRegistry: new RhiErrorListenerRegistry() },
+    vi.fn(),
+    (owningDevice, release) => {
+      expect(owningDevice).toBe(device);
+      retire.push(release);
+    },
+  );
+  const unregister = owner.registerBuiltinPostProcess('effect', {
+    source: 'effect',
+    params: { byteSize: 32, defaultValue: new Uint8Array(32) },
+  });
+  const primary = owner.getBuffer('effect');
+  const create = vi.spyOn(device, 'createBuffer');
+  const destroy = vi.spyOn(device, 'destroyBuffer');
+  owner.beginRecording();
+  expect(owner.getBuffer('effect', 'write')).toBe(primary);
+  const duplicate = owner.getBuffer('effect', 'write');
+  expect(duplicate).toBeDefined();
+  expect(duplicate).not.toBe(primary);
+  expect(owner.getBuffer('effect')).toBe(primary);
+  owner.finishRecording();
+  for (let frame = 0; frame < 60; frame++) {
+    owner.beginRecording();
+    expect(owner.getBuffer('effect', 'write')).toBe(primary);
+    expect(owner.getBuffer('effect', 'write')).toBe(duplicate);
+    owner.finishRecording();
+  }
+  expect(create).toHaveBeenCalledTimes(1);
+  expect(retire).toHaveLength(0);
+  owner.beginRecording();
+  expect(owner.getBuffer('effect', 'write')).toBe(primary);
+  owner.finishRecording();
+  expect(retire).toHaveLength(1);
+  expect(destroy).not.toHaveBeenCalled();
+  retire.pop()?.();
+  expect(destroy).toHaveBeenCalledExactlyOnceWith(duplicate);
+  unregister();
   owner.dispose();
 });

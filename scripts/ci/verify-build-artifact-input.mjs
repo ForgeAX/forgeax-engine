@@ -361,7 +361,7 @@ function main() {
           'ci-shared-input-payload-mismatch',
           expectedPayload,
           manifest.payload,
-          'Rebuild shared-app-inputs so its serialized pack and compiled engine shader payload match the contract.',
+          'Rebuild shared-app-inputs so its serialized pack and Engine shader template payload match the contract.',
         );
       }
       if (

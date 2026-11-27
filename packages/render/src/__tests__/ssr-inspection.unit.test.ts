@@ -10,7 +10,7 @@ const camera = {
   projection: 'perspective' as const,
   near: 0.1,
   far: 100,
-  screenSpaceReflection: { waterTemporal: 0, maxDistance: 40, thickness: 0.2, maxRoughness: 0.6 },
+  screenSpaceReflection: { maxDistance: 40, thickness: 0.2, maxRoughness: 0.6 },
 };
 
 const environment: SsrSpatialEnvironment = {
@@ -64,16 +64,16 @@ describe('SSR bounded spatial inspection', () => {
     const admission = admitSsrSpatial({ camera, environment });
     const inspection = projectSsrSpatialInspection(admission, {
       status: 'structural-only',
-      history: { state: 'stable', bytes: 128, resetCount: 2 },
-      passRoster: ['depth-pyramid-seed', 'ssr-trace', 'ssr-compose'],
+      history: { state: 'not-owned', bytes: 128, resetCount: 2 },
+      passRoster: ['hzb-seed', 'ssr-trace', 'ssr-compose'],
       fallbackSource: 'probe',
       coverage: { hitCount: 3, fallbackCount: 1, excludedCount: 2 },
     });
     expect(inspection).toMatchObject({
       status: 'structural-only',
-      history: { state: 'stable', bytes: 128, resetCount: 2 },
+      history: { state: 'not-owned', bytes: 128, resetCount: 2 },
       coverage: { hitCount: 3, fallbackCount: 1, excludedCount: 2 },
-      passRoster: ['depth-pyramid-seed', 'ssr-trace', 'ssr-compose'],
+      passRoster: ['hzb-seed', 'ssr-trace', 'ssr-compose'],
       fallbackSource: 'probe',
     });
     expect(Object.isFrozen(inspection)).toBe(true);
@@ -98,7 +98,7 @@ describe('SSR bounded spatial inspection', () => {
     ).toThrow('coverage.fallbackCount');
     expect(() =>
       projectSsrSpatialInspection(admission, {
-        history: { state: 'stable', bytes: -1, resetCount: 0 },
+        history: { state: 'not-owned', bytes: -1, resetCount: 0 },
       }),
     ).toThrow('history.bytes');
   });

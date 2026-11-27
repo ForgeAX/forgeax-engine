@@ -691,10 +691,12 @@ import { RenderGraph } from '../graph.js';
         'resource-allocation-failed',
         'resource-resolution-failed',
         'pass-encode-failed',
+        'pass-preparation-failed',
+        'graph-preparation-invalid',
         'compiled-graph-retired',
         'resource-retire-failed',
       ];
-      expect(allCodes).toHaveLength(31);
+      expect(allCodes).toHaveLength(33);
     });
 
     it('allows exhaustive switch without default covering every member', () => {
@@ -732,6 +734,32 @@ import { RenderGraph } from '../graph.js';
             return 'observation-stale';
           case 'observation-retired':
             return 'observation-retired';
+          default:
+            return remaining(code);
+        }
+      }
+      function remaining(
+        code: Exclude<
+          RenderGraphErrorCode,
+          | 'dangling-read'
+          | 'cap-missing'
+          | 'duplicate-resource'
+          | 'alias-source-missing'
+          | 'unknown-resource'
+          | 'resource-alloc-failed'
+          | 'invalid-format'
+          | 'invalid-color-domain'
+          | 'missing-color-domain'
+          | 'color-domain-mismatch'
+          | 'observation-absent'
+          | 'observation-invalid-format'
+          | 'observation-invalid-size'
+          | 'observation-missing-copy-src'
+          | 'observation-stale'
+          | 'observation-retired'
+        >,
+      ): string {
+        switch (code) {
           case 'duplicate-pass-name':
           case 'duplicate-resource-label':
           case 'builder-sealed':
@@ -745,6 +773,8 @@ import { RenderGraph } from '../graph.js';
           case 'resource-allocation-failed':
           case 'resource-resolution-failed':
           case 'pass-encode-failed':
+          case 'pass-preparation-failed':
+          case 'graph-preparation-invalid':
           case 'compiled-graph-retired':
           case 'resource-retire-failed':
             return code;

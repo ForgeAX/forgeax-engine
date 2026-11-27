@@ -19,8 +19,8 @@ export interface DrawEvidence {
 }
 
 export interface DrawChangeVisitor {
-  /** A slot the row-change log names; its row version tells whether it still differs. */
-  slot(slot: number): void;
+  /** The final row version published at a written or retired address. */
+  slot(slot: number, version: number): void;
   /** A slot whose availability or probe record changed without a row write. */
   row(slot: number): void;
   /** A Mesh whose effective draw facts may differ for every slot drawing it. */
@@ -56,8 +56,8 @@ export function drawChangesSince(
     for (const { cacheKey } of probe.dirtyRecords) visit.row(cacheKey);
     for (const cacheKey of probe.removedCacheKeys) visit.row(cacheKey);
   }
-  // Entered, left and changed rows come from the Scene's row-change log cursor.
-  if (before.slots !== after.slots && !after.slots.changesSince(before.slots, visit.slot))
+  // Every phase reads the final versions published by this Scene.
+  if (before.slots !== after.slots && !after.slots.visitChangedVersions(before.slots, visit.slot))
     return false;
   if (before.unavailable !== after.unavailable)
     after.unavailable.changesSince(before.unavailable, visit.row);

@@ -1,4 +1,5 @@
 import {
+  type AssetCodec,
   type AssetDecoder,
   type AssetDecoderContribution,
   type AssetKind,
@@ -20,6 +21,15 @@ import { decodeMeshBinary, normalizeMeshPayload } from './mesh-binary';
 export const meshAssetKind: AssetKind<MeshAsset, 'mesh'> = {
   kind: 'mesh',
 } as AssetKind<MeshAsset, 'mesh'>;
+
+function isMeshDistanceFieldCodec(codec: AssetCodec | undefined): codec is AssetCodec {
+  return (
+    codec?.name === MESH_VISIBILITY_DISTANCE_FIELD_CODEC.name &&
+    codec.version === MESH_VISIBILITY_DISTANCE_FIELD_CODEC.version &&
+    (codec.profile === MESH_VISIBILITY_DISTANCE_FIELD_CODEC.profile ||
+      codec.profile === MESH_GEOMETRIC_DISTANCE_FIELD_CODEC.profile)
+  );
+}
 
 /** Geometry validates mesh payload shape before any render owner consumes it. */
 export const meshAssetDecoder: AssetDecoder<MeshAsset> = {
@@ -45,7 +55,7 @@ export const meshAssetDecoder: AssetDecoder<MeshAsset> = {
     if (body !== undefined) {
       const bytes = await artifacts.read(body);
       if (!bytes.ok) return err<AssetLoadError>(bytes.error);
-      mesh = decodeMeshBinary(bytes.value, envelope.refs, 'interleaved');
+      mesh = decodeMeshBinary(bytes.value, envelope.refs, 'native');
       if (mesh === undefined) return invalid('mesh binary decode failed');
     } else {
       if (payload.vertices instanceof Float32Array) {
@@ -59,22 +69,18 @@ export const meshAssetDecoder: AssetDecoder<MeshAsset> = {
     if (mesh === undefined) return invalid('mesh geometry validation failed');
     const fieldDescriptor = envelope.artifacts['distance-field.bin'];
     if (distanceField === undefined && fieldDescriptor === undefined)
-      return ok(interleavedMesh(mesh));
+      return ok(mesh.attributeStorage === 'static-streams' ? mesh : interleavedMesh(mesh));
     if (fieldDescriptor === undefined) return invalid('mesh distance field artifact is missing');
     const { assetCodec, integrity } = fieldDescriptor;
-    if (
-      assetCodec?.name !== MESH_VISIBILITY_DISTANCE_FIELD_CODEC.name ||
-      assetCodec.version !== MESH_VISIBILITY_DISTANCE_FIELD_CODEC.version ||
-      (assetCodec.profile !== MESH_VISIBILITY_DISTANCE_FIELD_CODEC.profile &&
-        assetCodec.profile !== MESH_GEOMETRIC_DISTANCE_FIELD_CODEC.profile)
-    )
+    if (!isMeshDistanceFieldCodec(assetCodec))
       return invalid('unsupported mesh distance field artifact codec');
     if (integrity === undefined)
       return invalid('mesh distance field artifact integrity is missing');
     const artifact = { integrity: { ...integrity }, assetCodec: { ...assetCodec } };
     const read = await artifacts.read(fieldDescriptor);
     if (!read.ok) return read;
-    const attached = await decodeMeshDistanceFieldAttachment(mesh, distanceField, read.value);
+    const canonical = interleavedMesh(mesh);
+    const attached = await decodeMeshDistanceFieldAttachment(canonical, distanceField, read.value);
     if (!attached.ok) return invalid(attached.error.detail.reason);
     const field = attached.value;
     const codec =
@@ -83,7 +89,7 @@ export const meshAssetDecoder: AssetDecoder<MeshAsset> = {
         : MESH_GEOMETRIC_DISTANCE_FIELD_CODEC;
     if (artifact.assetCodec.profile !== codec.profile)
       return invalid('mesh distance field codec policy mismatch');
-    return ok(interleavedMesh({ ...mesh, distanceField: { ...field, artifact } }));
+    return ok({ ...canonical, distanceField: { ...field, artifact } });
   },
 };
 

@@ -14,6 +14,8 @@ import { decodeMaterialProgramWire, encodeMaterialProgramWire } from './material
 import type { PackProgram } from './program.js';
 
 /** Portable delivered bytes. Decoding and dependency readiness remain loader responsibilities. */
+export const RUNTIME_PACK_SUFFIX = '.runtime-pack.json';
+
 export interface FixedPackExecution {
   readonly programs: Readonly<Record<string, PackProgram>>;
   /** Membership is the producer's explicit executable plugin projection for this target. */
@@ -73,18 +75,21 @@ export interface RuntimePackPublicationInput {
   readonly externalEvidence?: readonly AssetPublicationExternalEvidence[];
 }
 
-function isRuntimePackEnvelope(value: unknown): value is RuntimePackEnvelope {
+function isRuntimePackDocument(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
+  const { schemaVersion, kind, assets } = value as Record<string, unknown>;
+  return schemaVersion === '2.0.0' && kind === 'internal-text-package' && Array.isArray(assets);
+}
+
+function isRuntimePackEnvelope(value: unknown): value is RuntimePackEnvelope {
+  if (!isRuntimePackDocument(value)) return false;
+  const { scopeId, generation } = value;
   return (
-    record.schemaVersion === '2.0.0' &&
-    record.kind === 'internal-text-package' &&
-    typeof record.scopeId === 'string' &&
-    record.scopeId.length > 0 &&
-    typeof record.generation === 'number' &&
-    Number.isSafeInteger(record.generation) &&
-    record.generation > 0 &&
-    Array.isArray(record.assets)
+    typeof scopeId === 'string' &&
+    scopeId.length > 0 &&
+    typeof generation === 'number' &&
+    Number.isSafeInteger(generation) &&
+    generation > 0
   );
 }
 
@@ -100,27 +105,22 @@ export function stripRuntimePackLifecycle(value: unknown): unknown {
   return decoded.value === value ? semantic : encodeMaterialProgramWire(semantic);
 }
 
-/** Rehydrate a DDC Pack payload into the active runtime scope for transport. */
-export function bindRuntimePackScope(value: unknown, scopeId: string, generation: number): unknown {
+/** Rehydrate a DDC Pack payload after optional admission of the decoded contents. */
+export function bindRuntimePackScope(
+  value: unknown,
+  scopeId: string,
+  generation: number,
+  admit?: (pack: unknown) => boolean,
+): unknown {
   const decoded = decodeMaterialProgramWire(value);
-  if (!decoded.ok) return value;
-  const wire = decoded.value !== value;
-  value = decoded.value;
-  if (
-    value === null ||
-    typeof value !== 'object' ||
-    Array.isArray(value) ||
-    (value as { readonly schemaVersion?: unknown }).schemaVersion !== '2.0.0' ||
-    (value as { readonly kind?: unknown }).kind !== 'internal-text-package' ||
-    !Array.isArray((value as { readonly assets?: unknown }).assets)
-  ) {
-    return value;
-  }
+  if (!decoded.ok || admit?.(decoded.value) === false) return value;
+  const pack = decoded.value;
+  if (!isRuntimePackDocument(pack)) return pack;
   // The accepted Catalog tuple is authoritative for a live transport. This
   // also repairs a legacy DDC body whose publication generation predates the
   // current accepted candidate.
-  const bound = { ...(value as Record<string, unknown>), scopeId, generation };
-  return wire ? encodeMaterialProgramWire(bound) : bound;
+  const bound = { ...pack, scopeId, generation };
+  return pack === value ? bound : encodeMaterialProgramWire(bound);
 }
 
 function* stableArray(value: readonly unknown[]): Generator<string> {
@@ -210,17 +210,38 @@ function outputFor(asset: RuntimePackAsset, sourceKey?: string): AssetPublicatio
   };
 }
 
-export function createRuntimePackPublication(
-  input: RuntimePackPublicationInput,
-): RuntimePackPublication {
-  const assets = normalizedAssets(input.pack);
-  const semantic = {
+function semanticRuntimePack(assets: readonly RuntimePackAsset[]) {
+  return {
     schemaVersion: '2.0.0' as const,
     kind: 'internal-text-package' as const,
     assets: [...assets].sort((left, right) =>
       left.guid.toLowerCase().localeCompare(right.guid.toLowerCase()),
     ),
   };
+}
+
+function withPublicationScope(
+  pack: ReturnType<typeof semanticRuntimePack>,
+  scopeId: string,
+  { generation, digest, outputSetDigest }: AssetPublicationEnvelope,
+): RuntimePackEnvelope {
+  return { ...pack, scopeId, generation, digest, outputSetDigest };
+}
+
+/** Bind transport bytes to the scope using the already-prepared publication. */
+export function bindRuntimePackPublication(
+  pack: RuntimePackInput,
+  scopeId: string,
+  publication: AssetPublicationEnvelope,
+): RuntimePackEnvelope {
+  return withPublicationScope(semanticRuntimePack(normalizedAssets(pack)), scopeId, publication);
+}
+
+export function createRuntimePackPublication(
+  input: RuntimePackPublicationInput,
+): RuntimePackPublication {
+  const assets = normalizedAssets(input.pack);
+  const semantic = semanticRuntimePack(assets);
   const valueDigest = input.digest ?? digest(semantic);
   const outputs =
     input.outputs ??
@@ -236,13 +257,7 @@ export function createRuntimePackPublication(
     externalEvidence: input.externalEvidence ?? [],
   });
   return {
-    pack: {
-      ...semantic,
-      scopeId: input.scopeId,
-      generation: publication.generation,
-      digest: valueDigest,
-      outputSetDigest: publication.outputSetDigest,
-    },
+    pack: withPublicationScope(semantic, input.scopeId, publication),
     publication,
   };
 }

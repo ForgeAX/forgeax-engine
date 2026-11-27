@@ -40,10 +40,10 @@ export async function verifySsaoRoom(
     return result;
   };
   try {
-    setProfile({ ...profile, ssao: false });
+    setProfile({ ...profile, ambientOcclusion: { enabled: false } });
     app.world.set(room.light, DirectionalLight, { castShadow: false }).unwrap();
     const neither = await sample();
-    setProfile({ ...profile, ssao: { ...(typeof profile.ssao === 'object' ? profile.ssao : {}), quality: 'high', radius: 0.5, intensity: 1 } });
+    setProfile({ ...profile, ambientOcclusion: { ...profile.ambientOcclusion, enabled: true, quality: 'high', radius: 0.5, intensity: 1 } });
     const ao = await sample();
     const aoOnly = requireChange('Room contact AO', neither, ao);
     app.world.set(room.light, DirectionalLight, { castShadow: true, shadowFilter: DirectionalShadowFilterValue.pcf3 }).unwrap();

@@ -38,8 +38,12 @@ export interface FrameLoopOptions {
   readonly onSubmitted?: (receipt: FrameReceipt, renderDrawCpuMs: number | undefined) => void;
   /** Forward a receipt only after its completion Result is successful. */
   readonly onCompleted?: (receipt: FrameReceipt) => void;
+  /** Grant App-owned work before fixed steps, with this frame's picture intent. */
+  readonly beforeUpdate?: (render: boolean) => void;
   /** Reconcile host-owned camera state after World update and before draw. */
   readonly beforeDraw?: () => void;
+  /** Keep the actual source lease until App-owned Level retirement confirms release. */
+  readonly retainSourceOnStop?: () => boolean;
   /** An update-only step drew nothing: frame-scoped immediate-mode data of that update is dropped. */
   readonly onFrameSkipped?: () => void;
   readonly sceneAdmission?: () => SceneAdmission;
@@ -66,6 +70,7 @@ export interface FrameLoopHandle {
   /** Snapshot the host-owned receipt credit counters without mutating them. */
   inspect(): ExecutionFrameInspection;
   setStopped(): void;
+  releaseSource(): void;
 }
 
 function beginFrame(session: RecorderSession | undefined): ProfileFrameToken | undefined {
@@ -519,6 +524,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
             ? undefined
             : observeAppScheduleRuns(world, session);
         try {
+          opts.beforeUpdate?.(render);
           if (fireWorldUpdateResult(world.update(deltaSeconds), reportError)) {
             primaryUpdated = true;
           }
@@ -726,6 +732,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
         return scheduled;
       });
     },
+    releaseSource: releaseAttachments,
     stepFrame(deltaSeconds, render = true): Result<void, AppError | RenderError> {
       const reason =
         state !== 'paused'
@@ -807,7 +814,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
       }
       setState('stopped');
       const cancelled = cancelFrame();
-      releaseAttachments();
+      if (opts.retainSourceOnStop?.() !== true) releaseAttachments();
       releaseProfiler();
       return cancelled;
     },
@@ -863,7 +870,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
     setStopped(): void {
       setState('stopped');
       const cancelled = cancelFrame();
-      releaseAttachments();
+      if (opts.retainSourceOnStop?.() !== true) releaseAttachments();
       releaseProfiler();
       if (!cancelled.ok) opts.onError?.(cancelled.error);
     },

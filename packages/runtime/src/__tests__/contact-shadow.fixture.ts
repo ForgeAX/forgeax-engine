@@ -171,9 +171,11 @@ export async function verifyContactShadow(
     renderPath: 'forward' | 'deferred',
     length: number,
     capture?: 'off' | 'on',
+    contactShadows = true,
   ): Promise<Float32Array> => {
-    unwrap(renderer.setProfile({ ...original, renderPath }));
+    unwrap(renderer.setProfile({ ...original, renderPath, contactShadows }));
     world.set(sun, DirectionalLight, { contactShadowLength: length }).unwrap();
+    const authoredLength = world.get(sun, DirectionalLight).unwrap().contactShadowLength;
     let luminance: Float32Array | undefined;
     for (let index = 0; index < 6; index++) {
       world.update(1 / 60).unwrap();
@@ -200,10 +202,12 @@ export async function verifyContactShadow(
         width: size,
         height: size,
       });
-      options.image?.(`${renderPath}-${length === 0 ? 'off' : 'on'}`, observation);
+      const label = contactShadows ? (length === 0 ? 'off' : 'on') : 'profile-off';
+      options.image?.(`${renderPath}-${label}`, observation);
       luminance = luminanceRgba16f(observation.bytes, size, size, observation.metadata.bytesPerRow);
     }
     expect(errors, JSON.stringify(errors)).toEqual([]);
+    expect(world.get(sun, DirectionalLight).unwrap().contactShadowLength).toBe(authoredLength);
     if (luminance === undefined) throw new Error('no contact-shadow sample');
     for (const value of luminance) expect(Number.isFinite(value)).toBe(true);
     return luminance;
@@ -212,8 +216,11 @@ export async function verifyContactShadow(
   try {
     const deferredOff = await sample('deferred', 0, 'off');
     const deferredOn = await sample('deferred', length, 'on');
+    expect(await sample('deferred', length, undefined, false)).toEqual(deferredOff);
     const forwardOff = await sample('forward', 0);
     const forwardOn = await sample('forward', length);
+    expect(await sample('forward', length, undefined, false)).toEqual(forwardOff);
+    expect(await sample('forward', length)).toEqual(forwardOn);
     let darkenedPixels = 0;
     let darkenedOnLightSide = 0;
     let sumX = 0;

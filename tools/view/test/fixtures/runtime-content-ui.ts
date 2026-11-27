@@ -84,6 +84,7 @@ const client = {
   },
 };
 Object.assign(globalThis, { runtimeContentFixture: { calls,
+  setLocale,
   deferSnapshot() { snapshotReady = new Promise<void>(done => { completeSnapshot = done; }); },
   completeSnapshot() { completeSnapshot?.(); snapshotReady = undefined; },
   reviseThumbnail() { thumbnailColor = 'blue'; holdThumbnails = true; catalogEpoch++; changed(); },

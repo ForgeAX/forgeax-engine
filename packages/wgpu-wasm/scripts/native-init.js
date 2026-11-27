@@ -80,3 +80,13 @@ export function initializeNativeWgpu(host) {
   });
   return nativeReady;
 }
+
+/** Consumers share the Host-initialized bindings and their verified identity. */
+export function nativeWgpuReady() {
+  return nativeReady ?? Promise.reject(nativeInitializationError('host-readiness', 'initialize the native Host first'));
+}
+
+export async function getCompilerFingerprint() {
+  await nativeWgpuReady();
+  return nativeArtifact.compilerFingerprint;
+}

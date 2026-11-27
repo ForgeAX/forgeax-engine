@@ -19,7 +19,7 @@ function requireMask(value: number | undefined): number {
 function reuseSelector(mask: number, target: string): number {
   const entry = STANDARD_SAMPLE_REUSE.find((candidate) => candidate.target === target);
   if (entry === undefined) throw new Error(`unknown sample reuse target ${target}`);
-  return (mask >>> entry.shift) & (2 ** entry.width - 1);
+  return Math.floor(mask / 2 ** entry.shift) % 2 ** entry.width;
 }
 
 describe('Standard independent scalar maps', () => {
@@ -140,6 +140,33 @@ describe('Standard independent scalar maps', () => {
     expect(reuseSelector(mask, 'metallicTexture')).toBe(1); // metallic reuses packed
     expect(reuseSelector(mask, 'roughnessTexture')).toBe(2); // roughness reuses packed
     expect(reuseSelector(mask, 'alphaTexture')).toBe(1); // alpha reuses base color
+  });
+
+  it('reuses a packed ORM texel only when AO and MR have identical sampling inputs', () => {
+    const values = { metallicRoughnessTexture: 8, occlusionTexture: 8 };
+    const sampling = {
+      textureHandles: new Map(Object.entries(values)),
+      samplerHandles: new Map(),
+      textureCoordinates: new Map(),
+    };
+    const selector = (inputs: typeof sampling) =>
+      reuseSelector(
+        requireMask(
+          materialStandardTextureMask(undefined, 'forgeax::default-standard-pbr', values, inputs),
+        ),
+        'occlusionTexture',
+      );
+    expect(selector(sampling)).toBe(1);
+    expect(selector({ ...sampling, textureHandles: new Map([['occlusionTexture', 9]]) })).toBe(0);
+    expect(selector({ ...sampling, samplerHandles: new Map([['occlusionTexture', 1]]) })).toBe(0);
+    expect(
+      selector({
+        ...sampling,
+        textureCoordinates: new Map([
+          ['occlusionTexture', { set: 0, transform: { scale: [2, 2] } }],
+        ]),
+      }),
+    ).toBe(0);
   });
 
   it('projects reuse into the renderer material snapshot', () => {

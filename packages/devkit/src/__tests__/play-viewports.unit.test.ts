@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parsePlayViewports } from '../play-viewports.js';
+import { parsePlayViewports } from '../play-input-page.js';
 
 describe('play viewports', () => {
   it('parses WxH lists and rejects tiny, duplicate, malformed or too many viewports', () => {

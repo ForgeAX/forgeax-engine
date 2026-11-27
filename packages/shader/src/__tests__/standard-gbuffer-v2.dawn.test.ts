@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { mat4 } from '@forgeax/engine/math';
 import { expect, it } from 'vitest';
 import { composeShader } from '../../../naga/src/index';
 
@@ -14,6 +15,21 @@ it('keeps depth-only and masked pixels invalid through the full six-target Defer
     device.createTexture({
       size: [8, 1],
       format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    }),
+  );
+  const composedFormats = ['rg32uint', 'r32uint', 'r32uint'] as const;
+  const composed = composedFormats.map((format) =>
+    device.createTexture({
+      size: [8, 1],
+      format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    }),
+  );
+  const decalLayers = Array.from({ length: 2 }, () =>
+    device.createTexture({
+      size: [8, 1],
+      format: 'rgba16float',
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     }),
   );
@@ -45,9 +61,11 @@ it('keeps depth-only and masked pixels invalid through the full six-target Defer
   // Forward-only contributor with no material output in this lane.
   if (x < 3u) { discard; }
   let metallic = select(select(0.0, 0.99999, x == 4u), 1.0, x == 5u);
+  let subsurface = select(vec4f(0), vec4f(2,1,1,0.5), x == 5u);
+  let profile = select(subsurface, vec4f(0,0,0,0.5), x == 6u);
   return encodeStandardGBuffer(vec3f(0,0,1), vec3f(0,1,0), 0.25,
     vec3f(0.16,0.36,0.64), metallic, vec4f(0.01,0.04,0.16,0.35), 0.6,
-    vec3f(2,3,4), 1.0, 2u, 17u, x != 7u, 0x80000001u, vec4f(0), x == 6u);
+    vec3f(2,3,4), 1.0, 2u, 17u, x != 7u, 0x80000001u, profile, x == 6u, x == 4u);
 }
 @group(0) @binding(0) var color: texture_2d<f32>;
 @group(0) @binding(1) var normal: texture_2d<u32>;
@@ -112,6 +130,41 @@ struct Result { normal: vec4f, mixed: vec4f, dielectric: vec4f, facts: vec4f, ra
         targets: formats.map((format) => ({ format })),
       },
     });
+    const decalModule = device.createShaderModule({
+      code: await composeShader(
+        readFileSync(new URL('../decal-apply.wgsl', import.meta.url), 'utf8'),
+        {
+          'forgeax_pbr::gbuffer': readFileSync(
+            new URL('../standard-gbuffer.wgsl', import.meta.url),
+            'utf8',
+          ),
+        },
+        {},
+      ),
+    });
+    const decalPipeline = await device.createRenderPipelineAsync({
+      layout: 'auto',
+      vertex: { module: decalModule, entryPoint: 'vs_main' },
+      fragment: {
+        module: decalModule,
+        entryPoint: 'fs_main',
+        targets: composedFormats.map((format) => ({ format })),
+      },
+    });
+    const decalGroup = device.createBindGroup({
+      layout: decalPipeline.getBindGroupLayout(0),
+      entries: [
+        textures[1],
+        textures[3],
+        textures[2],
+        decalLayers[0],
+        decalLayers[1],
+        decalLayers[0],
+      ].map((texture, binding) => {
+        if (texture === undefined) throw new Error('Missing decal fixture input');
+        return { binding, resource: texture.createView() };
+      }),
+    });
     const reader = await device.createComputePipelineAsync({
       layout: 'auto',
       compute: { module, entryPoint: 'cs_read_surface' },
@@ -119,7 +172,12 @@ struct Result { normal: vec4f, mixed: vec4f, dielectric: vec4f, facts: vec4f, ra
     const group = device.createBindGroup({
       layout: reader.getBindGroupLayout(0),
       entries: [
-        ...textures.map((texture, binding) => ({ binding, resource: texture.createView() })),
+        ...[textures[0], composed[0], composed[2], composed[1], textures[4], textures[5]].map(
+          (texture, binding) => {
+            if (texture === undefined) throw new Error('Missing composed GBuffer fixture input');
+            return { binding, resource: texture.createView() };
+          },
+        ),
         { binding: 6, resource: depth.createView() },
         { binding: 7, resource: { buffer: output } },
       ],
@@ -153,6 +211,28 @@ struct Result { normal: vec4f, mixed: vec4f, dielectric: vec4f, facts: vec4f, ra
     pass.setPipeline(writer);
     pass.draw(3);
     pass.end();
+    encoder
+      .beginRenderPass({
+        colorAttachments: decalLayers.map((texture, index) => ({
+          view: texture.createView(),
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: index === 0 ? [0, 0, 0, 0] : [0, 1, 0, 1],
+        })),
+      })
+      .end();
+    const decal = encoder.beginRenderPass({
+      colorAttachments: composed.map((texture) => ({
+        view: texture.createView(),
+        loadOp: 'clear',
+        storeOp: 'store',
+        clearValue: [0, 0, 0, 0],
+      })),
+    });
+    decal.setPipeline(decalPipeline);
+    decal.setBindGroup(0, decalGroup);
+    decal.draw(3);
+    decal.end();
     const read = encoder.beginComputePass();
     read.setPipeline(reader);
     read.setBindGroup(0, group);
@@ -171,7 +251,7 @@ struct Result { normal: vec4f, mixed: vec4f, dielectric: vec4f, facts: vec4f, ra
         expect(Array.from(f.slice(at + 12, at + 16))).toEqual([0, 0.75, 0, 0]);
         continue;
       }
-      expect(f[at + 2]).toBeGreaterThan(0.999);
+      expect(f[at + 1]).toBeGreaterThan(0.999);
       expect(Math.abs((f[at + 3] ?? NaN) - 0.25)).toBeLessThan(1 / 510 + 1e-6);
       expect(Math.abs((f[at + 7] ?? NaN) - 0.6)).toBeLessThan(1 / 510 + 1e-6);
       expect(Math.abs((f[at + 11] ?? NaN) - 0.35)).toBeLessThan(1 / 510 + 1e-6);
@@ -189,11 +269,12 @@ struct Result { normal: vec4f, mixed: vec4f, dielectric: vec4f, facts: vec4f, ra
       expect(Array.from(f.slice(at + 12, at + 16))).toEqual([2, 0.5, 1, x === 6 ? 1 : 0]);
       expect(u[at + 16]).toBe(((2 << 24) | (x === 7 ? 1 << 23 : 0) | 17) >>> 0);
       expect(u[at + 18]).toBe(0x80000001);
+      expect((u[at + 19] ?? 0) >>> 16).toBe(x === 4 || x === 5 ? 3 : 1);
     }
     readback.unmap();
     expect(await device.popErrorScope()).toBeNull();
   } finally {
-    for (const texture of textures) texture.destroy();
+    for (const texture of [...textures, ...composed, ...decalLayers]) texture.destroy();
     depth.destroy();
     output.destroy();
     readback.destroy();
@@ -364,6 +445,135 @@ struct Output { normalRoughness: vec4f, facts: vec4f }
     readback.destroy();
     v1.destroy();
     v2.destroy();
+    device.destroy();
+  }
+});
+
+it('recovers signed scene depth from the actual Deferred reconstruction on Dawn', async () => {
+  const source = readFileSync(
+    new URL('../standard-deferred-lighting.wgsl', import.meta.url),
+    'utf8',
+  );
+  const reconstruction = source.match(
+    / {2}let homogeneous = [^;]+;\n {2}let position = [^;]+;/,
+  )?.[0];
+  const viewDepth = source.match(/ {2}let viewZ = [^;]+;/)?.[0];
+  if (reconstruction === undefined || viewDepth === undefined)
+    throw new Error('Deferred scene depth reconstruction is missing');
+
+  const near = 0.25;
+  const far = 512;
+  const perspective = mat4.perspectiveReverseZ(mat4.create(), 1.1, 1.6, near, far);
+  const shifted = mat4.clone(perspective);
+  shifted[8] = 0.2;
+  shifted[9] = -0.13;
+  const oblique = mat4.clone(shifted);
+  oblique[2] = 0.015;
+  oblique[6] = -0.01;
+  const infinite = mat4.perspectiveReverseZ(mat4.create(), 1.1, 1.6, near, Infinity);
+  const orthographic = mat4.orthographicReverseZ(mat4.create(), -8, 6, -5, 7, near, far);
+  const cameraPosition = [20, -6, 12] as const;
+  const viewMatrix = mat4.lookAt(mat4.create(), cameraPosition, [20, -6, 11], [0, 1, 0]);
+  const depths = [0.5, 3.5, 31.5, 247.5];
+  const inputs: number[] = [];
+  const expected: number[] = [];
+  for (const projection of [perspective, shifted, oblique, infinite, orthographic]) {
+    const worldViewProj = mat4.multiply(mat4.create(), projection, viewMatrix);
+    const inverseViewProj = mat4.invert(mat4.create(), worldViewProj);
+    for (const [index, depth] of depths.entries()) {
+      inputs.push(
+        ...worldViewProj,
+        ...inverseViewProj,
+        near,
+        far,
+        projection === orthographic ? 1 : 0,
+        0,
+        cameraPosition[0] + 0.025 * depth,
+        cameraPosition[1] + 0.015 * depth * (index % 2 === 0 ? 1 : -1),
+        cameraPosition[2] - depth,
+        1,
+      );
+      expected.push(-depth);
+    }
+  }
+
+  const code = await composeShader(
+    `
+#import forgeax_scene_temporal::{sceneViewZ, sceneFragmentViewZ}
+struct Projection {
+  worldViewProj: mat4x4f, inverseViewProj: mat4x4f, temporalProjection: vec4f, world: vec4f,
+}
+struct Pixel { position: vec4f }
+@group(0) @binding(0) var<storage, read> projections: array<Projection>;
+@group(0) @binding(1) var<storage, read_write> results: array<vec2f>;
+@compute @workgroup_size(1) fn testDepth(@builtin(global_invocation_id) id: vec3u) {
+  let view = projections[id.x];
+  let clip = view.worldViewProj * view.world;
+  let ndc = clip.xyz / clip.w;
+  let depth = ndc.z;
+  let in = Pixel(vec4f(11.5, 7.5, 0.0, 1.0));
+  ${reconstruction}
+  ${viewDepth}
+  let roundTrip = sceneViewZ(view.worldViewProj * vec4f(position, 1.0), view.temporalProjection);
+  results[id.x] = vec2f(viewZ, roundTrip);
+}`,
+    {
+      forgeax_scene_temporal: readFileSync(
+        new URL('../scene-temporal.wgsl', import.meta.url),
+        'utf8',
+      ),
+    },
+    {},
+  );
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter === null) throw new Error('Deferred scene depth requires a GPU adapter');
+  const device = await adapter.requestDevice();
+  const data = new Float32Array(inputs);
+  const input = device.createBuffer({
+    size: data.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  const output = device.createBuffer({
+    size: expected.length * 8,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+  });
+  const readback = device.createBuffer({
+    size: output.size,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  try {
+    device.queue.writeBuffer(input, 0, data);
+    const module = device.createShaderModule({ code });
+    const pipeline = await device.createComputePipelineAsync({
+      layout: 'auto',
+      compute: { module, entryPoint: 'testDepth' },
+    });
+    const group = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: input } },
+        { binding: 1, resource: { buffer: output } },
+      ],
+    });
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, group);
+    pass.dispatchWorkgroups(expected.length);
+    pass.end();
+    encoder.copyBufferToBuffer(output, 0, readback, 0, readback.size);
+    device.queue.submit([encoder.finish()]);
+    await readback.mapAsync(GPUMapMode.READ);
+    const observed = new Float32Array(readback.getMappedRange());
+    for (const [index, depth] of expected.entries()) {
+      expect(observed[index * 2]).toBeCloseTo(depth, 3);
+      expect(observed[index * 2 + 1]).toBeCloseTo(depth, 3);
+    }
+    readback.unmap();
+  } finally {
+    input.destroy();
+    output.destroy();
+    readback.destroy();
     device.destroy();
   }
 });

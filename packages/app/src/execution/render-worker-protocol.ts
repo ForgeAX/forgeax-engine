@@ -16,6 +16,12 @@ import type {
 import type { CaptureFrameOptions, RhiDebugError } from '@forgeax/engine-rhi-debug';
 import type { RhiRemoteCaptureCompletion } from '../internal/rhi-capture';
 import type {
+  ClosedLevelFrameChanges,
+  ClosedLevelFrameSelectionReceipt,
+  ClosedLevelRowReceipt,
+  ClosedLevelRowRequest,
+} from './closed-level-row-protocol';
+import type {
   ExecutionFrameCompletion,
   ExecutionFrameSubmitted,
   ExecutionInitMessage,
@@ -39,9 +45,16 @@ export interface MeshResidencyFailure {
 
 export type MeshResidencyRequest =
   | {
+      readonly kind: 'mesh-reserve';
+      readonly requestId: number;
+      readonly identity: RenderPublicationIdentity;
+      readonly bytes: number;
+    }
+  | {
       readonly kind: 'mesh-prepare';
       readonly requestId: number;
       readonly input: PublishedMeshPreparation;
+      readonly reserved?: true;
       readonly entity?: number;
     }
   | {
@@ -51,7 +64,7 @@ export type MeshResidencyRequest =
       readonly evict: boolean;
     };
 export type MeshResidencyResponse = {
-  readonly kind: 'mesh-ready' | 'mesh-released';
+  readonly kind: 'mesh-reserved' | 'mesh-ready' | 'mesh-retired' | 'mesh-released';
   readonly requestId: number;
   readonly identity: RenderPublicationIdentity;
   readonly result:
@@ -93,7 +106,19 @@ export type RenderWorkerInput =
       readonly worldIdentity: string;
     }
   | { readonly kind: 'hdr-observe-cancel'; readonly requestId: number }
+  | {
+      readonly kind: 'viewport-hit';
+      readonly requestId: number;
+      readonly identity: RenderPublicationIdentity;
+      readonly request: import('@forgeax/engine-render').ViewportHitRequest;
+    }
+  | { readonly kind: 'viewport-hit-cancel'; readonly requestId: number }
   | MeshResidencyRequest
+  | ClosedLevelRowRequest
+  | {
+      readonly kind: 'stage-shader-manifest';
+      readonly url?: string;
+    }
   | (Pick<
       ExecutionInitMessage,
       | 'startup'
@@ -107,7 +132,9 @@ export type RenderWorkerInput =
       | 'pipelineLibrary'
       | 'backgroundPipelineLibrary'
       | 'backgroundPipelineLibraryConcurrency'
+      | 'viewportHitWarmup'
       | 'dynamicGeometryMeshBudgetBytes'
+      | 'staticShadowBudgetBytes'
       | 'assetBudgetBytes'
       | 'featureTextureReadbackBudgetBytes'
       | 'textureMipSkip'
@@ -138,6 +165,7 @@ export type RenderWorkerInput =
       readonly width: number;
       readonly height: number;
       readonly publication: RenderPublicationMessage;
+      readonly groupSelection?: ClosedLevelFrameChanges;
       readonly sourceFixedStep: number;
       /** Engine Worker World update milliseconds for this published frame. */
       readonly engineUpdateMs?: number;
@@ -176,6 +204,12 @@ export type RenderWorkerInput =
     }
   | { readonly kind: 'dispose' };
 export type RenderWorkerOutput =
+  | {
+      readonly kind: 'viewport-hit-result';
+      readonly requestId: number;
+      readonly identity: RenderPublicationIdentity;
+      readonly result: import('@forgeax/engine-render').ViewportHitResult;
+    }
   | import('../configuration-apply').ConfigurationApplyResponse
   | {
       readonly kind: 'geometry-observation-result';
@@ -192,6 +226,8 @@ export type RenderWorkerOutput =
       readonly result: import('./types').ExecutionHdrObservationResult;
     }
   | MeshResidencyResponse
+  | ClosedLevelRowReceipt
+  | ClosedLevelFrameSelectionReceipt
   | {
       readonly kind: 'inspect-result';
       readonly requestId: number;

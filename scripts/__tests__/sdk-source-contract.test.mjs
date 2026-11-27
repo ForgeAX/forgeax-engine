@@ -96,7 +96,7 @@ test('SDK template discovery fails closed on orphan and invalid descriptors', as
 });
 
 test('SDK source contract keeps the source root and prebuilt WASM closure explicit', () => {
-  assert.equal(SDK_MANIFEST_VERSION, '1.11.0');
+  assert.equal(SDK_MANIFEST_VERSION, '1.12.0');
   assert.equal(SDK_SOURCE_FORMAT, 'git-archive-public-snapshot');
   assert.deepEqual(SDK_SOURCE_EXCLUDED_PATHS, [
     '.gitmodules',

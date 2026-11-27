@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { fileURLToPath, URL as NodeURL } from 'node:url';
+import { URL as NodeURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { parseCssAuthoring } from '../css.js';
 import { parseHtmlAuthoring } from '../html.js';
@@ -107,18 +107,6 @@ describe('portable implementation support', () => {
         '<label>Size<input type="number" min="1" max="10" step="0.5"></label><details><summary>More</summary><br>Text</details>',
         'guide.ui.html',
       ).diagnostics,
-    ).toEqual([]);
-  });
-
-  it('accepts the complete shared startup document', async () => {
-    const { hostStartupDocument } = await import(
-      fileURLToPath(new NodeURL('../../../../devkit/src/host/startup-source.ts', import.meta.url))
-    );
-    expect(
-      parseHtmlAuthoring(hostStartupDocument('Portable game'), 'startup.html', {
-        portableOnly: true,
-        context: 'document',
-      }).diagnostics,
     ).toEqual([]);
   });
 

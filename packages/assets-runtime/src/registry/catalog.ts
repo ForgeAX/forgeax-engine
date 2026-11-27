@@ -1,29 +1,16 @@
-import { decodeCatalogWire } from '@forgeax/engine-pack/runtime';
+import {
+  type CatalogNavigationRow,
+  decodeCatalogWire,
+  readCatalogNavigationRow,
+} from '@forgeax/engine-pack/runtime';
 import { err, ok, type Result } from '@forgeax/engine-rhi';
 import {
   ASSET_ERROR_HINTS,
-  type AssetAuthoringCapability,
   AssetError,
-  type AssetPublicationEnvelope,
-  type AssetRelation,
-  type CatalogDiagnostic,
-  type CatalogEntry,
-  type CatalogProjection,
-  type ProviderProvenance,
   type ResourceRevision,
   type RuntimeAssetBinding,
-  type SourceOverrideDescriptor,
-  type SourceOverrideMap,
 } from '@forgeax/engine-types';
 import { jsonOf, type PackageFetcher, readPackage } from '../internal/package-read.js';
-
-/**
- * Runtime catalog row parsed from the shared pack-index POD shape. GUID is the
- * catalog key, and inline assets have no source declaration to navigate.
- */
-type CatalogRecord = Omit<CatalogEntry, 'guid' | 'sourcePath'> & {
-  readonly sourcePath?: string;
-};
 
 function parseError(
   expected: string,
@@ -47,10 +34,12 @@ function sameRevision(left: ResourceRevision, right: ResourceRevision): boolean 
 }
 
 export function checkExpectedRevision(
-  records: readonly CatalogRecord[],
+  records: readonly Pick<CatalogNavigationRow, 'revision'>[],
   expectedRevision: ResourceRevision | undefined,
+  requireObservation = false,
 ): AssetError | undefined {
-  if (expectedRevision === undefined || records.length === 0) return undefined;
+  if (expectedRevision === undefined || (!requireObservation && records.length === 0))
+    return undefined;
   const actualRevisions = records.flatMap((record) =>
     record.revision === undefined ? [] : [record.revision],
   );
@@ -61,7 +50,9 @@ export function checkExpectedRevision(
     return undefined;
   }
   return parseError(
-    'every catalog entry to carry the expected producer revision',
+    requireObservation
+      ? 'static catalog entries to carry the expected producer revision'
+      : 'every catalog entry to carry the expected producer revision',
     { expectedRevision, actualRevisions },
     'restore a verified catalog revision before applying the source',
   );
@@ -81,15 +72,6 @@ export function resolveCatalogAssetUrl(
   } catch {
     return packageUrl;
   }
-}
-
-function isRawSourceLocator(packageUrl: string): boolean {
-  const path = packageUrl.split(/[?#]/, 1)[0]?.toLowerCase() ?? packageUrl.toLowerCase();
-  if (path.endsWith('.pack.json')) return false;
-  return (
-    /\.(bin|fbx|gltf|glb|hdr|jpg|jpeg|png|wav|mp3|ogg|ttf|otf|woff|woff2|svg)$/.test(path) ||
-    path.endsWith('.particle-effect.json')
-  );
 }
 
 function scopedSnapshotError(
@@ -129,73 +111,8 @@ function scopedSnapshotError(
   return undefined;
 }
 
-interface CatalogRowIdentity {
-  readonly rawRow: Record<string, unknown>;
-  readonly guid: string;
-  readonly packageUrl: string;
-  readonly kind: string;
-}
-
-/** A row must be a navigation-only object naming a cooked package by GUID and kind. */
-function catalogRowIdentity(item: unknown): Result<CatalogRowIdentity, AssetError> {
-  if (item === null || typeof item !== 'object') {
-    return err(parseError('each catalog row to be an object'));
-  }
-  const rawRow = item as Record<string, unknown>;
-  const legacyLocator = ['relative', 'Url'].join('');
-  if (
-    legacyLocator in rawRow ||
-    'metadata' in rawRow ||
-    'compression' in rawRow ||
-    'artifacts' in rawRow ||
-    'assetCodec' in rawRow ||
-    'contentEncoding' in rawRow
-  ) {
-    return err(parseError('catalog rows to expose navigation fields only'));
-  }
-  const { guid, packageUrl, kind } = rawRow;
-  if (
-    typeof guid !== 'string' ||
-    guid.length === 0 ||
-    typeof packageUrl !== 'string' ||
-    packageUrl.length === 0 ||
-    typeof kind !== 'string' ||
-    kind.length === 0
-  ) {
-    return err(parseError('each catalog row to contain guid, packageUrl, and kind strings'));
-  }
-  if (isRawSourceLocator(packageUrl)) {
-    return err(parseError(`catalog packageUrl ${packageUrl} to identify a cooked package`));
-  }
-  return ok({ rawRow, guid, packageUrl, kind });
-}
-
-function catalogRowFieldError(
-  rawRow: Record<string, unknown>,
-  guid: string,
-): AssetError | undefined {
-  const refs = rawRow.refs;
-  if (refs !== undefined && (!Array.isArray(refs) || !refs.every((ref) => typeof ref === 'string')))
-    return parseError(`catalog refs for GUID ${guid} to be a string array`);
-  if (
-    rawRow.sourceOverrides !== undefined &&
-    (rawRow.sourceOverrides === null ||
-      typeof rawRow.sourceOverrides !== 'object' ||
-      Array.isArray(rawRow.sourceOverrides))
-  ) {
-    return parseError(`catalog sourceOverrides for GUID ${guid} to be an object`);
-  }
-  if (
-    rawRow.sourceOverrideDescriptors !== undefined &&
-    !Array.isArray(rawRow.sourceOverrideDescriptors)
-  ) {
-    return parseError(`catalog sourceOverrideDescriptors for GUID ${guid} to be an array`);
-  }
-  return undefined;
-}
-
 function resolveRowUrl(
-  identity: CatalogRowIdentity,
+  identity: Pick<CatalogNavigationRow, 'guid' | 'packageUrl'>,
   resolveUrl: (packageUrl: string) => string,
 ): Result<string, AssetError> {
   try {
@@ -210,123 +127,34 @@ function resolveRowUrl(
   }
 }
 
-function catalogNavigationFields(
-  rawRow: Record<string, unknown>,
-): Pick<
-  CatalogRecord,
-  'authoring' | 'name' | 'sourcePath' | 'refs' | 'cookReceiptUrl' | 'packageId'
-> {
-  return {
-    ...(rawRow.authoring !== undefined
-      ? { authoring: rawRow.authoring as AssetAuthoringCapability }
-      : {}),
-    ...(typeof rawRow.name === 'string' ? { name: rawRow.name } : {}),
-    ...(typeof rawRow.sourcePath === 'string' ? { sourcePath: rawRow.sourcePath } : {}),
-    ...(rawRow.refs !== undefined ? { refs: rawRow.refs as readonly string[] } : {}),
-    ...(typeof rawRow.cookReceiptUrl === 'string' ? { cookReceiptUrl: rawRow.cookReceiptUrl } : {}),
-    ...(typeof rawRow.packageId === 'string' ? { packageId: rawRow.packageId } : {}),
-  };
-}
-
-function catalogProvenanceFields(
-  rawRow: Record<string, unknown>,
-): Pick<
-  CatalogRecord,
-  | 'provenance'
-  | 'revision'
-  | 'sourceKey'
-  | 'sourceIndex'
-  | 'sourceOverrides'
-  | 'sourceOverrideDescriptors'
-  | 'relations'
-  | 'diagnostics'
-> {
-  return {
-    ...(rawRow.provenance !== undefined
-      ? { provenance: rawRow.provenance as ProviderProvenance }
-      : {}),
-    ...(rawRow.revision !== undefined ? { revision: rawRow.revision as ResourceRevision } : {}),
-    ...(typeof rawRow.sourceKey === 'string' ? { sourceKey: rawRow.sourceKey } : {}),
-    ...(typeof rawRow.sourceIndex === 'number' ? { sourceIndex: rawRow.sourceIndex } : {}),
-    ...(rawRow.sourceOverrides !== undefined
-      ? { sourceOverrides: rawRow.sourceOverrides as SourceOverrideMap }
-      : {}),
-    ...(rawRow.sourceOverrideDescriptors !== undefined
-      ? {
-          sourceOverrideDescriptors:
-            rawRow.sourceOverrideDescriptors as readonly SourceOverrideDescriptor[],
-        }
-      : {}),
-    ...(Array.isArray(rawRow.relations)
-      ? { relations: rawRow.relations as readonly AssetRelation[] }
-      : {}),
-    ...(Array.isArray(rawRow.diagnostics)
-      ? { diagnostics: rawRow.diagnostics as readonly CatalogDiagnostic[] }
-      : {}),
-  };
-}
-
-function catalogLifecycleFields(
-  rawRow: Record<string, unknown>,
-): Pick<CatalogRecord, 'subject' | 'execution' | 'lifecycle' | 'projection' | 'publication'> {
-  return {
-    ...(rawRow.subject === 'internal-asset' || rawRow.subject === 'imported-output'
-      ? { subject: rawRow.subject }
-      : {}),
-    ...(rawRow.execution === 'direct' || rawRow.execution === 'cooked'
-      ? { execution: rawRow.execution }
-      : {}),
-    ...(rawRow.lifecycle === 'missing' ||
-    rawRow.lifecycle === 'cooking' ||
-    rawRow.lifecycle === 'current' ||
-    rawRow.lifecycle === 'stale' ||
-    rawRow.lifecycle === 'failed'
-      ? { lifecycle: rawRow.lifecycle }
-      : {}),
-    ...(rawRow.projection !== undefined
-      ? { projection: rawRow.projection as CatalogProjection }
-      : {}),
-    ...(rawRow.publication !== undefined
-      ? { publication: rawRow.publication as AssetPublicationEnvelope }
-      : {}),
-  };
-}
-
 /** Parse the shared pack-index/catalog wire shape without loading payloads. */
 export function parseCatalog(
   raw: unknown,
   resolveUrl: (packageUrl: string) => string = (packageUrl) => packageUrl,
   expectedRevision?: ResourceRevision,
   expectedScope?: Pick<RuntimeAssetBinding, 'scopeId' | 'generation'>,
-): Result<Map<string, CatalogRecord>, AssetError> {
+): Result<readonly CatalogNavigationRow[], AssetError> {
   if (expectedScope !== undefined) {
     const scopeError = scopedSnapshotError(raw, expectedScope);
     if (scopeError !== undefined) return err(scopeError);
   }
   const decoded = decodeCatalogWire(raw);
   if (!decoded.ok) return decoded;
-  const rows: readonly unknown[] = decoded.value;
-
-  const catalog = new Map<string, CatalogRecord>();
-  for (const item of rows) {
-    const identity = catalogRowIdentity(item);
-    if (!identity.ok) return identity;
-    const { rawRow, guid: rawGuid } = identity.value;
+  const catalog: CatalogNavigationRow[] = [];
+  const guids = new Set<string>();
+  for (const item of decoded.value) {
+    const parsed = readCatalogNavigationRow(item);
+    if (!parsed.ok) return parsed;
+    const row = parsed.value;
+    const rawGuid = row.guid;
     const guid = rawGuid.toLowerCase();
-    if (catalog.has(guid)) return err(parseError(`catalog GUID ${rawGuid} to be unique`));
-    const fieldError = catalogRowFieldError(rawRow, rawGuid);
-    if (fieldError !== undefined) return err(fieldError);
-    const resolvedUrl = resolveRowUrl(identity.value, resolveUrl);
+    if (guids.has(guid)) return err(parseError(`catalog GUID ${rawGuid} to be unique`));
+    const resolvedUrl = resolveRowUrl(parsed.value, resolveUrl);
     if (!resolvedUrl.ok) return resolvedUrl;
-    catalog.set(guid, {
-      packageUrl: resolvedUrl.value,
-      kind: identity.value.kind,
-      ...catalogNavigationFields(rawRow),
-      ...catalogProvenanceFields(rawRow),
-      ...catalogLifecycleFields(rawRow),
-    });
+    guids.add(guid);
+    catalog.push({ ...row, guid, packageUrl: resolvedUrl.value });
   }
-  const revisionError = checkExpectedRevision([...catalog.values()], expectedRevision);
+  const revisionError = checkExpectedRevision(catalog, expectedRevision);
   if (revisionError !== undefined) return err(revisionError);
   return ok(catalog);
 }
@@ -342,7 +170,7 @@ export async function fetchCatalog(
 ): Promise<
   Result<
     {
-      readonly entries: Map<string, CatalogRecord>;
+      readonly entries: readonly CatalogNavigationRow[];
       readonly scope?: Pick<RuntimeAssetBinding, 'scopeId' | 'generation'>;
     },
     AssetError

@@ -16,14 +16,14 @@ const TERRAIN_DEFINES = {
 
 /** Both built-in manifests and Pack cooking derive the fixed Terrain composition here. */
 export function terrainProgramSource(identifier: string) {
-  const selected = /^forgeax::standard-terrain(-ids)?(-shadow)?$/.exec(identifier);
+  const selected = /^forgeax::standard-terrain(-ids|-detail)?(-shadow)?$/.exec(identifier);
   if (selected === null) return undefined;
   return {
     module:
       selected[2] === undefined
         ? 'forgeax::default-standard-pbr'
         : 'forgeax::default-shadow-caster',
-    surface: `forgeax_material::terrain${selected[1] === undefined ? '' : '_id'}_surface`,
+    surface: `forgeax_material::terrain${selected[1] === '-ids' ? '_id' : selected[1] === '-detail' ? '_detail' : ''}_surface`,
     defines: TERRAIN_DEFINES,
   };
 }

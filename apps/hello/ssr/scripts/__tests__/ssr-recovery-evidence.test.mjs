@@ -21,7 +21,7 @@ const recoveredInspection = () => ({
       deviceGeneration: 1,
     },
   },
-  ssr: { status: 'admitted', history: { state: 'stable', bytes: 393216 } },
+  ssr: { status: 'admitted', passRoster: ['ssr-trace', 'ssr-compose'] },
   ssrDependencies: { temporal: { successfulSubmit: true, generation: 1 } },
 });
 
@@ -79,8 +79,8 @@ test('a matching receipt cannot establish recovery without a new device generati
 
 for (const [name, mutate] of [
   ['unadmitted SSR', (inspection) => { inspection.ssr.status = 'off'; }],
-  ['unstable history', (inspection) => { inspection.ssr.history.state = 'reset'; }],
-  ['empty history', (inspection) => { inspection.ssr.history.bytes = 0; }],
+  ['missing trace', (inspection) => { inspection.ssr.passRoster = ['ssr-compose']; }],
+  ['missing composition', (inspection) => { inspection.ssr.passRoster = ['ssr-trace']; }],
   ['missing temporal receipt', (inspection) => {
     inspection.ssrDependencies.temporal = undefined;
   }],

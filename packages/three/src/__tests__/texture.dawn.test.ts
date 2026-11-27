@@ -1,5 +1,5 @@
 import { WebGPURenderer } from '@forgeax/engine/three';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, it } from 'vitest';
 import { offscreenCanvas } from '../../../runtime/src/__tests__/hdr-evidence.fixture';
 import { observeNativeDeviceRequests } from '../../../runtime/src/__tests__/native-device-work.fixture';
@@ -14,7 +14,7 @@ async function createTextureRenderer() {
   const renderer = new WebGPURenderer({
     canvas: target.canvas as unknown as OffscreenCanvas,
     forgeax: {
-      bundler: { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()) },
+      bundler: { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()) },
     },
   });
   return { target, renderer };

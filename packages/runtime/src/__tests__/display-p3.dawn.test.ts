@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import type { OutputColorSpace, Renderer } from '@forgeax/engine-render';
 import { attachRecorder, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { describe, expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import {
@@ -15,7 +15,7 @@ import {
 import { encodeRgbaPng } from './hdr-evidence.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 const root = 'artifacts/pr-evidence/display-p3/dawn';
 
 /**

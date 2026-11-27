@@ -4,6 +4,7 @@ import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { computeDisplayScreenRay } from '../../picking/src/display-picking';
 import { createCleanupEvidenceWriter } from './render-worker-cleanup-evidence';
+import { verifyRenderWorkerMultiCamera } from './render-worker-multi-camera.fixture';
 
 async function fixture(
   data: { stallMs?: number; cleanupMs?: number; fail?: boolean; holdFirstCompletion?: boolean; cleanupEvidence?: boolean },
@@ -65,6 +66,7 @@ async function fixture(
     channel,
     messages,
     submitted,
+    completed,
     readyFrame() {
       const ready = completed.find(frame => frame.presentation === 'ready');
       return ready && submitted.find(frame => frame.frameId === ready.frameId && frame.deviceGeneration === ready.deviceGeneration);
@@ -103,8 +105,12 @@ it('submits and executes two frames before the oldest receipt retires without ad
       .toEqual([1, 2]);
     // The second real GPU frame is done, but the older composite receipt is held.
     await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(f.app.execution?.report().frame.completed).toBe(2);
-    expect(f.app.execution?.report().render?.completedFrame).toBe(0);
+    await expect
+      .poll(() => f.app.execution?.report().frame.completed, { timeout: 30_000 })
+      .toBeGreaterThan(2);
+    expect(f.app.execution?.report().render).toMatchObject({ submittedFrame: 2, completedFrame: 0 });
+    expect(f.submitted.map((frame) => frame.frameId)).toEqual([1, 2]);
+    expect(f.app.execution?.report().frame.highWater).toBe(2);
     expect(f.messages.filter((row) => row.kind === 'sealed').map((row) => row.tick)).toEqual([
       1, 2,
     ]);
@@ -114,12 +120,17 @@ it('submits and executes two frames before the oldest receipt retires without ad
       .poll(() => f.app.execution?.report().render?.completedFrame, { timeout: 30_000 })
       .toBe(2);
     expect(f.app.lastError).toBeUndefined();
+    const lastCompletedSimulation = f.app.execution?.report().frame.completed ?? 2;
     f.app.resume().unwrap();
-    await expect
-      .poll(() => f.app.execution?.report().render?.completedFrame, { timeout: 30_000 })
-      .toBeGreaterThanOrEqual(4);
+    await expect.poll(() => f.completed.length, { timeout: 30_000 }).toBeGreaterThanOrEqual(4);
     f.app.pause().unwrap();
-    expect(f.submitted.slice(0, 4).map((frame) => frame.frameId)).toEqual([1, 2, 3, 4]);
+    const submitted = f.submitted.slice(0, 4).map((frame) => frame.frameId);
+    expect(submitted.slice(0, 2)).toEqual([1, 2]);
+    expect(submitted[2]).toBeGreaterThan(lastCompletedSimulation);
+    const [, , firstResumed, secondResumed] = submitted;
+    if (firstResumed === undefined || secondResumed === undefined) throw new Error('Missing resumed pictures');
+    expect(secondResumed).toBeGreaterThan(firstResumed);
+    expect(f.completed.slice(0, 4).map((frame) => frame.frameId)).toEqual(submitted);
     expect(f.app.lastError).toBeUndefined();
   } finally {
     f.releaseFirstFrame();
@@ -128,7 +139,8 @@ it('submits and executes two frames before the oldest receipt retires without ad
 }, 90_000);
 
 it('overlaps exactly one sealed successor, stays responsive beyond the admission timeout, and drains cleanup', async () => {
-  const f = await fixture({ stallMs: 3000, cleanupMs: 50, cleanupEvidence: true });
+  const stallMs = 3000;
+  const f = await fixture({ holdFirstCompletion: true, cleanupMs: 50, cleanupEvidence: true });
   try {
     f.app.start().unwrap();
     await expect
@@ -137,30 +149,63 @@ it('overlaps exactly one sealed successor, stays responsive beyond the admission
     expect(f.app.execution?.report().render?.completedFrame).toBe(0);
     f.channel.port1.postMessage('mutate-sealed-source');
     await expect.poll(() => f.messages.some((row) => row.kind === 'mutated')).toBe(true);
+    // Sealing happens before the Render Worker prepares and submits a picture.
+    // Start the timed receipt stall after both submissions have reached Host.
+    await expect
+      .poll(() => f.submitted.map((frame) => frame.frameId), { timeout: 10_000 })
+      .toEqual([1, 2]);
+    const stalledUntil = performance.now() + stallMs;
     await new Promise((resolve) => setTimeout(resolve, 2100));
-    expect(f.app.execution?.report().frame.completed).toBe(2);
+    const stalled = f.app.execution?.report();
+    expect(stalled?.frame.completed).toBeGreaterThan(2);
+    expect(stalled?.render?.submittedFrame).toBe(2);
+    expect(f.submitted.map((frame) => frame.frameId)).toEqual([1, 2]);
     expect(f.messages.filter((row) => row.kind === 'sealed').map((row) => row.tick)).toEqual([
       1, 2,
     ]);
     expect(f.app.lastError).toBeUndefined();
     expect(f.app.execution?.report().render?.completedFrame).toBe(0);
     f.app.pause().unwrap();
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, stalledUntil - performance.now())));
+    f.releaseFirstFrame();
     await expect
       .poll(() => f.messages.find((row) => row.kind === 'feedback' && row.value?.tick === 2), {
         timeout: 30_000,
       })
       .toMatchObject({ value: { tick: 2, marker: 2 } });
     expect(f.messages.filter((row) => row.kind === 'sealed')).toHaveLength(2);
+    const lastCompletedSimulation = f.app.execution?.report().frame.completed ?? 2;
     f.app.resume().unwrap();
-    await expect
-      .poll(() => f.app.execution?.report().render?.completedFrame, { timeout: 30_000 })
-      .toBeGreaterThanOrEqual(3);
+    const resumeDeadline = performance.now() + 30_000;
+    await expect.poll(() => f.completed.length, { timeout: 30_000 }).toBeGreaterThanOrEqual(3);
     f.app.pause().unwrap();
-    const report = f.app.execution?.report();
-    expect(
-      (report?.frame.submitted ?? 0) - (report?.render?.completedFrame ?? 0),
-    ).toBeLessThanOrEqual(2);
-    expect(f.submitted.slice(0, 3).map((frame) => frame.frameId)).toEqual([1, 2, 3]);
+    expect(f.app.execution?.report().frame.highWater).toBe(2);
+    expect(f.submitted.slice(0, 2).map((frame) => frame.frameId)).toEqual([1, 2]);
+    expect(f.submitted[2]?.frameId).toBeGreaterThan(lastCompletedSimulation);
+    // Wait for all issued simulation steps to seal their pictures. Then read
+    // the source's witness through that same ordered port before draining GPU receipts.
+    await expect
+      .poll(() => f.app.execution?.report().frame.inFlight, {
+        timeout: Math.max(1, resumeDeadline - performance.now()),
+      })
+      .toBe(0);
+    f.channel.port1.postMessage('observe-sealed-source');
+    await expect
+      .poll(() => f.messages.some((row) => row.kind === 'observed-sealed-source'), {
+        timeout: Math.max(1, resumeDeadline - performance.now()),
+      })
+      .toBe(true);
+    const sealed = f.messages.flatMap((row) =>
+      row.kind === 'sealed' && row.tick !== undefined ? [row.tick] : [],
+    );
+    const retiredFrame = f.app.execution?.report().render?.completedFrame;
+    if (retiredFrame === undefined) throw new Error('Missing Render Worker report');
+    expect(sealed.filter((frameId) => frameId > retiredFrame).length).toBeLessThanOrEqual(2);
+    await expect
+      .poll(() => f.completed.length, { timeout: Math.max(1, resumeDeadline - performance.now()) })
+      .toBe(sealed.length);
+    expect(f.submitted.map((frame) => frame.frameId)).toEqual(sealed);
+    expect(f.completed.map((frame) => frame.frameId)).toEqual(sealed);
     if (f.app.remoteEval === undefined) throw new Error('Missing public eval owner');
     const pending = f.app.remoteEval('await new Promise(() => {})');
     const rejected = pending.catch((cause: unknown) => cause);
@@ -188,6 +233,7 @@ it('overlaps exactly one sealed successor, stays responsive beyond the admission
     }
     throw cause;
   } finally {
+    f.releaseFirstFrame();
     (await f.dispose()).unwrap();
   }
 }, 90_000);
@@ -265,3 +311,9 @@ it.each([
     await f.dispose();
   }
 }, 90_000);
+
+it(
+  'keeps multi-camera pixels, cadence and source ownership through actual Render Worker replacement',
+  verifyRenderWorkerMultiCamera,
+  240_000,
+);

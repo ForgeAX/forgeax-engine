@@ -22,6 +22,9 @@ const [{ parseImage }, { AssetGuid }, { definePackageId }, { runUnifiedCli }] = 
 const root = await realpath(await mkdtemp(join(tmpdir(), 'forgeax-independent-run-')));
 process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST = '/missing-contributor-cache-must-not-affect-run';
 process.env.FORGEAX_RUNS_DIR = await realpath(await mkdtemp(join(tmpdir(), 'forgeax-run-state-')));
+// Both snapshots independently boot from authored inputs. Their task-local
+// cache can reuse identical Pack builds while changed inputs get a new key.
+process.env.FORGEAX_BUILD_CACHE_DIR = join(process.env.FORGEAX_RUNS_DIR, 'build-cache');
 // The full SDK version footer wraps at the lightweight width. Reserve room
 // below both authored UI panels so it cannot cover their exact color oracles.
 if (process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') {

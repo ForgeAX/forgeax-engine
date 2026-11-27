@@ -50,7 +50,7 @@ export async function productionShadowFixture(count = 3, cascades = 3) {
     ...standardPbrInputs(device, shader, viewLayout),
     scene: {
       scene,
-      plan: topology.query(topology.sourcePlan(), undefined),
+      plan: topology.query(topology.sourcePlan(), undefined).active,
       slots: projection.slotsSnapshot(),
       slotAt: projection.slotAt,
     },
@@ -70,7 +70,7 @@ export async function productionShadowFixture(count = 3, cascades = 3) {
     scene.sync(delta, undefined, (slot) => projection.cullingWorldBoundsAt(slot)).unwrap();
     input.scene = {
       scene,
-      plan: topology.query(topology.sourcePlan(), undefined),
+      plan: topology.query(topology.sourcePlan(), undefined).active,
       slots: projection.slotsSnapshot(),
       slotAt: projection.slotAt,
     };

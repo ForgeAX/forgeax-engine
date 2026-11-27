@@ -1,5 +1,5 @@
 import { decodeMeshBinary } from '@forgeax/engine-geometry';
-import { ImporterRegistry, runImport } from '@forgeax/engine-import';
+import { ImporterRegistry, projectImportPack, runImport } from '@forgeax/engine-import';
 import { describe, expect, it } from 'vitest';
 import { gltfImporter } from '../gltf-importer';
 
@@ -99,7 +99,7 @@ async function decodedMeshes(meshes: readonly (readonly Primitive[])[], material
   const result = await produce(meshes, materialCount);
   if (!result.ok) throw result.error;
   if ('skipped' in result.value) throw new Error('expected mesh products');
-  const { assets } = result.value.pack;
+  const { assets } = projectImportPack(result.value.product);
   return GUIDS.slice(0, meshes.length).map((guid) => {
     const row = assets.find((asset) => asset.guid === guid);
     const bytes = row?.artifacts.body?.bytes;

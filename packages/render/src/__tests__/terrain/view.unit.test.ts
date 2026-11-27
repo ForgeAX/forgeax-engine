@@ -1,4 +1,4 @@
-import { terrainHeightBounds, terrainSurfaceVertex } from '@forgeax/engine-terrain';
+import { terrainHeightBounds, terrainLod, terrainSurfaceVertex } from '@forgeax/engine-terrain';
 import { cookTerrain } from '@forgeax/engine-terrain/cook';
 import { expect, it } from 'vitest';
 import { captureMaterialSnapshot, MaterialResource } from '../../material-resource';
@@ -10,7 +10,7 @@ import {
   type ExtractedFrame,
   type RenderableSnapshot,
 } from '../../render-system-extract.js';
-import { MaterialFrame } from '../../scene/material-dispatch';
+import { MaterialFrame, materialPasses } from '../../scene/material-dispatch';
 import type { StandardSceneSurfaceAdmission } from '../../temporal/scene-data';
 import {
   createStandardSceneSurfaceAdmission,
@@ -20,6 +20,7 @@ import {
 } from '../../temporal/standard-scene-data-admission';
 import type { TerrainLayers } from '../../terrain/layers';
 import { terrainDrawSection } from '../../terrain/source';
+import { captureSubmittedTerrain } from '../../terrain/submitted';
 import { projectTerrainView, terrainSectionKey } from '../../terrain/view.js';
 import { runtimeTerrainFixture, terrainViewPreparation } from './runtime-fixture';
 
@@ -129,6 +130,30 @@ it('derives each view and boundary LOD from one terrain entity without adopting 
       worldRenderResources(fixture.world),
       ...terrainViewPreparation(fixture.assets),
     ).frame;
+  const maxLod = defined(near.renderables.at(0)?.terrainSection).source.grids.length - 1;
+  const spans = [15, 63];
+  for (const span of spans) {
+    const ortho = {
+      ...camera(100),
+      projection: 'orthographic' as const,
+      orthoTop: span / 2,
+      orthoBottom: -span / 2,
+    };
+    const result = projectTerrainView(
+      { ...frame(100), cameras: [ortho] },
+      accepted,
+      materials,
+      worldRenderResources(fixture.world),
+      ...terrainViewPreparation(fixture.assets),
+    );
+    const expected = Math.fround(
+      terrainLod(7 / span, defined(source.terrain).lod0Diameter, maxLod),
+    );
+    for (const row of result.frame.renderables) {
+      expect(row.terrainSection?.lod).toBe(expected);
+      expect(row.terrainSection?.neighbors).toEqual([expected, expected, expected, expected]);
+    }
+  }
   for (const section of near.renderables) {
     const acceptedMaterial = defined(projected.materials.get(section.material));
     expect(materials.get(section.material)).toBeUndefined();
@@ -226,7 +251,7 @@ it('reuses only the accepted owned Terrain material for matching parameters and 
   );
   expect(nearBySection.size).toBe(2);
   const material = defined(nearBySection.get(0)).material;
-  const projectionFacts = defined(nearBySection.get(0)).terrainSection?.projectionFacts;
+  const acceptedSection = defined(nearBySection.get(0)?.terrainSection);
   const materialSnapshot = material.snapshot;
   const acceptedMaterial = nearProjection.materials.get(material);
   expect(material.ownsValues(materialSnapshot)).toBe(true);
@@ -240,13 +265,12 @@ it('reuses only the accepted owned Terrain material for matching parameters and 
   expect(resolveCalls - callsBeforeStableHit).toBe(2);
   for (const row of same.frame.renderables) {
     expect(row.material).toBe(nearBySection.get(defined(row.terrainSection).index)?.material);
-    expect(row.terrainSection?.projectionFacts).toBe(projectionFacts);
     expect(row.terrainSection).toBe(
       nearBySection.get(defined(row.terrainSection).index)?.terrainSection,
     );
   }
-  expect(Object.isFrozen(projectionFacts)).toBe(true);
-  expect(Object.isFrozen(projectionFacts?.sections)).toBe(true);
+  expect(Object.isFrozen(acceptedSection)).toBe(true);
+  expect(Object.isFrozen(acceptedSection.neighbors)).toBe(true);
   expect(same.materials.get(material)).toBe(acceptedMaterial);
 
   // An unsubmitted far-camera candidate changes LOD but cannot replace the
@@ -255,6 +279,19 @@ it('reuses only the accepted owned Terrain material for matching parameters and 
   const farSection = defined(far.renderables.find((row) => row.terrainSection?.index === 0));
   expect(farSection.terrainSection?.lod).not.toBe(nearBySection.get(0)?.terrainSection?.lod);
   expect(farSection.material).not.toBe(material);
+  const nearPasses = materialPasses(materialSnapshot);
+  expect(materialPasses(farSection.material.snapshot)).toBe(nearPasses);
+  expect(materialPasses(defined(resources.values().next().value).snapshot)).toBe(nearPasses);
+  const distinctBindings = new MaterialFrame(undefined).with(material).with(farSection.material);
+  expect(distinctBindings.get(material)?.passes[0]).not.toBe(
+    distinctBindings.get(farSection.material)?.passes[0],
+  );
+  expect(near.dispatch.length).toBe(6);
+  for (let i = 0; i < near.dispatch.length; i++) {
+    const expected = defined(near.dispatch.at(i));
+    expect(far.dispatch.at(i)).toBe(expected);
+    expect(Object.isFrozen(expected)).toBe(true);
+  }
   const returned = project(12).frame;
   expect(returned.renderables.find((row) => row.terrainSection?.index === 0)?.material).toBe(
     material,
@@ -267,6 +304,10 @@ it('reuses only the accepted owned Terrain material for matching parameters and 
     changedSource.frame.renderables.find((row) => row.terrainSection?.index === 0),
   ).material;
   expect(changedSourceMaterial).not.toBe(material);
+  // Replacing one live material leaves its neighbor's submitted section intact.
+  expect(changedSource.frame.renderables.at(1)?.terrainSection).toBe(
+    nearBySection.get(1)?.terrainSection,
+  );
   expect(material.snapshot).toBe(materialSnapshot);
   accept(changedSource.frame);
   expect(
@@ -286,7 +327,7 @@ it('reuses only the accepted owned Terrain material for matching parameters and 
   expect(material.snapshot.paramSnapshot?.terrainLod).toEqual([0, 0, 2, 1]);
 });
 
-it('relocates accepted Terrain dispatch around live rows and rejects in-place pose edits', () => {
+it('relocates accepted Terrain dispatch and preserves submitted poses through in-place edits', () => {
   const fixture = runtimeTerrainFixture({
     columns: 15,
     rows: 8,
@@ -295,7 +336,7 @@ it('relocates accepted Terrain dispatch around live rows and rejects in-place po
     heights: new Float32Array(120),
   });
   const matrix = new Float32Array(fixture.source.transform.world);
-  const terrainSource = {
+  let terrainSource: RenderableSnapshot = {
     ...fixture.source,
     transform: { ...fixture.source.transform, world: matrix },
   };
@@ -352,20 +393,64 @@ it('relocates accepted Terrain dispatch around live rows and rejects in-place po
   };
   const first = project(false).frame;
   accept(first);
-  const heldFacts = defined(first.renderables.at(0)?.terrainSection).projectionFacts;
+  const firstReceipt = captureSubmittedTerrain(
+    first.renderables,
+    worldRenderResources(fixture.world),
+  );
+  const firstSection = defined(first.renderables.at(0)?.terrainSection);
+  const geometry = terrainDrawSection(firstSection.source, firstSection.index);
+  const firstBounds = defined(first.renderables.at(0)?.localAabb);
+  expect(Array.from(firstBounds)).toEqual(geometry.localAabb);
+  firstBounds[4] = 1000;
   const withOther = project(true).frame;
+  expect(withOther.renderables.at(1)?.localAabb?.[4]).toBe(geometry.localAabb[4]);
   const terrainRows = withOther.renderables.flatMap((row, index) =>
     row.terrainSection === undefined ? [] : [index],
   );
   expect(terrainRows).toEqual([1, 2]);
   expect(withOther.dispatch.map((entry) => entry.renderableIndex)).toEqual([0, 1, 1, 1, 2, 2, 2]);
+  expect(first.dispatch.map((entry) => entry.renderableIndex)).toEqual([0, 0, 0, 1, 1, 1]);
+  accept(withOther);
+  const stillShifted = project(true).frame;
+  for (let i = 1; i < withOther.dispatch.length; i++)
+    expect(stillShifted.dispatch.at(i)).toBe(defined(withOther.dispatch.at(i)));
 
   matrix[12] = 3;
   const moved = project(false).frame;
-  const movedFacts = defined(moved.renderables.at(0)?.terrainSection).projectionFacts;
-  expect(movedFacts).not.toBe(heldFacts);
-  expect(heldFacts?.transform[12]).toBe(0);
-  expect(movedFacts?.transform[12]).toBe(3);
+  const movedReceipt = captureSubmittedTerrain(
+    moved.renderables,
+    worldRenderResources(fixture.world),
+  );
+  expect(firstReceipt[0]?.translation[0]).toBe(0);
+  expect(movedReceipt[0]?.translation[0]).toBe(3);
+  accept(moved);
+  const visible = terrainSource;
+  terrainSource = { ...visible, authorVisible: false };
+  const hidden = project(false).frame;
+  expect(hidden.dispatch).toHaveLength(0);
+  accept(hidden);
+  terrainSource = {
+    ...visible,
+    shadowCaster: false,
+    terrain: { ...defined(visible.terrain), layer: 9 },
+  };
+  const lit = project(false).frame;
+  expect(lit.dispatch).toHaveLength(4);
+  expect(
+    lit.dispatch.every((entry) => entry.layer === 9 && entry.tags.LightMode !== 'ShadowCaster'),
+  ).toBe(true);
+  expect(
+    lit.dispatch.filter((entry) => entry.renderableIndex === 0).map((entry) => entry.passIndex),
+  ).toEqual([0, 1]);
+  accept(lit);
+  terrainSource = visible;
+  const casting = project(false).frame;
+  expect(casting.dispatch.filter((entry) => entry.tags.LightMode === 'ShadowCaster')).toHaveLength(
+    2,
+  );
+  expect(casting.dispatch.every((entry) => entry.layer === defined(visible.terrain).layer)).toBe(
+    true,
+  );
 });
 
 it('keeps borrowed Terrain material parameters live instead of reusing accepted products', () => {
@@ -422,10 +507,11 @@ it('keeps borrowed Terrain material parameters live instead of reusing accepted 
   expect(firstBorrowed.ownsValues(firstBorrowed.snapshot)).toBe(false);
   let resolveCalls = 0;
   let useBorrowed = false;
+  let borrowedSection: number | undefined;
   const project = () =>
     projectTerrainView(frame, accepted, sourceMaterials, world, sources, (_world, handle) => {
       resolveCalls += 1;
-      return useBorrowed ? borrowedFor(handle) : ownedFor(handle);
+      return useBorrowed || handle === borrowedSection ? borrowedFor(handle) : ownedFor(handle);
     }).frame;
   const accept = (projected: ExtractedFrame) => {
     accepted.clear();
@@ -437,9 +523,21 @@ it('keeps borrowed Terrain material parameters live instead of reusing accepted 
   const first = project();
   accept(first);
   expect(accepted.size).toBe(2);
-  expect(defined(accepted.values().next().value?.terrainSection).projectionFacts).toBeDefined();
+  expect(defined(accepted.values().next().value?.terrainSection).materialReuse).toBeDefined();
   const firstRow = defined(first.renderables.at(0));
   const firstMaterial = firstRow.material;
+  borrowedSection = Number(
+    terrainDrawSection(sources.resolve(world, defined(source.terrain).handle), 1).data.material,
+  );
+  const mixed = project();
+  expect(mixed.renderables.at(0)?.terrainSection).toBe(firstRow.terrainSection);
+  accept(mixed);
+  const mixedAgain = project();
+  for (let i = 0; i < mixed.dispatch.length; i++) {
+    const entry = defined(mixed.dispatch.at(i));
+    if (entry.renderableIndex === 0) expect(mixedAgain.dispatch.at(i)).toBe(entry);
+    else expect(mixedAgain.dispatch.at(i)).not.toBe(entry);
+  }
   useBorrowed = true;
   borrowedParameters.authoredScalar = 0.75;
 
@@ -447,7 +545,7 @@ it('keeps borrowed Terrain material parameters live instead of reusing accepted 
   const second = project();
   expect(resolveCalls - callsBeforeBorrowedFrame).toBe(2);
   expect(accepted.values().next().value?.material).toBe(firstMaterial);
-  expect(second.renderables.every((row) => row.terrainSection?.projectionFacts === undefined)).toBe(
+  expect(second.renderables.every((row) => row.terrainSection?.materialReuse === undefined)).toBe(
     true,
   );
   const secondRow = defined(second.renderables.at(0));
@@ -460,7 +558,7 @@ it('keeps borrowed Terrain material parameters live instead of reusing accepted 
   const callsBeforeNextBorrowedFrame = resolveCalls;
   const third = project();
   expect(resolveCalls - callsBeforeNextBorrowedFrame).toBe(2);
-  expect(third.renderables.every((row) => row.terrainSection?.projectionFacts === undefined)).toBe(
+  expect(third.renderables.every((row) => row.terrainSection?.materialReuse === undefined)).toBe(
     true,
   );
 });

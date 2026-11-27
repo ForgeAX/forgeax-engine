@@ -15,8 +15,8 @@ const read = (file: string) =>
   readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), 'utf8');
 const shader = read('default-standard-pbr.wgsl');
 
-function evaluateStandardSurfaceBody(source: string): string {
-  const start = source.indexOf('fn evaluateStandardSurface(');
+function surfaceInputBody(source: string): string {
+  const start = source.indexOf('fn standardSurfaceInput(');
   const end = source.indexOf('\nfn ', start + 1);
   expect(start).toBeGreaterThanOrEqual(0);
   return source.slice(start, end);
@@ -39,7 +39,7 @@ describe('Standard surface discard override', () => {
   });
 
   it('keeps the shared surface LOD coverage and view clipping calls inside the source macro', () => {
-    const body = evaluateStandardSurfaceBody(shader);
+    const body = surfaceInputBody(shader);
     expect(body).toMatch(
       /#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true\s*#if LOD_DITHER == true\s*#if WATER_WAVES_AVAILABLE == true\s*applyLodCoverage\(in\.clip\.xy, bitcast<f32>\(in\.materialAddress\.w\)\);\s*#else\s*applyLodCoverage\(in\.clip\.xy, in\.lodFade\);\s*#endif\s*#endif\s*#endif/,
     );
@@ -57,11 +57,16 @@ describe('Standard surface discard override', () => {
     expect(body).toMatch(/#ifdef MATERIAL_CLIPPING_AVAILABLE\s*applyLocalClipping\(/);
   });
 
-  it('leaves the temporal entry and the skin template unchanged', () => {
-    const temporal = shader.slice(shader.indexOf('fn fs_temporal('));
+  it('shares temporal raster coverage and preserves the skin template', () => {
+    const temporal = shader.slice(shader.indexOf('fn materialTemporal('));
     expect(temporal).toMatch(/\n {2}applyViewClipping\(in\.clippingPositionWS, false\);/);
     expect(temporal).toMatch(/\n {2}applyLodCoverage\(in\.clip\.xy, in\.temporal\.z\);/);
-    expect(read('default-standard-pbr-skin.wgsl')).not.toContain('standardSurfaceDiscards');
+    const packedVelocity =
+      'return encodeSceneVelocityRaster(materialTemporal(in), in.previousClip);';
+    expect(temporal).toContain(packedVelocity);
+    const skin = read('default-standard-pbr-skin.wgsl');
+    expect(skin).toContain(packedVelocity);
+    expect(skin).not.toContain('standardSurfaceDiscards');
   });
 
   it('rejects uncovered Water geometry in every Standard raster entry after Surface evaluation', () => {
@@ -73,8 +78,6 @@ describe('Standard surface discard override', () => {
       'fs_oit_premultiplied',
       'fs_gbuffer',
       'fs_depth_masked',
-      'fs_ao_input',
-      'fs_ao_input_msaa',
     ]) {
       const start = shader.indexOf(`fn ${entry}(`);
       expect(start, entry).toBeGreaterThanOrEqual(0);
@@ -85,7 +88,10 @@ describe('Standard surface discard override', () => {
         /(?:standardForward|standardGBuffer|evaluateStandardSurface|standardAoInput)[\s\S]*if \(!standardWaterCovered\)/,
       );
     }
-    const evaluator = evaluateStandardSurfaceBody(shader);
+    expect(shader).toMatch(
+      /fn evaluateStandardSurface\([\s\S]*?let input = standardSurfaceInput\(/,
+    );
+    const evaluator = surfaceInputBody(shader);
     expect(evaluator).toContain('!(in.worldNormal.w <= 0.0)');
     expect(evaluator).toContain('waterMeshCoverageContains(');
     expect(evaluator).toContain('waterDynamicBoundsContains(');

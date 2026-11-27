@@ -4,8 +4,11 @@ Run `pnpm dev --port 5381` in this directory and open <http://127.0.0.1:5381/>.
 The Chinese control panel owns scene presets, water selection and material operations.
 The header icon hides or restores the complete panel in one action.
 
-The demo selects independent Water SSR temporal resolution alongside main TAA.
-The rendering panel exposes Always, Auto and Off without changing Engine defaults.
+Open `?pipeline=forward&view=surface&aa=none` for the Forward reflection
+comparison. The screen-space reflection control toggles the scene's SSR.
+Use `ssr=off` for the same starting view with only environment reflection.
+The camera can start with `aa=taa`, `aa=tsr`, or `aa=msaa` on Forward.
+The default renderer for this demo is Deferred.
 
 Focus the canvas to move with <kbd>W</kbd>, <kbd>A</kbd>, <kbd>S</kbd>, <kbd>D</kbd>;
 <kbd>Q</kbd>/<kbd>E</kbd> move vertically and <kbd>Shift</kbd> increases speed.

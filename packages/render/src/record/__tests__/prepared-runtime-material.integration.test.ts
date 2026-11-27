@@ -146,6 +146,7 @@ it('uploads accepted values on World and published-reader paths without mutating
       defaultSampler: {},
       skylightFallback: {
         irradianceView: {},
+        skySh: {},
         prefilterView: {},
         brdfLutView: {},
         sampler: {},

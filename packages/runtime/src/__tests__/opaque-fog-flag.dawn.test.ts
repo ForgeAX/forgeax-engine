@@ -3,7 +3,7 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { verifyAnalyticFogMsaa } from './analytic-fog-msaa.fixture';
@@ -27,7 +27,7 @@ import {
  * after the opaque fog pass and keeps its unlit colour, while its fogged twin
  * at the same depth and the far wall still receive exponential fog.
  */
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 const RED = [1, 0, 0] as const;
 const CUBE_DISTANCE = 10;
 const CUBE_OFFSET = 1.5;

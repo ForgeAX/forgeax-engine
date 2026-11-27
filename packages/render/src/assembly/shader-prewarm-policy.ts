@@ -106,6 +106,24 @@ export function selectSkinPrewarmVariants(
   );
 }
 
+function isOrdinarySceneIndexVariant(
+  variant: MaterialShaderManifestEntry['variants'][number],
+  vertexColorAvailable: boolean,
+  atmosphereAvailable: boolean,
+): boolean {
+  const { defines } = variant;
+  return (
+    isOrdinaryMaterialVariant(variant) &&
+    defines.CLIPPING_PLANES !== true &&
+    defines.LOD_DITHER !== true &&
+    defines.STORAGE_BUFFER_AVAILABLE === true &&
+    defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true &&
+    (defines.ATMOSPHERE_AVAILABLE ?? false) === atmosphereAvailable &&
+    (!('CLUSTER_FORWARD_AVAILABLE' in defines) || defines.CLUSTER_FORWARD_AVAILABLE === false) &&
+    (defines.VERTEX_COLOR_AVAILABLE === true) === vertexColorAvailable
+  );
+}
+
 /**
  * Select the explicit storage-backed, non-clustered GPU scene-index variant.
  * The GPU raster adapter owns a dedicated slot-3 BGL, so this source must not
@@ -120,24 +138,16 @@ export function selectGpuDrivenSceneIndexVariant(
   atmosphereAvailable = false,
 ): MaterialShaderManifestEntry['variants'][number] | undefined {
   if (manifestEntry !== undefined && isShaderTemplateManifestRow(manifestEntry)) {
-    const axes = new Set(materialShaderAxes(manifestEntry));
-    const optional = {
-      COVERAGE_ONLY: false,
-      VISIBLE_SURFACE_AVAILABLE: false,
-      ALPHA_MASK: false,
-      DIRECTIONAL_SHADOW_SIMPLE: false,
-      LEAN_LIGHTING: false,
-      STANDARD_LEAN_INPUTS: false,
-      CLUSTER_FORWARD_AVAILABLE: false,
-      PROBE_BLEND_AVAILABLE: false,
+    const axes = materialShaderAxes(manifestEntry);
+    const capabilities: Readonly<Record<string, boolean>> = {
       EXTENDED_LIGHTING_AVAILABLE: extendedLightingAvailable,
       DIRECTIONAL_PCSS_AVAILABLE: directionalPcssAvailable,
       PROJECTOR_AVAILABLE: projectorAvailable,
-      REFLECTION_FALLBACK_AVAILABLE: false,
-      TRANSMISSION_AVAILABLE: false,
     };
     return findVariantByDefines(manifestEntry, {
-      ...Object.fromEntries(Object.entries(optional).filter(([axis]) => axes.has(axis))),
+      // Boot recipes admit explicitly selected device capabilities. Future
+      // scene axes default off as part of the complete selection.
+      ...Object.fromEntries(axes.map((axis) => [axis, capabilities[axis] === true])),
       STORAGE_BUFFER_AVAILABLE: true,
       GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true,
       ATMOSPHERE_AVAILABLE: atmosphereAvailable,
@@ -146,13 +156,7 @@ export function selectGpuDrivenSceneIndexVariant(
   }
   return manifestEntry?.variants.find(
     (variant) =>
-      isOrdinaryMaterialVariant(variant) &&
-      variant.defines.STORAGE_BUFFER_AVAILABLE === true &&
-      variant.defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true &&
-      (variant.defines.ATMOSPHERE_AVAILABLE ?? false) === atmosphereAvailable &&
-      (!('CLUSTER_FORWARD_AVAILABLE' in variant.defines) ||
-        variant.defines.CLUSTER_FORWARD_AVAILABLE === false) &&
-      (variant.defines.VERTEX_COLOR_AVAILABLE === true) === vertexColorAvailable &&
+      isOrdinarySceneIndexVariant(variant, vertexColorAvailable, atmosphereAvailable) &&
       (!('PROBE_BLEND_AVAILABLE' in variant.defines) ||
         variant.defines.PROBE_BLEND_AVAILABLE === false) &&
       (!('EXTENDED_LIGHTING_AVAILABLE' in variant.defines) ||

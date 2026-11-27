@@ -26,6 +26,7 @@ import {
   setLightState,
   spawnCamera,
   spawnLight,
+  spawnSponzaSky,
   createGiBoxMesh,
   spawnProceduralScene,
 } from './build-scene.ts';
@@ -76,7 +77,7 @@ const app = (
         ...DEFAULT_STANDARD_PROFILE,
         renderPath: 'deferred',
         ibl: false,
-        ssao: false,
+        ambientOcclusion: { enabled: false },
       },
     },
     {
@@ -102,6 +103,7 @@ if (sceneId === 'sponza') {
   const scene = (await assets.load(guid.value, 'scene')).unwrap();
   assets.instantiate(scene, world).unwrap();
   const light = spawnLight(world, SPONZA.light);
+  spawnSponzaSky(world);
   const camera = spawnCamera(world, SPONZA.camera, 1);
   controls = {
     setLight: (on, moved = false) => setLightState(world, light, SPONZA.light, on, moved),
@@ -158,13 +160,14 @@ function applyTier(selected: NonNullable<typeof tier>) {
 
 function applyState() {
   if (tier !== undefined) return applyTier(tier);
+  if (sceneId === 'sponza' && state.gi === 'screen-probe') return applyTier('high');
   const { diffuseGi: _previous, ...profile } = baseProfile;
   const diffuseGi = diffuseGiFor(state.gi, sceneData, { maxBounces: bounces });
   const result = renderer.setProfile({
     ...profile,
     renderPath: 'deferred',
     ibl: false,
-    ssao: false,
+    ambientOcclusion: { enabled: false },
     ...(diffuseGi === undefined
       ? {}
       : {

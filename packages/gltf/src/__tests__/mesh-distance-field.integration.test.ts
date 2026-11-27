@@ -6,12 +6,13 @@ import { dirname, join, resolve } from 'node:path';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { copyMeshAttribute, meshAssetContribution, packMeshBin } from '@forgeax/engine-geometry';
 import {
+  commitImportPublication,
   finalizeImportProducts,
   ImporterRegistry,
   meshAssetOutputProducer,
   projectImportProductForBuild,
-  publishImportPublication,
   runImport,
+  stageImportPublication,
 } from '@forgeax/engine-import';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import {
@@ -63,7 +64,7 @@ async function produce(settings: unknown, shift = 0, doubleSided = false, alphaM
     { readSource: async () => ({ ok: true, value: source }) },
   );
   if (!result.ok) throw result.error;
-  if (!('pack' in result.value)) throw new Error('missing pack');
+  if ('skipped' in result.value) throw new Error('missing import product');
   const asset = result.value.product.assets[0];
   if (!asset) throw new Error('missing mesh');
   return { asset, ms: performance.now() - started };
@@ -73,6 +74,7 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-mesh-field-'));
   const requests: string[] = [];
   let selectedKey: string | undefined;
+  let acceptedPack: string | undefined;
   let corruptField: Uint8Array | undefined;
   let catalog: CatalogEntry[] = [];
   const listeners = new Set<(delta: CatalogDelta) => void>();
@@ -87,7 +89,7 @@ async function fixture() {
       return;
     }
     try {
-      if (path === '/mesh.pack.json') response.end(await readFile(join(root, 'runtime', path)));
+      if (path === '/mesh.pack.json' && acceptedPack !== undefined) response.end(acceptedPack);
       else {
         const entry = selectedKey ? await new DdcEntryStore(root).read(selectedKey) : undefined;
         const bytes =
@@ -179,7 +181,7 @@ async function fixture() {
         },
       ];
       const started = performance.now();
-      const result = await publishImportPublication({
+      const staged = await stageImportPublication({
         root,
         guid: GUID,
         desiredKey: hash(serialized),
@@ -187,16 +189,14 @@ async function fixture() {
         previousCatalog: catalog,
         nextCatalog,
         publishedGuids: [GUID],
-        transport: {
-          path: join(root, 'runtime', 'mesh.pack.json'),
-          body: serialized,
-          artifacts: Object.entries(asset.artifacts)
-            .filter(([name]) => !(omitField && name === 'distance-field.bin'))
-            .map(([path, artifact]) => ({ path, ...artifact })),
-        },
+        artifacts: Object.entries(asset.artifacts)
+          .filter(([name]) => !(omitField && name === 'distance-field.bin'))
+          .map(([path, artifact]) => ({ path, ...artifact })),
       });
+      const result = staged.ok ? await commitImportPublication(staged.candidate) : staged;
       if (result.ok) {
         selectedKey = result.key;
+        acceptedPack = serialized;
         corruptField = undefined;
         catalog = nextCatalog;
         pending = true;

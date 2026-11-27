@@ -1,13 +1,11 @@
 import {
-  type CompiledRenderGraph,
+  encodeNativeRenderPass,
   type GraphBufferAccess,
-  RenderGraphBuilder,
-  RenderGraphError,
+  type RenderGraphFrame,
   type RenderGraphNativePass,
+  type RenderGraphPassInstrumentation,
 } from '@forgeax/engine-render-graph';
-import type { Buffer, RhiCaps, RhiCommandEncoder, RhiDevice } from '@forgeax/engine-rhi';
-import { ok } from '@forgeax/engine-types';
-import type { DeviceScope } from '../device/device-scope';
+import type { Buffer, RhiCaps } from '@forgeax/engine-rhi';
 import type { RenderError } from '../errors/render';
 import {
   getRenderFeaturePlanExecutionProjection,
@@ -17,9 +15,7 @@ import {
   type RenderFeaturePlanExecutionPass,
 } from './host';
 import type { RenderFeatureResourceDeclaration } from './plan';
-import { encodeRenderFeatureGpuComputePass } from './prepared-gpu-work';
-import { throwFeatureRecordingFailure } from './recording-failure';
-import { visitRenderFeatureComputeSequence } from './render-graph-compute';
+import { issueFeatureComputeCommands } from './render-graph-compute';
 
 // This is a conservative admission subset, not a replacement graph validator.
 // Anything outside it retains the original compile-time error authority.
@@ -31,10 +27,7 @@ const computeBufferUsage: Partial<Record<GraphBufferAccess, number>> = {
   'indirect-read': 0x0100,
 };
 
-export interface SharedFeatureCommandFrame {
-  readonly encoder: RhiCommandEncoder;
-  readonly featureExecutions?: readonly RenderFeaturePlanExecution[] | undefined;
-  readonly nativePassNames?: string[] | undefined;
+export interface SharedFeatureCommandFrame extends RenderGraphFrame {
   readonly reportError?: ((error: RenderError) => void) | undefined;
 }
 
@@ -148,145 +141,24 @@ export function sharedFrameNativeExecutions(
   return executions;
 }
 
-function copyPass(pass: RenderFeaturePlanExecutionPass): RenderGraphNativePass {
-  return {
-    kind: 'copy',
-    name: pass.name,
-    encode: (encoder) => {
-      for (const copy of pass.resolvedGpuCopies ?? []) {
-        if (copy.enabled === false) continue;
-        encoder.copyBufferToBuffer(
-          copy.source.buffer,
-          copy.sourceOffset,
-          copy.destination.buffer,
-          copy.destinationOffset,
-          copy.size,
-        );
-      }
-    },
-  };
-}
-
-function computePass(
-  passes: readonly RenderFeaturePlanExecutionPass[],
-  reportError: SharedFeatureCommandFrame['reportError'],
-): RenderGraphNativePass {
-  return {
-    kind: 'compute',
-    name: passes[0]?.name ?? 'shared-feature-compute',
-    encode: (encoder) => {
-      for (const pass of passes) {
-        if (pass.enabled === false) continue;
-        try {
-          // Admission checked this exact current frame's complete pass list.
-          if (pass.resolvedGpuCompute === undefined)
-            throw new Error('Missing admitted compute work');
-          encodeRenderFeatureGpuComputePass(encoder, pass.resolvedGpuCompute);
-        } catch (cause) {
-          throwFeatureRecordingFailure(
-            cause,
-            pass.featureIdentity,
-            pass.order,
-            pass.name,
-            'bindings',
-            reportError,
-          );
-        }
-      }
-    },
-  };
-}
-
-class NativeCommandFailure extends Error {
-  constructor(readonly error: RenderGraphError) {
-    super('Shared Feature native command failed');
-  }
-}
-
-/** The shell is not the failing logical pass; retain the original graph error shape. */
-export function sharedFrameNativeFailure(error: RenderGraphError): RenderGraphError {
-  const detail = error.detail;
-  return error.code === 'pass-encode-failed' &&
-    detail !== undefined &&
-    'cause' in detail &&
-    detail.cause instanceof NativeCommandFailure
-    ? detail.cause.error
-    : error;
-}
-
-/** Re-evaluate physical alias and usage grouping for every current submission. */
-function encodeFrame(frame: SharedFeatureCommandFrame, run: (pass: RenderGraphNativePass) => void) {
-  if (frame.featureExecutions === undefined) throw new Error('Missing current shared Feature work');
+/** The submission owns the current passes and the encoder. No graph or GPU resources
+ * belong to this command sequence. Failed batches publish no completed pass names. */
+export function encodeSharedFrameCommands<F extends SharedFeatureCommandFrame>(
+  frame: F,
+  executions: readonly RenderFeaturePlanExecution[],
+  instrumentation: RenderGraphPassInstrumentation<F> | undefined,
+): void {
+  let executionIndex = 0;
   const execute = (pass: RenderGraphNativePass) => {
-    try {
-      run(pass);
-    } catch (cause) {
-      throw new NativeCommandFailure(
-        new RenderGraphError({
-          code: 'pass-encode-failed',
-          expected: `pass '${pass.name}' encodes without throwing`,
-          hint: 'inspect detail.cause and repair the pass-owned RHI command',
-          detail: { passName: pass.name, passKind: pass.kind, cause },
-        }),
-      );
-    }
-    frame.nativePassNames?.push(pass.name);
+    encodeNativeRenderPass(frame, pass, executionIndex++, instrumentation);
   };
-  for (const execution of frame.featureExecutions) {
-    const visited = visitRenderFeatureComputeSequence(execution.passes, {
-      copy: (pass) => {
-        if (pass.enabled !== false) execute(copyPass(pass));
-        return ok(undefined);
-      },
-      compute: (passes) => {
-        if (passes.some((pass) => pass.enabled !== false))
-          execute(computePass(passes, frame.reportError));
-        return ok(undefined);
-      },
-    });
-    if (!visited.ok) throw visited.error;
-  }
-}
-
-/** Own only a zero-resource shell; no frame, plan, binding, or Buffer is retained. */
-export class SharedFrameNativeCommands {
-  private graph: CompiledRenderGraph<SharedFeatureCommandFrame> | undefined;
-  private closed = false;
-
-  constructor(
-    readonly scope: DeviceScope,
-    readonly device: RhiDevice,
-  ) {
-    scope._adopt('feature', this, (owner) => owner.dispose());
-  }
-
-  current(scope: DeviceScope, device: RhiDevice): boolean {
-    return !this.closed && this.scope === scope && this.device === device && scope.isAlive();
-  }
-
-  prepare(): {
-    readonly graph: CompiledRenderGraph<SharedFeatureCommandFrame>;
-    readonly built: boolean;
-  } {
-    if (this.closed || !this.scope.isAlive())
-      throw new Error('Shared Feature device scope retired');
-    if (this.graph !== undefined) return { graph: this.graph, built: false };
-    const builder = new RenderGraphBuilder<SharedFeatureCommandFrame>();
-    const added = builder.addSubgraphPass('shared-feature-native-commands', {
-      accesses: [],
-      commands: ({ frame, execute }) => encodeFrame(frame, execute),
-    });
-    if (!added.ok) throw added.error;
-    const compiled = builder.compile({ device: this.device, surfaceSize: { width: 1, height: 1 } });
-    if (!compiled.ok) throw compiled.error;
-    this.graph = compiled.value;
-    return { graph: compiled.value, built: true };
-  }
-
-  async dispose(): Promise<void> {
-    this.closed = true;
-    const graph = this.graph;
-    this.graph = undefined;
-    if (graph !== undefined) await graph.retire();
+  for (const execution of executions) {
+    issueFeatureComputeCommands(
+      execution.passes,
+      0,
+      execution.passes.length,
+      execute,
+      frame.reportError,
+    );
   }
 }

@@ -148,8 +148,8 @@ describe('Unlit and skinned selected-entry coverage', () => {
       const source = await compile(kind, { localClipping: true, scene });
       const entries =
         kind === 'unlit'
-          ? ['fs_main', 'fs_ao_input', 'fs_temporal', 'fs_shadow']
-          : ['fs_opaque', 'fs_ao_input', 'fs_temporal'];
+          ? ['fs_main', 'fs_depth_masked', 'fs_temporal', 'fs_scene_velocity', 'fs_shadow']
+          : ['fs_opaque', 'fs_depth_masked', 'fs_temporal', 'fs_scene_velocity'];
       for (const entry of entries) {
         const graph = reachability(source, entry);
         expect(graph.discards).toContainEqual(expect.stringContaining('applyLocalClipping'));
@@ -158,9 +158,15 @@ describe('Unlit and skinned selected-entry coverage', () => {
     }
   });
 
-  it('retains Unlit cutoff/hash in color, surface-data, temporal and shadow entries', async () => {
+  it('retains Unlit cutoff/hash in color, depth, temporal and shadow entries', async () => {
     const source = await compile('unlit', { mask: true, clipping: true });
-    for (const entry of ['fs_main', 'fs_ao_input', 'fs_temporal', 'fs_shadow']) {
+    for (const entry of [
+      'fs_main',
+      'fs_depth_masked',
+      'fs_temporal',
+      'fs_scene_velocity',
+      'fs_shadow',
+    ]) {
       const graph = reachability(source, entry);
       expect(graph.discards).toContain(entry);
       expect(graph.discards).not.toContainEqual(expect.stringContaining('unlitCoverageRejected'));
@@ -171,6 +177,7 @@ describe('Unlit and skinned selected-entry coverage', () => {
   it('retains exact Unlit temporal coverage in the opaque publication lane', async () => {
     const source = await compile('unlit');
     expect(reachability(source, 'fs_main').discards).toEqual([]);
-    expect(reachability(source, 'fs_temporal').discards).toContain('fs_temporal');
+    for (const entry of ['fs_temporal', 'fs_scene_velocity'])
+      expect(reachability(source, entry).discards).toEqual([entry]);
   });
 });

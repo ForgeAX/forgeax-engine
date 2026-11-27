@@ -11,7 +11,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname, relative, resolve, sep } from 'node:path';
-import { isFilesystemPathWithin } from './filesystem-path.js';
+import { isFilesystemPathWithin, isMissingPathError } from './filesystem-path.js';
 import { commandError, readProjectFacts } from './project.js';
 import type { SdkContext, SdkSkill } from './sdk.js';
 import type { CommandResult, ProjectCommandOptions } from './types.js';
@@ -30,14 +30,12 @@ const MANIFEST_PATH = '.forgeax/skill-install-manifest.json';
 const GITIGNORE_BEGIN = '# BEGIN FORGEAX MANAGED SKILLS';
 const GITIGNORE_END = '# END FORGEAX MANAGED SKILLS';
 
-interface InstalledSkill extends SdkSkill {}
-
 interface SkillInstallManifest {
   readonly schemaVersion: '1.0.0';
   readonly sourceRoot: 'skills';
   readonly sdkVersion?: string;
   readonly engineCommit?: string;
-  readonly skills: readonly InstalledSkill[];
+  readonly skills: readonly SdkSkill[];
   readonly mounts: readonly {
     readonly root: string;
     readonly skills: readonly string[];
@@ -63,26 +61,24 @@ async function pathKind(path: string): Promise<'missing' | 'directory' | 'file' 
     if (info.isDirectory()) return 'directory';
     return 'file';
   } catch (cause) {
-    if (cause !== null && typeof cause === 'object' && 'code' in cause && cause.code === 'ENOENT') {
-      return 'missing';
-    }
+    if (isMissingPathError(cause)) return 'missing';
     throw cause;
   }
 }
 
-async function filesUnder(root: string, directory = root): Promise<readonly string[]> {
+async function filesUnder(directory: string): Promise<readonly string[]> {
   const files: string[] = [];
   for (const name of (await readdir(directory)).sort()) {
     const path = resolve(directory, name);
     const info = await lstat(path);
     if (info.isSymbolicLink()) throw new Error(`skill-source-symlink: ${path}`);
-    if (info.isDirectory()) files.push(...(await filesUnder(root, path)));
+    if (info.isDirectory()) files.push(...(await filesUnder(path)));
     else if (info.isFile()) files.push(path);
   }
   return files;
 }
 
-async function skillRow(sourceRoot: string, id: string): Promise<InstalledSkill> {
+async function skillRow(sourceRoot: string, id: string): Promise<SdkSkill> {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) throw new Error(`skill-id-invalid: ${id}`);
   const root = resolve(sourceRoot, id);
   if ((await pathKind(root)) !== 'directory') throw new Error(`skill-source-invalid: ${id}`);
@@ -100,7 +96,7 @@ async function skillRow(sourceRoot: string, id: string): Promise<InstalledSkill>
   };
 }
 
-async function discoverProjectSkills(root: string): Promise<readonly InstalledSkill[]> {
+async function discoverProjectSkills(root: string): Promise<readonly SdkSkill[]> {
   const sourceRoot = resolve(root, 'skills');
   if ((await pathKind(sourceRoot)) !== 'directory') throw new Error('project-skills-missing');
   const entries = await readdir(sourceRoot, { withFileTypes: true });
@@ -167,16 +163,35 @@ export async function copySdkSkills(sdk: SdkContext, projectRoot: string): Promi
   }
 }
 
-function expectedLinkTarget(projectRoot: string, mountRoot: string, id: string): string {
-  const mountParent = resolve(projectRoot, mountRoot);
-  const target = resolve(projectRoot, 'skills', id);
-  return process.platform === 'win32' ? target : relative(mountParent, target);
+function skillLink(project: string, mount: string, id: string) {
+  const parent = resolve(project, mount);
+  const source = resolve(project, 'skills', id);
+  return {
+    path: resolve(parent, id),
+    target: process.platform === 'win32' ? source : relative(parent, source),
+  };
 }
 
-async function linkMatches(path: string, target: string): Promise<boolean> {
-  if ((await pathKind(path)) !== 'symlink') return false;
-  const actual = await readlink(path);
-  return resolve(dirname(path), actual) === resolve(dirname(path), target);
+type SkillLink = ReturnType<typeof skillLink>;
+
+function skillMounts(project: string, ids: readonly string[]) {
+  return PROJECT_SKILL_MOUNT_ROOTS.map((root) => {
+    const directory = resolve(project, root);
+    return {
+      root,
+      directory,
+      ignorePath: resolve(directory, '.gitignore'),
+      links: ids.map((id) => skillLink(project, root, id)),
+    };
+  });
+}
+
+async function linkStatus({ path, target }: SkillLink): Promise<'missing' | 'owned' | 'foreign'> {
+  const kind = await pathKind(path);
+  if (kind === 'missing') return kind;
+  if (kind !== 'symlink') return 'foreign';
+  const parent = dirname(path);
+  return resolve(parent, await readlink(path)) === resolve(parent, target) ? 'owned' : 'foreign';
 }
 
 function updateManagedGitignore(previous: string, skillIds: readonly string[]): string {
@@ -220,9 +235,7 @@ async function readOptional(path: string): Promise<string | undefined> {
   try {
     return await readFile(path, 'utf8');
   } catch (cause) {
-    if (cause !== null && typeof cause === 'object' && 'code' in cause && cause.code === 'ENOENT') {
-      return undefined;
-    }
+    if (isMissingPathError(cause)) return undefined;
     throw cause;
   }
 }
@@ -250,13 +263,21 @@ export async function installedProjectSkillDirectories(root: string): Promise<re
     if ((await pathKind(resolve(root, skill.root))) !== 'directory') continue;
     directories.push(skill.root);
     for (const mountRoot of PROJECT_SKILL_MOUNT_ROOTS) {
-      const path = `${mountRoot}/${skill.id}`;
-      if (await linkMatches(resolve(root, path), expectedLinkTarget(root, mountRoot, skill.id))) {
-        directories.push(path);
-      }
+      if ((await linkStatus(skillLink(root, mountRoot, skill.id))) === 'owned')
+        directories.push(`${mountRoot}/${skill.id}`);
     }
   }
   return directories;
+}
+
+function installedSkillsReport(root: string, skills: readonly string[]): SkillInstallReport {
+  return {
+    root,
+    sourceRoot: resolve(root, 'skills'),
+    manifest: resolve(root, MANIFEST_PATH),
+    skills,
+    mountRoots: PROJECT_SKILL_MOUNT_ROOTS,
+  };
 }
 
 export async function installProjectSkills(
@@ -267,14 +288,10 @@ export async function installProjectSkills(
   const skills = await discoverProjectSkills(projectRoot);
   const ids = skills.map((skill) => skill.id);
   const priorManifest = await readInstallManifest(projectRoot);
-  const desiredLinks = PROJECT_SKILL_MOUNT_ROOTS.flatMap((mountRoot) =>
-    ids.map((id) => ({
-      path: resolve(projectRoot, mountRoot, id),
-      target: expectedLinkTarget(projectRoot, mountRoot, id),
-    })),
-  );
-  const desiredPaths = new Set(desiredLinks.map((entry) => entry.path));
-  const desiredMountRoots = new Set<string>(PROJECT_SKILL_MOUNT_ROOTS);
+  const mounts = skillMounts(projectRoot, ids);
+  const desiredLinks = mounts.flatMap(({ links }) => links);
+  const desiredPaths = new Set(desiredLinks.map(({ path }) => path));
+  const desiredMountRoots = new Set(mounts.map(({ root }) => root));
   const retiredMountRoots = (priorManifest?.mounts ?? [])
     .map((mount) => mount.root)
     .filter(
@@ -282,30 +299,21 @@ export async function installProjectSkills(
         !desiredMountRoots.has(mountRoot) && RETIRED_PROJECT_SKILL_MOUNT_ROOTS.has(mountRoot),
     );
   const staleLinks = (priorManifest?.mounts ?? [])
-    .flatMap((mount) =>
-      mount.skills.map((id) => ({
-        path: resolve(projectRoot, mount.root, id),
-        target: expectedLinkTarget(projectRoot, mount.root, id),
-      })),
-    )
-    .filter((entry) => !desiredPaths.has(entry.path));
-
-  for (const entry of desiredLinks) {
-    const kind = await pathKind(entry.path);
-    if (kind !== 'missing' && !(await linkMatches(entry.path, entry.target))) {
-      throw new Error(`skill-mount-conflict: ${slash(relative(projectRoot, entry.path))}`);
-    }
-  }
-  for (const entry of staleLinks) {
-    const kind = await pathKind(entry.path);
-    if (kind !== 'missing' && !(await linkMatches(entry.path, entry.target))) {
-      throw new Error(`skill-stale-mount-conflict: ${slash(relative(projectRoot, entry.path))}`);
+    .flatMap(({ root, skills }) => skills.map((id) => skillLink(projectRoot, root, id)))
+    .filter(({ path }) => !desiredPaths.has(path));
+  for (const [links, code] of [
+    [desiredLinks, 'skill-mount-conflict'],
+    [staleLinks, 'skill-stale-mount-conflict'],
+  ] as const) {
+    for (const link of links) {
+      if ((await linkStatus(link)) === 'foreign')
+        throw new Error(`${code}: ${slash(relative(projectRoot, link.path))}`);
     }
   }
 
   const ignoreSnapshots = new Map<string, string | undefined>();
   const createdLinks: string[] = [];
-  const removedLinks: { path: string; target: string }[] = [];
+  const removedLinks: SkillLink[] = [];
   const manifestPath = resolve(projectRoot, MANIFEST_PATH);
   const priorManifestText = await readOptional(manifestPath);
   try {
@@ -328,17 +336,13 @@ export async function installProjectSkills(
       await removeEmptyDirectory(mountParent);
       await removeEmptyDirectory(dirname(mountParent));
     }
-    for (const mountRoot of PROJECT_SKILL_MOUNT_ROOTS) {
-      const mountParent = resolve(projectRoot, mountRoot);
-      await mkdir(mountParent, { recursive: true });
-      const ignorePath = resolve(mountParent, '.gitignore');
+    for (const { directory, ignorePath, links } of mounts) {
+      await mkdir(directory, { recursive: true });
       const previous = await readOptional(ignorePath);
       ignoreSnapshots.set(ignorePath, previous);
       await writeFile(ignorePath, updateManagedGitignore(previous ?? '', ids));
-      for (const id of ids) {
-        const path = resolve(mountParent, id);
+      for (const { path, target } of links) {
         if ((await pathKind(path)) === 'missing') {
-          const target = expectedLinkTarget(projectRoot, mountRoot, id);
           await symlink(target, path, process.platform === 'win32' ? 'junction' : 'dir');
           createdLinks.push(path);
         }
@@ -352,7 +356,7 @@ export async function installProjectSkills(
       ...(sdkVersion === undefined ? {} : { sdkVersion }),
       ...(engineCommit === undefined ? {} : { engineCommit }),
       skills,
-      mounts: PROJECT_SKILL_MOUNT_ROOTS.map((mountRoot) => ({ root: mountRoot, skills: ids })),
+      mounts: mounts.map(({ root }) => ({ root, skills: ids })),
     };
     await mkdir(dirname(manifestPath), { recursive: true });
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -377,13 +381,7 @@ export async function installProjectSkills(
     else await writeFile(manifestPath, priorManifestText);
     throw cause;
   }
-  return {
-    root: projectRoot,
-    sourceRoot: resolve(projectRoot, 'skills'),
-    manifest: manifestPath,
-    skills: ids,
-    mountRoots: PROJECT_SKILL_MOUNT_ROOTS,
-  };
+  return installedSkillsReport(projectRoot, ids);
 }
 
 export async function verifyProjectSkills(root: string): Promise<SkillInstallReport> {
@@ -401,52 +399,38 @@ export async function verifyProjectSkills(root: string): Promise<SkillInstallRep
   ) {
     throw new Error('skill-install-manifest-drift');
   }
-  for (const mountRoot of PROJECT_SKILL_MOUNT_ROOTS) {
-    const declared = manifest.mounts.find((mount) => mount.root === mountRoot);
-    if (declared === undefined || JSON.stringify(declared.skills) !== JSON.stringify(ids)) {
-      throw new Error(`skill-install-manifest-mount-drift: ${mountRoot}`);
-    }
-    const ignore = await readOptional(resolve(projectRoot, mountRoot, '.gitignore'));
-    if (ignore === undefined || updateManagedGitignore(ignore, ids) !== ignore) {
-      throw new Error(`skill-mount-gitignore-drift: ${mountRoot}`);
-    }
-    for (const id of ids) {
-      const path = resolve(projectRoot, mountRoot, id);
-      const target = expectedLinkTarget(projectRoot, mountRoot, id);
-      if (!(await linkMatches(path, target))) {
-        throw new Error(`skill-mount-drift: ${mountRoot}/${id}`);
-      }
-    }
+  for (const [index, mount] of skillMounts(projectRoot, ids).entries()) {
+    const declared = manifest.mounts[index];
+    if (declared === undefined || JSON.stringify(declared.skills) !== JSON.stringify(ids))
+      throw new Error(`skill-install-manifest-mount-drift: ${mount.root}`);
+    const ignore = await readOptional(mount.ignorePath);
+    if (ignore === undefined || updateManagedGitignore(ignore, ids) !== ignore)
+      throw new Error(`skill-mount-gitignore-drift: ${mount.root}`);
+    for (const link of mount.links)
+      if ((await linkStatus(link)) !== 'owned')
+        throw new Error(`skill-mount-drift: ${slash(relative(projectRoot, link.path))}`);
   }
-  return {
-    root: projectRoot,
-    sourceRoot: resolve(projectRoot, 'skills'),
-    manifest: resolve(projectRoot, MANIFEST_PATH),
-    skills: ids,
-    mountRoots: PROJECT_SKILL_MOUNT_ROOTS,
-  };
+  return installedSkillsReport(projectRoot, ids);
 }
 
-export async function skillInstallCommand(
-  options: ProjectCommandOptions = {},
+async function runSkillCommand(
+  operation: 'install' | 'verify',
+  options: ProjectCommandOptions,
 ): Promise<CommandResult<SkillInstallReport>> {
   const facts = await readProjectFacts(options.root);
   if (!facts.ok) return facts;
+  const run = operation === 'install' ? installProjectSkills : verifyProjectSkills;
   try {
-    return { ok: true, value: await installProjectSkills(facts.value.root) };
+    return { ok: true, value: await run(facts.value.root) };
   } catch (cause) {
-    return { ok: false, error: commandError(cause, 'skill-install-failed') };
+    return { ok: false, error: commandError(cause, `skill-${operation}-failed`) };
   }
 }
 
-export async function skillVerifyCommand(
-  options: ProjectCommandOptions = {},
-): Promise<CommandResult<SkillInstallReport>> {
-  const facts = await readProjectFacts(options.root);
-  if (!facts.ok) return facts;
-  try {
-    return { ok: true, value: await verifyProjectSkills(facts.value.root) };
-  } catch (cause) {
-    return { ok: false, error: commandError(cause, 'skill-verify-failed') };
-  }
+export function skillInstallCommand(options: ProjectCommandOptions = {}) {
+  return runSkillCommand('install', options);
+}
+
+export function skillVerifyCommand(options: ProjectCommandOptions = {}) {
+  return runSkillCommand('verify', options);
 }

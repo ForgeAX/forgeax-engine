@@ -3,6 +3,7 @@ import {
   materialShaderPreparedSourceRows,
   materialShaderSourceMatches,
 } from '@forgeax/engine-shader';
+import type { SubmittedFrameInspection } from './record/frame-snapshot';
 import type { PointShadowSnapshot } from './render-system-extract';
 import { SHADOW_ATLAS_DEFAULT_LAYERS } from './shadow-atlas';
 
@@ -15,9 +16,8 @@ import { SHADOW_ATLAS_DEFAULT_LAYERS } from './shadow-atlas';
  * the same extract owner. No consumer needs to maintain a second budget
  * ledger.
  *
- * `unavailable` means the loaded Standard shaders were compiled without the
- * cube-array sampling lane (`forgeaxShader({ engineEntries: { pointShadows:
- * true } })`), so no point light can cast a visible shadow in this renderer.
+ * `unavailable` means there is no material that can sample the cube-array
+ * atlas and the submitted Forward receiver did not project point shadows.
  */
 export interface PointShadowInspection {
   readonly status: 'unavailable' | 'inactive' | 'ready' | 'over-budget';
@@ -72,14 +72,15 @@ const laneByEntry = new WeakMap<
 >();
 
 /**
- * Derive whether any loaded material program samples the point-shadow atlas.
- * The composed WGSL is the only authority: the view BGL always declares
- * binding 5, but only an opted-in build compiles a shader that reads it.
+ * Read prepared material WGSL for a point-shadow atlas sampling lane.
+ * The Forward projection is a separate utility program whose receipt comes
+ * from the submitted receiver.
  */
 export function materialShadersSamplePointShadows(
   entries: Iterable<MaterialShaderManifestEntry>,
 ): boolean {
   for (const entry of entries) {
+    if (entry.identifier === 'forgeax::engine-forward-directional-shadow') continue;
     const rows = materialShaderPreparedSourceRows(entry);
     let cached = laneByEntry.get(entry);
     if (cached === undefined || cached.count !== rows.length) {
@@ -96,15 +97,21 @@ export function materialShadersSamplePointShadows(
 }
 
 /**
- * Publish the recorded point-shadow facts, or the `unavailable` projection
- * when no loaded shader can sample the atlas. The request count is kept so a
- * caller sees which lights asked for shadows that cannot be displayed.
+ * Publish the recorded point-shadow facts when a material samples the atlas
+ * or the submitted Forward receiver projects it. Preserve the request count
+ * when neither sampling path is available.
  */
 export function projectPointShadowInspection(
-  recorded: PointShadowInspection | undefined,
-  shaderLane: boolean,
+  submitted: Pick<SubmittedFrameInspection, 'forwardShadow' | 'pointShadow'> | undefined,
+  entries: Iterable<MaterialShaderManifestEntry>,
 ): PointShadowInspection | undefined {
-  if (shaderLane) return recorded;
+  const forwardShadow = submitted?.forwardShadow;
+  const recorded = submitted?.pointShadow;
+  if (
+    (forwardShadow?.mode === 'screen' && forwardShadow.punctual?.point === true) ||
+    materialShadersSamplePointShadows(entries)
+  )
+    return recorded;
   return Object.freeze({
     status: 'unavailable',
     requested: recorded?.requested ?? 0,

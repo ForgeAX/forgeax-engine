@@ -7,11 +7,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { defaultBackendRoot, parseArgs, resolveStartup } from '../start.mjs';
 
-async function fixture(t, embedded = false) {
+async function fixture(t) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'view-file-start-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const engine = join(root, 'node_modules/@forgeax/engine');
-  const view = embedded ? join(engine, 'tools/view') : join(root, 'node_modules/@forgeax/view');
+  const view = join(root, 'node_modules/@forgeax/view');
   await mkdir(engine, { recursive: true });
   await mkdir(join(view, 'dist/modules'), { recursive: true });
   await mkdir(join(view, 'dist/viewer'), { recursive: true });
@@ -19,8 +19,9 @@ async function fixture(t, embedded = false) {
     join(engine, 'package.json'),
     JSON.stringify({
       name: '@forgeax/engine',
+      version: '0.5.2',
       type: 'module',
-      exports: { './package.json': './package.json', './devkit': './devkit.mjs' },
+      exports: { './package.json': './package.json', './*': { import: './*.mjs' } },
     }),
   );
   await writeFile(join(view, 'package.json'), '{"name":"@forgeax/view","type":"module"}');
@@ -80,7 +81,7 @@ test('default startup shares an installation root and independent instances allo
 });
 
 test('the View file starts a retained HTTP presentation directly with its installed Engine API', async (t) => {
-  const { engine, view } = await fixture(t, true);
+  const { engine, view } = await fixture(t);
   const options = await resolveStartup({ viewRoot: view });
   assert.equal(options.enginePackage, engine);
   const entry = await import(pathToFileURL(join(view, 'start.mjs')).href);
@@ -98,20 +99,54 @@ test('the View file starts a retained HTTP presentation directly with its instal
   const bootstrap = await (await fetch(new URL('/__forgeax/view/bootstrap', service.url))).json();
   assert.equal(bootstrap.phase, 'offline');
   assert.equal(bootstrap.launcher, true);
+  assert.equal(bootstrap.frontendConfig.engineVersion, '0.5.2');
   await service.close();
   assert.equal(api.calls[0].options.signal.aborted, true);
   assert.equal(await readFile(join(view, 'host.pack.json'), 'utf8'), '{}');
 });
 
 test('an incomplete installation names the missing output before allocating a Backend workspace', async (t) => {
-  const { view, root } = await fixture(t, true);
+  const { view, root } = await fixture(t);
   await rm(join(view, 'dist/modules/service.mjs'));
   const backend = join(root, 'must-not-be-created');
   await assert.rejects(resolveStartup({ viewRoot: view, root: backend }), (error) => {
     assert.equal(error.code, 'view-installation-incomplete');
     assert.match(error.message, /service\.mjs/);
-    assert.match(error.message, /complete matching @forgeax\/engine/);
+    assert.match(error.message, /complete matching SDK/);
     return true;
   });
   await assert.rejects(realpath(backend), { code: 'ENOENT' });
+});
+
+test('SDK file startup bootstraps and uses the SDK runtime independently of the game', async (t) => {
+  const { root, engine, view } = await fixture(t);
+  const sdkView = join(root, 'sdk/tools/view');
+  const game = join(root, 'game');
+  await mkdir(join(game, 'node_modules/@forgeax/engine'), { recursive: true });
+  await writeFile(join(game, 'node_modules/@forgeax/engine/package.json'),
+    '{"name":"@forgeax/engine","version":"9.9.9"}');
+  await mkdir(sdkView, { recursive: true });
+  await mkdir(join(root, 'sdk/bin'), { recursive: true });
+  await writeFile(join(root, 'sdk/sdk-manifest.json'), '{"sdkVersion":"1.2.3"}');
+  await writeFile(
+    join(root, 'sdk/bin/forgeax.mjs'),
+    `export async function ensureSdkRuntime() {
+      return ${JSON.stringify(root)};
+    }`,
+  );
+  await writeFile(
+    join(sdkView, 'start.mjs'),
+    await readFile(new URL('../start.mjs', import.meta.url)),
+  );
+  const entry = await import(pathToFileURL(join(sdkView, 'start.mjs')).href);
+  const service = await entry.startView({ project: game });
+  t.after(service.close);
+  assert.equal(service.enginePackage, engine);
+  assert.equal(service.viewRoot, view);
+  assert.equal(service.project, game);
+  const api = await import(pathToFileURL(join(engine, 'devkit.mjs')).href);
+  assert.equal(api.calls[0].options.hostPack, join(view, 'host.pack.json'));
+  assert.equal((await fetch(service.url)).status, 200);
+  const bootstrap = await (await fetch(new URL('/__forgeax/view/bootstrap', service.url))).json();
+  assert.equal(bootstrap.frontendConfig.engineVersion, '0.5.2');
 });

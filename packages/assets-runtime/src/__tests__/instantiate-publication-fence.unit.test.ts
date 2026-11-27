@@ -1,5 +1,5 @@
 import type { AssetPublicationEnvelope, CatalogEntry } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   scenePublicationFenceFromRegistry,
   validateKeyedScenePublication,
@@ -73,23 +73,22 @@ function entry(
 }
 
 describe('scenePublicationFenceFromRegistry', () => {
-  it('derives a fence from the complete Catalog projection', () => {
+  it('derives a fence with a point lookup of the accepted Catalog', () => {
     const pub = publication();
-    const registry = {
-      catalogSnapshot: () => ({ entries: [entry(pub)] }),
-      packIndexCache: undefined,
-    };
+    const lookup = vi.fn((guid: string) => (guid === SCENE_GUID ? entry(pub) : undefined));
+    const registry = { catalogEntry: lookup };
     expect(scenePublicationFenceFromRegistry(registry as never, SCENE_GUID)).toMatchObject({
       ok: true,
       value: { publicationGeneration: 17, sourcePath: pub.sourcePath },
     });
+    expect(lookup.mock.calls).toEqual([[SCENE_GUID]]);
   });
 
   it('derives the fence only from the accepted Catalog, regardless of a stale side map', () => {
     const stale = publication();
     const current = publication('assets/current.glb');
     const registry = {
-      catalogSnapshot: () => ({ entries: [entry(current)] }),
+      catalogEntry: (guid: string) => (guid === SCENE_GUID ? entry(current) : undefined),
       packIndexCache: new Map([[SCENE_GUID, entry(stale)]]),
     };
     expect(scenePublicationFenceFromRegistry(registry as never, SCENE_GUID)).toMatchObject({
@@ -131,9 +130,8 @@ describe('scenePublicationFenceFromRegistry', () => {
       },
     };
     const registry = {
-      catalogSnapshot: () => ({
-        entries: [entry(rootPublication), entry(childPublication, CHILD_GUID)],
-      }),
+      catalogEntry: (guid: string) =>
+        guid === SCENE_GUID ? entry(rootPublication) : entry(childPublication, CHILD_GUID),
       packIndexCache: undefined,
       assetCatalog: new Map([
         [CHILD_GUID, { guid: CHILD_GUID, kind: 'scene', payload: childScene, refs: [] }],
@@ -155,9 +153,8 @@ describe('scenePublicationFenceFromRegistry', () => {
     });
     const staleRegistry = {
       ...registry,
-      catalogSnapshot: () => ({
-        entries: [entry(rootPublication), entry(staleChild, CHILD_GUID)],
-      }),
+      catalogEntry: (guid: string) =>
+        guid === SCENE_GUID ? entry(rootPublication) : entry(staleChild, CHILD_GUID),
     };
     expect(
       validateKeyedScenePublication(staleRegistry as never, rootScene, SCENE_GUID),

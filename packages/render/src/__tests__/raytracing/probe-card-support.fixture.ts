@@ -87,9 +87,13 @@ export async function verifyProbeCardSupport() {
       return [name, { buffer, size: bytes.byteLength }];
     }),
   ) as unknown as ProbeCardSupportInputs;
-  const kernel = createProbeCardSupportRecorder(
-    device,
-    (await recorder.backend.createShaderModule(device, { code: PROBE_CARD_SUPPORT_WGSL })).unwrap(),
+  const kernel = (
+    await createProbeCardSupportRecorder(
+      device,
+      (
+        await recorder.backend.createShaderModule(device, { code: PROBE_CARD_SUPPORT_WGSL })
+      ).unwrap(),
+    )
   ).unwrap();
   const pending = recorder.captureFrame();
   (await recorder.frameBoundary()).unwrap();

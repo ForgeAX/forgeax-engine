@@ -87,8 +87,8 @@ globalThis.cancelAnimationFrame = (id) => {
   rafQueue = rafQueue.filter((entry) => entry.id !== id);
 };
 
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-const manifest = await buildEngineShaderManifest();
+const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const manifest = await buildEngineShaderTemplateManifest();
 const manifestUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(manifestUrl));
 const { createApp } = await import('@forgeax/engine-app/browser');

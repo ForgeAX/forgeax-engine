@@ -10,7 +10,7 @@ import { materialRecordFixture } from '../../../../assets-runtime/src/__tests__/
 import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { renderMaterialContext } from '../../extract/material-context';
 import type { RenderFeature } from '../../features/types';
-import { materialProgramSelectionsForMaterial } from '../../render-system-extract';
+import { materialProgramSelectionsForMaterial } from '../../material-program-selection';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 import { encodeRenderPublication } from '../record';

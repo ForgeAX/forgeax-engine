@@ -14,6 +14,11 @@ import {
   type SurfaceCardSource,
   surfaceCardKey,
 } from '../../raytracing/surface-cards';
+import {
+  cardCaptureReplayStages,
+  cardQueryReplayStages,
+  replayPassWorks,
+} from './card-capture-replay.fixture';
 import { readBuffer } from './path-tracer.fixture';
 import type { SdfCardsFixture } from './sdf-cards.commands';
 import { half, readCardPlanes, sdfCubeInstance } from './sdf-cards.fixture';
@@ -166,14 +171,16 @@ export async function verifyMultiMaterialCards(fixture: SdfCardsFixture) {
         expect(half(validity, pixel * 8 + 6)).toBe(1);
       }
       cards.dispose();
-      const model = buildFrameModel(decodeTape(tape).unwrap());
-      expect(model.works).toHaveLength(current.sections.length);
+      const decoded = decodeTape(tape).unwrap();
+      const model = buildFrameModel(decoded);
       expect(model.unseededResources).toEqual([]);
+      const { rasterWorks } = cardCaptureReplayStages(decoded, model, current.sections.length);
+      expect(model.works).toHaveLength(rasterWorks);
       evidence.push({
         tape,
         planes,
         works: model.works.length,
-        rasterWorks: model.works.length,
+        rasterWorks,
         colors: [],
         buffers: [],
       });
@@ -220,14 +227,20 @@ export async function verifyMultiMaterialCards(fixture: SdfCardsFixture) {
         expect(color).toEqual(lower ? [1, 0, 0] : [0, 0, 1]);
         expect(half(validity, offset + 6)).toBe(1);
       }
-      const model = buildFrameModel(decodeTape(tape).unwrap());
+      const decoded = decodeTape(tape).unwrap();
+      const model = buildFrameModel(decoded);
       expect(model.unseededResources).toEqual([]);
-      expect(model.works).toHaveLength(adjacent.layout.cards.length * adjacent.sections.length);
+      const { rasterWorks } = cardCaptureReplayStages(
+        decoded,
+        model,
+        adjacent.layout.cards.length * adjacent.sections.length,
+      );
+      expect(model.works).toHaveLength(rasterWorks);
       evidence.push({
         tape,
         planes,
         works: model.works.length,
-        rasterWorks: model.works.length,
+        rasterWorks,
         colors,
         buffers: [],
       });
@@ -293,19 +306,22 @@ export async function verifyMultiMaterialCards(fixture: SdfCardsFixture) {
     expect(new Uint32Array(mapped.buffer)[0]).toBe(CardLookupStatus.mapped);
     expect(Array.from(new Float32Array(mapped.buffer).slice(4, 7))).toEqual([1, 0, 0]);
     expect(new Uint32Array(rejected.buffer)[0]).toBe(CardLookupStatus.stale);
-    const model = buildFrameModel(decodeTape(tape).unwrap());
-    expect(model.works).toHaveLength(39);
+    const decoded = decodeTape(tape).unwrap();
+    const model = buildFrameModel(decoded);
     expect(model.unseededResources).toEqual([]);
+    const capture = cardQueryReplayStages(decoded, model, 36, 2);
+    const { traceWork, lookupWork: mappedWork, secondLookupWork: staleWork } = capture;
+    assert(staleWork);
     evidence.push({
       tape,
       planes,
-      works: 39,
-      rasterWorks: 36,
+      works: model.works.length,
+      rasterWorks: capture.rasterWorks,
       colors: [],
       buffers: [
-        { work: 36, binding: 3, bytes: hits },
-        { work: 37, binding: 2, bytes: mapped },
-        { work: 38, binding: 2, bytes: rejected },
+        { work: traceWork.workIndex, binding: 3, bytes: hits },
+        { work: mappedWork.workIndex, binding: 2, bytes: mapped },
+        { work: staleWork.workIndex, binding: 2, bytes: rejected },
       ],
     });
     stale.dispose();
@@ -327,9 +343,12 @@ export async function verifyMultiMaterialCards(fixture: SdfCardsFixture) {
         // Preserve every-draw checks for the original single-Card captures.
         // The adjacent atlas fills several tiles progressively; its complete
         // planes are checked at the final raster work below, as for the cube.
-        for (const work of capture.buffers.length || capture.rasterWorks !== source.sections.length
+        const material = replayPassWorks(tape, model, 'cards.capture');
+        const lastMaterial = material.at(-1);
+        assert(lastMaterial);
+        for (const work of capture.buffers.length || material.length !== source.sections.length
           ? []
-          : model.works) {
+          : material) {
           const color = work.attachments?.colorViewHandleIds[0];
           assert(color);
           const bytes = (await replay.readResourceAtWork(color, work.workIndex)).unwrap().bytes;
@@ -337,11 +356,11 @@ export async function verifyMultiMaterialCards(fixture: SdfCardsFixture) {
           expect(equalBytes(bytes, capture.planes[0])).toBe(true);
         }
         for (const i of CARD_PLANES.keys()) {
-          const resource = model.works[capture.rasterWorks - 1]?.attachments?.colorViewHandleIds[i];
+          const resource = lastMaterial.attachments?.colorViewHandleIds[i];
           assert(resource);
           expect(
             equalBytes(
-              (await replay.readResourceAtWork(resource, capture.rasterWorks - 1)).unwrap().bytes,
+              (await replay.readResourceAtWork(resource, lastMaterial.workIndex)).unwrap().bytes,
               capture.planes[i],
             ),
           ).toBe(true);

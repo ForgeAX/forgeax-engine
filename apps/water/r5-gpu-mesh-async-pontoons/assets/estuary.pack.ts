@@ -54,6 +54,11 @@ function material(
     values: { baseColor: color, roughness, metallic },
     passes: [
       {
+        name: 'deferred',
+        program: { module: 'forgeax_material::standard', fragmentEntry: 'fs_gbuffer' },
+        renderState: { tags: { LightMode: 'Deferred' }, queue: 2000 },
+      },
+      {
         name: 'forward',
         program: { module: 'forgeax_material::standard' },
         renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
@@ -109,7 +114,7 @@ export default definePack({
           { directionXZ: [-0.2, 0.9798], wavelengthM: 4.8, amplitudeM: 0.008, steepness: 0.008 },
         ],
       },
-      depthMaskM: 3,
+      depthMaskM: 0.12,
       maxWaveHeightM: 0.23,
       timeSource: 'scene-clock',
     }).unwrap();
@@ -153,14 +158,19 @@ export default definePack({
       type: 'river',
       overlapPriority: 3,
       ...waterMaterialFamilySlots(family, 'river'),
+      surfaceMaterialGuid: guid('material/water/river'),
+      lodMaterialGuid: guid('material/water/river-lod'),
+      riverToLakeTransitionMaterialGuid: guid('material/water/river'),
+      riverToOceanTransitionMaterialGuid: guid('material/water/river'),
       spline: {
         closed: false,
         interpolationVersion: 'water-spline/2',
         points: [
-          point(0, -91, -22, 0.14, 12),
-          point(1, -63, -15, 0.1, 13),
-          point(2, -37, -4, 0.06, 15),
-          point(3, -15, 0, 0.04, 19),
+          // This tidal reach shares the harbor's mean level. Terrain owns its visible width.
+          point(0, -91, -22, common.baseHeightM, 24),
+          point(1, -63, -15, common.baseHeightM, 24),
+          point(2, -37, -4, common.baseHeightM, 26),
+          point(3, -15, 0, common.baseHeightM, 26),
         ],
       },
       collision: { type: 'river-prism', enabled: true, collisionGroups: 0x0002ffff },
@@ -168,7 +178,7 @@ export default definePack({
     const lake: WaterBodySource = {
       ...common,
       type: 'lake',
-      baseHeightM: 0.04,
+      // This open harbor shares the Ocean's mean level; no dam separates them.
       overlapPriority: 2,
       ...waterMaterialFamilySlots(family, 'lake'),
       surfaceMaterialGuid: guid('material/water/lake'),
@@ -176,14 +186,9 @@ export default definePack({
       spline: {
         closed: true,
         interpolationVersion: 'water-spline/2',
-        points: [
-          point(0, -25, -19),
-          point(1, 8, -24),
-          point(2, 25, -8),
-          point(3, 20, 17),
-          point(4, -15, 22),
-          point(5, -29, 8),
-        ],
+        // The whole tidal reach intersects the harbor, retaining River flow
+        // while transition tiles use one incident wave field. Dry land hides the bounds.
+        points: [point(0, -110, -45), point(1, 36, -45), point(2, 36, 45), point(3, -110, 45)],
       },
       collision: {
         type: 'polygon',
@@ -206,14 +211,11 @@ export default definePack({
         closed: true,
         interpolationVersion: 'water-spline/2',
         points: [
+          // Keep the exclusion edge below dry land, behind the actual coast.
           point(0, -115, -95),
-          point(1, 25, -95),
-          point(2, 25, -32),
-          point(3, 20, -19),
-          point(4, 24, 18),
-          point(5, 30, 32),
-          point(6, 30, 95),
-          point(7, -115, 95),
+          point(1, 15, -95),
+          point(2, 15, 95),
+          point(3, -115, 95),
         ],
       },
       collision: {
@@ -270,7 +272,8 @@ export default definePack({
           gpuMesh: { supersampling: 2, msaaSamples: 4, occlusion: 'disabled' },
           waterInfo: {
             resolution: { widthPx: 256, heightPx: 256 },
-            format: 'rgba16f',
+            // Keep the mapped River mean plane coincident with the flat harbor.
+            format: 'rgba32f',
             blurRadius: 1,
             localTessellation: false,
           },
@@ -554,16 +557,18 @@ export default definePack({
     }
     const foamTextures = coastFoamTextures();
     const waterMaterials = Object.fromEntries(
-      (['lake', 'lake-lod', 'ocean', 'ocean-lod'] as const).map((type) => [
+      (['river', 'river-lod', 'lake', 'lake-lod', 'ocean', 'ocean-lod'] as const).map((type) => [
         `material/water/${type}`,
         {
           kind: 'material',
           parent: family.guids[type],
-          staticSwitches: { waterFoam: true, waterOceanFoam: true },
+          // This open estuary shares one incident wave field across its current.
+          staticSwitches: { waterWaves: true, waterFoam: true, waterOceanFoam: true },
           values: {
             waterFoamTexture: guid('texture/foam-height'),
             waterFoamNormalTexture: guid('texture/foam-normal'),
             foamTilingM: COAST_FOAM_TILING_M,
+            foamVelocityMPerSec: [0.18, -0.12],
             foamAmount: 1,
             contactFoamAmount: 1,
             foamPower: 0.45,
@@ -580,8 +585,8 @@ export default definePack({
             surfaceCrestFoamAmount: 0.45,
             surfaceCrestFoamCompressionMinimum: 0.04,
             surfaceCrestFoamCompressionRange: 0.1,
-            sceneDepthFoamAmount: 0.6,
-            sceneDepthFoamWidthM: 0.45,
+            sceneDepthFoamAmount: 1,
+            sceneDepthFoamWidthM: 0.35,
           },
         } satisfies MaterialAsset,
       ]),

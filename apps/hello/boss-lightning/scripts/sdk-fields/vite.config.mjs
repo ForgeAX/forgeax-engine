@@ -7,7 +7,6 @@ import { forgeaxShader } from '@forgeax/engine/vite-plugin-shader';
 const root = import.meta.dirname;
 const assets = resolve(root, 'assets');
 const fieldSources = new Set([
-  'field-effects.pack.json',
   'fields-affine-spatial-on.vfx.wgsl',
   'fields-boundary-off.vfx.wgsl',
   'fields-boundary-on.vfx.wgsl',

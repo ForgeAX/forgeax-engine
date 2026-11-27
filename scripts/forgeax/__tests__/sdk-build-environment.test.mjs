@@ -56,16 +56,9 @@ test('SDK production uses the budget on its actual Engine child', () => {
   const source = readFileSync(new URL('../build-sdk.mjs', import.meta.url), 'utf8');
   assert.match(
     source,
-    /await run\('pnpm', \['build:engine'\], \{[\s\S]*?\.\.\.sdkBuildEnvironment\(\)/,
+    /await run\('pnpm', engineBuildArgs, \{[\s\S]*?\.\.\.sdkBuildEnvironment\(\)/,
   );
-  const publicationStage = source.slice(
-    source.indexOf("for (const profile of ['base-ssao', 'point-ssao'])"),
-    source.indexOf('const publicPackages = []'),
-  );
-  assert.match(publicationStage, /'--expose-gc'/);
-  assert.match(publicationStage, /'scripts\/forgeax\/check-shader-publication\.mjs'/);
-  assert.doesNotMatch(publicationStage, /--max-old-space-size/);
-  assert.match(publicationStage, /env: sdkBuildEnvironment\(\)/);
+  assert.doesNotMatch(source, /check-shader-publication|--compiled-shaders/);
 });
 
 test('publication validation receives the bounded runner heap without dropping inherited options', () => {

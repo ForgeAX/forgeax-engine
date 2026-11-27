@@ -41,7 +41,7 @@ describe('shared device feature admission', () => {
       limit !== undefined && limit > 8 ? limit : undefined,
     );
   });
-  it('admits precise HDR and bounded scratch only within adapter capabilities', () => {
+  it('admits available float32 HDR features without requesting legacy subsurface scratch', () => {
     const full = deriveDeviceFeatureAdmission(
       adapter(['float32-filterable', 'float32-blendable', 'texture-formats-tier2'], {
         maxComputeWorkgroupStorageSize: 65536,
@@ -52,10 +52,8 @@ describe('shared device feature admission', () => {
       'float32-filterable',
       'float32-blendable',
     ]);
-    // The SSS compute shader writes rgba32float storage; its tier2 read-write
-    // access is not part of this pipeline's capability contract.
     expect(full.requiredFeatures).not.toContain('texture-formats-tier2');
-    expect(full.requiredLimits).toEqual({ maxComputeWorkgroupStorageSize: 32768 });
+    expect(full.requiredLimits).toBeUndefined();
     const minimum = deriveDeviceFeatureAdmission(
       adapter([], { maxComputeWorkgroupStorageSize: 16384 }),
     );
@@ -88,16 +86,16 @@ describe('shared device feature admission', () => {
     [[], 40, 40],
     [[], 44, 44],
     [[], 48, 48],
-    [[], 52, 52],
-    [[], 64, 56],
+    [[], 52, 48],
+    [[], 64, 48],
     [['primitive-index'], 48, 48],
     [['primitive-index'], 52, 52],
     [['primitive-index'], 56, 56],
     [['primitive-index'], 60, 60],
     [['primitive-index'], 64, 64],
-    [['primitive-index'], 68, 68],
-    [['primitive-index'], 72, 72],
-    [['primitive-index'], 128, 72],
+    [['primitive-index'], 68, 64],
+    [['primitive-index'], 72, 64],
+    [['primitive-index'], 128, 64],
   ] as const)('requests supported temporal MRT capacity for %j / %i bytes', (features, bytes, requested) => {
     const admitted = deriveDeviceFeatureAdmission(
       adapter([...features], {
@@ -108,6 +106,12 @@ describe('shared device feature admission', () => {
     expect(admitted.requiredLimits?.maxColorAttachmentBytesPerSample).toBe(requested);
     expect(admitted.requiredLimits ?? {}).not.toHaveProperty('maxColorAttachments');
   });
+  it('requests packed HDR rendering only on adapters that advertise it', () => {
+    const feature = 'rg11b10ufloat-renderable';
+    expect(deriveDeviceFeatureAdmission(adapter([feature])).requiredFeatures).toContain(feature);
+    expect(deriveDeviceFeatureAdmission(adapter([])).requiredFeatures).not.toContain(feature);
+  });
+
   it('admits supported timestamps for a late DRS component and omits unsupported features', () => {
     const supported = adapter(['timestamp-query', 'texture-compression-bc']);
     const available = deriveDeviceFeatureAdmission(supported);
@@ -139,10 +143,12 @@ describe('shared device feature admission', () => {
   it.each([
     [48, 32],
     [32, 32],
-    [31, 27],
+    [31, 29],
+    [29, 29],
+    [28, 27],
     [27, 27],
-    [26, 25],
-    [25, 25],
+    [26, 21],
+    [25, 21],
     [24, 21],
     [23, 21],
     [21, 21],

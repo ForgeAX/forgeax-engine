@@ -184,7 +184,9 @@ test('aborts a stalled artifact endpoint so transport retry can recover', async 
   }
 });
 
-test('a stalled archive body yields to a fresh route within the acceleration window', async () => {
+test('a stalled archive body yields to a fresh route within the acceleration window', {
+  timeout: 2_000,
+}, async () => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-artifact-body-retry-'));
   const destination = join(root, 'archive.zip');
   const archive = Buffer.from('complete artifact after a stalled route');
@@ -207,10 +209,12 @@ test('a stalled archive body yields to a fresh route within the acceleration win
               'abort',
               () => {
                 aborted = true;
-                controller.error(new Error('stalled route aborted'));
               },
               { once: true },
             );
+          },
+          cancel() {
+            return new Promise(() => {});
           },
         }),
       );
@@ -230,11 +234,14 @@ test('a stalled archive body yields to a fresh route within the acceleration win
   }
 });
 
-test('aborts and classifies an idle response body instead of hanging forever', async () => {
+test('aborts and classifies an idle response body instead of hanging forever', {
+  timeout: 2_000,
+}, async () => {
   let cancelled = false;
   const body = new ReadableStream({
     cancel() {
       cancelled = true;
+      return new Promise(() => {});
     },
   });
   const controller = new AbortController();
@@ -244,6 +251,39 @@ test('aborts and classifies an idle response body instead of hanging forever', a
   );
   assert.equal(controller.signal.aborted, true);
   assert.equal(cancelled, true);
+});
+
+test('an HTTP error aborts its unused body before retrying the artifact', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'forgeax-artifact-error-retry-'));
+  const path = join(root, 'archive.zip');
+  const archive = Buffer.from('retry returned a complete archive');
+  const digest = `sha256:${createHash('sha256').update(archive).digest('hex')}`;
+  const previousFetch = globalThis.fetch;
+  const previousToken = process.env.GITHUB_TOKEN;
+  let metadataRequests = 0;
+  let oldSignal;
+  try {
+    process.env.GITHUB_TOKEN = 'test-token';
+    globalThis.fetch = async (url, { signal }) => {
+      if (String(url).endsWith('/zip')) return new Response(archive);
+      if (++metadataRequests > 1) {
+        assert.equal(oldSignal.aborted, true);
+        return new Response(JSON.stringify({ expired: false, digest }));
+      }
+      oldSignal = signal;
+      return new Response(new ReadableStream(), { status: 503 });
+    };
+    const result = await retryArtifact(() => downloadArtifact('owner/repo', '42', path), {
+      sleepFn: async () => {},
+    });
+    assert.equal(result.attempt, 2);
+    assert.deepEqual(await readFile(path), archive);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = previousToken;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('requires non-empty numeric exact artifact IDs', () => {

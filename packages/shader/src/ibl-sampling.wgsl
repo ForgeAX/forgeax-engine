@@ -15,32 +15,13 @@
 // Exports:
 //   - sampleIblDiffuse(N, irradianceMap, irradianceSampler)
 //   - sampleIblRadiance(reflectionDirection, roughness, rotation, prefilterMap, prefilterSampler)
-//   - sampleIblSpecular(N, V, roughness, F0, prefilterMap, prefilterSampler,
-//                       brdfLut, brdfLutSampler)
-//   - specularEnvironmentAlbedo(NdotV, roughness, F0, brdfLut, brdfLutSampler)
-//   - environmentDfg(NdotV, roughness, brdfLut, brdfLutSampler) (LUT; fit under ENV_BRDF_FIT)
+//   - sampleIblSpecular, specularEnvironmentAlbedo, environmentDfg
+//     LUT arguments are present only in ENV_BRDF_LUT programs.
 //   - box_project(worldPosition, direction, boxCenter, boxExtents)
-//   - sampleReflectionProbeSpecular(..., probeMap, probeSampler, ...)
 
 #import forgeax_pbr::ibl_shared::{fresnelSchlickRoughness, inverseRotateEnvironment}
 #import forgeax_pbr::brdf::{approximateDirectDfg}
 #import forgeax_pbr::pmrem::{samplePmrem}
-
-// Decode the renderer's Skylight/probe scalar without touching the probe box
-// metadata carried in the color lanes. A negative intensity is the
-// ReflectionProbe sentinel `-(probeIntensity + 1)` selects a helper that has
-// already combined probe intensity and the global Skylight boundary fallback.
-// Ordinary Skylights still apply their linear RGB tint and intensity here.
-fn decodeSpecularEnvironmentScale(
-  skyColor: vec3<f32>,
-  intensity: f32,
-) -> vec3<f32> {
-  return select(
-    skyColor * intensity,
-    vec3<f32>(1.0),
-    intensity < 0.0,
-  );
-}
 
 // Sample pre-convolved irradiance from the irradiance cubemap.
 // The cube is single-mip, so an explicit level keeps the lookup legal in
@@ -74,52 +55,76 @@ fn environmentMultiScattering(single: vec3<f32>, missingEnergy: f32, F0: vec3<f3
   return single * favg * missingEnergy / max(vec3<f32>(1.0) - missingEnergy * favg, vec3<f32>(1e-6));
 }
 
+fn environmentSingleScatteringFromDfg(ab: vec2<f32>, F0: vec3<f32>, F90: f32) -> vec3<f32> {
+  return F0 * ab.r + ab.g * F90;
+}
+
 fn environmentScatteringFromDfg(ab: vec2<f32>, F0: vec3<f32>, F90: f32) -> EnvironmentScattering {
-  let single = F0 * ab.r + ab.g * F90;
+  let single = environmentSingleScatteringFromDfg(ab, F0, F90);
   let ems = clamp(1.0 - ab.r - ab.g, 0.0, 1.0);
   let multi = environmentMultiScattering(single, ems, F0);
   return EnvironmentScattering(single, multi, ems);
 }
 
 // Split-sum environment BRDF as (scale, bias) on F0 / F90.
-// Default: the preintegrated 256^2 LUT (UE MATERIAL_USE_PREINTEGRATED_GF; it
-// matches Three r187's 16^2 DFG LUT). A Standard material that sets the
-// `environmentBrdfApprox` static switch is cooked with ENV_BRDF_FIT and uses
-// UE EnvBRDFApproxLazarov (BRDF.ush) instead: ALU only, no texture fetch, but
-// up to ~0.08 off the LUT on dielectrics and ~0.5 on rough metals at grazing
-// angles. The preprocessor removes the other path, so neither program carries
-// the unused branch.
+// All callers share the analytic fit by default.
+// Cooked Forward materials can select the preintegrated LUT by setting
+// environmentBrdfApprox to false. Direct-light DFG has its own policy.
 fn environmentDfg(
-  NdotV: f32, roughness: f32, brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
+  NdotV: f32, roughness: f32,
+#ifdef ENV_BRDF_LUT
+  brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
+#endif
 ) -> vec2<f32> {
-#ifdef ENV_BRDF_FIT
-  return approximateDirectDfg(roughness, NdotV);
-#else
+#ifdef ENV_BRDF_LUT
   return textureSampleLevel(brdfLut, brdfLutSampler, vec2<f32>(NdotV, roughness), 0.0).rg;
+#else
+  return approximateDirectDfg(roughness, NdotV);
 #endif
 }
 
 fn environmentScattering(
-  NdotV: f32, roughness: f32, F0: vec3<f32>, brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
+  NdotV: f32, roughness: f32, F0: vec3<f32>,
+#ifdef ENV_BRDF_LUT
+  brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
+#endif
 ) -> EnvironmentScattering {
-  let ab = environmentDfg(NdotV, roughness, brdfLut, brdfLutSampler);
+  let ab = environmentDfg(NdotV, roughness,
+#ifdef ENV_BRDF_LUT
+    brdfLut, brdfLutSampler,
+#endif
+  );
   return environmentScatteringFromDfg(ab, F0, 1.0);
 }
 
 fn specularEnvironmentAlbedo(
-  NdotV: f32, roughness: f32, F0: vec3<f32>, brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
+  NdotV: f32, roughness: f32, F0: vec3<f32>,
+#ifdef ENV_BRDF_LUT
+  brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
+#endif
 ) -> vec3<f32> {
-  let scattering = environmentScattering(NdotV, roughness, F0, brdfLut, brdfLutSampler);
+  let scattering = environmentScattering(NdotV, roughness, F0,
+#ifdef ENV_BRDF_LUT
+    brdfLut, brdfLutSampler,
+#endif
+  );
   return scattering.single + scattering.multi;
 }
 
 // Directional single-scattering response, shared by environment, probe, SSR and clearcoat.
 fn projectSpecularRadiance(
   radiance: vec3<f32>, normal: vec3<f32>, view: vec3<f32>,
-  roughness: f32, F0: vec3<f32>, brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
+  roughness: f32, F0: vec3<f32>,
+#ifdef ENV_BRDF_LUT
+  brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
+#endif
 ) -> vec3<f32> {
   let NdotV = max(dot(normal, view), 0.001);
-  return radiance * environmentScattering(NdotV, roughness, F0, brdfLut, brdfLutSampler).single;
+  return radiance * environmentScattering(NdotV, roughness, F0,
+#ifdef ENV_BRDF_LUT
+    brdfLut, brdfLutSampler,
+#endif
+  ).single;
 }
 
 // Three r184 EnvironmentNode: rough surfaces approach the normal instead of
@@ -145,11 +150,17 @@ fn sampleIblRadiance(
 fn sampleIblSpecular(
   normal: vec3<f32>, view: vec3<f32>, roughness: f32, F0: vec3<f32>, rotation: vec4<f32>,
   prefilterMap: texture_2d<f32>, prefilterSampler: sampler,
+#ifdef ENV_BRDF_LUT
   brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
+#endif
 ) -> vec3<f32> {
   let radiance = sampleIblRadiance(environmentReflectionDirection(normal, view, roughness),
     roughness, rotation, prefilterMap, prefilterSampler);
-  return projectSpecularRadiance(radiance, normal, view, roughness, F0, brdfLut, brdfLutSampler);
+  return projectSpecularRadiance(radiance, normal, view, roughness, F0,
+#ifdef ENV_BRDF_LUT
+    brdfLut, brdfLutSampler,
+#endif
+  );
 }
 
 // Project a reflection ray from a point inside a probe box onto the box
@@ -174,57 +185,4 @@ fn box_project(
   let distances = (edge - localPosition) / safeDirection;
   let travel = min(distances.x, min(distances.y, distances.z));
   return normalize(localPosition + direction * max(travel, 0.0));
-}
-
-// Split-sum probe sample. The probe texture is supplied by the caller so a
-// missing scene candidate can keep using sampleIblSpecular with the Skylight
-// resources already present in the Standard material layout.
-fn sampleReflectionProbeRadiance(
-  reflectionDirection: vec3<f32>,
-  roughness: f32,
-  worldPosition: vec3<f32>,
-  boxCenter: vec3<f32>,
-  boxExtents: vec3<f32>,
-  rotation: vec4<f32>,
-  probeMap: texture_2d<f32>,
-  probeSampler: sampler,
-  skylightMap: texture_2d<f32>,
-  skylightRotation: vec4<f32>,
-  skylightScale: vec3<f32>,
-  probeIntensity: f32,
-  boxProjection: bool,
-) -> vec3<f32> {
-  // Selection is per draw, but a receiver can extend beyond that probe's box.
-  // Only the interior admits parallax correction. Keep global specular IBL
-  // resident and blend the outer 10% of the box into its real Skylight source.
-  let relative = abs(worldPosition - boxCenter) / max(boxExtents, vec3<f32>(0.0001));
-  let weight = smoothstep(0.0, 0.1, 1.0 - max(relative.x, max(relative.y, relative.z)));
-  var sky = vec3<f32>(0.0);
-  if (weight < 1.0) {
-    sky = sampleIblRadiance(reflectionDirection, roughness, skylightRotation, skylightMap, probeSampler) * skylightScale;
-  }
-  if (weight <= 0.0) { return sky; }
-  var projected = reflectionDirection;
-  if (boxProjection) { projected = box_project(worldPosition, reflectionDirection, boxCenter, boxExtents); }
-  let rotated = inverseRotateEnvironment(projected, rotation);
-  // Runtime cube cameras capture world-space faces directly. The image IBL
-  // bake's Y convention does not apply to these captures.
-  let probeDirection = rotated;
-  let prefilteredColor = samplePmrem(probeMap, probeSampler, probeDirection, roughness);
-  let local = prefilteredColor * probeIntensity;
-  return mix(sky, local, weight);
-}
-
-fn sampleReflectionProbeSpecular(
-  normal: vec3<f32>, view: vec3<f32>, roughness: f32, F0: vec3<f32>,
-  worldPosition: vec3<f32>, boxCenter: vec3<f32>, boxExtents: vec3<f32>, rotation: vec4<f32>,
-  probeMap: texture_2d<f32>, probeSampler: sampler,
-  brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
-  skylightMap: texture_2d<f32>, skylightRotation: vec4<f32>, skylightScale: vec3<f32>,
-  probeIntensity: f32, boxProjection: bool,
-) -> vec3<f32> {
-  let radiance = sampleReflectionProbeRadiance(environmentReflectionDirection(normal, view, roughness), roughness, worldPosition,
-    boxCenter, boxExtents, rotation, probeMap, probeSampler, skylightMap,
-    skylightRotation, skylightScale, probeIntensity, boxProjection);
-  return projectSpecularRadiance(radiance, normal, view, roughness, F0, brdfLut, brdfLutSampler);
 }

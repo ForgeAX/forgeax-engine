@@ -9,10 +9,14 @@ export async function cookSurfaceExpression(kind: 'standard' | 'unlit' | 'roughn
   const rebound = surfaceExpressionExample(kind, undefined, undefined, true);
   const ground = new MeshStandardNodeMaterial({ color: 0x777777 });
   ground.roughnessNode = float(1);
+  // The material cooker shares one bounded pool for these independent graphs.
+  const cooks = [
+    cookThreeSurface(initial.material),
+    cookThreeSurface(rebound.material),
+    kind === 'standard' ? cookThreeSurface(ground) : undefined,
+  ] as const;
   try {
-    const first = await cookThreeSurface(initial.material);
-    const second = await cookThreeSurface(rebound.material);
-    const receiver = kind === 'standard' ? await cookThreeSurface(ground) : undefined;
+    const [first, second, receiver] = await Promise.all(cooks);
     return {
       ...first,
       reboundRecipe: second.recipe,
@@ -24,6 +28,7 @@ export async function cookSurfaceExpression(kind: 'standard' | 'unlit' | 'roughn
       ],
     };
   } finally {
+    await Promise.allSettled(cooks);
     initial.material.dispose();
     initial.image.dispose();
     rebound.material.dispose();

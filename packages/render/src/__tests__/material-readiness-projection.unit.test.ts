@@ -2,7 +2,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
-import type { AssetHandle, SamplerAsset, TextureAsset } from '@forgeax/engine-types';
+import { type AssetHandle, ok, type SamplerAsset, type TextureAsset } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { samplerContribution } from '../assets/asset-decoders';
 import { GpuResidencyCache } from '../device/gpu-residency';
@@ -118,6 +118,37 @@ it('observes a repeated material once per World and refreshes the next phase', (
   expect(getView).toHaveBeenCalledTimes(4);
 });
 
+it('observes the exact source version when value-only material variants share a handle', () => {
+  const scope = worldRenderResources(assetWorld());
+  const internals = {} as RenderSystemInternals;
+  const root = 15;
+  const accepted = {
+    ...defaultMaterialSnapshot(root),
+    sourceAssets: {
+      root,
+      revision: 1,
+      assets: [
+        { handle: root, revision: 1, value: { kind: 'material' as const, passes: [], values: {} } },
+      ],
+    },
+  };
+  const unavailable = {
+    ...defaultMaterialSnapshot(root),
+    sourceAssets: { root, revision: 2, assets: [{ handle: root, revision: 2 }] },
+  };
+  for (const [first, second] of [
+    [accepted, unavailable],
+    [unavailable, accepted],
+  ] as const) {
+    const observe = createMaterialResidencyObserver(internals, false);
+    for (const material of [first, second, { ...first }]) {
+      expect(observe(scope, material)).toEqual(
+        observeMaterialResidency(scope, material, internals, false),
+      );
+    }
+  }
+});
+
 it('does not re-project an owned material residency key for every consumer', () => {
   const scope = worldRenderResources(assetWorld());
   let reads = 0;
@@ -224,6 +255,11 @@ it('reuses the accepted texture allocation across value clones and rejects inval
   const scope = worldRenderResources(world);
   const createTexture = vi.spyOn(device, 'createTexture');
   try {
+    const published = scope.resolveAsset<TextureAsset>(handle).unwrap();
+    const entry = store.ensureResident(handle, published, scope).unwrap();
+    expect(entry.receipt.shape).toBe(published.shape);
+    expect(entry.receipt.fixedSourceMips).toBe(published.mips);
+    expect(Object.isFrozen(published.shape.extent)).toBe(true);
     const observe = createMaterialResidencyObserver(internals, false);
     for (let index = 0; index < 2048; index++)
       expect(observe(scope, { ...material, roughness: index / 2048 }).readiness).toBe('ready');
@@ -233,6 +269,59 @@ it('reuses the accepted texture allocation across value clones and rejects inval
       'ready',
     );
     expect(createTexture).toHaveBeenCalledTimes(1);
+  } finally {
+    store.destroyAll();
+    assets.dispose();
+  }
+});
+
+it.each([
+  'mutable extent',
+  'frozen getter',
+] as const)('observes live %s edits across different materials in one phase', async (mode) => {
+  const world = assetWorld();
+  const assets = runtimeAssetRegistry(world.assets);
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const store = new GpuResidencyCache();
+  store.configureGpuDevice(device, undefined, device.caps);
+  const size = { width: 1, height: 1 };
+  const extent =
+    mode === 'mutable extent'
+      ? size
+      : Object.freeze({
+          get width() {
+            return size.width;
+          },
+          height: 1,
+        });
+  const texture: TextureAsset = {
+    kind: 'texture',
+    format: 'rgba8unorm',
+    colorSpace: 'linear',
+    shape: Object.freeze({ viewDimension: '2d', extent }),
+    mips: Object.freeze({ kind: 'none' }),
+    data: new Uint8Array(4),
+  };
+  const handle = assets
+    .create({ ...texture, shape: { viewDimension: '2d', extent: size } })
+    .unwrap();
+  const scope = { ...worldRenderResources(world), resolveAsset: <T>() => ok(texture as T) };
+  const material = { ...defaultMaterialSnapshot(), baseColorTexture: handle };
+  const observe = createMaterialResidencyObserver(
+    { gpuStore: store } as RenderSystemInternals,
+    false,
+  );
+  try {
+    const entry = store.ensureResident(handle, texture, scope).unwrap();
+    expect(entry.receipt.fixedSourceMips).toBeUndefined();
+    expect(observe(scope, material).readiness).toBe('ready');
+    size.width = 0;
+    expect(observe(scope, { ...material, roughness: 0.3 })).toMatchObject({
+      readiness: 'failed',
+      preparationFailure: { code: 'texture-shape-invalid', detail: { field: 'width' } },
+    });
+    size.width = 1;
+    expect(observe(scope, { ...material, roughness: 0.4 }).readiness).toBe('ready');
   } finally {
     store.destroyAll();
     assets.dispose();

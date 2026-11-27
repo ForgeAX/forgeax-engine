@@ -8,36 +8,48 @@ import {
   produceBuildAssets,
 } from '@forgeax/engine-import';
 import { decodeMaterialProgramWire, serializeCookedMaterialRecord } from '@forgeax/engine-pack';
+import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
+import { parsePackSourceJson } from '@forgeax/engine-pack/source';
 import { planAssetBundles } from '../../../../devkit/src/delivery-bundles';
 import { materialRecordFixture } from './material-publication.js';
 
-export async function materialProductionFixture(external = true, record = materialRecordFixture()) {
+export async function materialProductionFixture(
+  external = true,
+  options?:
+    | Omit<NonNullable<Parameters<typeof materialRecordFixture>[0]>, 'guid'>
+    | ((guid: string) => ReturnType<typeof materialRecordFixture>),
+) {
+  const packageId = '019f0000-0000-7000-8000-000000000702';
+  const namespace = PackageId.parse(packageId);
+  if (!namespace.ok) throw namespace.error;
+  const sourceKey = 'material/main';
+  const guid = AssetGuid.format(AssetGuid.derive(namespace.value, sourceKey));
+  const record =
+    typeof options === 'function' ? options(guid) : materialRecordFixture({ ...options, guid });
   const root = resolve('/fixture');
   const sourcePath = resolve(root, 'materials.pack.json');
   const files = new Map<string, BuildProductionFile>();
   const original = JSON.parse(serializeCookedMaterialRecord(record));
   const authored = {
-    schemaVersion: '2.0.0',
-    kind: 'internal-text-package',
-    assets: [
-      {
-        guid: record.guid,
+    schemaVersion: '3.0.0',
+    packageId,
+    assets: {
+      [sourceKey]: {
         kind: 'material',
-        execution: 'cooked',
         payload: { kind: 'material', ...record.resolved },
         refs: [],
       },
-    ],
+    },
   } as const;
   const entries = await produceBuildAssets({
     inventory: {
-      schemaVersion: 'catalog-legacy-v1',
       authority: 'authoritative',
       diagnostics: [],
       declarations: new Map(),
       entries: [
         { guid: record.guid, kind: 'material', packageUrl: '/source.pack.json', sourcePath },
       ],
+      packInstances: new Map(),
       sourceDeclarations: new Map([
         [
           sourcePath,
@@ -46,7 +58,7 @@ export async function materialProductionFixture(external = true, record = materi
             sourceRevision: 'fixture-revision',
             sourcePath,
             sourceText: JSON.stringify(authored),
-            value: authored,
+            value: parsePackSourceJson(authored).unwrap(),
           },
         ],
       ]),
@@ -61,7 +73,6 @@ export async function materialProductionFixture(external = true, record = materi
       },
     },
     cookedCurrentProjection: {},
-    directCurrentProjection: {},
     authoredCookedCurrentProjection: {},
     cookers: [
       {
@@ -120,6 +131,7 @@ export async function materialProductionFixture(external = true, record = materi
 export async function bundleMaterialFixture(
   fixture: Awaited<ReturnType<typeof materialProductionFixture>>,
 ) {
+  const packPath = fixture.entry.packageUrl.slice(1);
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-material-bundle-'));
   try {
     const artifacts = new Map();
@@ -138,8 +150,7 @@ export async function bundleMaterialFixture(
       sourceRoot: root,
       outputRoot: root,
       artifacts,
-      catalog: fixture.entries,
-      packIndexPath: 'pack-index.json',
+      sources: new Map([[packPath, fixture.entry.sourcePath]]),
       delivery: {},
       pathOf: (url, from) =>
         url.startsWith('/') ? url.slice(1) : posix.join(posix.dirname(from), url),
@@ -150,9 +161,7 @@ export async function bundleMaterialFixture(
         fileName: file.path,
         source: await readFile(resolve(root, file.path)),
       });
-    fixture.pack = JSON.parse(
-      await readFile(resolve(root, fixture.entry.packageUrl.slice(1)), 'utf8'),
-    );
+    fixture.pack = JSON.parse(await readFile(resolve(root, packPath), 'utf8'));
     return output.report;
   } finally {
     await rm(root, { recursive: true, force: true });

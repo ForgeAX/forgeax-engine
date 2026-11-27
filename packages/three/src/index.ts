@@ -14,11 +14,15 @@ export type * from './node-types';
 export { createThreePipeline } from './pipeline';
 export { QuadMesh } from './quad-mesh';
 export {
+  readThreeFrame,
   setThreePlanarReflection,
   type ThreeFrameCapture,
+  type ThreeFrameObservation,
   type ThreePlanarReflectionOptions,
   WebGPURenderer,
   type WebGPURendererParameters,
 } from './renderer';
 export type { RendererErrorInfo } from './renderer-events';
 export type { ThreeSourceIdentity } from './scene';
+export { setThreeSceneTracking } from './source-changes';
+export { enableThreeSourceTracking } from './source-collections';

@@ -1,9 +1,8 @@
 {
-  "schemaVersion": "2.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "019e9c00-0000-7000-8000-000000000001",
+  "schemaVersion": "3.0.0",
+  "packageId": "b1ea7939-a6eb-5786-a1be-366d113ee269",
+  "assets": {
+    "material/mouth": {
       "kind": "material",
       "payload": {
         "passes": [
@@ -37,11 +36,9 @@
           "emissiveIntensity": 4
         }
       },
-      "refs": [],
-      "artifacts": {}
+      "refs": []
     },
-    {
-      "guid": "019e9c00-0000-7000-8000-000000000002",
+    "material/standalone-strike": {
       "kind": "material",
       "payload": {
         "passes": [
@@ -75,11 +72,9 @@
           "emissiveIntensity": 3
         }
       },
-      "refs": [],
-      "artifacts": {}
+      "refs": []
     },
-    {
-      "guid": "019e9c00-0000-7000-8000-000000000003",
+    "material/body": {
       "kind": "material",
       "payload": {
         "passes": [
@@ -113,11 +108,9 @@
           "emissiveIntensity": 0.35
         }
       },
-      "refs": [],
-      "artifacts": {}
+      "refs": []
     },
-    {
-      "guid": "019e9c00-0000-7000-8000-000000000004",
+    "material/accent": {
       "kind": "material",
       "payload": {
         "passes": [
@@ -151,11 +144,9 @@
           "emissiveIntensity": 0.12
         }
       },
-      "refs": [],
-      "artifacts": {}
+      "refs": []
     },
-    {
-      "guid": "019e9c00-0000-7000-8000-000000000005",
+    "material/warning": {
       "kind": "material",
       "payload": {
         "passes": [
@@ -189,11 +180,9 @@
           "emissiveIntensity": 1.5
         }
       },
-      "refs": [],
-      "artifacts": {}
+      "refs": []
     },
-    {
-      "guid": "019e9c00-0000-7000-8000-000000000006",
+    "material/strike": {
       "kind": "material",
       "payload": {
         "passes": [
@@ -227,8 +216,7 @@
           "emissiveIntensity": 4
         }
       },
-      "refs": [],
-      "artifacts": {}
+      "refs": []
     }
-  ]
+  }
 }

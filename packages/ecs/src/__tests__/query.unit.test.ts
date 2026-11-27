@@ -124,6 +124,25 @@ describe('executable Query', () => {
     expect(query.at(second)).toBeUndefined();
   });
 
+  it('lends one row per addressed traversal and resolves each handle when visited', () => {
+    const { world, first, second } = createWorld();
+    const query = world.query({ read: [Position] }).unwrap();
+    const rows = new Set<object>();
+    const seen: number[] = [];
+    query.forEachAt([first, second, first], (row) => {
+      rows.add(row);
+      seen.push(row.entity);
+      query.forEachAt([second], (nested) => {
+        expect(nested).not.toBe(row);
+        expect(nested.entity).toBe(second);
+      });
+      expect(row.entity).toBe(first);
+      if (seen.length === 1) world.despawn(second).unwrap();
+    });
+    expect(seen).toEqual([first, first]);
+    expect(rows.size).toBe(1);
+  });
+
   it('checks optional presence without materialising a component row', () => {
     const { world } = createWorld();
     const query = world.query({ read: [Position], optional: [Velocity] }).unwrap();

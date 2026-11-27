@@ -2,37 +2,41 @@ import { probeR32FloatRenderCapability } from '@forgeax/engine-rhi';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { expect, it, onTestFinished } from 'vitest';
 import * as wgpu from '../../../rhi-wgpu/src/index';
-import { readOwnedShaderManifestPublication } from '../../../shader/src/manifest-publication';
 import { weightedLuminanceHistogram } from '../pipeline/standard-output/auto-exposure/oracle';
-import { runPortableExposure, runPortablePyramid } from './portable-kernel-expansion-gpu';
+import { browserShaderEntries } from './browser-shader-entries.fixture';
+import {
+  runPortableExposure,
+  runPortablePyramid,
+  runUeExposureMeterFixture,
+} from './portable-kernel-expansion-gpu';
 import {
   runSsrGpuDispatch,
-  type SsrShaderManifest,
+  SSR_PROBE_SHADER_IDENTIFIERS,
   sourcesFromManifest,
-  ssrCoordinateErrors,
+  ssrPlanarCoordinateErrors,
 } from './ssr-gpu-dispatch';
 
 it.each([
   'webgpu',
   'wgpu-webgl2',
 ] as const)('qualifies Hi-Z, SSR and exact histogram exposure on %s raster execution', async (backend) => {
-  const publication = await fetch('/shaders/manifest.json');
-  expect(publication.ok).toBe(true);
-  // Fresh JSON has one owner, matching ShaderRegistry's publication admission.
-  const manifest = (await readOwnedShaderManifestPublication(
-    await publication.json(),
-  )) as SsrShaderManifest;
+  const entries = await browserShaderEntries([
+    ...SSR_PROBE_SHADER_IDENTIFIERS,
+    'forgeax::depth-pyramid-seed-fragment',
+    'forgeax::depth-pyramid-reduce-fragment',
+    'forgeax::ssr-trace-fragment',
+    'forgeax::ssr-compose-fragment',
+  ]);
   const find = (entry: string) => {
-    const source = manifest.entries.find(({ wgsl }) => wgsl.includes(`fn ${entry}(`))?.wgsl;
+    const source = entries.find(({ wgsl }) => wgsl.includes(`fn ${entry}(`))?.wgsl;
     if (source === undefined) throw new Error(`missing published ${entry}`);
     return source;
   };
   const sources = {
-    ...sourcesFromManifest(manifest),
+    ...sourcesFromManifest({ entries }),
     seedFragment: find('depth_pyramid_seed_fragment'),
     reduceFragment: find('depth_pyramid_reduce_fragment'),
     traceFragment: find('ssr_trace_fragment'),
-    temporalFragment: find('ssr_temporal_fragment'),
     composeFragment: find('vs_ssr_compose_fragment'),
   };
   const pack = backend === 'webgpu' ? webgpu : wgpu;
@@ -123,14 +127,21 @@ it.each([
     expect(invalid.histogram.every((count) => count === 0)).toBe(true);
     expect(invalid.candidate[0]).toBe(1);
   }
+  const { maxBucketError, gainErrorEv } = await runUeExposureMeterFixture(
+    device,
+    factory,
+    'fragment',
+  );
+  expect(maxBucketError).toBeLessThanOrEqual(32);
+  expect(gainErrorEv).toBeLessThan(2e-6);
   const ssr = await runSsrGpuDispatch(
     device,
     sources,
     60,
-    { execution: 'fragment', coordinateSource: true },
+    { execution: 'fragment', planarCoordinateSource: true },
     pack.createShaderModuleImmediate,
   );
-  const errors = ssrCoordinateErrors(ssr.tracePixels[0] ?? []);
+  const errors = ssrPlanarCoordinateErrors(ssr.tracePixels[0] ?? []);
   expect(errors.length).toBeGreaterThan(20);
   expect(Math.max(...errors)).toBeLessThan(0.02);
   // biome-ignore lint/suspicious/noConsole: preserve detached real-GPU qualification evidence.

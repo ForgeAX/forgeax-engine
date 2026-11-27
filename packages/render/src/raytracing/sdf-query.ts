@@ -3,7 +3,6 @@ import {
   type MeshDistanceField,
   validateMeshDistanceField,
 } from '@forgeax/engine-geometry';
-import { mat4 } from '@forgeax/engine-math';
 import type {
   Buffer,
   RhiCommandEncoder,
@@ -19,12 +18,14 @@ import {
   rayGeometryKey,
   rayReferenceFailure,
 } from './scene';
-import {
-  packGeometricField,
-  packSampledField,
-  SDF_BRICK_EDGE,
-  SdfFieldUpload,
-} from './sdf-field-storage';
+import { packGeometricField, SDF_BRICK_EDGE, SdfFieldUpload } from './sdf-field-storage';
+import { SDF_INSTANCE_WGSL } from './sdf-instance-wgsl';
+import { appendSdfSceneCandidates } from './sdf-scene-candidates';
+import { sdfPlacementTransform } from './sdf-scene-placement';
+import { packSceneSurface, sdfSurfaceRowAddress } from './sdf-scene-surface';
+import type { SdfSurfaceCoverage } from './sdf-surface-coverage';
+import { type SdfSurfacePlacement, sdfSurfacePlacement } from './sdf-surface-storage';
+import type { SdfPlacementBounds } from './sdf-transform-certificate';
 
 export const SdfQueryStatus = {
   miss: 0,
@@ -40,6 +41,10 @@ export interface SdfMeshInstance {
   readonly geometryId: number;
   readonly mask: number;
   readonly transform: ArrayLike<number>;
+  /** Accepted placement opacity in the canonical primitive namespace. Unknown alpha
+   * retains complete geometry and is unavailable only where an intersection may matter;
+   * unqualified/custom geometry remains wholly unavailable. */
+  readonly surfaceCoverage?: SdfSurfaceCoverage;
   /** Only an exact accepted asset-version owner supplies this fixed storage. */
   readonly fieldUpload?: SdfFieldUpload;
   readonly field:
@@ -55,6 +60,7 @@ export function sdfInstanceKey(instance: SdfMeshInstance): string {
     instance.geometryId,
     instance.mask,
     Array.from(instance.transform),
+    instance.surfaceCoverage ?? 'opaque',
     'missing' in instance.field
       ? instance.field.bounds
       : [
@@ -98,17 +104,18 @@ export interface SdfSceneFieldPayload {
 export const SDF_HIT_STRIDE = 64;
 export const SDF_INSTANCE_STRIDE = 144;
 export const SDF_SAMPLE_WGSL = `
-struct Instance { inverse: mat4x4f, ids: vec4u, field: vec4u, origin: vec4f, extent: vec4f, error: vec4f }
+${SDF_INSTANCE_WGSL}
 struct Ray { origin: vec3f, tMin: f32, direction: vec3f, tMax: f32, mask: vec4u }
 struct SdfHit { state: vec4u, metrics: vec4f, position: vec4f, normal: vec4f }
 fn sdfTexel(m: Instance, c: vec3u) -> f32 {
-  if(m.error.w>0.5){
+  if(m.error.w==1.0 || m.error.w==2.0){
+    let first=select(m.field.x,fields[m.field.x+4u],m.error.w==2.0);
     let edge=${SDF_BRICK_EDGE}u;
     let dims=(m.field.yzw+vec3u(edge-1u))/edge;
     let b=c/edge;
-    let entry=fields[m.field.x+(b.z*dims.y+b.y)*dims.x+b.x];
+    let entry=fields[first+(b.z*dims.y+b.y)*dims.x+b.x];
     let p=c%edge;let local=(p.z*edge+p.y)*edge+p.x;
-    return unpack2x16snorm(fields[m.field.x+entry+(local>>1u)])[local&1u]*m.extent.w;
+    return unpack2x16snorm(fields[first+entry+(local>>1u)])[local&1u]*m.extent.w;
   }
   return bitcast<f32>(fields[m.field.x+(c.z*m.field.z+c.y)*m.field.y+c.x]);
 }
@@ -123,7 +130,8 @@ fn sdfValue(m: Instance, p: vec3f) -> f32 {
   return value;
 }
 `;
-export const SDF_TRACE_WGSL = `${SDF_SAMPLE_WGSL}fn sdfNormal(m: Instance,p: vec3f) -> vec3f {
+export const SDF_TRACE_WGSL = `${SDF_SAMPLE_WGSL}
+fn sdfNormal(m: Instance,p: vec3f) -> vec3f {
   let h=select(m.origin.w,m.origin.w*0.5,m.error.w>0.5);let g=vec3f(sdfValue(m,p+vec3f(h,0,0))-sdfValue(m,p-vec3f(h,0,0)),
     sdfValue(m,p+vec3f(0,h,0))-sdfValue(m,p-vec3f(0,h,0)),sdfValue(m,p+vec3f(0,0,h))-sdfValue(m,p-vec3f(0,0,h)));
   let n=transpose(mat3x3f(m.inverse[0].xyz,m.inverse[1].xyz,m.inverse[2].xyz))*g;
@@ -133,7 +141,9 @@ fn traceSdf(ray: Ray, instanceCount: u32, maxSteps: u32, rayDistanceExpansion: b
 var result=SdfHit(vec4u(${SdfQueryStatus.miss}u,0xffffffffu,0xffffffffu,0xffffffffu),vec4f(ray.tMax,0,0,0),vec4f(0),vec4f(0));
   var totalSteps=0u;
   for(var i=0u;i<instanceCount;i++){
-    let m=instances[i];if((m.ids.w&ray.mask.x)==0u){continue;}
+    if((sdfInstanceMask(i)&ray.mask.x)==0u){continue;}
+    if(!sdfInstanceValid(i)){result.state.x=${SdfQueryStatus.missingField}u;return result;}
+    let m=sdfInstanceAt(i);
     let o=(m.inverse*vec4f(ray.origin,1)).xyz;let d=(m.inverse*vec4f(ray.direction,0)).xyz;
     let visibility=m.error.w>0.5;let lo=select(m.origin.xyz,m.origin.xyz+vec3f(m.origin.w),visibility);
     var near=ray.tMin;var far=ray.tMax;var overlap=true;
@@ -152,7 +162,9 @@ var result=SdfHit(vec4u(${SdfQueryStatus.miss}u,0xffffffffu,0xffffffffu,0xffffff
         maxDistance=max(maxDistance,value);
         let expansionDistance=select(maxDistance,t*speed,rayDistanceExpansion);
         let expansion=m.error.x*clamp(expansionDistance/(2.0*m.error.x),0.0,1.0);
-        if(value<expansion){
+        // A zero sample at the first closed-interval contact is a surface even
+        // when clearance history has not accumulated any expansion yet.
+        if(value<=expansion){
           t=clamp(t+(value-expansion)/speed,near,far);status=${SdfQueryStatus.visibilityHit}u;break;
         }
         let next=t+max(value,m.error.z)/speed;
@@ -183,7 +195,7 @@ var result=SdfHit(vec4u(${SdfQueryStatus.miss}u,0xffffffffu,0xffffffffu,0xffffff
 }
 `;
 export const SDF_QUERY_WGSL = `
-@group(0) @binding(0) var<storage,read> instances: array<Instance>;
+@group(0) @binding(0) var<storage,read> instances: array<RawInstance>;
 @group(0) @binding(1) var<storage,read> fields: array<u32>;
 @group(0) @binding(2) var<storage,read> rays: array<Ray>;
 @group(0) @binding(3) var<storage,read_write> hits: array<SdfHit>;
@@ -241,7 +253,8 @@ export async function createSdfQuery(
     return wrote.ok ? result : wrote;
   };
   const data = {
-    ...scene.value,
+    instances: scene.value.instances,
+    fields: scene.value.fields,
     rays: packed.value,
     hits: new Uint8Array(rays.length * SDF_HIT_STRIDE),
     settings: new Uint8Array(
@@ -329,18 +342,94 @@ export async function createSdfQuery(
 }
 
 /** Shared frozen scene packing for query, composition and diffuse transport kernels. */
+function sdfSceneCapacity(count: number, maximum: number, capacity: number) {
+  return (
+    Number.isInteger(maximum) &&
+    maximum >= 1 &&
+    maximum <= 1024 &&
+    count <= maximum &&
+    Number.isInteger(capacity) &&
+    capacity >= Math.max(1, count) &&
+    capacity <= maximum
+  );
+}
+
+/** Repack a complete placement row, retaining only the admitted immutable Mesh payload address. */
+export function repackSdfPlacementRow(instance: SdfMeshInstance, canonical: Uint8Array) {
+  if (canonical.byteLength !== SDF_INSTANCE_STRIDE)
+    return rayReferenceFailure('a complete canonical SDF instance row is required');
+  const original = new DataView(canonical.buffer, canonical.byteOffset, canonical.byteLength);
+  if (
+    original.getUint32(64, true) !== instance.instanceId ||
+    original.getUint32(68, true) !== instance.geometryId ||
+    original.getUint32(76, true) !== instance.mask
+  )
+    return rayReferenceFailure('SDF placement identity must match its admitted row');
+  const pose = sdfPlacementTransform(instance.transform);
+  if (!pose.ok) return pose;
+  const bytes = canonical.slice();
+  const view = new DataView(bytes.buffer);
+  pose.value.inverse.forEach((value, axis) => {
+    view.setFloat32(axis * 4, value, true);
+  });
+  const field = instance.field;
+  const sampled = !('missing' in field) && field.policy.kind === 'sampled-visibility';
+  const error =
+    'missing' in field || field.policy.kind === 'sampled-visibility' ? 0 : field.policy.errorBound;
+  const spacing = 'missing' in field ? 0 : field.spacing;
+  view.setFloat32(132, sampled ? 0 : (2 * error + spacing * 0.02) * pose.value.scaleBound, true);
+  return ok({ bytes, forward: pose.value.matrix, inverse: pose.value.inverse });
+}
+type PreparedSdfSurface = Extract<ReturnType<typeof packSceneSurface>, { ok: true }>['value'];
+type SdfFieldLayout =
+  | {
+      readonly kind: 'surface';
+      readonly surface: PreparedSdfSurface;
+      readonly segments: (Uint32Array | SdfFieldUpload)[];
+      readonly offsets: Map<object, number>;
+      wordCount: number;
+    }
+  | {
+      readonly kind: 'static';
+      readonly payload: SdfSceneFieldPayload;
+      readonly used: SdfFieldUpload[];
+      readonly offsets: Map<object, number>;
+    };
+
 export function packSdfScene(
   source: readonly SdfMeshInstance[],
   maxInstances = 64,
-): Result<{ instances: Uint8Array; fields: Uint8Array }, RayReferenceError> {
-  const packed = packSdfSceneInternal(source, maxInstances);
-  if (!packed.ok) return packed;
-  if (packed.value.fields === undefined)
-    throw new Error('Raw SDF packing must include field bytes');
-  return ok({ instances: packed.value.instances, fields: packed.value.fields });
+  capacity = Math.max(1, source.length),
+  sourceEpoch?: number,
+): Result<
+  {
+    instances: Uint8Array;
+    fields: Uint8Array;
+    surface: SdfSurfacePlacement;
+    /** Immutable cold-pack facts, not valid for a later in-place edit. */
+    placementBounds: readonly (SdfPlacementBounds | undefined)[];
+  },
+  RayReferenceError
+> {
+  if (!sdfSceneCapacity(source.length, maxInstances, capacity))
+    return rayReferenceFailure(`SDF profile allows ${maxInstances} instances (maximum 1024)`, true);
+  const surface = packSceneSurface(source, capacity);
+  if (!surface.ok) return surface;
+  const layout: Extract<SdfFieldLayout, { kind: 'surface' }> = {
+    kind: 'surface',
+    surface: surface.value,
+    segments: [surface.value.pool.words],
+    offsets: new Map(),
+    wordCount: surface.value.pool.words.length,
+  };
+  const instances = packSdfInstanceRows(source, capacity, layout);
+  return instances.ok
+    ? finishSdfScene(surface.value, layout.segments, layout.wordCount, instances.value, sourceEpoch)
+    : instances;
 }
 
-/** Pack frame-varying instances while retaining static field bytes in their owner payload. */
+/** Sample-only consumers retain their exact owner-upload layout while poses change.
+ * They use the existing sampled-field mode; they do not acquire surface certificates. */
 export function packSdfSceneWithStaticFields(
   source: readonly SdfMeshInstance[],
   maxInstances: number,
@@ -349,223 +438,229 @@ export function packSdfSceneWithStaticFields(
   { instances: Uint8Array; initialization: SdfSceneFieldPayload['initialization'] },
   RayReferenceError
 > {
-  const packed = packSdfSceneInternal(source, maxInstances, payload);
-  if (!packed.ok) return packed;
-  if (packed.value.fields !== undefined)
-    throw new Error('Owned SDF packing must not materialize field bytes');
-  return ok({ instances: packed.value.instances, initialization: payload.initialization });
+  const capacity = Math.max(1, source.length);
+  if (!sdfSceneCapacity(source.length, maxInstances, capacity))
+    return rayReferenceFailure(`SDF profile allows ${maxInstances} instances (maximum 1024)`, true);
+  if (
+    !Number.isSafeInteger(payload.wordLength) ||
+    payload.wordLength <= 0 ||
+    payload.wordLength > 4_194_304 ||
+    payload.initialization.byteLength !== payload.wordLength * 4 ||
+    payload.uploads.length !== payload.offsets.size
+  )
+    return rayReferenceFailure('invalid or incomplete SDF payload');
+  const layout: Extract<SdfFieldLayout, { kind: 'static' }> = {
+    kind: 'static',
+    payload,
+    used: [],
+    offsets: new Map(),
+  };
+  const instances = packSdfInstanceRows(source, capacity, layout);
+  if (!instances.ok) return instances;
+  if (
+    layout.used.length !== payload.uploads.length ||
+    layout.used.some((upload, index) => upload !== payload.uploads[index])
+  )
+    return rayReferenceFailure('invalid or incomplete SDF payload');
+  return ok({ instances: instances.value, initialization: payload.initialization });
 }
 
-function packSdfSceneInternal(
-  source: readonly SdfMeshInstance[],
-  maxInstances: number,
-  payload?: SdfSceneFieldPayload,
-): Result<{ instances: Uint8Array; fields?: Uint8Array }, RayReferenceError> {
-  const validateSdfPackingCapacity = () => {
-    if (
-      !Number.isInteger(maxInstances) ||
-      maxInstances < 1 ||
-      maxInstances > 1024 ||
-      source.length > maxInstances
-    )
-      return rayReferenceFailure(
-        `SDF profile allows ${maxInstances} instances (maximum 1024)`,
-        true,
-      );
-    if (
-      payload !== undefined &&
-      (payload.wordLength <= 0 ||
-        payload.wordLength > 4_194_304 ||
-        payload.initialization.byteLength !== payload.wordLength * 4 ||
-        payload.uploads.length !== payload.offsets.size)
-    )
-      return rayReferenceFailure('invalid or incomplete SDF payload');
-    return undefined;
-  };
-  const packingCapacityFailure = validateSdfPackingCapacity();
-  if (packingCapacityFailure !== undefined) return packingCapacityFailure;
-  const fieldOffsets = new Map<object, number>();
-  const instances = new Uint8Array(Math.max(1, source.length) * SDF_INSTANCE_STRIDE),
-    iv = new DataView(instances.buffer),
-    segments: (Uint32Array | SdfFieldUpload)[] = [],
-    ids = new Set<number>(),
-    usedUploads: SdfFieldUpload[] = [];
-  let wordCount = 0;
-  for (let i = 0; i < source.length; i++) {
-    const m = source[i];
-    if (m === undefined) return rayReferenceFailure('missing SDF instance');
-    const validateSdfInstanceIdentity = () => {
-      if (
-        !Number.isInteger(m.instanceId) ||
-        m.instanceId < 0 ||
-        m.instanceId >= 0xffffffff ||
-        ids.has(m.instanceId) ||
-        ![m.geometryId, m.mask].every((v) => Number.isInteger(v) && v >= 0 && v <= 0xffffffff) ||
-        m.mask > 255
-      )
-        return rayReferenceFailure('SDF identities must be unique u32 values and masks must be u8');
-      return undefined;
-    };
-    const identityFailure = validateSdfInstanceIdentity();
-    if (identityFailure !== undefined) return identityFailure;
-    ids.add(m.instanceId);
-    const t = Array.from(m.transform);
-    const resolveSdfTransform = () => {
-      if (
-        t.length !== 16 ||
-        !t.every((v) => Number.isFinite(Math.fround(v))) ||
-        t[3] !== 0 ||
-        t[7] !== 0 ||
-        t[11] !== 0 ||
-        t[15] !== 1
-      )
-        return rayReferenceFailure('expected finite affine SDF transform');
-      const matrix = mat4.clone(t),
-        inverse = mat4.invert(mat4.create(), matrix),
-        check = mat4.multiply(mat4.create(), matrix, inverse);
-      if (
-        !mat4.equals(check, mat4.identity(mat4.create()), 1e-4) ||
-        !Array.from(inverse).every(Number.isFinite)
-      )
-        return rayReferenceFailure('singular or ill-conditioned SDF transform');
-      return ok(inverse);
-    };
-    const transform = resolveSdfTransform();
-    if (!transform.ok) return transform;
-    const inverse = transform.value;
-    const field = m.field,
-      missing = 'missing' in field,
-      bounds = field.bounds;
-    const validateSdfFieldBounds = () => {
-      if (
-        ![...bounds.min, ...bounds.max].every(Number.isFinite) ||
-        bounds.min.some((v, a) =>
-          !missing && field.policy.kind === 'signed-solid'
-            ? v >= (bounds.max[a] ?? -Infinity)
-            : v > (bounds.max[a] ?? -Infinity),
-        )
-      )
-        return rayReferenceFailure('invalid SDF bounds');
-      return undefined;
-    };
-    const boundsFailure = validateSdfFieldBounds();
-    if (boundsFailure !== undefined) return boundsFailure;
-    const offset = i * SDF_INSTANCE_STRIDE;
-    inverse.forEach((v, j) => {
-      iv.setFloat32(offset + j * 4, v, true);
-    });
-    [m.instanceId, m.geometryId, 0xffffffff, m.mask].forEach((v, j) => {
-      iv.setUint32(offset + 64 + j * 4, v, true);
-    });
-    let origin: FieldVec3 = bounds.min,
-      extent: FieldVec3 = bounds.max,
-      spacing = 0,
-      error = 0,
-      distanceBand = 0;
-    if (!missing) {
-      const packSdfField = () => {
-        const upload =
-          m.fieldUpload instanceof SdfFieldUpload && m.fieldUpload.field === field
-            ? m.fieldUpload
-            : undefined;
-        if (payload !== undefined && upload === undefined)
-          return rayReferenceFailure('invalid or incomplete SDF payload');
-        if (upload === undefined && !validateMeshDistanceField(field).ok)
-          return rayReferenceFailure('invalid or incomplete SDF payload');
-        const deduplicationKey = payload === undefined ? field : upload;
-        if (deduplicationKey === undefined)
-          return rayReferenceFailure('invalid or incomplete SDF payload');
-        let fieldOffset = fieldOffsets.get(deduplicationKey);
-        if (fieldOffset === undefined) {
-          if (payload !== undefined) {
-            fieldOffset = payload.offsets.get(upload as SdfFieldUpload);
-            if (fieldOffset === undefined)
-              return rayReferenceFailure('invalid or incomplete SDF payload');
-            usedUploads.push(upload as SdfFieldUpload);
-          } else {
-            const remaining = 4_194_304 - wordCount;
-            const packed =
-              upload ??
-              (field.policy.kind === 'sampled-visibility'
-                ? packSampledField(field.values, field.bricks, field.policy.distanceBand, remaining)
-                : packGeometricField(field, remaining));
-            if (!packed || packed.length > remaining)
-              return rayReferenceFailure('SDF sample memory exceeds 16 MiB', true);
-            fieldOffset = wordCount;
-            wordCount += packed.length;
-            segments.push(packed);
-          }
-          fieldOffsets.set(deduplicationKey, fieldOffset);
-        }
-        [fieldOffset, ...field.dimensions].forEach((v, j) => {
-          iv.setUint32(offset + 80 + j * 4, v, true);
-        });
-        origin = field.origin;
-        spacing = field.spacing;
-        error = field.policy.kind === 'sampled-visibility' ? 0 : field.policy.errorBound;
-        extent = [
-          origin[0] + (field.dimensions[0] - 1) * spacing,
-          origin[1] + (field.dimensions[1] - 1) * spacing,
-          origin[2] + (field.dimensions[2] - 1) * spacing,
-        ];
-        if (field.policy.kind === 'sampled-visibility') {
-          distanceBand = field.policy.distanceBand;
-          const bounds = field.policy.traceBounds;
-          extent = bounds.max;
-          const halfExtent = Math.max(...extent.map((v, a) => (v - (bounds.min[a] ?? 0)) / 2));
-          // A dense unsigned sample can remain half a voxel away from a sheet.
-          // Use its half-diagonal coverage radius with the caller-distance falloff;
-          // UE's sparse volume surface-bias coefficient alone misses this case.
-          iv.setFloat32(offset + 128, (Math.sqrt(3) * spacing) / 2, true);
-          iv.setFloat32(offset + 136, halfExtent / 1024, true);
-          iv.setFloat32(offset + 140, 1, true);
-        }
-        return undefined;
-      };
-      const fieldFailure = packSdfField();
-      if (fieldFailure !== undefined) return fieldFailure;
-    } else iv.setUint32(offset + 80, 0xffffffff, true);
-    [...origin, spacing].forEach((v, j) => {
-      iv.setFloat32(offset + 96 + j * 4, v, true);
-    });
-    [...extent, distanceBand].forEach((v, j) => {
-      iv.setFloat32(offset + 112 + j * 4, v, true);
-    });
-    if (missing || field.policy.kind !== 'sampled-visibility')
-      iv.setFloat32(offset + 128, error, true);
-    const writeSdfInstanceErrorBounds = () => {
-      const scaleBound = Math.hypot(...[0, 1, 2, 4, 5, 6, 8, 9, 10].map((j) => t[j] ?? 0));
-      iv.setFloat32(
-        offset + 132,
-        !missing && field.policy.kind === 'sampled-visibility'
-          ? 0
-          : (2 * error + spacing * 0.02) * scaleBound,
-        true,
-      );
-    };
-    writeSdfInstanceErrorBounds();
+function validateSdfInstanceIdentity(instance: SdfMeshInstance, ids: Set<number>) {
+  if (
+    !Number.isInteger(instance.instanceId) ||
+    instance.instanceId < 0 ||
+    instance.instanceId >= 0xffffffff ||
+    ids.has(instance.instanceId) ||
+    ![instance.geometryId, instance.mask].every(
+      (value) => Number.isInteger(value) && value >= 0 && value <= 0xffffffff,
+    ) ||
+    instance.mask > 255
+  )
+    return rayReferenceFailure('SDF identities must be unique u32 values and masks must be u8');
+  ids.add(instance.instanceId);
+  return ok(undefined);
+}
+
+function sdfFieldAddress(
+  instance: SdfMeshInstance,
+  row: number,
+  layout: SdfFieldLayout,
+): Result<number, RayReferenceError> {
+  const field = instance.field;
+  if ('missing' in field) return ok(0xffffffff);
+  const upload =
+    instance.fieldUpload instanceof SdfFieldUpload && instance.fieldUpload.field === field
+      ? instance.fieldUpload
+      : undefined;
+  if (layout.kind === 'static' && upload === undefined)
+    return rayReferenceFailure('invalid or incomplete SDF payload');
+  if (upload === undefined && !validateMeshDistanceField(field).ok)
+    return rayReferenceFailure('invalid or incomplete SDF payload');
+  if (layout.kind === 'surface' && field.policy.kind === 'sampled-visibility')
+    return ok(sdfSurfaceRowAddress(row));
+  const key = layout.kind === 'static' ? upload : field;
+  if (key === undefined) return rayReferenceFailure('invalid or incomplete SDF payload');
+  const prior = layout.offsets.get(key);
+  if (prior !== undefined) return ok(prior);
+  let address: number;
+  if (layout.kind === 'static') {
+    if (!upload) return rayReferenceFailure('invalid or incomplete SDF payload');
+    const first = layout.payload.offsets.get(upload);
+    if (first === undefined) return rayReferenceFailure('invalid or incomplete SDF payload');
+    address = first;
+    layout.used.push(upload);
+  } else {
+    const remaining = 4_194_304 - layout.wordCount;
+    const packed = upload ?? packGeometricField(field, remaining);
+    if (!packed || packed.length > remaining)
+      return rayReferenceFailure('SDF sample memory exceeds 16 MiB', true);
+    address = layout.wordCount;
+    layout.wordCount += packed.length;
+    layout.segments.push(packed);
   }
-  const validateSdfPayloadUploadRoster = () => {
-    if (
-      payload !== undefined &&
-      (usedUploads.length !== payload.uploads.length ||
-        usedUploads.some((upload, index) => upload !== payload.uploads[index]))
+  layout.offsets.set(key, address);
+  return ok(address);
+}
+
+function writeSdfFieldProperties(
+  view: DataView,
+  offset: number,
+  field: SdfMeshInstance['field'],
+  address: number,
+  scaleBound: number,
+  sampledMode: 1 | 2,
+): Result<void, RayReferenceError> {
+  const missing = 'missing' in field,
+    bounds = field.bounds;
+  if (
+    ![...bounds.min, ...bounds.max].every(Number.isFinite) ||
+    bounds.min.some((value, axis) =>
+      !missing && field.policy.kind === 'signed-solid'
+        ? value >= (bounds.max[axis] ?? -Infinity)
+        : value > (bounds.max[axis] ?? -Infinity),
     )
-      return rayReferenceFailure('invalid or incomplete SDF payload');
-    return undefined;
-  };
-  const uploadRosterFailure = validateSdfPayloadUploadRoster();
-  if (uploadRosterFailure !== undefined) return uploadRosterFailure;
-  if (payload !== undefined) return ok({ instances });
-  const serializeSdfFieldWords = () => {
-    const words = new Uint32Array(Math.max(1, wordCount));
-    let offset = 0;
-    for (const segment of segments) {
-      if (segment instanceof SdfFieldUpload) segment.copyInto(words, offset);
-      else words.set(segment, offset);
-      offset += segment.length;
+  )
+    return rayReferenceFailure('invalid SDF bounds');
+  let origin: FieldVec3 = bounds.min,
+    extent: FieldVec3 = bounds.max,
+    spacing = 0,
+    error = 0,
+    distanceBand = 0;
+  view.setUint32(offset + 80, address, true);
+  if (!missing) {
+    field.dimensions.forEach((value, axis) => {
+      view.setUint32(offset + 84 + axis * 4, value, true);
+    });
+    origin = field.origin;
+    spacing = field.spacing;
+    error = field.policy.kind === 'sampled-visibility' ? 0 : field.policy.errorBound;
+    extent = [
+      origin[0] + (field.dimensions[0] - 1) * spacing,
+      origin[1] + (field.dimensions[1] - 1) * spacing,
+      origin[2] + (field.dimensions[2] - 1) * spacing,
+    ];
+    if (field.policy.kind === 'sampled-visibility') {
+      distanceBand = field.policy.distanceBand;
+      const trace = field.policy.traceBounds;
+      extent = trace.max;
+      const halfExtent = Math.max(
+        ...extent.map((value, axis) => (value - (trace.min[axis] ?? 0)) / 2),
+      );
+      view.setFloat32(offset + 128, (Math.sqrt(3) * spacing) / 2, true);
+      view.setFloat32(offset + 136, halfExtent / 1024, true);
+      view.setFloat32(offset + 140, sampledMode, true);
     }
-    return ok({ instances, fields: new Uint8Array(words.buffer) });
-  };
-  return serializeSdfFieldWords();
+  }
+  [...origin, spacing].forEach((value, axis) => {
+    view.setFloat32(offset + 96 + axis * 4, value, true);
+  });
+  [...extent, distanceBand].forEach((value, axis) => {
+    view.setFloat32(offset + 112 + axis * 4, value, true);
+  });
+  if (missing || field.policy.kind !== 'sampled-visibility')
+    view.setFloat32(offset + 128, error, true);
+  view.setFloat32(
+    offset + 132,
+    !missing && field.policy.kind === 'sampled-visibility'
+      ? 0
+      : (2 * error + spacing * 0.02) * scaleBound,
+    true,
+  );
+  const properties = new Float32Array(view.buffer, view.byteOffset + offset + 96, 12);
+  if (!properties.every(Number.isFinite) || (!missing && (properties[3] ?? 0) <= 0))
+    return rayReferenceFailure(
+      'SDF field properties require finite f32 values and positive spacing',
+    );
+  return ok(undefined);
+}
+
+function packSdfInstanceRows(
+  source: readonly SdfMeshInstance[],
+  capacity: number,
+  layout: SdfFieldLayout,
+): Result<Uint8Array, RayReferenceError> {
+  const instances = new Uint8Array(capacity * SDF_INSTANCE_STRIDE),
+    view = new DataView(instances.buffer),
+    ids = new Set<number>();
+  for (const [row, instance] of source.entries()) {
+    if (!instance) return rayReferenceFailure('missing SDF instance');
+    const identity = validateSdfInstanceIdentity(instance, ids);
+    if (!identity.ok) return identity;
+    const pose =
+      layout.kind === 'surface'
+        ? ok(layout.surface.placements[row])
+        : sdfPlacementTransform(instance.transform);
+    if (!pose.ok) return pose;
+    if (!pose.value) return rayReferenceFailure('missing prepared SDF placement');
+    const address = sdfFieldAddress(instance, row, layout);
+    if (!address.ok) return address;
+    const offset = row * SDF_INSTANCE_STRIDE;
+    pose.value.inverse.forEach((value, axis) => {
+      view.setFloat32(offset + axis * 4, value, true);
+    });
+    [instance.instanceId, instance.geometryId, 0xffffffff, instance.mask].forEach((value, axis) => {
+      view.setUint32(offset + 64 + axis * 4, value, true);
+    });
+    const properties = writeSdfFieldProperties(
+      view,
+      offset,
+      instance.field,
+      address.value,
+      pose.value.scaleBound,
+      layout.kind === 'surface' ? 2 : 1,
+    );
+    if (!properties.ok) return properties;
+  }
+  return ok(instances);
+}
+
+function finishSdfScene(
+  surface: PreparedSdfSurface,
+  segments: readonly (Uint32Array | SdfFieldUpload)[],
+  wordCount: number,
+  instances: Uint8Array,
+  sourceEpoch: number | undefined,
+) {
+  const words = new Uint32Array(Math.max(1, wordCount));
+  let offset = 0;
+  for (const segment of segments) {
+    if (segment instanceof SdfFieldUpload) segment.copyInto(words, offset);
+    else words.set(segment, offset);
+    offset += segment.length;
+  }
+  const placementBounds = Object.freeze(surface.placements.map((row) => row.bounds)),
+    candidates = appendSdfSceneCandidates(words, instances, placementBounds, sourceEpoch);
+  if (!candidates.ok) return candidates;
+  return ok({
+    instances,
+    fields: new Uint8Array(candidates.value.words.buffer),
+    surface: sdfSurfacePlacement(
+      surface.pool,
+      candidates.value.words,
+      placementBounds,
+      candidates.value.directory,
+      sourceEpoch,
+    ),
+    placementBounds,
+  });
 }

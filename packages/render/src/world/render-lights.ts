@@ -30,7 +30,7 @@ import { sameValue } from '../same-value';
 import { SHADOW_ATLAS_DEFAULT_LAYERS } from '../shadow-atlas';
 import { shadowPlanes } from '../shadow-frustum';
 import { renderWorldFor } from './render-world';
-import { requireViewField } from './view-field';
+import { readViewField, requireViewField } from './view-field';
 
 /** Spot shadow tiles in the renderer-owned spot depth array. */
 export const SPOT_SHADOW_LAYERS = 4;
@@ -349,13 +349,41 @@ const EMPTY: LightRoster = Object.freeze({
 const LAYER_KEYS: ReadonlySet<string> = new Set(['shadowAtlasLayer', 'shadowAtlasTile']);
 
 function sameList(stored: readonly unknown[], source: readonly unknown[]): boolean {
+  if (stored === source) return true;
   if (stored.length !== source.length) return false;
   for (let index = 0; index < stored.length; index += 1)
     if (!sameValue(stored[index], source[index], LAYER_KEYS)) return false;
   return true;
 }
 
-function directionalFacts(source: LightRoster): DirectionalLightFacts {
+const EMPTY_ADDITIONAL = Object.freeze([]);
+
+function sameOrder(left: readonly EntityHandle[], right: readonly EntityHandle[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) if (left[i] !== right[i]) return false;
+  return true;
+}
+
+/** Keep the accepted column until the first row whose issued value actually differs. */
+function publishRows<T, S>(
+  previous: readonly T[],
+  source: readonly S[],
+  read: (row: S, index: number) => T | undefined,
+): readonly T[] {
+  let next: T[] | undefined;
+  let count = 0;
+  for (let i = 0; i < source.length; i++) {
+    const value = read(source[i] as S, i);
+    if (value === undefined) continue;
+    if (next === undefined && previous[count] !== value) next = previous.slice(0, count);
+    next?.push(value);
+    count++;
+  }
+  if (next === undefined && previous.length !== count) next = previous.slice(0, count);
+  return next === undefined ? previous : Object.freeze(next);
+}
+
+function directionalFacts(source: DirectionalLightFacts): DirectionalLightFacts {
   return {
     directional: source.directional,
     directionalCsmConfig: source.directionalCsmConfig,
@@ -368,9 +396,7 @@ function directionalFacts(source: LightRoster): DirectionalLightFacts {
 
 function sameDirectional(stored: LightRoster, source: LightRoster): boolean {
   return (
-    stored.directionalCount === source.directionalCount &&
     sameValue(stored.directional, source.directional) &&
-    sameList(stored.additionalDirectional ?? [], source.additionalDirectional ?? []) &&
     sameValue(stored.directionalCsmConfig, source.directionalCsmConfig) &&
     sameValue(stored.directionalCsmDirection, source.directionalCsmDirection) &&
     stored.depthBias === source.depthBias &&
@@ -385,20 +411,19 @@ function keyOf(light: { readonly entity?: unknown }, ordinal: number): number {
   return Number(light.entity);
 }
 
-/** Ingest identity translation of one light kind: source key to entity, and its layer pool. */
+/** The exact immutable facts issued to both the ECS entity and the drawing roster. */
+interface PublishedLight {
+  readonly entity: EntityHandle;
+  seen: number;
+  facts: LightFacts;
+  shadow: PointShadowSnapshot | undefined;
+  cubeIndex?: number;
+}
+
 interface LightKind {
   readonly value: number;
   readonly shadow: 'point' | 'spot' | undefined;
-  readonly declared: Map<
-    number,
-    {
-      readonly entity: EntityHandle;
-      seen: number;
-      /** Source facts and shadow last written for this light; the same objects again are unchanged. */
-      facts: LightFacts;
-      shadow: PointShadowSnapshot | undefined;
-    }
-  >;
+  readonly declared: Map<number, PublishedLight>;
   /** Free atlas layers, lowest first. */
   readonly free: number[];
 }
@@ -434,7 +459,8 @@ export class RenderLights {
   /** The source roster last adopted. */
   private adopted: LightRoster | undefined;
   /** Shadowed point lights (pointShadow order) then casting spots: the `shadowViews` order. */
-  private shadowed: readonly EntityHandle[] = Object.freeze([]);
+  private pointOrder: readonly PublishedLight[] = [];
+  private spotOrder: readonly PublishedLight[] = [];
   private orderChanged = false;
   /** Lights whose shadow views refit this run; reused. */
   private readonly refit = new Set<EntityHandle>();
@@ -444,12 +470,6 @@ export class RenderLights {
 
   constructor(readonly world: World) {}
 
-  /**
-   * Reconcile the light entities with a frame's extracted roster (the
-   * `render-lights` system). A change-driven source hands over the same
-   * roster while its lights hold still; an equal one compares in place and
-   * writes nothing.
-   */
   /** Borrow the renderer-owned atlas roster only for the source this owner actually adopted. */
   borrowAdoptedRoster(source: LightRoster): LightRoster | undefined {
     return this.adopted === source ? this.roster : undefined;
@@ -479,8 +499,7 @@ export class RenderLights {
   }
 
   adopt(source: LightRoster): void {
-    if (source === this.adopted) return;
-    if (!this.matches(source)) this.apply(source);
+    this.apply(source);
     this.adopted = source;
   }
 
@@ -625,77 +644,138 @@ export class RenderLights {
     return undefined;
   }
 
-  private matches(source: LightRoster): boolean {
-    const current = this.roster;
-    return (
-      sameDirectional(current, source) &&
-      sameList(current.point, source.point) &&
-      sameList(current.spot, source.spot) &&
-      sameList(current.rect, source.rect) &&
-      sameList(current.pointShadow, source.pointShadow)
-    );
+  /** Only members of the reconciled family can depart or release its atlas layers. */
+  private retireDeparted(kind: LightKind, frame: number): void {
+    for (const [key, light] of kind.declared) {
+      if (light.seen === frame) continue;
+      this.freeLayer(kind, publishedLayer(kind, light));
+      this.world.despawn(light.entity).unwrap();
+      kind.declared.delete(key);
+    }
   }
 
   private apply(source: LightRoster): void {
+    const current = this.roster;
     const frame = ++this.syncs;
-    const shadows = new Map<number, PointShadowSnapshot>();
-    for (const [index, shadow] of source.pointShadow.entries())
-      shadows.set(keyOf(shadow, index), shadow);
-    const directional =
-      source.directional === undefined
-        ? undefined
-        : this.declare(
-            this.directional,
-            keyOf(source.directional, 0),
-            frame,
-            directionalFacts(source),
-          );
-    const points = source.point.map((light, index) => {
-      const key = keyOf(light, index);
-      return this.declare(this.point, key, frame, light, shadows.get(key));
-    });
-    const spots = source.spot.map((light, index) =>
-      this.declare(this.spot, keyOf(light, index), frame, light),
-    );
-    const rects = source.rect.map((light, index) =>
-      this.declare(this.rect, keyOf(light, index), frame, light),
-    );
-    for (const kind of [this.directional, this.point, this.spot, this.rect]) {
-      for (const [key, light] of kind.declared) {
-        if (light.seen === frame) continue;
-        this.freeLayer(kind, this.layerOf(light.entity));
-        // Linked despawn retires the light's shadow views with it.
-        this.world.despawn(light.entity).unwrap();
-        kind.declared.delete(key);
+    let sun: DirectionalLightFacts = current;
+    if (!sameDirectional(current, source)) {
+      sun = EMPTY;
+      if (source.directional !== undefined)
+        sun = this.declare(
+          this.directional,
+          keyOf(source.directional, 0),
+          frame,
+          directionalFacts(source),
+        ).facts as DirectionalLightFacts;
+      this.retireDeparted(this.directional, frame);
+    }
+
+    // Shadow order is independent of the point list. Existing declarations receive
+    // their source ordinal directly; only as-yet unknown keys need a temporary join.
+    const cubes = source.pointShadow;
+    let newCubes: Map<number, number> | undefined;
+    for (let i = 0; i < cubes.length; i++) {
+      const key = keyOf(cubes[i] as PointShadowSnapshot, i);
+      const light = this.point.declared.get(key);
+      if (light !== undefined) light.cubeIndex = i;
+      else {
+        newCubes ??= new Map();
+        newCubes.set(key, i);
       }
     }
-    // Layers go to waiting lights in source order once every departure freed its own.
-    const shadowed: EntityHandle[] = [];
-    for (const [index, shadow] of source.pointShadow.entries()) {
-      const light = this.point.declared.get(keyOf(shadow, index));
-      if (light !== undefined && light.seen === frame) shadowed.push(light.entity);
+    for (let i = 0; i < source.point.length; i++) {
+      const facts = source.point[i] as PointLightSnapshot;
+      const key = keyOf(facts, i);
+      const previous = this.point.declared.get(key);
+      const index = previous?.cubeIndex ?? newCubes?.get(key);
+      const shadow = index === undefined ? undefined : cubes[index];
+      const row = this.declare(
+        this.point,
+        key,
+        frame,
+        facts,
+        shadow !== undefined && index !== undefined && keyOf(shadow, index) === key
+          ? shadow
+          : undefined,
+        previous,
+      );
+      if (previous === undefined && index !== undefined) row.cubeIndex = index;
     }
-    for (const entity of shadowed) this.acquire(this.point, entity);
-    for (const entity of spots) if (this.wantsTile(entity)) this.acquire(this.spot, entity);
-    const order = [...shadowed, ...spots.filter((entity) => this.layerOf(entity) >= 0)];
-    const retainedOrder = this.shadowed;
+    this.retireDeparted(this.point, frame);
+    const pointOrder = publishRows(this.pointOrder, cubes, (shadow, i) => {
+      const light = this.point.declared.get(keyOf(shadow, i));
+      if (light !== undefined) this.acquire(this.point, light);
+      return light;
+    });
+    const point = publishRows(
+      current.point,
+      source.point,
+      (facts, i) =>
+        this.point.declared.get(keyOf(facts, i))?.facts as PointLightSnapshot | undefined,
+    );
+    const pointShadow = publishRows(current.pointShadow, pointOrder, (light) => light.shadow);
+
+    for (let i = 0; i < source.spot.length; i++) {
+      const facts = source.spot[i] as SpotLightSnapshot;
+      this.declare(this.spot, keyOf(facts, i), frame, facts);
+    }
+    this.retireDeparted(this.spot, frame);
+    const spotOrder = publishRows(this.spotOrder, source.spot, (facts, i) => {
+      const light = this.spot.declared.get(keyOf(facts, i));
+      if (light === undefined || !castsSpot(light.facts)) return undefined;
+      this.acquire(this.spot, light);
+      return publishedLayer(this.spot, light) >= 0 ? light : undefined;
+    });
+    const spot = publishRows(
+      current.spot,
+      source.spot,
+      (facts, i) => this.spot.declared.get(keyOf(facts, i))?.facts as SpotLightSnapshot | undefined,
+    );
+    if (pointOrder !== this.pointOrder || spotOrder !== this.spotOrder) this.orderChanged = true;
+    this.pointOrder = pointOrder;
+    this.spotOrder = spotOrder;
+
+    const rect = publishRows(
+      current.rect,
+      source.rect,
+      (light, i) =>
+        this.declare(this.rect, keyOf(light, i), frame, light).facts as RectAreaDirectLightSnapshot,
+    );
+    this.retireDeparted(this.rect, frame);
+    const extra = source.additionalDirectional ?? EMPTY_ADDITIONAL;
+    const additionalDirectional = sameList(current.additionalDirectional ?? EMPTY_ADDITIONAL, extra)
+      ? current.additionalDirectional
+      : Object.freeze([...extra]);
+    const warnings = source.ignoredDirectionalShadowCasters;
+    const ignored = current.ignoredDirectionalShadowCasters;
+    const sameWarnings =
+      ignored === warnings ||
+      (ignored !== undefined && warnings !== undefined && sameOrder(ignored, warnings));
     if (
-      retainedOrder.length !== order.length ||
-      order.some((entity, index) => entity !== retainedOrder[index])
-    ) {
-      this.shadowed = Object.freeze(order);
-      this.orderChanged = true;
-    }
+      sun === current &&
+      source.directionalCount === current.directionalCount &&
+      additionalDirectional === current.additionalDirectional &&
+      sameWarnings &&
+      point === current.point &&
+      pointShadow === current.pointShadow &&
+      spot === current.spot &&
+      rect === current.rect
+    )
+      return;
+    const ignoredDirectionalShadowCasters = sameWarnings
+      ? ignored
+      : warnings === undefined
+        ? undefined
+        : Object.freeze([...warnings]);
     this.roster = Object.freeze({
-      ...(directional === undefined ? EMPTY : (this.facts(directional) as DirectionalLightFacts)),
+      ...directionalFacts(sun),
       directionalCount: source.directionalCount,
-      additionalDirectional: Object.freeze([...(source.additionalDirectional ?? [])]),
-      point: Object.freeze(points.map((entity) => this.facts(entity) as PointLightSnapshot)),
-      spot: Object.freeze(spots.map((entity) => this.facts(entity) as SpotLightSnapshot)),
-      rect: Object.freeze(rects.map((entity) => this.facts(entity) as RectAreaDirectLightSnapshot)),
-      pointShadow: Object.freeze(
-        shadowed.map((entity) => this.pointShadow(entity) as PointShadowSnapshot),
-      ),
+      additionalDirectional: additionalDirectional ?? EMPTY_ADDITIONAL,
+      ...(ignoredDirectionalShadowCasters === undefined ? {} : { ignoredDirectionalShadowCasters }),
+      point,
+      pointShadow,
+      spot,
+      rect,
     });
   }
 
@@ -716,7 +796,9 @@ export class RenderLights {
     refit.clear();
     if (!changed) return;
     const views: ShadowViewProjection[] = [];
-    for (const entity of this.shadowed) views.push(...this.currentViews(entity));
+    for (const order of [this.pointOrder, this.spotOrder])
+      for (const light of order)
+        for (const view of this.viewEntities(light.entity)) views.push(this.projectionOf(view));
     this.shadowViews = Object.freeze(views);
   }
 
@@ -727,50 +809,52 @@ export class RenderLights {
     frame: number,
     facts: LightFacts,
     shadow?: PointShadowSnapshot,
-  ): EntityHandle {
+    light = kind.declared.get(key),
+  ): PublishedLight {
     const world = this.world;
-    const declared = kind.declared.get(key);
-    if (declared === undefined) {
+    if (light === undefined) {
+      const issued = stamp(kind, -1, facts, shadow);
       const entity = world
         .spawn({
           component: RenderLight,
           data: {
             kind: kind.value,
             shadowLayer: -1,
-            facts: world.allocUniqueRef('LightFacts', stamp(kind, -1, facts, shadow)),
+            facts: world.allocUniqueRef('LightFacts', issued),
           },
         })
         .unwrap();
-      kind.declared.set(key, { entity, seen: frame, facts, shadow });
-      if (shadow !== undefined) this.writeShadow(entity, -1, shadow);
-      return entity;
+      const row: PublishedLight = { entity, seen: frame, facts: issued, shadow: undefined };
+      if (shadow !== undefined) this.writeShadow(row, -1, shadow);
+      kind.declared.set(key, row);
+      return row;
     }
-    const entity = declared.entity;
-    declared.seen = frame;
+    light.seen = frame;
+    const oldLayer = publishedLayer(kind, light);
     const casts = kind.shadow === 'point' ? shadow !== undefined : castsSpot(facts);
-    if (!casts) this.release(kind, entity);
-    // Extraction keeps the snapshot of an unchanged light, so the very same
-    // objects as last time need no structural comparison against the stored
-    // copies; layer restamps preserve every compared key.
-    if (declared.facts === facts && declared.shadow === shadow) return entity;
-    const layer = this.layerOf(entity);
-    if (!sameValue(this.facts(entity), facts, LAYER_KEYS))
-      this.writeFacts(entity, stamp(kind, layer, facts, shadow));
-    if (!sameValue(this.pointShadow(entity), shadow, LAYER_KEYS))
-      this.writeShadow(entity, layer, shadow);
-    declared.facts = facts;
-    declared.shadow = shadow;
-    return entity;
+    const layer = casts ? oldLayer : -1;
+    if (layer !== oldLayer) {
+      this.freeLayer(kind, oldLayer);
+      for (const view of this.viewEntities(light.entity)) world.despawn(view).unwrap();
+      world.set(light.entity, RenderLight, { shadowLayer: layer }).unwrap();
+    }
+    if (
+      layer !== oldLayer ||
+      (kind.shadow === 'point' && (light.shadow === undefined) !== (shadow === undefined)) ||
+      !sameValue(light.facts, facts, LAYER_KEYS)
+    )
+      this.writeFacts(light, stamp(kind, layer, facts, shadow));
+    if (!sameValue(light.shadow, shadow, LAYER_KEYS)) this.writeShadow(light, layer, shadow);
+    return light;
   }
 
-  private wantsTile(entity: EntityHandle): boolean {
-    return castsSpot(this.facts(entity));
-  }
-
-  /** Take the lowest free layer; a full atlas leaves the light unshadowed. */
-  private acquire(kind: LightKind, entity: EntityHandle): void {
-    if (this.layerOf(entity) >= 0 || kind.free.length === 0) return;
-    this.restamp(kind, entity, kind.free.shift() as number);
+  /** Allocate after departures so all new casters see the freed layers in source order. */
+  private acquire(kind: LightKind, light: PublishedLight): void {
+    if (publishedLayer(kind, light) >= 0 || kind.free.length === 0) return;
+    const layer = kind.free.shift() as number;
+    this.world.set(light.entity, RenderLight, { shadowLayer: layer }).unwrap();
+    this.writeFacts(light, stamp(kind, layer, light.facts, light.shadow));
+    if (light.shadow !== undefined) this.writeShadow(light, layer, light.shadow);
   }
 
   private freeLayer(kind: LightKind, layer: number): void {
@@ -779,55 +863,41 @@ export class RenderLights {
     kind.free.sort((a, b) => a - b);
   }
 
-  /** A live light stops casting: free its layer and despawn its shadow views. */
-  private release(kind: LightKind, entity: EntityHandle): void {
-    const layer = this.layerOf(entity);
-    if (layer < 0) return;
-    this.freeLayer(kind, layer);
-    for (const view of this.viewEntities(entity)) this.world.despawn(view).unwrap();
-    this.restamp(kind, entity, -1);
+  private projectionOf(view: EntityHandle): ShadowViewProjection {
+    return this.world
+      .resolveUniqueRef<ShadowViewProjection>(
+        requireViewField(this.world, view, ShadowView, 'projection'),
+      )
+      .unwrap();
   }
 
-  private restamp(kind: LightKind, entity: EntityHandle, layer: number): void {
-    this.world.set(entity, RenderLight, { shadowLayer: layer }).unwrap();
-    const shadow = this.pointShadow(entity);
-    this.writeFacts(entity, stamp(kind, layer, this.facts(entity), shadow));
-    if (shadow !== undefined) this.writeShadow(entity, layer, shadow);
-  }
-
-  /** The light's shadow view projections, in face order. */
-  private currentViews(entity: EntityHandle): ShadowViewProjection[] {
-    const world = this.world;
-    return this.viewEntities(entity).map((view) =>
-      world
-        .resolveUniqueRef<ShadowViewProjection>(world.get(view, ShadowView).unwrap().projection)
-        .unwrap(),
-    );
-  }
-
-  /**
-   * Spawn or rewrite the light's shadow views in face order when its layer or
-   * matrices changed; true when a view was written.
-   */
+  /** One source matrix span owns one face. Keep untouched planes and previously issued views. */
   private refreshViews(entity: EntityHandle): boolean {
     const kind = this.kindOf(entity);
     if (kind === undefined) return false;
     const layer = this.layerOf(entity);
-    const matrices = layer < 0 ? undefined : this.viewMatrices(kind, entity);
+    if (layer < 0) return false;
+    const point = kind.shadow === 'point';
+    const matrices = point
+      ? this.pointShadow(entity)?.shadowMatrices
+      : (this.facts(entity) as SpotLightSnapshot).lightViewProj;
     if (matrices === undefined) return false;
     const world = this.world;
     const entities = this.viewEntities(entity);
-    const current = this.currentViews(entity);
-    if (
-      current.length === matrices.length &&
-      current.every(
-        (view, face) => view.identity.index === layer && sameValue(view.matrix, matrices[face]),
+    let changed = false;
+    for (let face = 0; face < (point ? 6 : 1); face += 1) {
+      const view = entities[face];
+      const prior = view === undefined ? undefined : this.projectionOf(view);
+      const priorIdentity = prior?.identity;
+      const offset = point ? face * 16 : 0;
+      const length = point ? Math.max(0, Math.min(16, matrices.length - offset)) : matrices.length;
+      if (
+        prior !== undefined &&
+        prior.identity.index === layer &&
+        sameMatrixSpan(prior.matrix, matrices, offset, length)
       )
-    )
-      return false;
-    for (let face = 0; face < matrices.length; face += 1) {
-      const matrix = new Float32Array(matrices[face] as Float32Array);
-      const priorIdentity = current[face]?.identity;
+        continue;
+      const matrix = matrices.slice(offset, offset + length);
       const projection: ShadowViewProjection = Object.freeze({
         identity: captureShadowViewIdentity(
           priorIdentity?.kind === kind.shadow &&
@@ -844,7 +914,7 @@ export class RenderLights {
         planes: shadowPlanes(matrix),
       });
       const handle = world.allocUniqueRef('ShadowViewProjection', projection);
-      const view = entities[face];
+      changed = true;
       if (view === undefined)
         world
           .spawn(
@@ -854,7 +924,7 @@ export class RenderLights {
           .unwrap();
       else world.set(view, ShadowView, { projection: handle }).unwrap();
     }
-    return true;
+    return changed;
   }
 
   private kindOf(entity: EntityHandle): LightKind | undefined {
@@ -866,19 +936,6 @@ export class RenderLights {
         : undefined;
   }
 
-  /** Face matrices of a light's shadow views. */
-  private viewMatrices(kind: LightKind, entity: EntityHandle): Float32Array[] | undefined {
-    if (kind.shadow === 'point') {
-      const shadow = this.pointShadow(entity);
-      if (shadow === undefined) return undefined;
-      return Array.from({ length: 6 }, (_, face) =>
-        shadow.shadowMatrices.subarray(face * 16, face * 16 + 16),
-      );
-    }
-    const spot = this.facts(entity) as SpotLightSnapshot;
-    return spot.lightViewProj === undefined ? undefined : [spot.lightViewProj];
-  }
-
   /** The light's shadow view entities, in the face order they were spawned. */
   private viewEntities(entity: EntityHandle): readonly EntityHandle[] {
     const world = this.world;
@@ -887,38 +944,43 @@ export class RenderLights {
   }
 
   private layerOf(entity: EntityHandle): number {
-    return this.world.get(entity, RenderLight).unwrap().shadowLayer;
+    return requireViewField(this.world, entity, RenderLight, 'shadowLayer');
   }
 
   private facts(entity: EntityHandle): LightFacts {
     const world = this.world;
     return world
-      .resolveUniqueRef<LightFacts>(world.get(entity, RenderLight).unwrap().facts)
+      .resolveUniqueRef<LightFacts>(requireViewField(world, entity, RenderLight, 'facts'))
       .unwrap();
   }
 
   private pointShadow(entity: EntityHandle): PointShadowSnapshot | undefined {
     const world = this.world;
-    if (!world.hasComponent(entity, RenderPointShadow)) return undefined;
-    return world
-      .resolveUniqueRef<PointShadowSnapshot>(world.get(entity, RenderPointShadow).unwrap().facts)
-      .unwrap();
+    const handle = readViewField(world, entity, RenderPointShadow, 'facts');
+    return handle === undefined
+      ? undefined
+      : world.resolveUniqueRef<PointShadowSnapshot>(handle).unwrap();
   }
 
-  private writeFacts(entity: EntityHandle, facts: LightFacts): void {
+  private writeFacts(light: PublishedLight, facts: LightFacts): void {
     const world = this.world;
-    world.set(entity, RenderLight, { facts: world.allocUniqueRef('LightFacts', facts) }).unwrap();
+    world
+      .set(light.entity, RenderLight, { facts: world.allocUniqueRef('LightFacts', facts) })
+      .unwrap();
+    light.facts = facts;
   }
 
   private writeShadow(
-    entity: EntityHandle,
+    light: PublishedLight,
     layer: number,
     shadow: PointShadowSnapshot | undefined,
   ): void {
     const world = this.world;
-    const present = world.hasComponent(entity, RenderPointShadow);
+    const entity = light.entity;
+    const present = light.shadow !== undefined;
     if (shadow === undefined) {
       if (present) world.removeComponent(entity, RenderPointShadow).unwrap();
+      light.shadow = undefined;
       return;
     }
     const stamped =
@@ -926,12 +988,35 @@ export class RenderLights {
     const facts = world.allocUniqueRef('PointShadowSnapshot', stamped);
     if (present) world.set(entity, RenderPointShadow, { facts }).unwrap();
     else world.addComponent(entity, { component: RenderPointShadow, data: { facts } }).unwrap();
+    light.shadow = stamped;
   }
+}
+
+/** Compare the packed source directly. A NaN requires checking its original bit pattern. */
+function sameMatrixSpan(
+  current: Float32Array,
+  source: Float32Array,
+  offset: number,
+  length: number,
+): boolean {
+  if (current.length !== length) return false;
+  for (let i = 0; i < length; i++) {
+    const value = current[i];
+    if (!Object.is(value, source[offset + i])) return false;
+    if (Number.isNaN(value)) return sameValue(current, source.subarray(offset, offset + length));
+  }
+  return true;
 }
 
 function castsSpot(facts: LightFacts): boolean {
   const spot = facts as SpotLightSnapshot;
   return spot.castShadow && spot.lightViewProj !== undefined;
+}
+
+function publishedLayer(kind: LightKind, light: PublishedLight): number {
+  if (kind.shadow === 'point') return light.shadow?.shadowAtlasLayer ?? -1;
+  if (kind.shadow === 'spot') return (light.facts as SpotLightSnapshot).shadowAtlasTile ?? -1;
+  return -1;
 }
 
 /** A light's own layer stamped into its stored facts. */

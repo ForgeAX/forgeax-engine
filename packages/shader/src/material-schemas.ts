@@ -23,6 +23,9 @@ export const DEFAULT_STANDARD_PBR_PARAM_SCHEMA: readonly ParamSchemaEntry[] =
 
 /** Numeric WGSL override ID, stable across Naga symbol mangling. */
 export const STANDARD_TEXTURE_MASK_OVERRIDE = '64000';
+/** Fragment-only selector for shared ORM. The existing u32 mask is full. */
+export const STANDARD_ORM_REUSE_OVERRIDE = '64004';
+export const STANDARD_ORM_REUSE_BIT = 2 ** 32;
 
 /**
  * Pipeline-request key that carries the surface discard facts (bit set below)
@@ -54,13 +57,14 @@ export const STANDARD_DIRECT_DFG_LUT_BINDING =
   STANDARD_PHYSICAL_BINDING_START + STANDARD_PHYSICAL_TEXTURE_FIELDS.length * 2;
 
 /** The optional PlanarReflection target and its projection uniform follow the DFG texture. */
-export const STANDARD_PLANAR_REFLECTION_TEXTURE_BINDING = STANDARD_DIRECT_DFG_LUT_BINDING + 1;
-export const STANDARD_PLANAR_REFLECTION_UNIFORM_BINDING = STANDARD_DIRECT_DFG_LUT_BINDING + 2;
+export const STANDARD_PLANAR_REFLECTION_TEXTURE_BINDING = 36;
+export const STANDARD_PLANAR_REFLECTION_UNIFORM_BINDING = 37;
 
+const standardTextureNames = DEFAULT_STANDARD_PBR_PARAM_SCHEMA.filter(
+  (entry) => entry.type === 'texture2d',
+).map((entry) => entry.name);
 const standardTextureBits: ReadonlyMap<string, number> = new Map(
-  DEFAULT_STANDARD_PBR_PARAM_SCHEMA.filter((entry) => entry.type === 'texture2d').map(
-    (entry, index) => [entry.name, 2 ** index],
-  ),
+  standardTextureNames.map((name, index) => [name, 2 ** index]),
 );
 
 const STANDARD_SAMPLE_REUSE_SOURCES = [
@@ -83,7 +87,7 @@ const STANDARD_SAMPLE_REUSE_SOURCES = [
  * selector stores `sourceIndex + 1` (0 = no reuse), so it is `width` bits wide
  * and starts where the previous field ended, after the texture presence bits.
  */
-export const STANDARD_SAMPLE_REUSE = (() => {
+const scalarSampleReuse = (() => {
   let shift = standardTextureBits.size;
   return STANDARD_SAMPLE_REUSE_SOURCES.map((entry) => {
     const width = Math.ceil(Math.log2(entry.sources.length + 1));
@@ -93,10 +97,16 @@ export const STANDARD_SAMPLE_REUSE = (() => {
   });
 })();
 
-const standardReuseEnd = STANDARD_SAMPLE_REUSE.reduce(
+const standardReuseEnd = scalarSampleReuse.reduce(
   (end, entry) => Math.max(end, entry.shift + entry.width),
   standardTextureBits.size,
 );
+
+/** The CPU value carries one extra bit, split into an independent fragment override. */
+export const STANDARD_SAMPLE_REUSE = [
+  ...scalarSampleReuse,
+  { target: 'occlusionTexture', sources: ['metallicRoughnessTexture'], shift: 32, width: 1 },
+] as const;
 
 /**
  * Standard derived layout projections. In one mode a split scalar-map pair
@@ -106,7 +116,7 @@ const standardReuseEnd = STANDARD_SAMPLE_REUSE.reduce(
  * the bind-group builders read this table.
  *
  * - `shared-transmission`: the minimum-limit transmission variant has no
- *   dedicated lanes for transmission, thickness and the screen backdrop.
+ *   dedicated lanes for transmission and thickness.
  * - `parallax`: the fragment march of `displacementMode: 'parallax'` reads
  *   `displacementTexture` (its own view and sampler) through the metallic pair;
  *   the vertex displacement pair stays vertex-only.
@@ -124,7 +134,6 @@ export const STANDARD_DERIVED_LAYOUT_PROJECTIONS = [
     sampler: 'thicknessSampler',
     host: 'roughnessTexture',
   },
-  { mode: 'shared-transmission', resource: 'transmissionBackdropTexture', host: 'alphaTexture' },
   { mode: 'parallax', resource: 'displacementTexture', host: 'metallicTexture' },
 ] as const;
 
@@ -163,6 +172,36 @@ export const STANDARD_SHARED_TRANSMISSION_DEFINE = 'TRANSMISSION_SHARED_SLOTS';
 
 function standardAvailableDefine(field: string): string {
   return `${field.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase()}_AVAILABLE`;
+}
+
+/** Select the resources used by a stock, non-transmissive Surface on demand. */
+export function standardSurfaceResourceDefines(
+  mask: number,
+  schema: readonly ParamSchemaEntry[],
+): Readonly<Record<string, boolean>> {
+  const fields = new Set(schema.map((entry) => entry.name));
+  const defines = Object.fromEntries(
+    [...standardTextureBits].map(([field, bit]) => [
+      standardAvailableDefine(field),
+      fields.has(field) && standardMaskHasBit(mask, bit),
+    ]),
+  );
+  // Bump and normal share the canonical Normal pair. Parallax similarly
+  // samples height through the metallic pair. Only the bound resource needs
+  // that declaration; the runtime mask still selects the intended operation.
+  if (defines.BUMP_TEXTURE_AVAILABLE && fields.has('normalTexture'))
+    defines.NORMAL_TEXTURE_AVAILABLE = true;
+  const parallax =
+    standardParallaxSelectable((field) => fields.has(field)) &&
+    standardMaskHasBit(mask, STANDARD_PARALLAX_DISPLACEMENT_BIT);
+  defines[STANDARD_PARALLAX_HEIGHT_DEFINE] = parallax;
+  if (parallax) defines.METALLIC_TEXTURE_AVAILABLE = true;
+  defines.STANDARD_SURFACE_PACKED_ORM =
+    mask >= STANDARD_ORM_REUSE_BIT &&
+    fields.has('occlusionTexture') &&
+    defines.METALLIC_ROUGHNESS_TEXTURE_AVAILABLE === true;
+  if (defines.STANDARD_SURFACE_PACKED_ORM) defines.OCCLUSION_TEXTURE_AVAILABLE = false;
+  return defines;
 }
 
 /**
@@ -240,6 +279,30 @@ export function standardSharedTransmissionConflicts(
   );
 }
 
+/** Standard texture presence follows defined author values and declaration defaults. */
+export function standardTextureValueMask(
+  values: Readonly<Record<string, unknown>>,
+  defaults: number,
+): number {
+  let mask = defaults;
+  let bit = 1;
+  for (const name of standardTextureNames) {
+    if (values[name] !== undefined) mask |= bit;
+    bit *= 2;
+  }
+  return mask;
+}
+
+/** An authored default contributes the same bit as an explicitly supplied texture value. */
+export function standardTextureDefaultMask(
+  parameters: readonly { readonly name: string; readonly default?: unknown }[],
+): number {
+  let mask = 0;
+  for (const parameter of parameters)
+    if (parameter.default !== undefined) mask |= standardTextureBits.get(parameter.name) ?? 0;
+  return mask;
+}
+
 /** Presence follows the authored contract, never asynchronous GPU residency. */
 export function standardTextureMask(schema: readonly ParamSchemaEntry[]): number {
   let mask = 0;
@@ -270,6 +333,32 @@ if (standardReuseEnd + 3 > 32) {
  */
 export function standardMaskHasBit(mask: number, bit: number): boolean {
   return Math.floor(mask / bit) % 2 === 1;
+}
+
+const alphaReuseField = scalarSampleReuse.find(({ target }) => target === 'alphaTexture');
+const coverageBaseReuse = alphaReuseField === undefined ? 0 : 2 ** alphaReuseField.shift;
+const vertexTextureBits =
+  (standardTextureBits.get('displacementTexture') ?? 0) | STANDARD_PARALLAX_DISPLACEMENT_BIT;
+const coverageTextureBits =
+  (standardTextureBits.get('baseColorTexture') ?? 0) |
+  (standardTextureBits.get('alphaTexture') ?? 0) |
+  vertexTextureBits;
+
+/** Standard raster vertices only sample the authored displacement map. */
+export function standardVertexTextureMask(mask: number): number {
+  return (mask & vertexTextureBits) >>> 0;
+}
+
+/** Coverage can reuse Base Color, and its only vertex map is displacement. */
+export function standardCoverageTextureMask(mask: number, projected = false): number {
+  // A selector for a metallic sample becomes a separate Alpha sample.
+  const reuseBase =
+    alphaReuseField !== undefined &&
+    Math.floor(mask / coverageBaseReuse) % 2 ** alphaReuseField.width === 1;
+  const relevant = projected
+    ? coverageTextureBits | STANDARD_TRIPLANAR_PROJECTION_BIT
+    : coverageTextureBits;
+  return ((mask & relevant) >>> 0) + (reuseBase ? coverageBaseReuse : 0);
 }
 
 /** Derive projection selectors from effective `triplanarSpace` / `normalMapSpace` / `displacementMode` values. */

@@ -1,6 +1,8 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import type { WaterSplashWakeEvent, WaterVisualContact } from '@forgeax/engine-water';
 import type { DispatchEntry, RenderableSnapshot } from '../render-system-extract';
+import type { FrameList } from '../scene/frame-list';
+import { sceneSurfaceRowsOf } from '../scene/render-scene-view';
 
 export const WATER_FLUID_FOAM_EVENT_CAPACITY = 4096;
 export const WATER_FLUID_FOAM_EVENT_STRIDE_BYTES = 32;
@@ -109,36 +111,56 @@ export function waterFluidFoamEventCurrent(
   );
 }
 
+const NO_FOAM_MATERIALS: readonly WaterFluidFoamMaterial[] = Object.freeze([]);
+
 /** Derive the shader's exact mapping from the admitted material value snapshot. */
 export function captureWaterFluidFoamMaterials(
-  renderables: Iterable<RenderableSnapshot>,
+  renderables: FrameList<RenderableSnapshot>,
   viewIdentity: string,
   dispatch?: Iterable<Pick<DispatchEntry, 'renderableIndex' | 'materialHandle'>>,
 ): readonly WaterFluidFoamMaterial[] {
+  if (sceneSurfaceRowsOf(renderables, renderables.at)?.source.mayHaveWaterSources === false)
+    return NO_FOAM_MATERIALS;
   const result = new Map<string, WaterFluidFoamMaterial>();
-  const draws = dispatch === undefined ? undefined : [...dispatch];
-  for (const [index, row] of [...renderables].entries()) {
+  const water = new Map<
+    number,
+    {
+      row: RenderableSnapshot;
+      owner: NonNullable<RenderableSnapshot['waterOwner'] | RenderableSnapshot['waterMeshSource']>;
+      source: RenderableSnapshot['waterMeshSource'];
+      handles?: Set<number>;
+    }
+  >();
+  let index = 0;
+  for (const row of renderables) {
+    const address = index++;
     if (row.authorVisible === false) continue;
     const source = row.waterMeshSource;
     const owner = row.waterOwner ?? source;
-    if (owner === undefined) continue;
+    if (owner !== undefined) water.set(address, { row, owner, source });
+  }
+  if (dispatch !== undefined) {
+    for (const draw of dispatch) {
+      const match = water.get(draw.renderableIndex);
+      if (match === undefined || match.source !== undefined) continue;
+      match.handles ??= new Set();
+      match.handles.add(draw.materialHandle);
+    }
+  }
+  for (const { row, owner, source, handles } of water.values()) {
     const materials =
       source === undefined
-        ? row.materials.filter(
-            (resource) =>
-              draws === undefined ||
-              draws.some(
-                (draw) =>
-                  draw.renderableIndex === index &&
-                  draw.materialHandle === resource.snapshot.materialHandle,
-              ),
-          )
+        ? row.materials
         : (source.views
             .find((view) => view.viewIdentity === viewIdentity)
             ?.draws.map((draw) => row.materials[draw.materialIndex]) ?? []);
     for (const resource of materials) {
       const material = resource?.snapshot;
       if (
+        (source === undefined &&
+          dispatch !== undefined &&
+          (material?.materialHandle === undefined ||
+            handles?.has(material.materialHandle) !== true)) ||
         material?.staticSwitches?.waterOceanFoam !== true ||
         material.staticSwitches.waterFoam === false
       )

@@ -417,7 +417,8 @@ export type WaterBrushRecipeAsset = WaterBrushRecipeSource;
 
 export type WaterFluidSimulationSource = {
   readonly system: 'fluid-simulation';
-  readonly configurationVersion: 1;
+  /** 1 preserves legacy kernels; 2 uses signed shallow divergence and free-surface displacement. */
+  readonly configurationVersion: 1 | 2;
   readonly solverMode: 'ripple' | 'shallow';
   readonly terrainMode: 'none' | 'constant-depth' | 'water-info';
   readonly resolution: readonly [number, number];

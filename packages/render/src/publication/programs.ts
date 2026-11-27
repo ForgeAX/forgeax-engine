@@ -1,11 +1,16 @@
 import { type AssetRegistry, runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
 import {
   materialProgramContextKey,
+  readMaterialTemplateSources,
   validateMaterialCookProgramContext,
+  validateMaterialTemplatePublication,
+  validMaterialRasterSourceInputs,
+  validMaterialRasterSourceSelection,
 } from '@forgeax/engine-pack/material-cook';
 import {
   type MaterialRuntimeArtifact,
   type MaterialShaderEntry,
+  type MaterialShaderSourceEntry,
   materialArtifactConflict,
   ShaderRegistry,
 } from '@forgeax/engine-shader';
@@ -13,6 +18,7 @@ import {
   getAdmittedParamSchemaInterface,
   isMaterialProgramAbi,
   type MaterialAsset,
+  type MaterialRasterSourceInputs,
   type ParamSchemaEntry,
 } from '@forgeax/engine-types';
 import {
@@ -20,7 +26,10 @@ import {
   ownRenderFeatureProgramData,
   ownRenderFeatureProgramDataWith,
 } from '../features/prepared-gpu-work';
-import { type MaterialProgramInputs, materialProgramInputs } from '../material-program-inputs';
+import {
+  type MaterialProgramInputs,
+  materialProgramInputsForArtifact,
+} from '../material-program-inputs';
 import type { MaterialSnapshot } from '../render-system-extract';
 import { type RenderPublication, RenderPublicationError } from './contract';
 import type { PreparedRenderPublication } from './receiver';
@@ -82,6 +91,23 @@ function validPublicationProjectionShape(
     for (const program of pass.programs) if (!validProgram(program)) return false;
   }
   return true;
+}
+
+function validPublicationSourceTemplate(projection: PublishedMaterialProjection): boolean {
+  const input = projection.sourceTemplate;
+  if (input === undefined) return true;
+  if (input === null || typeof input !== 'object') return false;
+  const checked = validateMaterialTemplatePublication(input.publication);
+  if (
+    !checked.ok ||
+    checked.value.guid !== projection.materialGuid ||
+    checked.value.sourceArtifact.digest !== projection.artifactHash
+  )
+    return false;
+  return readMaterialTemplateSources(
+    new TextEncoder().encode(JSON.stringify(input.sources)),
+    projection.artifactHash,
+  ).ok;
 }
 
 /** The receiver-state and material checks every admission repeats, even for interned content. */
@@ -160,6 +186,7 @@ export class PublicationMaterialProjectionAdmission {
       return true;
     };
     if (!validPublicationProjectionShape(input, validProgram)) return undefined;
+    if (!validPublicationSourceTemplate(input)) return undefined;
     const owned = ownRenderFeatureProgramDataWith(input as PublishedMaterialProjection, (node) =>
       reused.get(node),
     );
@@ -244,15 +271,15 @@ export function publicationMaterialSchemaRebinder(registry: ShaderRegistry) {
     const shader =
       material.materialShaderId === undefined
         ? undefined
-        : registry.materialArtifact(material.materialShaderId);
+        : registry.materialParamSchemaProjection(material.materialShaderId)?.schema;
     // Full content includes defaults and author metadata. A merged schema or
     // another Pass's ABI must not be replaced merely because field types match.
     let rebound =
       schema !== undefined &&
       shader !== undefined &&
-      schema !== shader.paramSchema &&
-      matchesSchema(material, shader.paramSchema)
-        ? { ...material, materialParamSchema: shader.paramSchema }
+      schema !== shader &&
+      matchesSchema(material, shader)
+        ? { ...material, materialParamSchema: shader }
         : material;
     const programInputs = Object.fromEntries(
       material.passes.flatMap((pass) => {
@@ -260,8 +287,7 @@ export function publicationMaterialSchemaRebinder(registry: ShaderRegistry) {
           material.materialProgramKeys?.[pass.name] ??
           runtimeMaterialShaderId(pass.program.module, pass.name);
         if (key === undefined) return [];
-        const artifact = registry.materialArtifact(key);
-        const inputs = artifact === undefined ? undefined : materialProgramInputs(artifact);
+        const inputs = materialProgramInputsForArtifact(registry, key);
         return inputs === undefined ? [] : [[pass.name, inputs]];
       }),
     );
@@ -310,12 +336,57 @@ export function rebindPublicationMaterialSchemas(
   return input;
 }
 
+/** Collect the immutable producer closure for candidate rows before sending them. */
+export function captureLevelMaterialPrograms(
+  assets: AssetRegistry,
+  rows: readonly import('../render-system-extract').RenderableSnapshot[],
+  acknowledged: (key: string) => boolean,
+): RenderPublication['programs'] {
+  const programs = new Map<string, RenderPublication['programs'][number]>();
+  const materials = new Set<MaterialSnapshot>();
+  const capture = (key: string): void => {
+    if (programs.has(key) || acknowledged(key)) return;
+    const program = capturePublicationProgram(assets, key);
+    programs.set(key, program);
+    for (const reference of program.shader.variantReferences ?? []) capture(reference.identifier);
+  };
+  for (const row of rows) {
+    for (const resource of [...row.materials, ...(row.materialOverrides ?? [])]) {
+      const material = resource?.snapshot;
+      if (material === undefined || materials.has(material)) continue;
+      materials.add(material);
+      for (const key of publicationMaterialProgramKeys(material)) capture(key);
+    }
+  }
+  return [...programs.values()];
+}
+
 /** Capture one immutable program from its native declaration; callers traverse its family closure. */
 export function capturePublicationProgram(
   assets: AssetRegistry,
   key: string,
 ): RenderPublication['programs'][number] {
   const declaration = assets.shaderRegistry.materialArtifactDeclaration(key);
+  const recipe = assets.shaderRegistry.materialArtifactSourceRecipe(key);
+  if (recipe !== undefined && declaration?.kind === 'source') {
+    const { kind: _kind, ...metadata } = declaration;
+    return { key, shader: { sourceEncoding: 'raster-source', ...metadata }, recipe };
+  }
+  if (recipe !== undefined && declaration?.kind === 'ready') {
+    const { paramSchema, receipt, variantReferences, program } = declaration.entry;
+    return {
+      key,
+      shader: {
+        sourceEncoding: 'raster-source',
+        paramSchema,
+        ...(receipt === undefined ? {} : { receipt }),
+        ...(variantReferences === undefined ? {} : { variantReferences }),
+        ...(program.entryPoints === undefined ? {} : { entryPoints: program.entryPoints }),
+        ...(program.forwardFog === undefined ? {} : { forwardFog: program.forwardFog }),
+      },
+      recipe,
+    };
+  }
   const artifact = assets.getMaterialArtifact(key);
   if (declaration?.kind === 'bytes' && artifact?.digest !== undefined) {
     const { kind: _kind, ...metadata } = declaration;
@@ -375,6 +446,42 @@ function publicationSourceEntry(
   return previous.ok ? undefined : shader;
 }
 
+type PublishedSourceProgram = Extract<RenderPublication['programs'][number], { recipe: unknown }>;
+
+function publicationRasterSourceEntry(
+  assets: AssetRegistry,
+  row: PublishedSourceProgram,
+  sourceInputs: WeakMap<MaterialRasterSourceInputs, MaterialRasterSourceInputs>,
+): MaterialShaderSourceEntry | undefined {
+  if (row.shader.sourceEncoding !== 'raster-source' || row.artifact !== undefined)
+    throw new RenderPublicationError({ reason: 'shape', subject: 'invalid raster source backing' });
+  let inputs = sourceInputs.get(row.recipe?.inputs);
+  if (inputs === undefined && validMaterialRasterSourceInputs(row.recipe?.inputs)) {
+    inputs = structuredClone(row.recipe.inputs);
+    sourceInputs.set(row.recipe.inputs, inputs);
+  }
+  if (inputs === undefined || !validMaterialRasterSourceSelection(row.recipe?.selection, inputs))
+    throw new RenderPublicationError({
+      reason: 'shape',
+      subject: `invalid raster source for ${row.key}`,
+    });
+  const recipe = { inputs, selection: structuredClone(row.recipe.selection) };
+  const { sourceEncoding: _encoding, ...shader } = row.shader;
+  const entry = {
+    ...shader,
+    recipe,
+    digest: recipe.selection.artifactDigest,
+    prepare: () => assets.prepareMaterialSourceProgram(recipe),
+  };
+  const accepted = assets.shaderRegistry.validateMaterialArtifactSource(row.key, entry);
+  if (!accepted.ok)
+    throw new RenderPublicationError({
+      reason: 'shape',
+      subject: `conflicting immutable shader ${row.key}`,
+    });
+  return accepted.value ? undefined : entry;
+}
+
 /** Admit immutable producer artifacts before the full Renderer prepares their pipelines. */
 export function installPublicationPrograms(
   assets: AssetRegistry,
@@ -384,23 +491,15 @@ export function installPublicationPrograms(
   const added: MaterialRuntimeArtifact[] = [];
   let shaders: ShaderRegistry | undefined;
   const keys = new Set<string>();
-  for (const row of programs) {
-    if (keys.has(row.key) || (row.artifact !== undefined && row.artifact.key !== row.key))
-      throw new RenderPublicationError({
-        reason: 'shape',
-        subject: 'duplicate or mismatched program key',
-      });
-    keys.add(row.key);
-    if (row.artifact !== undefined) {
-      // Keys are unique within a publication, so only the held artifact can conflict.
-      const existing = assets.getMaterialArtifact(row.key);
-      if (existing === undefined) added.push(row.artifact);
-      else {
-        const conflict = materialArtifactConflict(existing, row.artifact);
-        if (conflict !== undefined) throw conflict;
+  const sourceInputs = new WeakMap<MaterialRasterSourceInputs, MaterialRasterSourceInputs>();
+  const stageShader = (row: RenderPublication['programs'][number]) => {
+    if ('recipe' in row) {
+      const source = publicationRasterSourceEntry(assets, row, sourceInputs);
+      if (source !== undefined) {
+        shaders ??= new ShaderRegistry({ manifestUrl: undefined });
+        shaders.installMaterialArtifactSource(row.key, source);
       }
-    }
-    if ('sourceEncoding' in row.shader) {
+    } else if ('sourceEncoding' in row.shader) {
       if (row.shader.sourceEncoding !== 'utf8' || row.artifact?.digest === undefined)
         throw new RenderPublicationError({
           reason: 'shape',
@@ -431,6 +530,24 @@ export function installPublicationPrograms(
         shaders.installMaterialArtifact(row.key, source, assets.shaderRegistry);
       }
     }
+  };
+  for (const row of programs) {
+    if (keys.has(row.key) || (row.artifact !== undefined && row.artifact.key !== row.key))
+      throw new RenderPublicationError({
+        reason: 'shape',
+        subject: 'duplicate or mismatched program key',
+      });
+    keys.add(row.key);
+    if (row.artifact !== undefined) {
+      // Keys are unique within a publication, so only the held artifact can conflict.
+      const existing = assets.getMaterialArtifact(row.key);
+      if (existing === undefined) added.push(row.artifact);
+      else {
+        const conflict = materialArtifactConflict(existing, row.artifact);
+        if (conflict !== undefined) throw conflict;
+      }
+    }
+    stageShader(row);
   }
   if (shaders !== undefined) assets.shaderRegistry.installMaterialArtifactsFrom(shaders);
   for (const artifact of added) assets.materialArtifactRegistry.register(artifact).unwrap();

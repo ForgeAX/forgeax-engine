@@ -120,20 +120,24 @@ export function outputLensEffectsActive(input: LensEffectsSnapshot | undefined):
 }
 
 /** Percent intensity to per-channel lens-space scales, as UE's ChromaticAberrationParams. */
-export function chromaticAberrationScales(
+export function writeChromaticAberrationScales(
+  target: Float32Array,
+  index: number,
   intensity: number,
   startOffset: number,
-): readonly [red: number, green: number] {
-  if (startOffset >= 1) return [0, 0];
-  const offset = (intensity * 0.01) / (1 - startOffset);
-  return [offset * FRINGE_SCALE_RED, offset * FRINGE_SCALE_GREEN];
+): void {
+  const offset = startOffset >= 1 ? 0 : (intensity * 0.01) / (1 - startOffset);
+  target[index] = offset * FRINGE_SCALE_RED;
+  target[index + 1] = offset * FRINGE_SCALE_GREEN;
 }
 
 /** Red scale, green scale and start offset in lens-viewport units. */
 export function packChromaticAberrationParams(input: LensEffectsSnapshot | undefined): Uint8Array {
   const startOffset = input?.chromaticAberrationStartOffset ?? 0;
-  const [red, green] = chromaticAberrationScales(input?.chromaticAberration ?? 0, startOffset);
-  return new Uint8Array(new Float32Array([red, green, startOffset, 0]).buffer);
+  const values = new Float32Array(4);
+  writeChromaticAberrationScales(values, 0, input?.chromaticAberration ?? 0, startOffset);
+  values[2] = startOffset;
+  return new Uint8Array(values.buffer);
 }
 
 /** The captured frame seed makes replay deterministic without a clock or texture. */

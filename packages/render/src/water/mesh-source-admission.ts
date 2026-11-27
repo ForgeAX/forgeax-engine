@@ -26,6 +26,45 @@ export interface WaterMaterialAdmissionDrawClosure {
   readonly uploads: readonly WaterMeshInstanceDrawUpload[];
 }
 
+const emptyUploads: WaterMeshInstanceDrawUpload[] = [];
+Object.defineProperty(emptyUploads, OWNED_UPLOAD_CLOSURE, { value: true });
+export const EMPTY_WATER_CLOSURE: WaterMaterialAdmissionDrawClosure = Object.freeze({
+  draws: Object.freeze([]),
+  uploads: Object.freeze(emptyUploads),
+});
+
+/** Partition only the admitted rows. Addresses remain those of the submitted frame. */
+export function partitionWaterMaterialDraws<T>(
+  source: WaterMaterialAdmissionDrawClosure,
+  passAt: (address: number) => T | undefined,
+): ReadonlyMap<T, WaterMaterialAdmissionDrawClosure> {
+  const groups = new Map<T, WaterMaterialAdmissionDraw[]>();
+  for (const draw of source.draws) {
+    const pass = passAt(draw.renderableIndex);
+    if (pass === undefined) continue;
+    const group = groups.get(pass);
+    if (group === undefined) groups.set(pass, [draw]);
+    else group.push(draw);
+  }
+  const result = new Map<T, WaterMaterialAdmissionDrawClosure>();
+  for (const [pass, draws] of groups) {
+    if (draws.length === source.draws.length) {
+      result.set(pass, source);
+      continue;
+    }
+    const uploads: WaterMeshInstanceDrawUpload[] = [];
+    for (const draw of draws)
+      if (draw.tiles !== undefined) uploads.push(waterMeshAdmissionUpload(draw.tiles));
+    if (uploads.length > 0 && isOwnedWaterMeshAdmissionUploadClosure(source.uploads))
+      Object.defineProperty(uploads, OWNED_UPLOAD_CLOSURE, { value: true });
+    result.set(pass, {
+      draws: Object.freeze(draws),
+      uploads: uploads.length === 0 ? EMPTY_WATER_CLOSURE.uploads : Object.freeze(uploads),
+    });
+  }
+  return result;
+}
+
 /** Seal Water association slots only while constructing a renderer-owned source snapshot. */
 export function ownWaterMaterialAdmissionSource<T extends WaterMaterialSource>(source: T): T {
   try {
@@ -57,44 +96,43 @@ export function isOwnedWaterMaterialOwner(
  * from their producer; writable/custom sources stay on the live admission path.
  */
 export function finalizeWaterMaterialAdmissionDraws(
-  rows: readonly { readonly renderableIndex: number; readonly source: WaterMaterialSource }[],
+  rows: Iterable<{ readonly renderableIndex: number; readonly source: WaterMaterialSource }> & {
+    readonly length: number;
+  },
+  nativeReader?: { readonly mayHaveWaterSources?: boolean },
+  additionalDraws = 0,
 ): WaterMaterialAdmissionDrawClosure | undefined {
-  const draws: WaterMaterialAdmissionDraw[] = [];
-  const uploads: WaterMeshInstanceDrawUpload[] = [];
+  if (rows.length === 0 || (nativeReader?.mayHaveWaterSources === false && additionalDraws === 0))
+    return EMPTY_WATER_CLOSURE;
+  let draws: WaterMaterialAdmissionDraw[] | undefined;
+  let uploads: WaterMeshInstanceDrawUpload[] | undefined;
   try {
     for (const row of rows) {
-      const readSealedWaterMaterialRow = () => {
-        const sourceDescriptor = Object.getOwnPropertyDescriptor(row, 'source');
-        const indexDescriptor = Object.getOwnPropertyDescriptor(row, 'renderableIndex');
-        if (
-          sourceDescriptor === undefined ||
-          !('value' in sourceDescriptor) ||
-          indexDescriptor === undefined ||
-          !('value' in indexDescriptor) ||
-          !Number.isSafeInteger(indexDescriptor.value)
-        )
-          return undefined;
-        const source = sourceDescriptor.value as WaterMaterialSource;
-        const ownerDescriptor = immutableOwnDataProperty(source, 'waterOwner', true);
-        const tilesDescriptor = immutableOwnDataProperty(source, 'waterMeshTiles', true);
-        if (
-          ownerDescriptor === undefined ||
-          tilesDescriptor === undefined ||
-          !('value' in ownerDescriptor) ||
-          !('value' in tilesDescriptor) ||
-          ownerDescriptor.writable !== false ||
-          ownerDescriptor.configurable !== false ||
-          tilesDescriptor.writable !== false ||
-          tilesDescriptor.configurable !== false
-        )
-          return undefined;
+      const sourceDescriptor = Object.getOwnPropertyDescriptor(row, 'source');
+      const indexDescriptor = Object.getOwnPropertyDescriptor(row, 'renderableIndex');
+      if (
+        sourceDescriptor === undefined ||
+        !('value' in sourceDescriptor) ||
+        indexDescriptor === undefined ||
+        !('value' in indexDescriptor) ||
+        !Number.isSafeInteger(indexDescriptor.value)
+      )
+        return undefined;
+      const source = sourceDescriptor.value as WaterMaterialSource;
+      const ownerDescriptor = immutableOwnDataProperty(source, 'waterOwner', true);
+      const tilesDescriptor = immutableOwnDataProperty(source, 'waterMeshTiles', true);
+      if (
+        ownerDescriptor === undefined ||
+        tilesDescriptor === undefined ||
+        !('value' in ownerDescriptor) ||
+        !('value' in tilesDescriptor) ||
+        ownerDescriptor.writable !== false ||
+        ownerDescriptor.configurable !== false ||
+        tilesDescriptor.writable !== false ||
+        tilesDescriptor.configurable !== false
+      )
+        return undefined;
 
-        return { sourceDescriptor, indexDescriptor, source, ownerDescriptor, tilesDescriptor };
-      };
-      const readSealedWaterMaterialRowResult = readSealedWaterMaterialRow();
-      if (readSealedWaterMaterialRowResult === undefined) return undefined;
-      const { indexDescriptor, ownerDescriptor, tilesDescriptor } =
-        readSealedWaterMaterialRowResult;
       const owner = ownerDescriptor?.value as RenderableSnapshot['waterOwner'];
       if (owner === undefined) continue;
       if (!isOwnedWaterMaterialOwner(owner) || !Object.isFrozen(owner)) return undefined;
@@ -111,8 +149,10 @@ export function finalizeWaterMaterialAdmissionDraws(
           !isOwnedWaterMeshAdmissionUpload(upload)
         )
           return undefined;
+        uploads ??= [];
         uploads.push(upload);
       }
+      draws ??= [];
       draws.push(
         Object.freeze({
           renderableIndex: indexDescriptor.value as number,
@@ -124,8 +164,12 @@ export function finalizeWaterMaterialAdmissionDraws(
   } catch {
     return undefined;
   }
-  Object.defineProperty(uploads, OWNED_UPLOAD_CLOSURE, { value: true });
-  return Object.freeze({ draws: Object.freeze(draws), uploads: Object.freeze(uploads) });
+  if (draws === undefined) return EMPTY_WATER_CLOSURE;
+  if (uploads !== undefined) Object.defineProperty(uploads, OWNED_UPLOAD_CLOSURE, { value: true });
+  return Object.freeze({
+    draws: Object.freeze(draws),
+    uploads: uploads === undefined ? EMPTY_WATER_CLOSURE.uploads : Object.freeze(uploads),
+  });
 }
 
 function lockOwnDataProperty<T extends object, K extends PropertyKey>(

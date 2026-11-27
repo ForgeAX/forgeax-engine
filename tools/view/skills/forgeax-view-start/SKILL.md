@@ -1,43 +1,51 @@
 ---
 name: forgeax-view-start
 description: >-
-  Optional ForgeaX View startup from an installed Engine. Use when opening View,
+  Optional ForgeaX View startup from an installed SDK. Use when opening View,
   browsing game assets or scenes interactively, or diagnosing View startup.
 ---
 
 # Open ForgeaX View
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 View is optional. Open it when requested or when interactive asset/scene review
 is needed, including during authoring. Ordinary Engine commands work without it.
 This file and [View operations](../forgeax-view-cli/SKILL.md) are maintained by
-View and shipped with the matching Engine; no additional global SDK is required.
+View and shipped only with the SDK. Game npm dependencies do not include View.
 
-## Installed npm game
+## Installed SDK
 
-Read the game's `AGENTS.md`. From that game's root, run its installed View file:
-
-```sh
-node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
-```
-
-From another working directory, use absolute paths for both the script and game.
-Resolve the game's own `@forgeax/engine` installation; never silently substitute
-a global SDK or another game's Engine. pnpm links are supported: the file resolves
-its canonical installation. Do not add a launcher or npm script to the game.
+Read the game's `AGENTS.md`. From the game's root, run the matching SDK's file:
 
 ```sh
-node /absolute/game/node_modules/@forgeax/engine/tools/view/start.mjs --project /absolute/game
+node /absolute/forgeax-sdk/tools/view/start.mjs --project .
 ```
 
-Published outputs are built already. Do not run `build:engine`, install a separate
-View package, or manually start a Backend for this path. A missing startup file
-means this installation does not include View: report its package path/version
-and use a complete matching distribution. Missing built outputs indicate an
-incomplete installation; do not switch to a contributor build helper.
+From another directory, use absolute paths for the SDK and game:
 
-For an explicit SDK-wide chooser, use `node "$SDK_ROOT/tools/view/start.mjs"`.
-For a game, prefer its installed Engine and always pass `--project`. Omitting it
-opens a chooser or retains that instance's existing project; it does not select cwd.
+```sh
+node /absolute/forgeax-sdk/tools/view/start.mjs --project /absolute/game
+```
+
+The file resolves its canonical SDK installation and initializes that SDK's
+`.forgeax/cli-runtime` through the existing SDK launcher. It selects Engine and
+View from that runtime, including pnpm links, independently of cwd and the game's
+npm installation. Never silently substitute another SDK. Do not add a launcher,
+View dependency or npm script to the game.
+
+Published SDK outputs are built already. Do not run `build:engine`, install a
+separate View package, or manually start a Backend for this path. Missing outputs
+indicate an incomplete SDK; preserve the diagnostic and repair that installation.
+Source contributors use the separate contributor guide.
+
+Omit `--project` for the SDK-wide chooser or to retain the instance's existing
+project. The launcher never selects cwd implicitly.
+
+Language priority is the saved user choice, then the primary browser/system
+preference, then English. Missing, blocked or unsupported preferences fall back
+to English. Automatic detection does not persist a choice; use the language menu
+to override the system preference.
 
 ## Options and lifetime
 
@@ -86,8 +94,8 @@ and native host integration require their repository-specific contributor guide.
 
 ## Existing game guidance
 
-An npm upgrade updates this package's guidance, not the game's copied skills or
-`AGENTS.md`. For an older game, read the installed package's skill first. When
+An SDK upgrade updates its guidance, not the game's copied skills or
+`AGENTS.md`. For an older game, read the installed SDK's skill first. When
 asked to refresh its guidance, compare the two official View skills with the
 game's tracked versions, update unmodified official content and preserve custom
 edits. Replace obsolete manual-Backend/build-helper recommendations with the

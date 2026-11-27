@@ -6,6 +6,7 @@ import type {
   CompiledRenderGraph,
   GraphResourceResolver,
   RenderGraphFrame,
+  RenderGraphNativeIssue,
   RenderGraphNativePass,
   SubgraphPass,
 } from '../types.js';
@@ -110,6 +111,30 @@ function fixture(gpu: RhiDevice) {
 }
 
 describe('graph-native subgraph ports', () => {
+  it('retains physical profiler identities when snapshotting a command domain', async () => {
+    const builder = new RenderGraphBuilder<Frame>();
+    const copy = {
+      kind: 'copy',
+      name: 'copy-row-3',
+      profileName: 'copy-row',
+      encode() {},
+    } as const;
+    builder
+      .addSubgraphPass('rows', {
+        accesses: [],
+        profilePasses: () => [copy],
+        commandsDirect(_frame, _resources, issue, recording) {
+          issue(recording, copy);
+        },
+      })
+      .unwrap();
+    const graph = compile(builder, await device());
+    const pass = graph.inspect().passes.find(({ name }) => name === 'rows');
+    expect(pass?.nativeProfilePasses).toEqual([
+      { kind: 'copy', name: 'copy-row-3', profileName: 'copy-row' },
+    ]);
+  });
+
   it('commits persistent texture content from child writes, not parent write declarations', async () => {
     const gpu = await device();
     const makeWriter = (childWrites: boolean, skipped = false) => {
@@ -366,12 +391,14 @@ describe('graph-native subgraph ports', () => {
         return result;
       })
       .unwrap();
-    const seen: Buffer[] = [];
+    const issued: ReturnType<GraphResourceResolver['buffer']>[] = [];
     child
       .addComputePass('private-work', {
         accesses: [{ resource: input, usage: 'storage-read' }],
         encode: ({ resources }) => {
-          seen.push(resources.buffer(input).unwrap());
+          const receipt = resources.buffer(input);
+          expect(resources.buffer(input)).toBe(receipt);
+          issued.push(receipt);
         },
       })
       .unwrap();
@@ -387,7 +414,7 @@ describe('graph-native subgraph ports', () => {
     replacement.addCopyPass('replacement', { accesses: [], encode: () => {} }).unwrap();
     expect(graph.execute({ ...frame(gpu), child: compile(replacement, gpu) }).ok).toBe(true);
     expect(reads).toBe(2);
-    expect(seen).toEqual([a, b]);
+    expect(issued.map((receipt) => receipt.unwrap())).toEqual([a, b]);
     await graph.retire();
   });
 
@@ -510,6 +537,158 @@ describe('graph-native subgraph ports', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe('resource-descriptor-invalid');
     await graph.retire();
+  });
+
+  it('validates rotating physical imports through their declared ports and preserves aliases', async () => {
+    const gpu = await device();
+    const parent = new RenderGraphBuilder<Frame>();
+    const child = new RenderGraphBuilder<Frame>();
+    const count = 32;
+    const buffers = Array.from({ length: count }, () =>
+      gpu.createBuffer({ size: 32, usage: 0x80 }).unwrap(),
+    );
+    let rotation = 0;
+    let detached = false;
+    let aliasAdvertised = true;
+    let active = true;
+    let reads = 0;
+    let encoded = 0;
+    const physical = (slot: number) => required(buffers[(slot + rotation) % count]);
+    const inputs = buffers.map((_, slot) => {
+      const handle = parent
+        .importBuffer(`parent-${slot}`, { size: 16, usage: 0x80 }, () =>
+          physical(detached && slot === 0 ? 1 : slot),
+        )
+        .unwrap();
+      return {
+        resource: new Proxy(handle, {
+          get(target, key, receiver) {
+            if (key === 'owner') reads++;
+            return Reflect.get(target, key, receiver);
+          },
+        }),
+        usage: 'storage-read' as const,
+      };
+    });
+    // A later alias names the same buffer with a different range and permission.
+    const alias = parent
+      .importBuffer('alias', { size: 32, usage: 0x80 }, () => physical(aliasAdvertised ? 0 : 1))
+      .unwrap();
+    const accesses = buffers.map((_, slot) => ({
+      resource: child
+        .importBuffer(`child-${slot}`, { size: 16, usage: 0x80 }, () => physical(slot))
+        .unwrap(),
+      usage: 'storage-read' as const,
+    }));
+    child
+      .addComputePass('consume', {
+        accesses,
+        encodeDirect() {
+          encoded++;
+        },
+      })
+      .unwrap();
+    const selected = compile(child, gpu);
+    parent
+      .addSubgraphPass('scope', {
+        accesses: [...inputs, { resource: alias, usage: 'storage-write' }],
+        executeIf: () => active,
+        child: () => selected,
+      })
+      .unwrap();
+    const graph = compile(parent, gpu);
+    try {
+      for (rotation = 0; rotation < 60; rotation++) {
+        reads = 0;
+        graph.execute(frame(gpu)).unwrap();
+        if (rotation === 0) expect(reads).toBeLessThanOrEqual(4 * count);
+        else expect(reads).toBe(0);
+      }
+      expect(encoded).toBe(60);
+      // With only the write-only, larger alias remaining, the child must be denied.
+      detached = true;
+      const denied = graph.execute(frame(gpu));
+      expect(denied.ok).toBe(false);
+      if (!denied.ok) expect(denied.error.detail).toMatchObject({ field: 'buffer-port' });
+      expect(encoded).toBe(60);
+      // Detach the final alias while the pass is inactive. The former buffer is now private.
+      active = false;
+      aliasAdvertised = false;
+      graph.execute(frame(gpu)).unwrap();
+      expect(encoded).toBe(60);
+      active = true;
+      graph.execute(frame(gpu)).unwrap();
+      expect(encoded).toBe(61);
+      aliasAdvertised = true;
+      expect(graph.execute(frame(gpu)).ok).toBe(false);
+      detached = false;
+      graph.execute(frame(gpu)).unwrap();
+      expect(encoded).toBe(62);
+    } finally {
+      await graph.retire();
+      await selected.retire();
+      for (const buffer of buffers) gpu.destroyBuffer(buffer);
+    }
+  });
+
+  it('checks the current texture and view of a wide parent after every physical replacement', async () => {
+    const gpu = await device(),
+      parent = new RenderGraphBuilder<Frame>(),
+      child = new RenderGraphBuilder<Frame>();
+    const descriptor = { format: 'rgba8unorm', size: surfaceSize, usage: 0x04 } as const;
+    const textures = [
+      gpu.createTexture(descriptor).unwrap(),
+      gpu.createTexture(descriptor).unwrap(),
+    ] as const;
+    const views = [
+      gpu.createTextureView(textures[0], {}).unwrap(),
+      gpu.createTextureView(textures[1], {}).unwrap(),
+    ] as const;
+    let parentIndex: 0 | 1 = 0,
+      childTexture: 0 | 1 = 0,
+      childView: 0 | 1 = 0,
+      calls = 0;
+    const src = parent.importTexture('parent', descriptor, () => textures[parentIndex]).unwrap();
+    const dst = child.importTexture('child', descriptor, () => textures[childTexture]).unwrap();
+    const input = child.importView(dst, {}, () => views[childView]).unwrap();
+    const ports = Array.from({ length: 16 }, () => ({
+      resource: parent.importView(src, {}, () => views[parentIndex]).unwrap(),
+      usage: 'sampled-read' as const,
+    }));
+    child
+      .addComputePass('consume', {
+        accesses: [{ resource: input, usage: 'sampled-read' }],
+        encodeDirect(_pass, _frame, resources) {
+          expect(resources.textureView(input).unwrap()).toBe(views[parentIndex]);
+          calls++;
+        },
+      })
+      .unwrap();
+    const selected = compile(child, gpu);
+    parent.addSubgraphPass('scope', { accesses: ports, child: () => selected }).unwrap();
+    const graph = compile(parent, gpu);
+    try {
+      graph.execute(frame(gpu)).unwrap();
+      parentIndex = 1;
+      for (const [texture, view] of [
+        [0, 0],
+        [1, 0],
+        [0, 1],
+      ] as const) {
+        childTexture = texture;
+        childView = view;
+        const denied = graph.execute(frame(gpu));
+        expect(denied.ok).toBe(false);
+        if (!denied.ok) expect(denied.error.detail).toMatchObject({ field: 'texture-port' });
+      }
+      childTexture = childView = 1;
+      graph.execute(frame(gpu)).unwrap();
+      expect(calls).toBe(2);
+    } finally {
+      await graph.retire();
+      await selected.retire();
+      for (const texture of textures) gpu.destroyTexture(texture);
+    }
   });
 
   it('rejects a physical parent buffer alias captured outside the advertised ports', async () => {
@@ -641,17 +820,67 @@ it('captures a native command callback once and keeps actual pass instrumentatio
   builder.addSubgraphPass('slot', descriptor).unwrap();
   const graph = compile(builder, gpu);
   const observed: string[] = [];
+  const nativePassNames = ['prior-view'];
   graph
-    .execute(frame(gpu), undefined, {
+    .execute({ ...frame(gpu), nativePassNames }, undefined, {
       begin: (pass) => {
         observed.push(`${pass.executionIndex}:${pass.kind}:${pass.name}`);
         return undefined;
       },
     })
     .unwrap();
+  expect(nativePassNames).toEqual(['prior-view', 'current-compute']);
   expect(reads).toBe(1);
   expect(calls).toBe(1);
   expect(observed).toEqual(['0:compute:current-compute']);
   expect(() => required(escaped)({ kind: 'copy', name: 'escaped', encode: () => {} })).toThrow();
   await graph.retire();
+});
+
+it('issues changing pass lists with one writer and rejects stale and recursive commands', async () => {
+  const gpu = await device();
+  const builder = new RenderGraphBuilder<Frame>();
+  let half = false;
+  let current: RenderGraphNativeIssue | undefined;
+  let previous = 0;
+  let nested = false;
+  const first: RenderGraphNativePass = { kind: 'copy', name: 'first', encode() {} };
+  const second: RenderGraphNativePass = {
+    kind: 'copy',
+    name: 'second',
+    encode() {
+      if (nested) required(current)(previous, first);
+    },
+  };
+  builder
+    .addSubgraphPass('current-stage', {
+      accesses: [],
+      commandsDirect(_frame, _resources, issue, recording) {
+        if (current !== undefined) {
+          expect(current).toBe(issue);
+          expect(() => issue(previous, first)).toThrow();
+        }
+        current = issue;
+        previous = recording;
+        issue(recording, first);
+        if (half) issue(recording, second);
+      },
+    })
+    .unwrap();
+  const graph = compile(builder, gpu);
+  try {
+    for (let i = 0; i < 60; i++) {
+      half = (i & 1) !== 0;
+      const nativePassNames: string[] = [];
+      graph.execute({ ...frame(gpu), nativePassNames }).unwrap();
+      expect(nativePassNames).toEqual(half ? ['first', 'second'] : ['first']);
+      expect(() => required(current)(previous, first)).toThrow();
+    }
+    nested = true;
+    expect(graph.execute(frame(gpu)).ok).toBe(false);
+    nested = false;
+    expect(graph.execute(frame(gpu)).ok).toBe(true);
+  } finally {
+    await graph.retire();
+  }
 });

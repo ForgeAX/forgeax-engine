@@ -20,7 +20,7 @@ export default defineConfig({
         createMaterialPackCooker([resolve(here, 'assets')]),
         createParticleCodeNativeCookerFromRoots(
           [resolve(here, 'assets')],
-          { 'c1de0000-0000-7000-8000-000000000002': [{ name: 'heat', type: 'f32', visibility: 'fragment', lane: 0 }] },
+          { '2dad36f7-99bb-5aad-8dbe-321db767a727': [{ name: 'heat', type: 'f32', visibility: 'fragment', lane: 0 }] },
         ),
       ],
       refresh: reloadAssetHost(),

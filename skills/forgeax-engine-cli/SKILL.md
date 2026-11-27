@@ -7,6 +7,8 @@ description: >-
 
 # forgeax-engine-cli
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 ## Quick contract
 
 Covers routine game work; stop here unless a task needs a section below. Run from the
@@ -58,12 +60,9 @@ game root as `pnpm exec forgeax <path> ... --json`. Exact flags come from
 > forgeax help --tree --json returns the complete structured command tree. ToolContribution, ToolClient,
 > and ToolRun are internal composition contracts behind the CLI, not additional product entries.
 
-Optional View owns a separate file launcher. For interactive scene/asset review,
-read the game's `skills/forgeax-view-start/SKILL.md`, or its installed copy at
-`node_modules/@forgeax/engine/tools/view/skills/forgeax-view-start/SKILL.md`.
-From the game root: `node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .`.
-This needs no global SDK or manual Backend startup. Cold `forgeax help` does not
-discover the launcher; ordinary Engine commands do not require View.
+Run `forgeax project view --json` from the game root for interactive scene and
+asset review. Open the returned URL and confirm the selected project and its
+readiness. Use the same root with `forgeax backend status` and `backend stop`.
 
 `--json` output is compact by default: large owner fields are summarized and listed in
 `omitted.fields`. Add `--detail` only when a decision needs one of them, for example
@@ -76,6 +75,12 @@ control to reproduce and capture the failing frame; let tape evidence select
 further state queries and the repair owner.
 
 ## View development and host validation
+
+For native desktop releases, `project package --format native` checks the
+destination profile before bundling. Use the
+[installed desktop procedure](../../packages/devkit/README.md#installed-desktop-acceptance)
+to record target launches, upgrade and restored checkpoints from package
+receipts. The installed device and installer checks are manual.
 
 Custom Preview hosts use `readProjectFacts` from `@forgeax/engine-devkit` and
 `loadProjectCookers` from its `plugin-build` subpath to activate the selected project's build root.
@@ -98,12 +103,13 @@ Native Codex View instances are client-owned: the last App/business MCP process 
 
 For Linux batch jobs without a monitor, follow the
 unattended validation setup.
-For captures and live runs under Linux root, Engine can start an unprivileged
-Chromium child with a writable private profile and sandboxing enabled. With no
-display, the default is headless. An available borrowed page needs no local
-browser or display. If `browser-sandbox-root` remains, read the attempted
-launch's reason and report the affected gameplay and visual checks as
-unverified. A build or asset check only covers its own stage.
+DevKit launches Chrome with sandboxing enabled. In Linux root sessions it
+prepares an unprivileged browser identity and profile when it has an executable
+path. Without a display, live sessions default to headless. If sandbox setup or
+Chromium itself reports a sandbox failure, DevKit logs one retry with the same
+browser and sandboxing disabled. The command still checks real frame rendering
+and input. If startup remains blocked, inspect the launch error and report the
+affected checks as unverified. Borrowed pages need no local launch.
 
 ## Persistent live control
 
@@ -267,8 +273,8 @@ See the [DevKit workspace contract](../../packages/devkit/README.md#engine-works
 | Intent | Entry |
 |:--|:--|
 | Build an external forge.json game into static output | `forgeax project build <project> --base <url> --out-dir <dir> --json` |
-| Install the SDK from npm | `forgeax sdk install <dir> [--version VERSION]` |
-| Create from the SDK or initialize an existing project | `forgeax project new [dir] --template empty\|game-3d` / `forgeax project init` / `forgeax project check` |
+| Install Engine and its CLI | `npm install -g @forgeax/engine` |
+| Create from an Engine template or initialize an existing project | `forgeax project new [dir] --template empty\|game-3d` / `forgeax project init` / `forgeax project check` |
 | Install/verify project-local Engine skills | `forgeax project skill install` / `forgeax project skill verify` |
 | Package a hosted Web ZIP including Engine runtime (large JSON documents zstd-stored; `--compress=false` keeps plain JSON) | `forgeax project package --format web-zip [--output release/game-web.zip] [--compress=false]` |
 | Build native WebView installers | `forgeax project package --format tauri --platform windows\|macos\|linux\|android\|ios --json` |
@@ -280,7 +286,7 @@ See the [DevKit workspace contract](../../packages/devkit/README.md#engine-works
 | Compose a custom browser session with multiple checkpoints | `node <scenario.mjs>` + `createBrowserCapture(root).open()` / `session.capture()` |
 | Discover commands and arguments | `forgeax help [path] [--tree] [--json]` |
 | Execute build/resource-preview/authoring operations | `forgeax project ...` / `forgeax asset ...` / `forgeax rhi ...` / `forgeax profile ...` / `forgeax preview analyze` |
-| Compose operations programmatically | Import the SDK command client in an ordinary Node/Bun module. |
+| Compose operations programmatically | Import the Engine command client in an ordinary Node/Bun module. |
 | Inspect or maintain project plugins | `forgeax project plugin list\|inspect\|configure\|disable\|enable\|install\|uninstall` |
 | Query or mutate live World/Renderer | eval(script), below |
 | Analyze an offline RHI tape | forgeax-engine-rhi-debug |
@@ -310,15 +316,13 @@ and leaves runtime acceptance `not-run`. Run the packaged desktop smoke separate
 See [DevKit Tauri contract](../../packages/devkit/README.md) for signing and output paths.
 
 > [!IMPORTANT]
-> project new requires an explicit template: game-3d for 3D games, empty otherwise. Targets must be outside the unpacked SDK; its root/subdirectories return project-target-inside-sdk. project init handles existing external projects.
+> project new requires an explicit template: game-3d for 3D games, empty otherwise. Targets must be outside the Engine installation; its root/subdirectories return project-target-inside-sdk. project init handles existing external projects.
 
 > [!IMPORTANT]
 > game-3d copies a runnable third-person reference with scene content, visible objects/colliders, character/material/animation packs, and UI. Read its generated README before retaining, adapting, replacing, or removing content; update scene, runtime code, and pack references together.
 
-sdk install downloads the same-version
-@forgeax/engine-sdk carrier from public npm. npm integrity checks transport; the carrier's
-sdk-manifest.json checks SDK identity. Private GitHub Releases are internal archives, not
-consumer download sources. The target must be empty; download, version, or copy failures clean staging.
+Project creation uses the template from the installed Engine and pins that Engine
+version in the generated project. Keep the project lockfile with the game source.
 
 For project operations, composition, preview evidence, and optional service acceleration, read
 `references/authoring-operations.md` when those tasks apply.
@@ -395,7 +399,7 @@ Every play gets an empty browser profile; Pack products and Vite's optimized
 dependencies (`.forgeax/play/vite`) carry over, so cover several checks in one script.
 Pack products are keyed by content and Engine release, not location: a copied project
 keeps them with its `.forgeax/ddc`, `project new` starts with the template's and Engine
-Content's products cooked by the SDK, and `FORGEAX_BUILD_CACHE_DIR` shares them between projects.
+Content's products shipped in the Engine package, and `FORGEAX_BUILD_CACHE_DIR` shares them between projects.
 
 ```js
 // scripts/playthrough.mjs (new empty projects include an editable example)
@@ -413,7 +417,7 @@ export default async function playthrough(play) {
 ```
 
 The helper is `PlayContext` from `@forgeax/engine/devkit`. Its full signatures are generated from source in
-api/play.md
+[api/play.md](../forgeax-engine-authoring/references/api/play.md)
 (also `pnpm exec forgeax help project play --json`).
 
 Helpers: `step(name, run)`, `state(read?)`, `waitFor(predicate, { read, timeoutMs })`,
@@ -529,7 +533,7 @@ Pages/sessions in finally.
 |:--|:--|:--|
 | Dawn/Node smoke | Mesa lavapipe | GPUTexture readback without DOM. |
 | forgeax project capture --backend auto | Chrome hardware, software fallback when unavailable | Final Canvas + DOM/Shadow DOM composition. |
-| forgeax project capture --backend software / persistent SDK command-client session | Chrome SwiftShader, headless or Xvfb | Final Canvas + DOM/Shadow DOM composition; persistent sessions retain game state across captures. |
+| forgeax project capture --backend software / persistent Engine command-client session | Chrome SwiftShader, headless or Xvfb | Final Canvas + DOM/Shadow DOM composition; persistent sessions retain game state across captures. |
 
 > [!CAUTION]
 > Software pixels support screenshot iteration and deterministic regression, not physical GPU performance, vendor-driver compatibility, HDR displays, or release acceptance.
@@ -579,7 +583,7 @@ forgeax project package --format web-zip --output release/my-game-web.zip --json
 package rebuilds production output with relative base URLs, verifies every forgeax-dist.json size/SHA-256,
 then emits the selected format; web-zip is the default. The ZIP root contains
 index.html, hashed JS/WASM, shader manifest, pack index, and cooked assets, including Engine runtime.
-It excludes SDK source, node_modules, authored source, and remote debugging services.
+It excludes Engine source, node_modules, authored source, and remote debugging services.
 
 | Action | Entry | Evidence |
 |:--|:--|:--|
@@ -877,7 +881,7 @@ forgeax dev eval queries the current instance; domain plugins own import, Cook, 
 For a development Engine capability conflict, retain both resolved IDs and inspect
 physical package ownership and program-session queries. DevKit unifies Vite `v`
 cache versions automatically; repeatedly clearing its cache or patching installed
-SDK bytes does not repair conflicting package or session identities.
+Engine package bytes does not repair conflicting package or session identities.
 
 ## Further reading
 

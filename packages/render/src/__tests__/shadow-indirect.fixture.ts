@@ -18,6 +18,7 @@ export function preparedShadowFixture({
   shared,
   view,
   shaderModuleFactory,
+  retainIndirectBundles = false,
 }: {
   readonly device: RhiDevice;
   readonly buffer: Buffer;
@@ -25,6 +26,7 @@ export function preparedShadowFixture({
   readonly shared: GpuDrivenShadowBatch;
   readonly view: BindGroup;
   readonly shaderModuleFactory: PipelineBuilderShaderModuleFactory;
+  readonly retainIndirectBundles?: boolean;
 }) {
   const pipelineLookup = vi.fn((_shader: string) => shared.pipeline);
   const counts = { createBindGroup: 0, keys: [] as string[] };
@@ -119,6 +121,7 @@ export function preparedShadowFixture({
     validatedOrdered: [],
     runtime: {
       device,
+      options: { retainIndirectBundles },
       getMaterialShaderPipeline: pipelineLookup,
       immediateShaderModuleFactory: shaderModuleFactory,
     },

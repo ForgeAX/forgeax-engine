@@ -7,7 +7,11 @@ import {
   type ShaderSource,
 } from '@forgeax/engine-types';
 import { err, manifestMalformed, ok, type Result, type ShaderError } from './errors.js';
-import { bindManifestShaderSource, boundManifestShaderSource } from './manifest-publication.js';
+import {
+  bindManifestShaderSource,
+  boundManifestShaderSource,
+  manifestShaderSourcePrepared,
+} from './manifest-publication.js';
 import {
   type AdmittedShaderProgramTemplate,
   readShaderProgramTemplates,
@@ -15,9 +19,11 @@ import {
   type ShaderTemplateLibrary,
   selectShaderProgramDefines,
 } from './program-template.js';
+import { ShaderVariantDomain, type VariantPreference } from './supported-variant-defines.js';
 import type { MaterialShaderManifestEntry, MaterialShaderManifestVariant } from './types.js';
 
 export const SHADER_TEMPLATE_MANIFEST_VERSION = '7.0.0' as const;
+export const SHADER_PROJECT_MANIFEST_VERSION = '8.0.0' as const;
 
 export interface ShaderTemplateManifest {
   readonly schemaVersion: typeof SHADER_TEMPLATE_MANIFEST_VERSION;
@@ -51,13 +57,22 @@ type Resolve = (
   program: string,
   selection: Readonly<Record<string, boolean>>,
 ) => Result<CompiledProgram, ShaderError>;
+type Prepare = (
+  program: string,
+  selection: Readonly<Record<string, boolean>>,
+) => Result<boolean, ShaderError>;
 const nativeRows = new WeakSet<object>();
 const preparedRows = new WeakSet<object>();
-const variantReaders = new WeakMap<object, () => CompiledProgram>();
+const variantReaders = new WeakMap<
+  object,
+  { readonly read: () => CompiledProgram; readonly prepare?: () => Result<boolean, ShaderError> }
+>();
 const familyReaders = new WeakMap<
   object,
   {
     readonly axes: readonly string[];
+    readonly domain: () => ShaderVariantDomain;
+    readonly variant: (defines: Readonly<Record<string, boolean>>) => MaterialShaderManifestVariant;
     readonly select: (key: string) => MaterialShaderManifestVariant | undefined;
     readonly match: (
       constraints: Readonly<Record<string, boolean>>,
@@ -85,12 +100,49 @@ export function templateManifestVariantByDefines(
   return familyReaders.get(row)?.match(constraints);
 }
 
+/** Rank legal template rows by nonnegative weights on distinct axes. Ties follow canonical key order. */
+export function preferredMaterialShaderTemplateVariant(
+  entry: MaterialShaderManifestEntry,
+  constraints: Readonly<Record<string, boolean>>,
+  preferences: readonly VariantPreference[],
+): MaterialShaderManifestVariant | undefined {
+  const family = familyReaders.get(entry);
+  if (
+    family === undefined ||
+    Object.keys(constraints).some((axis) => constraints[axis] && !family.axes.includes(axis))
+  )
+    return undefined;
+  const selected = family.domain().preferred(constraints, preferences);
+  return selected === undefined ? undefined : family.variant(selected);
+}
+
+/** Visit variants which explicitly declare this axis value, in publication order. */
+export function* materialShaderVariantsWithAxis(
+  entry: MaterialShaderManifestEntry,
+  axis: string,
+  value: boolean,
+): Generator<MaterialShaderManifestVariant, undefined> {
+  const family = familyReaders.get(entry);
+  if (family === undefined) {
+    for (const row of entry.variants) if (row.defines[axis] === value) yield row;
+  } else if (family.axes.includes(axis)) {
+    for (const defines of family.domain().rows({ [axis]: value })) yield family.variant(defines);
+  }
+}
+
+/** Request CPU preparation for this selected row. Compiled publications are already ready. */
+export function prepareMaterialShaderTemplateVariant(
+  variant: MaterialShaderManifestVariant,
+): Result<boolean, ShaderError> {
+  return variantReaders.get(variant)?.prepare?.() ?? ok(true);
+}
+
 /** Preserve the selected source/reflection owner without reading the primary program. */
 export function shaderTemplateVariantEntry(
   entry: ManifestEntry,
   variant: MaterialShaderManifestVariant,
 ): ManifestEntry | undefined {
-  const read = variantReaders.get(variant);
+  const read = variantReaders.get(variant)?.read;
   if (!nativeRows.has(entry) || read === undefined) return undefined;
   const row = Object.freeze({
     ...(entry.identifier === undefined ? {} : { identifier: entry.identifier }),
@@ -222,8 +274,10 @@ function freeze(value: unknown): void {
 
 function variantRow(
   program: string,
+  definesKey: string,
   defines: Readonly<Record<string, boolean>>,
   resolve: Resolve,
+  prepare: Prepare | undefined,
 ): MaterialShaderManifestVariant {
   let compiled: CompiledProgram | undefined;
   const read = (): CompiledProgram => {
@@ -234,7 +288,7 @@ function variantRow(
     return compiled;
   };
   const row = Object.freeze({
-    definesKey: keyOf(defines),
+    definesKey,
     defines: Object.freeze({ ...defines }),
     get hash() {
       return read().manifestEntry.hash;
@@ -265,7 +319,12 @@ function variantRow(
     },
   }) as MaterialShaderManifestVariant;
   nativeRows.add(row);
-  variantReaders.set(row, read);
+  variantReaders.set(row, {
+    read,
+    ...(prepare === undefined
+      ? {}
+      : { prepare: () => (compiled === undefined ? prepare(program, defines) : ok(true)) }),
+  });
   bindManifestShaderSource(row, () => read().program.sourceReference);
   return row;
 }
@@ -274,6 +333,7 @@ function variantRow(
 export function materializeShaderTemplateManifest(
   admitted: AdmittedShaderTemplateManifest,
   resolve: Resolve,
+  prepare?: Prepare,
 ): {
   readonly entries: readonly ManifestEntry[];
   readonly materialShaders: readonly MaterialShaderManifestEntry[];
@@ -326,19 +386,22 @@ export function materializeShaderTemplateManifest(
           : JSON.stringify(program.template.engine.paramSchema);
       if (paramSchema === undefined) throw new Error('Admitted material schema is missing');
       const axes = program.template.axes;
+      let choicesDomain: ShaderVariantDomain | undefined;
+      const domain = () => (choicesDomain ??= new ShaderVariantDomain(axes));
       const choices = new Map<string, MaterialShaderManifestVariant>();
-      const select = (
+      const variant = (
         defines: Readonly<Record<string, boolean>>,
-      ): MaterialShaderManifestVariant | undefined => {
-        if (!selectShaderProgramDefines(program, defines).ok) return undefined;
+      ): MaterialShaderManifestVariant => {
         const key = keyOf(defines);
         let selected = choices.get(key);
         if (selected === undefined) {
-          selected = variantRow(declaration.program, defines, resolve);
+          selected = variantRow(declaration.program, key, defines, resolve, prepare);
           choices.set(key, selected);
         }
         return selected;
       };
+      const select = (defines: Readonly<Record<string, boolean>>) =>
+        selectShaderProgramDefines(program, defines).ok ? variant(defines) : undefined;
       const base = select(declaration.selection);
       if (base === undefined) throw new Error('Admitted template default selection is missing');
       let variants: readonly MaterialShaderManifestVariant[] | undefined;
@@ -381,19 +444,7 @@ export function materializeShaderTemplateManifest(
             variants = Object.freeze([]);
             return variants;
           }
-          const rows: MaterialShaderManifestVariant[] = [];
-          const visit = (index: number, selection: Record<string, boolean>): void => {
-            const axis = axes[index];
-            if (axis === undefined) {
-              const selected = select(selection);
-              if (selected !== undefined) rows.push(selected);
-              return;
-            }
-            visit(index + 1, { ...selection, [axis]: true });
-            visit(index + 1, { ...selection, [axis]: false });
-          };
-          visit(0, {});
-          variants = Object.freeze(rows);
+          variants = Object.freeze(Array.from(domain().rows(), variant));
           return variants;
         },
       }) as MaterialShaderManifestEntry;
@@ -401,29 +452,19 @@ export function materializeShaderTemplateManifest(
       bindManifestShaderSource(row, () => boundManifestShaderSource(base) as ShaderSource);
       familyReaders.set(row, {
         axes,
+        domain,
+        variant,
         prepared: () => [...choices.values()].filter((choice) => preparedRows.has(choice)),
         match(constraints) {
           if (Object.entries(constraints).some(([axis, value]) => !axes.includes(axis) && value))
             return undefined;
-          // Follow the publication's true-first order, stopping at the first legal
-          // selection. Partial lookup must not allocate the complete Cartesian table.
-          const selection: Record<string, boolean> = {};
-          const visit = (index: number): MaterialShaderManifestVariant | undefined => {
-            const axis = axes[index];
-            if (axis === undefined) return select(selection);
-            if (Object.hasOwn(constraints, axis)) {
-              selection[axis] = constraints[axis] as boolean;
-              return visit(index + 1);
-            }
-            selection[axis] = true;
-            const selected = visit(index + 1);
-            if (selected !== undefined) return selected;
-            selection[axis] = false;
-            return visit(index + 1);
-          };
-          return visit(0);
+          const first = domain().first(constraints);
+          return first === undefined ? undefined : variant(first);
         },
         select(key) {
+          // Every published row was admitted by the program or its legal domain.
+          const published = choices.get(key);
+          if (published !== undefined) return published;
           const defines: Record<string, boolean> = {};
           if (key === '')
             axes.forEach((axis) => {
@@ -449,5 +490,8 @@ export function materializeShaderTemplateManifest(
 export function materialShaderPreparedSourceRows(
   entry: MaterialShaderManifestEntry,
 ): readonly (MaterialShaderManifestEntry | MaterialShaderManifestVariant)[] {
-  return familyReaders.get(entry)?.prepared() ?? [entry, ...entry.variants];
+  return (
+    familyReaders.get(entry)?.prepared() ??
+    [entry, ...entry.variants].filter(manifestShaderSourcePrepared)
+  );
 }

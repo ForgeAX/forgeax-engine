@@ -2,9 +2,11 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
+import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { expect, it } from 'vitest';
 import { createPluginPackInternal } from '../plugin-pack.js';
+import { recordIndexedBundle } from './vite-fixtures.js';
 
 it.each([
   'dev',
@@ -15,13 +17,16 @@ it.each([
   try {
     const assets = join(root, 'assets');
     await mkdir(assets);
-    const guid = '019ffa97-0000-7000-8000-000000000081';
+    const packageId = '019ffa97-0000-7000-8000-000000000081';
+    const namespace = PackageId.parse(packageId);
+    if (!namespace.ok) throw namespace.error;
+    const guid = AssetGuid.format(AssetGuid.derive(namespace.value, 'effect'));
     await writeFile(
       join(assets, 'native.pack.json'),
       JSON.stringify({
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [{ guid, kind: 'test-effect', execution: 'cooked', payload: {}, refs: [] }],
+        schemaVersion: '3.0.0',
+        packageId,
+        assets: { effect: { kind: 'sampler', payload: {}, refs: [] } },
       }),
     );
     await writeFile(
@@ -36,12 +41,12 @@ it.each([
     );
     let cooks = 0;
     const cooker: NativeCooker = {
-      key: 'test-effect',
+      key: 'sampler',
       cook(input) {
         cooks++;
         return {
           guid: (input as { readonly guid: string }).guid,
-          payload: { compiled: true },
+          payload: { kind: 'sampler', compiled: true },
           refs: [],
           artifacts: {},
           inputFingerprint: 'sha256:compiled',
@@ -60,16 +65,7 @@ it.each([
       expect(plugin.catalogSnapshot().map((entry) => entry.guid)).toContain(guid);
     } else {
       const emitted: Array<{ fileName?: string; name?: string; source: string | Uint8Array }> = [];
-      await plugin.generateBundle.call({
-        emitFile(asset) {
-          emitted.push(asset);
-          return String(emitted.length - 1);
-        },
-        getFileName(id) {
-          const asset = emitted[Number(id)];
-          return asset?.fileName ?? `assets/${asset?.name ?? id}`;
-        },
-      });
+      await plugin.generateBundle.call(recordIndexedBundle(emitted));
       const catalog = emitted.find((asset) => asset.fileName === 'pack-index.json');
       expect(decodeCatalogWire(JSON.parse(String(catalog?.source))).unwrap()).toEqual(
         expect.arrayContaining([expect.objectContaining({ guid })]),

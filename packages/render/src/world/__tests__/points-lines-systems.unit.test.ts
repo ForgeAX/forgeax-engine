@@ -321,7 +321,7 @@ describe('Points/Lines frame preparation set', () => {
 
   it('prepares the whole retained set, for every row of the set it is given', () => {
     const owner = new StandardPointsLinesOwner({} as never);
-    const prepare = vi.spyOn(owner, 'prepare').mockReturnValue({} as never);
+    const prepare = vi.spyOn(owner, 'prepare').mockReturnValue({ plan: { drawCount: 1 } } as never);
     const rows = [row(1), row(2), row(3)];
     const outcome = owner.prepareFrame(
       rows as never,

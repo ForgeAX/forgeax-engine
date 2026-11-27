@@ -1,4 +1,5 @@
 import { type Mat4, mat4 } from '@forgeax/engine-math';
+import { compiledRenderGraphHasPass } from '@forgeax/engine-render-graph';
 import {
   attachComputedBarrelDistortionCameraFrame,
   type BarrelDistortionMapping,
@@ -135,7 +136,7 @@ export function resolveSubmittedBarrelMapping(
   if (retained && accepted !== undefined) {
     return resolveRetainedBarrelMapping(accepted, camera, width, height);
   }
-  const hasBarrelPass = graph.inspect().passes.some((pass) => pass.name === 'barrel-distortion');
+  const hasBarrelPass = compiledRenderGraphHasPass(graph, 'barrel-distortion');
   if (!hasBarrelPass) return identityBarrelMapping(camera, width, height, accepted);
   const authored = camera.barrelDistortion;
   if (!retained && authored !== undefined && authored.strength > 0) {

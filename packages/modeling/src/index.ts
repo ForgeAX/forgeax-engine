@@ -13,6 +13,7 @@ export {
   type BakeTarget,
   bakeMaps,
   bakeMapsParallel,
+  bakeMapsWithGpu,
   bakeSources,
   createBakeCooker,
 } from './bake';

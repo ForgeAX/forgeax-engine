@@ -144,6 +144,11 @@
     "reason": "Tutorial startup duplicates the maintained core Dawn smoke and Browser renderer owners."
   },
   {
+    "file": "apps/learn-render/6.pbr/4.render-target-reflection/src/__tests__/cube-camera.browser.test.ts",
+    "retained": "apps/hello/ssr/src/__tests__/cube-camera.browser.test.ts",
+    "reason": "The tutorial duplicates the hello SSR six-face orientation test verbatim. Daily Browser keeps that oracle, and full validation runs both copies."
+  },
+  {
     "file": "packages/runtime/src/__tests__/barrel-distortion-output.dawn.test.ts",
     "reason": "Daily Browser retains the corresponding real GPU owner; full validation adds native Dawn.",
     "retained": "packages/runtime/src/__tests__/barrel-distortion-output.browser.test.ts"
@@ -269,10 +274,6 @@
     "reason": "Full Three reference comparison; daily retains bridge render, texture, directional-shadow and runtime material/shadow owners."
   },
   {
-    "file": "packages/three/src/__tests__/variance-shadow.browser.test.ts",
-    "reason": "Full Three reference comparison; daily retains bridge render, texture, directional-shadow and runtime material/shadow owners."
-  },
-  {
     "file": "packages/three/src/__tests__/material-output-0.browser.test.ts",
     "reason": "Full Three reference comparison; daily retains bridge render, texture, directional-shadow and runtime material/shadow owners."
   },
@@ -291,6 +292,11 @@
   {
     "file": "packages/three/src/__tests__/environment-response.browser.test.ts",
     "reason": "Full Three reference comparison; daily retains bridge render, texture, directional-shadow and runtime material/shadow owners."
+  },
+  {
+    "file": "packages/three/src/__tests__/node-inputs.browser.test.ts",
+    "reason": "Expanded r187 pixel comparison. Daily Browser retains bound and material references, node instance inputs and node family pixels. The Dawn suites cover the same input fixtures.",
+    "retained": "packages/three/src/__tests__/bound-reference-inputs.browser.test.ts"
   },
   {
     "file": "packages/three/src/__tests__/transmission-output.browser.test.ts",
@@ -318,139 +324,139 @@
   },
   {
     "file": "packages/modeling/examples/actuator/__tests__/actuator.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/armor-bake/__tests__/armor.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/blend-corner/__tests__/blend-corner.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/body-panels/__tests__/panels.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/bracket/__tests__/bracket.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/c131/__tests__/c131.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/case/__tests__/render-validation.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/crate/__tests__/crate.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/crease-neck/__tests__/crease-neck.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/desk-lamp/__tests__/lamp.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/door-hinge/__tests__/hinge.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/feature-bracket/__tests__/feature-bracket.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/forearm/__tests__/forearm.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/hair-fork/__tests__/hair-fork.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/hood-linkage/__tests__/hood.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/housing/__tests__/housing.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/hydraulic-joint/__tests__/joint.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/joint-boot/__tests__/boot.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/limb-choreography/__tests__/choreo.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/limit-cage/__tests__/limit-cage.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/panel/__tests__/panel.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/patch-network/__tests__/patch-network.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/pauldron/__tests__/pauldron.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/pipe-bend/__tests__/pipe-bend.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/pipe-manifold/__tests__/manifold.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/pipe-weld/__tests__/pipe-weld.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/quality-body/__tests__/quality-body.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/scifi-mech/__tests__/scifi-mech.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/suspension/__tests__/suspension.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/tg-cases/__tests__/render.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/transforming-limb/__tests__/limb.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/tunic/__tests__/tunic.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/wheel-rim/__tests__/wheel-rim.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/wheel-uv/__tests__/wheel.case.dawn.test.ts",
-    "reason": "Individual modeling example capture; daily retains the full mech-gt S6 and modeling-show journeys."
+    "reason": "Individual modeling example capture. Daily keeps the Modeling Show and package-level model render oracles."
   },
   {
     "file": "packages/modeling/examples/hood-linkage/__tests__/hood.unit.test.ts",
@@ -477,6 +483,11 @@
     "reason": "Expanded full-car transformation and contact sweeps exercise example-specific mechanisms; core rig/joint/path operators and nominal S6 remain daily."
   },
   {
+    "file": "packages/modeling/examples/maid-whale/__tests__/g6-faceting.unit.test.ts",
+    "retained": "packages/modeling/src/__tests__/mesh-quality.unit.test.ts",
+    "reason": "The authored full-assembly faceting plan and obsolete-recipe falsifier are example validation. Engine core keeps the instrumented mesh-quality operator and the nominal S6 assembly."
+  },
+  {
     "file": "packages/devkit/src/__tests__/new-project-workers.e2e.test.ts",
     "reason": "Complete real-browser acceptance runs uninstrumented in the existing primary-pnpm worker. External browser/worker code does not contribute to parent V8 coverage; full-profile coverage retains this case."
   },
@@ -486,10 +497,295 @@
   },
   {
     "file": "packages/devkit/src/__tests__/live-dev-look.e2e.test.ts",
-    "reason": "Complete real-browser acceptance runs uninstrumented in the existing primary-pnpm worker. External browser/worker code does not contribute to parent V8 coverage; full-profile coverage retains this case."
+    "reason": "Complete private and session Play and Look acceptance runs together in the existing primary-pnpm worker. The independent Scene and other DevKit source suites retain V8 coverage."
   },
   {
     "file": "packages/devkit/src/__tests__/project-play.e2e.test.ts",
     "reason": "Complete seven-case real-browser acceptance runs uninstrumented in existing View shard one. External browser/worker code does not contribute to parent V8 coverage; full-profile coverage retains this case."
+  },
+  {
+    "file": "packages/render/src/__tests__/advanced-rigid-sdf.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/canonical-field-edit.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-contact-capture.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-fully-rough.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-lighting-support.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-primitive-identity.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-radiosity-status.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-radiosity-visibility.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-residency-owner-index.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-shadow-status.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-static-closure.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-support-tags.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/card-unknown-support.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/custom-surface-card-parameters.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/custom-surface-cards.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/irradiance-field-clearance-qualification.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/irradiance-field-convolution.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/irradiance-field-position.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/irradiance-field-radiance-atlas.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/irradiance-field-rotation-history.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/irradiance-field-unlit-history.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/screen-probe-card-facing.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/screen-probe-contact-coverage.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/screen-probe-sample-cosine.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/screen-probe-scene-history.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/screen-probe-screen-origin.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/screen-raster-receiver.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/sdf-scene-candidates.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/sdf-scene-texture-reader.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/sdf-scene-texture.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/sdf-surface-axis-tie.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/sdf-surface-endpoint-aggregation.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/sdf-surface-intersection.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/world-clearance.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/world-mesh-suffix.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/world-silhouette.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/render/src/__tests__/raytracing/world-surface-origin.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-cavity.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-clipmap-energy.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-concave.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-curved.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-directional.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-motion.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-moving-occluder.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-rooms.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-scenes.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-shadow-budget.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-temporal.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-coverage.dawn.test.ts",
+    "reason": "The complete scene exceeded the 15-minute software-adapter test budget. The required Native mutation group and full Dawn gi-3 owner retain recapture, edits and unsupported-material recovery. Dawn core retains software Global SDF GPU rays and material lookup with bounded Card candidates.",
+    "retained": "packages/render/src/__tests__/raytracing/global-card-lookup.dawn.test.ts"
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-gi-visible-temporal.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-irradiance-field-add.dawn.test.ts",
+    "reason": "The Native Ray Query mutation group verifies the full scene addition and probe updates. Full Dawn retains the matching software journey."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-irradiance-field-clipmap.dawn.test.ts",
+    "reason": "The Native Ray Query mutation group verifies the full camera and clipmap residency journey. Full Dawn retains the matching software journey."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-irradiance-field-edit.dawn.test.ts",
+    "reason": "The Native Ray Query foundation group verifies asset edits, removal and exact RHI replay. Dawn core retains the focused software GPU traversal and Card lookup cases."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-irradiance-field-residency.dawn.test.ts",
+    "reason": "The Native Ray Query mutation group verifies full scene residency and buffer ownership. Full Dawn retains the matching software journey."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-irradiance-field.dawn.test.ts",
+    "reason": "The Native Ray Query foundation group preserves the complete live Renderer convergence. Dawn core retains focused visibility sampling and software GPU traversal."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-irradiance-field-multiview.dawn.test.ts",
+    "reason": "The Native Ray Query mutation owner proves two-view pixel convergence, fair probe budgets and staging-buffer ownership. The full Dawn profile retains the software fallback journey.",
+    "retained": "packages/render/src/__tests__/raytracing/irradiance-field-view-demand.unit.test.ts"
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-radiance-cache.dawn.test.ts",
+    "reason": "The Native Ray Query foundation owner runs the complete Radiance Cache reference, energy and negative RHI replay checks. The full Dawn profile retains the software fallback journey.",
+    "retained": "packages/runtime/src/__tests__/renderer-reflections.dawn.test.ts"
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-reflection-denoise.dawn.test.ts",
+    "reason": "The full Dawn profile and explicit gi-4 Focus keep the live Renderer journey with convergence, replay and camera disocclusion. Required Dawn runs the production reflection filter directly to bound software-adapter memory while checking spatial denoising at receiver boundaries.",
+    "retained": "packages/render/src/__tests__/raytracing/irradiance-field-reflection-filter.dawn.test.ts"
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-screen-probe.dawn.test.ts",
+    "reason": "The Native Ray Query gather owner runs the complete Screen Probe Renderer, pixel replay and recovery journey. Dawn core retains independent Screen Probe history and traversal checks.",
+    "retained": "packages/render/src/__tests__/raytracing/screen-probe-history.dawn.test.ts"
+  },
+  {
+    "file": "packages/runtime/src/__tests__/renderer-irradiance-field-near-plane.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/runtime/src/__tests__/screen-canonical-receiver.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader-compiler/src/__tests__/wgsl-f32-boundary.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-scene-texture.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-surface-accept.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-surface-closed-boundary.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-surface-correlated-triangle.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-surface-exact-bits.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-surface-exact-endpoints.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-surface-local-ray.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
+  },
+  {
+    "file": "packages/shader/src/__tests__/sdf-surface-pool.dawn.test.ts",
+    "reason": "Extended GI native correctness and adversarial evidence remains in the full Dawn profile. Retain the existing PR renderer smoke and focused unit checks."
   }
 ]

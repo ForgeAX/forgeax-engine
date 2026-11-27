@@ -1,4 +1,5 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { assetDataBytes, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { rhi } from '@forgeax/engine-rhi-null';
@@ -111,6 +112,202 @@ it('fences source identity, cancellation and disposal without reviving an old le
   expect(replacement.isCurrent()).toBe(false);
   expect(f.receiver.prepareMesh(f.input).ok).toBe(false);
   f.publisher.dispose();
+});
+
+it('keeps the adopted Mesh lease until a replacement revision is published', () => {
+  const f = fixture();
+  const { meshHandle } = f.input;
+  const retire = vi.fn();
+  const first = f.receiver.prepareMesh(f.input, retire).unwrap();
+  f.world
+    .spawn(
+      { component: Transform, data: {} },
+      { component: MeshFilter, data: { assetHandle: meshHandle } },
+      { component: MeshRenderer, data: {} },
+    )
+    .unwrap();
+  f.world.update(0).unwrap();
+  const baseline = f.publisher.prepare(0).unwrap();
+  baseline.accept();
+  const accepted = f.receiver
+    .accept(encodeRenderPublication(structuredClone(baseline.packet)))
+    .unwrap();
+  f.publisher
+    .recycle(baseline.packet.revision, renderPublicationTransfers(baseline.message))
+    .unwrap();
+
+  const mesh = createBoxGeometry(2, 1, 1).unwrap();
+  const input = { ...f.input, mesh, revision: 2 };
+  const oldBytes = assetDataBytes(first.mesh);
+  const nextBytes = assetDataBytes(mesh);
+  try {
+    const abandoned = f.receiver.prepareMesh(input).unwrap();
+    expect(abandoned.isCurrent()).toBe(true);
+    expect(first.isCurrent()).toBe(true);
+    expect(f.receiver.inspectMeshStorage().preparedBytes).toBe(oldBytes + nextBytes);
+    abandoned.release();
+    expect(retire).not.toHaveBeenCalled();
+    expect(accepted.resources.resolveAsset(meshHandle).unwrap()).toBe(first.mesh);
+
+    const published = vi.fn();
+    const next = f.receiver.prepareMesh(input, undefined, published).unwrap();
+    expect(first.isCurrent()).toBe(true);
+    expect(published).not.toHaveBeenCalled();
+    f.assets.replace(meshHandle, mesh).unwrap();
+    f.world.update(0).unwrap();
+    const replacement = f.publisher.prepare(0).unwrap();
+    const packet = structuredClone(replacement.packet);
+    expect(packet.assets.find((row) => row.handle === meshHandle)?.revision).toBe(2);
+    replacement.accept();
+    const newer = f.receiver
+      .accept(
+        encodeRenderPublication({
+          ...packet,
+          assets: packet.assets.filter((row) => row.handle !== meshHandle),
+          preparedAssets: [{ handle: meshHandle, revision: 2 }],
+        }),
+      )
+      .unwrap();
+    f.publisher
+      .recycle(replacement.packet.revision, renderPublicationTransfers(replacement.message))
+      .unwrap();
+    expect(newer.resources.resolveAsset(meshHandle).unwrap()).toBe(next.mesh);
+    expect(retire).toHaveBeenCalledOnce();
+    expect(first.isCurrent()).toBe(false);
+    expect(next.isCurrent()).toBe(true);
+    expect(published).toHaveBeenCalledOnce();
+    expect(f.receiver.prepareMesh(f.input)).toMatchObject({
+      ok: false,
+      error: { detail: { reason: 'revision' } },
+    });
+    first.release();
+    finishPreparedMeshGrace(f.publisher, f.receiver);
+    expect(f.receiver.inspectMeshStorage().preparedBytes).toBe(nextBytes);
+    next.release();
+  } finally {
+    first.release();
+    f.receiver.dispose();
+    f.publisher.dispose();
+  }
+});
+
+function finishPreparedMeshGrace(
+  publisher: ReturnType<typeof createRenderPublisher>,
+  receiver: RenderPublicationReceiver,
+): void {
+  for (let index = 0; index < 9; index++) {
+    const candidate = publisher.prepare(index).unwrap();
+    candidate.accept();
+    receiver.accept(candidate.message).unwrap();
+    publisher
+      .recycle(candidate.packet.revision, renderPublicationTransfers(candidate.message))
+      .unwrap();
+  }
+}
+
+it('charges one retained revision through release grace and recovers its capacity after retirement', () => {
+  const f = fixture();
+  const bytes = assetDataBytes(f.input.mesh);
+  const { source, epoch } = f.input;
+  const receiver = new RenderPublicationReceiver(
+    { source, epoch },
+    undefined,
+    undefined,
+    undefined,
+    bytes,
+  );
+  try {
+    const first = receiver.prepareMesh(f.input).unwrap();
+    const duplicate = receiver.prepareMesh(f.input).unwrap();
+    expect(duplicate.mesh).toBe(first.mesh);
+    const next = { ...f.input, revision: 2 };
+    const rejected = {
+      ok: false,
+      error: {
+        code: 'mesh-residency-budget-exceeded',
+        actual: { used: bytes, requested: bytes, limit: bytes },
+      },
+    };
+    expect(receiver.prepareMesh(next)).toMatchObject(rejected);
+    expect(first.isCurrent()).toBe(true);
+    first.release();
+    duplicate.release();
+    expect(receiver.prepareMesh(next)).toMatchObject(rejected);
+    const reopened = receiver.prepareMesh(f.input).unwrap();
+    expect(reopened.mesh).toBe(first.mesh);
+    reopened.release();
+    // Empty accepted packets advance the release grace without consuming the Mesh.
+    finishPreparedMeshGrace(f.publisher, receiver);
+    expect(receiver.prepareMesh(next).ok).toBe(true);
+  } finally {
+    receiver.dispose();
+    f.publisher.dispose();
+  }
+});
+
+it('holds superseded preparation bytes past release grace until the physical lease retires', () => {
+  const f = fixture();
+  const bytes = assetDataBytes(f.input.mesh);
+  const { source, epoch } = f.input;
+  const receiver = new RenderPublicationReceiver(
+    { source, epoch },
+    undefined,
+    undefined,
+    undefined,
+    2 * bytes,
+  );
+  try {
+    const retire = vi.fn();
+    const first = receiver.prepareMesh(f.input, retire).unwrap();
+    const second = receiver.prepareMesh({ ...f.input, revision: 2 }).unwrap();
+    const third = { ...f.input, revision: 3 };
+    expect(retire).toHaveBeenCalledOnce();
+    finishPreparedMeshGrace(f.publisher, receiver);
+    expect(receiver.prepareMesh(third)).toMatchObject({
+      ok: false,
+      error: { code: 'mesh-residency-budget-exceeded', actual: { used: 2 * bytes } },
+    });
+    expect(second.isCurrent()).toBe(true);
+    first.release();
+    expect(receiver.prepareMesh(third).ok).toBe(true);
+  } finally {
+    receiver.dispose();
+    f.publisher.dispose();
+  }
+});
+
+it('charges a transferred mesh for the whole retained backing without counting shared views twice', () => {
+  const f = fixture();
+  const backing = new ArrayBuffer(8192);
+  const vertices = new Float32Array(backing, 128, f.input.mesh.vertices.length);
+  vertices.set(f.input.mesh.vertices);
+  const aabb = new Float32Array(backing, backing.byteLength - 24, 6);
+  aabb.set(required(f.input.mesh.aabb));
+  const mesh = { ...f.input.mesh, vertices, aabb };
+  const minimum = assetDataBytes(mesh) - vertices.byteLength - aabb.byteLength + backing.byteLength;
+  const { source, epoch } = f.input;
+  const receiver = new RenderPublicationReceiver(
+    { source, epoch },
+    undefined,
+    undefined,
+    undefined,
+    minimum,
+  );
+  try {
+    const prepared = receiver
+      .prepareMesh({ ...f.input, mesh }, undefined, undefined, 'received')
+      .unwrap();
+    expect(prepared.mesh.vertices.buffer).toBe(backing);
+    const nextInput = structuredClone({ ...f.input, mesh, revision: 2 });
+    const next = receiver.prepareMesh(nextInput, undefined, undefined, 'received');
+    expect(next).toMatchObject({
+      ok: false,
+      error: { code: 'mesh-residency-budget-exceeded', actual: { used: minimum } },
+    });
+  } finally {
+    receiver.dispose();
+    f.publisher.dispose();
+  }
 });
 
 async function gpuFixture() {
@@ -481,7 +678,10 @@ it('sends a prepared mesh revision once and adopts the receiver-held payload', (
     )
     .unwrap();
   world.update(0).unwrap();
+  const borrow = vi.spyOn(runtimeAssets(assets), 'borrow');
   const candidate = publisher.prepare(0).unwrap();
+  expect(borrow.mock.calls.some(([handle]) => handle === meshHandle)).toBe(false);
+  borrow.mockRestore();
   const packet = structuredClone(candidate.packet);
   expect(packet.assets.some((row) => row.handle === meshHandle)).toBe(false);
   expect(packet.preparedAssets).toEqual([

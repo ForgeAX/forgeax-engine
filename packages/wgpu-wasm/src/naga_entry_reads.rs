@@ -1,7 +1,7 @@
 //! Build-time resource reads of each entry, following helper arguments and returns.
 //! Aggregate copies keep their origin until a member is selected. Unknown aggregate
 //! consumption conservatively reads its complete originating structure.
-use naga::valid::{GlobalUse, ModuleInfo};
+use naga::valid::{FunctionInfo, GlobalUse, ModuleInfo};
 use naga::{AddressSpace, Expression, Function, Handle, Module, Statement, Type, TypeInner};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,6 +12,36 @@ pub struct EntryReads {
     pub stage: &'static str,
     pub bindings: Vec<BindingReads>,
     pub effects: EntryEffects,
+    #[serde(rename = "valueReads", skip_serializing_if = "Option::is_none")]
+    pub value_reads: Option<ValueReads>,
+}
+#[derive(Serialize)]
+pub struct ValueReads {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: &'static str,
+    pub structs: Vec<StructReads>,
+}
+#[derive(Serialize)]
+pub struct StructReads {
+    #[serde(rename = "typeDescriptor")]
+    pub type_descriptor: super::ReflectionTypeDescriptor,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Vec<String>>,
+    #[serde(rename = "consumerGlobals", skip_serializing_if = "Option::is_none")]
+    pub consumer_globals: Option<Vec<ConsumerGlobal>>,
+}
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ConsumerGlobal {
+    Bound {
+        group: u32,
+        binding: u32,
+    },
+    Unbound {
+        name: String,
+        #[serde(rename = "addressSpace")]
+        address_space: String,
+    },
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +100,7 @@ struct Origin {
     field: Option<u32>,
 }
 type Reads = BTreeMap<usize, Option<BTreeSet<u32>>>;
+type ConsumerGlobals = BTreeMap<usize, BTreeSet<usize>>;
 
 fn statements<'a>(block: &'a naga::Block, out: &mut Vec<&'a Statement>) {
     for statement in block.iter() {
@@ -104,30 +135,119 @@ fn extend(to: &mut Vec<Origin>, from: Vec<Origin>) {
 }
 struct FunctionReads<'a, 'r> {
     module: &'a Module,
+    info: &'a ModuleInfo,
     function: &'a Function,
+    function_info: &'a FunctionInfo,
     arguments: Vec<Vec<Origin>>,
     statements: Vec<&'a Statement>,
     memo: Vec<Option<Vec<Origin>>>,
     active: Vec<bool>,
     reads: &'r mut Reads,
+    value_reads: &'r mut Reads,
+    collect_values: bool,
+    consumers: &'r mut ConsumerGlobals,
+    lexical_globals: BTreeSet<usize>,
 }
 impl<'a, 'r> FunctionReads<'a, 'r> {
     fn new(
         module: &'a Module,
+        info: &'a ModuleInfo,
         function: &'a Function,
+        function_info: &'a FunctionInfo,
         arguments: Vec<Vec<Origin>>,
         reads: &'r mut Reads,
+        value_reads: &'r mut Reads,
+        collect_values: bool,
+        consumers: &'r mut ConsumerGlobals,
     ) -> Self {
         let mut body = Vec::new();
         statements(&function.body, &mut body);
         Self {
             module,
+            info,
             function,
+            function_info,
             arguments,
             statements: body,
             memo: vec![None; function.expressions.len()],
             active: vec![false; function.expressions.len()],
             reads,
+            value_reads,
+            collect_values,
+            consumers,
+            lexical_globals: BTreeSet::new(),
+        }
+    }
+    fn struct_type(&self, mut ty: Handle<Type>) -> Option<Handle<Type>> {
+        loop {
+            match self.module.types[ty].inner {
+                TypeInner::Struct { .. } => return Some(ty),
+                TypeInner::Pointer { base, .. } => ty = base,
+                _ => return None,
+            }
+        }
+    }
+    fn expression_struct(&self, expression: Handle<Expression>) -> Option<Handle<Type>> {
+        let ty = &self.function_info[expression].ty;
+        match ty.inner_with(&self.module.types) {
+            TypeInner::Struct { .. } => ty.handle(),
+            TypeInner::Pointer { base, .. } => self.struct_type(*base),
+            _ => None,
+        }
+    }
+    fn observe_struct(&mut self, ty: Handle<Type>) {
+        if self.collect_values {
+            if let Some(ty) = self.struct_type(ty) {
+                self.value_reads
+                    .entry(ty.index())
+                    .or_insert_with(|| Some(BTreeSet::new()));
+            }
+        }
+    }
+    fn consume_value(&mut self, ty: Handle<Type>) {
+        if !self.collect_values {
+            return;
+        }
+        match &self.module.types[ty].inner {
+            TypeInner::Struct { members, .. } => {
+                self.value_reads.insert(ty.index(), None);
+                for member in members {
+                    self.consume_value(member.ty);
+                }
+            }
+            TypeInner::Array { base, .. } | TypeInner::Pointer { base, .. } => {
+                self.consume_value(*base);
+            }
+            _ => {}
+        }
+    }
+    fn consume_expression(&mut self, value: Handle<Expression>) {
+        if let Some(ty) = self.function_info[value].ty.handle() {
+            self.consume_value(ty);
+        } else if let Some(ty) = self.expression_struct(value) {
+            self.consume_value(ty);
+        }
+    }
+    fn scan_value(&mut self, handle: Handle<Expression>, expression: &Expression) {
+        if !self.collect_values {
+            return;
+        }
+        if let Expression::GlobalVariable(global) = expression {
+            self.lexical_globals.insert(global.index());
+        }
+        if let Some(ty) = self.expression_struct(handle) {
+            self.observe_struct(ty);
+        }
+        if let Expression::AccessIndex { base, index } = expression {
+            if let Some(ty) = self.expression_struct(*base) {
+                let fields = self
+                    .value_reads
+                    .entry(ty.index())
+                    .or_insert_with(|| Some(BTreeSet::new()));
+                if let Some(fields) = fields {
+                    fields.insert(*index);
+                }
+            }
         }
     }
     fn record(&mut self, origins: Vec<Origin>) {
@@ -278,14 +398,28 @@ impl<'a, 'r> FunctionReads<'a, 'r> {
         let origins = arguments.iter().map(|value| self.origins(*value)).collect();
         let mut child = FunctionReads::new(
             self.module,
+            self.info,
             &self.module.functions[function],
+            &self.info[function],
             origins,
             self.reads,
+            self.value_reads,
+            self.collect_values,
+            self.consumers,
         );
-        child.scan(false)
+        let result = child.scan(false);
+        self.lexical_globals.extend(child.lexical_globals);
+        result
     }
     fn scan(&mut self, entry: bool) -> Vec<Origin> {
+        for argument in &self.function.arguments {
+            self.observe_struct(argument.ty);
+        }
+        if let Some(result) = &self.function.result {
+            self.observe_struct(result.ty);
+        }
         for (handle, expression) in self.function.expressions.iter() {
+            self.scan_value(handle, expression);
             match expression {
                 Expression::Load { .. }
                 | Expression::AccessIndex { .. }
@@ -330,6 +464,7 @@ impl<'a, 'r> FunctionReads<'a, 'r> {
                     let origins = self.origins(*value);
                     if entry {
                         self.record(origins.clone());
+                        self.consume_expression(*value);
                     }
                     extend(&mut returns, origins);
                 }
@@ -345,15 +480,33 @@ impl<'a, 'r> FunctionReads<'a, 'r> {
                     // interpreting the destination member index as its index.
                     let origins = self.origins(*value);
                     self.record(origins);
+                    if self.local_root(*pointer).is_none() {
+                        self.consume_expression(*value);
+                    }
                 }
                 _ => {}
+            }
+        }
+        if self.collect_values {
+            for argument in &self.function.arguments {
+                if let Some(ty) = self.struct_type(argument.ty) {
+                    self.consumers
+                        .entry(ty.index())
+                        .or_default()
+                        .extend(&self.lexical_globals);
+                }
             }
         }
         returns
     }
 }
 
-pub fn derive(module: &Module, info: &ModuleInfo) -> Vec<EntryReads> {
+pub fn derive(
+    module: &Module,
+    info: &ModuleInfo,
+    layouter: &naga::proc::Layouter,
+    collect_values: bool,
+) -> Result<Vec<EntryReads>, String> {
     // Validated Naga functions precede their callers. Unlike may_kill (a
     // uniformity fact), structural Kill reachability includes uniform and
     // unconditional discard. No source parser or separate shader IR is used.
@@ -367,7 +520,20 @@ pub fn derive(module: &Module, info: &ModuleInfo) -> Vec<EntryReads> {
         .enumerate()
         .map(|(index, entry)| {
             let mut reads = Reads::new();
-            FunctionReads::new(module, &entry.function, Vec::new(), &mut reads).scan(true);
+            let mut value_reads = Reads::new();
+            let mut consumers = ConsumerGlobals::new();
+            FunctionReads::new(
+                module,
+                info,
+                &entry.function,
+                info.get_entry_point(index),
+                Vec::new(),
+                &mut reads,
+                &mut value_reads,
+                collect_values,
+                &mut consumers,
+            )
+            .scan(true);
             let mut bindings = Vec::new();
             for (handle, global) in module.global_variables.iter() {
                 let Some(binding) = global.binding else {
@@ -403,7 +569,54 @@ pub fn derive(module: &Module, info: &ModuleInfo) -> Vec<EntryReads> {
                 });
             }
             bindings.sort_by_key(|binding| (binding.group, binding.binding));
-            EntryReads {
+            let values = if collect_values {
+                let mut structs = Vec::new();
+                for (handle, ty) in module.types.iter() {
+                    let Some(fields) = value_reads.get(&handle.index()) else {
+                        continue;
+                    };
+                    let TypeInner::Struct { members, .. } = &ty.inner else {
+                        continue;
+                    };
+                    structs.push(StructReads {
+                        type_descriptor: super::reflection_type_descriptor(
+                            module, layouter, handle,
+                        )?,
+                        fields: fields.as_ref().map(|indices| {
+                            indices
+                                .iter()
+                                .filter_map(|index| members.get(*index as usize)?.name.clone())
+                                .collect()
+                        }),
+                        consumer_globals: consumers.get(&handle.index()).map(|indices| {
+                            module
+                                .global_variables
+                                .iter()
+                                .filter(|(global, _)| indices.contains(&global.index()))
+                                .map(|(global, variable)| match variable.binding {
+                                    Some(binding) => ConsumerGlobal::Bound {
+                                        group: binding.group,
+                                        binding: binding.binding,
+                                    },
+                                    None => ConsumerGlobal::Unbound {
+                                        name: variable.name.clone().unwrap_or_else(|| {
+                                            format!("global#{}", global.index())
+                                        }),
+                                        address_space: format!("{:?}", variable.space),
+                                    },
+                                })
+                                .collect()
+                        }),
+                    });
+                }
+                Some(ValueReads {
+                    schema_version: "shader-value-member-reads/1",
+                    structs,
+                })
+            } else {
+                None
+            };
+            Ok(EntryReads {
                 name: entry.name.clone(),
                 stage: match entry.stage {
                     naga::ShaderStage::Vertex => "vertex",
@@ -427,7 +640,8 @@ pub fn derive(module: &Module, info: &ModuleInfo) -> Vec<EntryReads> {
                                 .intersects(GlobalUse::WRITE | GlobalUse::ATOMIC)
                     }),
                 },
-            }
+                value_reads: values,
+            })
         })
         .collect()
 }
@@ -435,7 +649,7 @@ pub fn derive(module: &Module, info: &ModuleInfo) -> Vec<EntryReads> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn reflect(source: &str) -> serde_json::Value {
+    fn reflect_mode(source: &str, values: bool) -> serde_json::Value {
         let module = naga::front::wgsl::parse_str(source).unwrap();
         let info = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
@@ -443,7 +657,109 @@ mod tests {
         )
         .validate(&module)
         .unwrap();
-        serde_json::to_value(derive(&module, &info)).unwrap()
+        let mut layouter = naga::proc::Layouter::default();
+        layouter.update(module.to_ctx()).unwrap();
+        serde_json::to_value(derive(&module, &info, &layouter, values).unwrap()).unwrap()
+    }
+    fn reflect(source: &str) -> serde_json::Value {
+        reflect_mode(source, false)
+    }
+    fn value_fields(result: &serde_json::Value, entry: usize, name: &str) -> serde_json::Value {
+        result[entry]["valueReads"]["structs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["typeDescriptor"]["name"] == name)
+            .unwrap()["fields"]
+            .clone()
+    }
+    #[test]
+    fn typed_member_reads_ignore_construction_and_unreachable_helpers() {
+        let result = reflect_mode(
+            r#"
+struct Input { uv: vec2f, view: vec3f, time: f32, }
+@group(0) @binding(0) var<uniform> eye: vec4f;
+fn make() -> Input { return Input(vec2f(1), eye.xyz, 0.0); }
+fn identity(value: Input) -> Input { return value; }
+fn unused(value: Input) -> vec3f { return value.view; }
+fn surface(value: Input) -> vec4f { var local = identity(value); return vec4f(local.uv, 0, 1); }
+@fragment fn fs() -> @location(0) vec4f { return surface(make()); }
+@fragment fn other() -> @location(0) vec4f { let value=make(); return vec4f(value.view, value.time); }
+"#,
+            true,
+        );
+        assert_eq!(value_fields(&result, 0, "Input"), serde_json::json!(["uv"]));
+        assert_eq!(
+            value_fields(&result, 1, "Input"),
+            serde_json::json!(["view", "time"])
+        );
+        // Existing resource semantics retain the constructor's real eye read.
+        assert_eq!(
+            result[0]["bindings"],
+            serde_json::json!([{"group":0,"binding":0}])
+        );
+    }
+    #[test]
+    fn typed_whole_aggregate_escape_is_not_an_empty_member_read_set() {
+        let result = reflect_mode(
+            r#"
+struct Input { uv: vec2f, view: vec3f, time: f32, }
+struct Wrapper { values: array<Input, 1>, }
+@group(0) @binding(0) var<storage, read_write> output: Wrapper;
+@compute @workgroup_size(1) fn cs() { output = Wrapper(array(Input(vec2f(0), vec3f(0), 0.0))); }
+"#,
+            true,
+        );
+        assert!(value_fields(&result, 0, "Input").is_null());
+        assert!(value_fields(&result, 0, "Wrapper").is_null());
+    }
+    #[test]
+    fn typed_reads_follow_pointer_aliases_and_arguments() {
+        let result = reflect_mode(
+            r#"
+struct Input { uv: vec2f, view: vec3f, time: f32, }
+fn from_pointer(value: ptr<function, Input>) -> vec3f { let forwarded = value; return (*forwarded).view; }
+@fragment fn fs() -> @location(0) vec4f { var value=Input(vec2f(0), vec3f(0), 0.0); return vec4f(from_pointer(&value), 1); }
+"#,
+            true,
+        );
+        assert_eq!(
+            value_fields(&result, 0, "Input"),
+            serde_json::json!(["view"])
+        );
+    }
+    #[test]
+    fn consumer_globals_exclude_return_only_producers_and_other_entries() {
+        let result = reflect_mode(
+            r#"
+struct Input { uv: vec2f, view: vec3f, time: f32, }
+@group(0) @binding(0) var<uniform> eye: vec4f;
+@group(1) @binding(0) var<uniform> material: vec4f;
+fn make() -> Input { return Input(vec2f(0), eye.xyz, 0.0); }
+fn unrelated(value: Input) -> vec4f { return eye + vec4f(value.uv,0,1); }
+fn surface(value: Input) -> vec4f { return material * vec4f(value.uv,0,1); }
+@fragment fn fs() -> @location(0) vec4f { return surface(make()); }
+@fragment fn other() -> @location(0) vec4f { return unrelated(make()); }
+"#,
+            true,
+        );
+        let global_reads = |entry: usize| {
+            result[entry]["valueReads"]["structs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["typeDescriptor"]["name"] == "Input")
+                .unwrap()["consumerGlobals"]
+                .clone()
+        };
+        assert_eq!(
+            global_reads(0),
+            serde_json::json!([{"kind":"bound","group":1,"binding":0}])
+        );
+        assert_eq!(
+            global_reads(1),
+            serde_json::json!([{"kind":"bound","group":0,"binding":0}])
+        );
     }
     #[test]
     fn entry_effects_follow_native_reachability_and_fragment_outputs() {

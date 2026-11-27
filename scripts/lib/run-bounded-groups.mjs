@@ -21,18 +21,20 @@ export async function runGroups({
   async function runBatch(batch) {
     let nextIndex = 0;
     let firstError = null;
-    async function worker() {
+    async function worker(slot) {
       while (firstError === null) {
         const index = batch[nextIndex++];
         if (index === undefined) return;
         try {
-          results[index] = await runGroupImpl(groups[index], index);
+          results[index] = await runGroupImpl(groups[index], index, slot);
         } catch (error) {
           firstError ??= error;
         }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(concurrency, batch.length) }, () => worker()));
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, batch.length) }, (_entry, slot) => worker(slot)),
+    );
     if (firstError !== null) throw firstError;
   }
 

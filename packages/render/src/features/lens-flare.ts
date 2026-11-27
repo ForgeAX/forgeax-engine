@@ -12,6 +12,7 @@ export const LENS_FLARE_POST_PROCESS_ID = 'forgeax.lens-flare';
 export const LENS_FLARE_PREFILTER_ID = 'forgeax.lens-flare.prefilter';
 export const LENS_FLARE_BLUR_ID = 'forgeax.lens-flare.blur';
 export const LENS_FLARE_COMPOSITE_ID = 'forgeax.lens-flare.composite';
+export const LENS_FLARE_WITH_BLOOM_ID = 'forgeax.lens-flare.with-bloom';
 export const LENS_FLARE_PARAMS_BYTES = 32 + LENS_FLARE_GHOST_COUNT * 16;
 /** Gather taps of the disc bokeh. */
 const LENS_FLARE_BOKEH_TAPS = 64;
@@ -22,24 +23,26 @@ const LENS_FLARE_BOKEH_TAPS = 64;
  */
 export const LENS_FLARE_GUARD_BAND = 1.25;
 
-const common = /* wgsl */ `
-const GUARD_BAND: f32 = ${LENS_FLARE_GUARD_BAND};
-struct Params {
-  control: vec4<f32>,
-  tint: vec4<f32>,
-  ghosts: array<vec4<f32>, ${LENS_FLARE_GHOST_COUNT}>,
-};
+const fullscreen = /* wgsl */ `
 struct Output {
   @builtin(position) position: vec4<f32>,
   @location(0) uv: vec2<f32>,
 };
 @group(1) @binding(0) var source: texture_2d<f32>;
 @group(1) @binding(1) var linearSampler: sampler;
-@group(1) @binding(2) var<uniform> params: Params;
 @vertex fn vs_main(@builtin(vertex_index) index: u32) -> Output {
   let uv = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
   return Output(vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0), uv);
 }
+`;
+const common = /* wgsl */ `${fullscreen}
+const GUARD_BAND: f32 = ${LENS_FLARE_GUARD_BAND};
+struct Params {
+  control: vec4<f32>, // threshold, bokeh radius, Bloom intensity
+  tint: vec4<f32>,
+  ghosts: array<vec4<f32>, ${LENS_FLARE_GHOST_COUNT}>,
+};
+@group(1) @binding(2) var<uniform> params: Params;
 fn disc_mask(x: vec2<f32>) -> f32 {
   let r = saturate(1.0 - dot(x, x));
   return r * r;
@@ -47,8 +50,8 @@ fn disc_mask(x: vec2<f32>) -> f32 {
 `;
 
 // Guard-band UV g maps to screen offset X = (2g - 1) * GUARD_BAND at 1/8 of
-// the view density. Each output texel box-filters 8x8 source pixels with 16
-// bilinear taps; the subtractive threshold removes Unreal's hard-cut flicker,
+// the view density. Four bilinear taps cover a 4x4 footprint of the shared
+// half-resolution scene. The subtractive threshold smooths the response,
 // and Unreal's guard-band disc mask DiscMask(X / 2) is kept.
 const prefilter = /* wgsl */ `${common}
 @fragment fn fs_main(input: Output) -> @location(0) vec4<f32> {
@@ -59,16 +62,16 @@ const prefilter = /* wgsl */ `${common}
   }
   let texel = 1.0 / vec2<f32>(textureDimensions(source));
   var sum = vec3<f32>(0.0);
-  for (var j = 0u; j < 4u; j += 1u) {
-    for (var i = 0u; i < 4u; i += 1u) {
-      let offset = (vec2<f32>(f32(i), f32(j)) - 1.5) * 2.0 * texel;
+  for (var j = 0u; j < 2u; j += 1u) {
+    for (var i = 0u; i < 2u; i += 1u) {
+      let offset = (vec2<f32>(f32(i), f32(j)) * 2.0 - 1.0) * texel;
       let uv = clamp(sceneUv + offset, texel * 0.5, 1.0 - texel * 0.5);
       let color = min(textureSampleLevel(source, linearSampler, uv, 0.0).rgb, vec3<f32>(65504.0));
       let luminance = color.r + color.g + color.b;
       sum += color * (max(luminance - params.control.x, 0.0) / max(luminance, 1e-4));
     }
   }
-  return vec4<f32>(sum * (disc_mask(x * 0.5) / 16.0), 1.0);
+  return vec4<f32>(sum * (disc_mask(x * 0.5) * 0.25), 1.0);
 }
 `;
 
@@ -92,26 +95,25 @@ const blur = /* wgsl */ `${common}
 // Ghost i at screen position P reads the source offset X = P / scale_i;
 // offsets outside the guard band hold no energy and are skipped.
 const composite = /* wgsl */ `${common}
-@group(1) @binding(3) var bokeh: texture_2d<f32>;
+@group(1) @binding(3) var bloom: texture_2d<f32>;
 // Small, bright bokeh texels amplify fixed-precision hardware filter weights.
 // Interpolate in f32 to keep ghost energy consistent across backends.
 fn sample_bokeh(uv: vec2<f32>) -> vec3<f32> {
-  let size = vec2<i32>(textureDimensions(bokeh));
+  let size = vec2<i32>(textureDimensions(source));
   let p = uv * vec2<f32>(size) - 0.5;
   let base = vec2<i32>(floor(p));
   let f = fract(p);
-  let a = textureLoad(bokeh, clamp(base, vec2<i32>(0), size - 1), 0).rgb;
-  let b = textureLoad(bokeh, clamp(base + vec2<i32>(1, 0), vec2<i32>(0), size - 1), 0).rgb;
-  let c = textureLoad(bokeh, clamp(base + vec2<i32>(0, 1), vec2<i32>(0), size - 1), 0).rgb;
-  let d = textureLoad(bokeh, clamp(base + vec2<i32>(1, 1), vec2<i32>(0), size - 1), 0).rgb;
+  let a = textureLoad(source, clamp(base, vec2<i32>(0), size - 1), 0).rgb;
+  let b = textureLoad(source, clamp(base + vec2<i32>(1, 0), vec2<i32>(0), size - 1), 0).rgb;
+  let c = textureLoad(source, clamp(base + vec2<i32>(0, 1), vec2<i32>(0), size - 1), 0).rgb;
+  let d = textureLoad(source, clamp(base + vec2<i32>(1, 1), vec2<i32>(0), size - 1), 0).rgb;
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
-@fragment fn fs_main(input: Output) -> @location(0) vec4<f32> {
-  let center = textureLoad(source, vec2<i32>(input.position.xy), 0);
-  let p = input.uv * 2.0 - 1.0;
+fn ghost_radiance(uv: vec2<f32>) -> vec3<f32> {
+  let p = uv * 2.0 - 1.0;
   let border = disc_mask(p) * disc_mask(p * 0.8);
   if (border <= 0.0) {
-    return center;
+    return vec3<f32>(0.0);
   }
   var flare = vec3<f32>(0.0);
   for (var i = 0u; i < ${LENS_FLARE_GHOST_COUNT}u; i += 1u) {
@@ -125,7 +127,15 @@ fn sample_bokeh(uv: vec2<f32>) -> vec3<f32> {
     }
     flare += ghost.rgb * sample_bokeh(g);
   }
-  return vec4<f32>(center.rgb + flare * params.tint.rgb * border, center.a);
+  return flare * params.tint.rgb * border;
+}
+@fragment fn fs_main(input: Output) -> @location(0) vec4<f32> {
+  return vec4<f32>(min(ghost_radiance(input.uv), vec3<f32>(65504.0)), 0.0);
+}
+@fragment fn fs_bloom(input: Output) -> @location(0) vec4<f32> {
+  let accumulated = textureLoad(bloom, vec2<i32>(input.position.xy), 0).rgb;
+  let radiance = accumulated * params.control.z + ghost_radiance(input.uv);
+  return vec4<f32>(min(radiance, vec3<f32>(65504.0)), 0.0);
 }
 `;
 
@@ -148,7 +158,15 @@ export const LENS_FLARE_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclara
     kind: 'fullscreen-program',
     name: LENS_FLARE_COMPOSITE_ID,
     source: composite,
-    reads: ['scene-color', 'lens-flare-bokeh'],
+    reads: ['input'],
+    params: { byteSize: LENS_FLARE_PARAMS_BYTES, defaultValue: packLensFlareParams(undefined) },
+  },
+  {
+    kind: 'fullscreen-program',
+    name: LENS_FLARE_WITH_BLOOM_ID,
+    source: composite,
+    fragmentEntryPoint: 'fs_bloom',
+    reads: ['input', 'bloom'],
     params: { byteSize: LENS_FLARE_PARAMS_BYTES, defaultValue: packLensFlareParams(undefined) },
   },
 ];
@@ -160,11 +178,15 @@ export function isLensFlarePostProcess(identity: string): boolean {
   );
 }
 
-/** One layout serves all three programs; intensity folds into the tint. */
-export function packLensFlareParams(input: LensFlareSnapshot | undefined): Uint8Array {
+/** Flare intensity folds into the tint; Bloom intensity scales only Bloom. */
+export function packLensFlareParams(
+  input: LensFlareSnapshot | undefined,
+  bloomIntensity = 0,
+): Uint8Array {
   const values = new Float32Array(LENS_FLARE_PARAMS_BYTES / 4);
   values[0] = input?.threshold ?? 8;
   values[1] = (input?.bokehSize ?? 3) / 100;
+  values[2] = bloomIntensity;
   const intensity = input?.intensity ?? 0;
   for (let channel = 0; channel < 3; channel += 1)
     values[4 + channel] = (input?.tint[channel] ?? 1) * intensity;

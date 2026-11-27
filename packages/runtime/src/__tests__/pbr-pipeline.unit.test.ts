@@ -44,7 +44,7 @@ function makeSpec(): PipelineSpec {
 
 describe('buildBindGroupLayoutDescriptor — pbr-pipeline 6 sites byte-equiv', () => {
   describe('pbr-view', () => {
-    it('storageBuffer=true: 12 entries with projector and cloud bindings', () => {
+    it('storageBuffer=true: 11 entries with projector and cloud bindings', () => {
       const spec = makeSpec();
       const out = buildBindGroupLayoutDescriptor(spec, {
         kind: 'pbr-view',
@@ -55,14 +55,14 @@ describe('buildBindGroupLayoutDescriptor — pbr-pipeline 6 sites byte-equiv', (
         entries: buildPbrViewBglEntries({ storageBuffer: true, extendedLighting: false }),
       };
       expect(out).toEqual(expected);
-      // Binding 8 is the always-on spot shadow atlas, binding 10 is the
-      // Points/Lines viewport UBO, bindings 11/12 are the optional projector
-      // resources, and bindings 16/17 carry the renderer-owned cloud shadow
-      // map. Local lights are exclusively carried by the Standard Cluster
-      // group(2), so the view group has no point/spot slots.
-      expect(out.entries.length).toBe(12);
+      // Binding 8 is the always-on spot shadow atlas, bindings 11/12 are the
+      // optional projector resources, and bindings 16/17 carry the
+      // renderer-owned cloud shadow map. Local lights are exclusively carried
+      // by the Standard Cluster group(2), so the view group has no point/spot
+      // slots; Points/Lines use their own view inputs.
+      expect(out.entries.length).toBe(11);
       expect(out.entries.find((entry) => entry.binding === 9)).toBeUndefined();
-      expect(out.entries.find((entry) => entry.binding === 10)?.buffer?.type).toBe('uniform');
+      expect(out.entries.find((entry) => entry.binding === 10)).toBeUndefined();
       expect(out.entries.find((entry) => entry.binding === 11)?.texture?.viewDimension).toBe('2d');
       expect(out.entries.find((entry) => entry.binding === 12)?.sampler?.type).toBe('filtering');
       expect(out.entries.find((entry) => entry.binding === 16)?.texture?.viewDimension).toBe('2d');
@@ -99,7 +99,7 @@ describe('buildBindGroupLayoutDescriptor — pbr-pipeline 6 sites byte-equiv', (
       });
       expect(out.entries.find((entry) => entry.binding === 11)).toBeUndefined();
       expect(out.entries.find((entry) => entry.binding === 12)).toBeUndefined();
-      expect(out.entries.find((entry) => entry.binding === 10)?.buffer?.type).toBe('uniform');
+      expect(out.entries.find((entry) => entry.binding === 10)).toBeUndefined();
     });
   });
 
@@ -135,7 +135,7 @@ describe('buildBindGroupLayoutDescriptor — pbr-pipeline 6 sites byte-equiv', (
         ),
       );
     });
-    it('32 entries: user-region 25 - shared pairs 2 + IBL 6 + backdrop 1 + scene material 1 + global specular 1', () => {
+    it('retains the authored region and the scene material row', () => {
       const spec = makeSpec();
       const out = buildBindGroupLayoutDescriptor(spec, {
         kind: 'pbr-material-merged',
@@ -150,24 +150,18 @@ describe('buildBindGroupLayoutDescriptor — pbr-pipeline 6 sites byte-equiv', (
       const expected = {
         label: 'pbr-material-skylight-bgl',
         entries: [
-          ...afterIbl.filter((entry) => ![15, 16].includes(entry.binding)),
-          ...appendInjection(afterIbl, 'transmission').filter(
-            (entry) => ![15, 16, 31].includes(entry.binding),
+          ...afterIbl.filter(
+            (entry) => !(entry.binding === 15 || entry.binding === 16 || entry.binding >= 25),
           ),
           {
             binding: 46,
             visibility: 0x1 | 0x2,
             buffer: { type: 'read-only-storage', hasDynamicOffset: false },
           },
-          {
-            binding: 47,
-            visibility: 0x2,
-            texture: { sampleType: 'float', viewDimension: '2d' },
-          },
         ],
       };
       expect(out).toEqual(expected);
-      expect(out.entries.length).toBe(32);
+      expect(out.entries.length).toBe(24);
     });
 
     it('adds only authored physical map pairs after the canonical injection chain', () => {
@@ -181,7 +175,7 @@ describe('buildBindGroupLayoutDescriptor — pbr-pipeline 6 sites byte-equiv', (
         kind: 'pbr-material-merged',
         materialParamSchema: schema,
       });
-      expect(out.entries.slice(30).map((entry) => entry.binding)).toEqual([48, 49, 52, 53, 46, 47]);
+      expect(out.entries.slice(23).map((entry) => entry.binding)).toEqual([48, 49, 52, 53, 46]);
     });
   });
 

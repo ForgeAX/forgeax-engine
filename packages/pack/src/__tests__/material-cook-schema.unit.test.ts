@@ -1,5 +1,4 @@
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { deriveStandardLayerPlan, type MaterialProgramAbi } from '@forgeax/engine-types';
 import Ajv from 'ajv';
 import { describe, expect, it, vi } from 'vitest';
@@ -13,6 +12,7 @@ import {
   validateCookedMaterialRecord,
   withMaterialPublicationGeneration,
 } from '../evidence/material-cook.js';
+import { forwardRasterContext } from './support/material-raster-context.js';
 
 const submissionAbi = {
   directEntry: 'vs_main',
@@ -30,6 +30,12 @@ const submissionAbi = {
   receiptIdentity: 'custom/layout',
   generation: 1,
 } satisfies MaterialProgramAbi;
+
+const rasterContext = { ...forwardRasterContext } as const;
+const schema = JSON.parse(
+  readFileSync(new URL('../schema/material-cook.schema.json', import.meta.url), 'utf8'),
+);
+const validateJson = new Ajv({ strict: false }).compile(schema);
 
 const record: CookedMaterialRecord = {
   schemaVersion: 'material-cook/5',
@@ -49,40 +55,13 @@ const record: CookedMaterialRecord = {
   programs: [
     {
       specializationKey: 'sha256:program',
-      selections: [
-        {
-          pass: 'forward',
-          context: {
-            backend: 'webgpu',
-            capability: 'storage-buffer',
-            pipeline: 'forward',
-            geometry: 'mesh',
-            pass: 'forward',
-            profile: 'forgeax-material-wgsl-v1',
-            toolchain: 'naga-oil',
-            instrumentation: 'none',
-          },
-          address: 'direct',
-          entry: 'vs_main',
-          abi: submissionAbi,
-        },
-        {
-          pass: 'forward',
-          context: {
-            backend: 'webgpu',
-            capability: 'storage-buffer',
-            pipeline: 'forward',
-            geometry: 'mesh',
-            pass: 'forward',
-            profile: 'forgeax-material-wgsl-v1',
-            toolchain: 'naga-oil',
-            instrumentation: 'none',
-          },
-          address: 'scene-index',
-          entry: 'vs_scene_index',
-          abi: submissionAbi,
-        },
-      ],
+      selections: (['direct', 'scene-index'] as const).map((address) => ({
+        pass: 'forward',
+        context: rasterContext,
+        address,
+        abi: submissionAbi,
+        entry: address === 'direct' ? submissionAbi.directEntry : submissionAbi.sceneIndexEntry,
+      })),
       artifact: {
         mediaType: 'text/wgsl',
         path: 'materials/mat-root/forward.wgsl',
@@ -141,6 +120,8 @@ describe('cooked material schema', () => {
     const pass = record.resolved.passes[0];
     if (selection === undefined || sceneSelection === undefined || pass === undefined)
       throw new Error('missing fixture pass');
+    if (selection.context.pipeline === 'ray' || sceneSelection.context.pipeline === 'ray')
+      throw new Error('the locale fixture requires its original raster selections');
     const source = seal({
       ...record,
       resolved: {
@@ -191,11 +172,12 @@ describe('cooked material schema', () => {
     });
     const published = serializeCookedMaterialRecord(source);
     // Native mini-game JS engines need not provide the producer's ICU collation.
-    const collation = vi
-      .spyOn(String.prototype, 'localeCompare')
-      .mockImplementation(function (other) {
-        return String(this) < other ? -1 : String(this) > other ? 1 : 0;
-      });
+    const collation = vi.spyOn(String.prototype, 'localeCompare').mockImplementation(function (
+      this: string,
+      other,
+    ) {
+      return String(this) < other ? -1 : String(this) > other ? 1 : 0;
+    });
     try {
       expect(validateCookedMaterialRecord(JSON.parse(published))).toMatchObject({ ok: true });
       expect(serializeCookedMaterialRecord(source)).toBe(published);
@@ -218,140 +200,81 @@ describe('cooked material schema', () => {
     expect(validateCookedMaterialRecord(rebound.value).ok).toBe(true);
   });
 
-  it('round trips both Surface derivatives through the executable and JSON contracts', () => {
-    const base = record.programs[0];
-    if (!base) throw new Error('missing base program');
-    const derivatives: MaterialCookProgram[] = ['ray-hit', 'card-capture'].map((pass) => ({
-      ...base,
-      specializationKey: pass,
-      selections: [
-        {
-          pass: 'forward',
-          entry: pass === 'ray-hit' ? 'cs_surface' : 'vs_card',
-          context: {
-            backend: 'webgpu',
-            capability: 'storage-buffer',
-            pipeline: 'ray',
-            geometry: 'mesh',
-            pass: pass as 'ray-hit' | 'card-capture',
-            profile: 'forgeax-material-ray-v1',
-            toolchain: 'naga-oil',
-            instrumentation: 'none',
-          },
-        },
-      ],
-    }));
-    const value = JSON.parse(
-      serializeCookedMaterialRecord(seal({ ...record, programs: [base, ...derivatives] })),
-    );
-    expect(validateCookedMaterialRecord(value)).toMatchObject({ ok: true });
-    const schema = JSON.parse(
-      readFileSync(new URL('../schema/material-cook.schema.json', import.meta.url), 'utf8'),
-    );
-    const validate = new Ajv({ strict: false }).compile(schema);
-    expect(validate(value), JSON.stringify(validate.errors)).toBe(true);
-    for (const change of [
-      { entry: 'cs_surface' },
-      { entry: 'fs_card' },
-      { address: 'direct' },
-      { abi: submissionAbi },
-      { context: { ...derivatives[1]?.selections[0]?.context, pass: 'raster-probe' } },
-      { context: { ...derivatives[1]?.selections[0]?.context, visibleSurface: true } },
-    ]) {
-      const invalid = structuredClone(value);
-      Object.assign(invalid.programs[2].selections[0], change);
-      expect(validateCookedMaterialRecord(invalid).ok).toBe(false);
-      expect(validate(invalid), JSON.stringify(change)).toBe(false);
-    }
-    const duplicate = structuredClone(value);
-    duplicate.programs.push({ ...duplicate.programs[2], specializationKey: 'duplicate-card' });
-    expect(validateCookedMaterialRecord(duplicate)).toMatchObject({
-      ok: false,
-      error: { detail: { actual: 'ambiguous Pass/context selection' } },
-    });
-  });
-
-  it('validates ray derivatives beside complete raster address pairs', () => {
-    const primary = record.programs[0] as MaterialCookProgram;
-    const context = primary.selections[0]?.context;
-    if (context === undefined) throw new Error('missing fixture context');
-    const ray: MaterialCookProgram = {
-      ...primary,
-      specializationKey: 'ray',
-      selections: [
-        {
-          pass: 'forward',
-          entry: 'cs_surface',
-          context: {
-            backend: 'webgpu',
-            capability: 'storage-buffer',
-            pipeline: 'ray',
-            geometry: 'mesh',
-            pass: 'ray-hit',
-            profile: 'forgeax-material-ray-v1',
-            toolchain: 'naga-oil',
-            instrumentation: 'none',
-          },
-        },
-      ],
-    };
-    const raster: MaterialCookProgram = {
-      ...primary,
-      selections: [
-        {
-          pass: 'forward',
-          context,
-          address: 'direct',
-          entry: submissionAbi.directEntry,
-          abi: submissionAbi,
-        },
-        {
-          pass: 'forward',
-          context,
-          address: 'scene-index',
-          entry: submissionAbi.sceneIndexEntry,
-          abi: submissionAbi,
-        },
-      ],
-    };
-    const modern = seal({ ...record, programs: [raster, ray] });
-    expect(validateCookedMaterialRecord(JSON.parse(serializeCookedMaterialRecord(modern))).ok).toBe(
-      true,
-    );
-    for (const change of [
-      { address: 'direct' },
-      { abi: submissionAbi },
-      { entry: 'vs_main' },
-      { context: { ...ray.selections[0]?.context, visibleSurface: true } },
-      { context: { ...ray.selections[0]?.context, backend: 'webgl2' } },
-      { context: { ...ray.selections[0]?.context, geometry: 'skinned' } },
-    ]) {
-      expect(
-        validateCookedMaterialRecord({
-          ...modern,
-          programs: [
-            raster,
-            {
-              ...ray,
-              selections: [{ ...ray.selections[0], ...change }],
+  it('round trips Surface derivatives beside raster address pairs and rejects inconsistent selections', () => {
+    const raster = record.programs[0] as MaterialCookProgram;
+    const [ray, card] = (['ray-hit', 'card-capture'] as const).map(
+      (pass): MaterialCookProgram => ({
+        ...raster,
+        specializationKey: pass,
+        selections: [
+          {
+            pass: 'forward',
+            entry: pass === 'ray-hit' ? 'cs_surface' : 'vs_card',
+            context: {
+              ...rasterContext,
+              pipeline: 'ray',
+              ...(pass === 'ray-hit'
+                ? ({ pass, profile: 'forgeax-material-ray-v1' } as const)
+                : ({ pass, profile: 'forgeax-material-card-v4' } as const)),
             },
-          ],
-        }).ok,
-      ).toBe(false);
+          },
+        ],
+      }),
+    ) as [MaterialCookProgram, MaterialCookProgram];
+    const modern = seal({ ...record, programs: [raster, ray, card] });
+    const value = JSON.parse(serializeCookedMaterialRecord(modern));
+    expect(validateCookedMaterialRecord(value)).toMatchObject({ ok: true });
+    expect(validateJson(value), JSON.stringify(validateJson.errors)).toBe(true);
+
+    for (const [index, changes] of [
+      [
+        1,
+        [
+          { address: 'direct' },
+          { abi: submissionAbi },
+          { entry: 'vs_main' },
+          { visibleSurface: true },
+          { backend: 'webgl2' },
+          { geometry: 'skinned' },
+        ],
+      ],
+      [
+        2,
+        [
+          { address: 'direct' },
+          { abi: submissionAbi },
+          { entry: 'cs_surface' },
+          { entry: 'fs_card' },
+          { pass: 'raster-probe' },
+          { profile: 'forgeax-material-ray-v1' },
+          { profile: undefined },
+          { visibleSurface: true },
+        ],
+      ],
+    ] as const) {
+      for (const change of changes) {
+        const invalid = structuredClone(value);
+        const selection = invalid.programs[index].selections[0];
+        const contextChange =
+          'visibleSurface' in change ||
+          'backend' in change ||
+          'geometry' in change ||
+          'pass' in change ||
+          'profile' in change;
+        Object.assign(contextChange ? selection.context : selection, change);
+        expect(validateCookedMaterialRecord(invalid).ok).toBe(false);
+        if (index === 2) expect(validateJson(invalid), JSON.stringify(change)).toBe(false);
+      }
+      const duplicate = structuredClone(value);
+      duplicate.programs.push({ ...duplicate.programs[index], specializationKey: 'duplicate' });
+      expect(validateCookedMaterialRecord(duplicate)).toMatchObject({
+        ok: false,
+        error: { detail: { actual: 'ambiguous Pass/context selection' } },
+      });
     }
-    // A derived ray program cannot satisfy the authored raster pass requirement.
     expect(validateCookedMaterialRecord(seal({ ...record, programs: [ray] }))).toMatchObject({
       ok: false,
       error: { detail: { actual: 'unpublished Pass' } },
-    });
-    expect(
-      validateCookedMaterialRecord({
-        ...modern,
-        programs: [raster, ray, { ...ray, specializationKey: 'duplicate-ray' }],
-      }),
-    ).toMatchObject({
-      ok: false,
-      error: { detail: { actual: 'ambiguous Pass/context selection' } },
     });
   });
 
@@ -381,61 +304,33 @@ describe('cooked material schema', () => {
     expect(projectCookedMaterialRecord(result.value).resolved.surface).toEqual(surface);
   });
 
-  it('requires material-cook/5 identity and derived interface association', () => {
-    const schema = JSON.parse(
-      readFileSync(
-        fileURLToPath(new URL('../schema/material-cook.schema.json', import.meta.url)),
-        'utf8',
-      ),
-    ) as {
-      properties: Record<
-        string,
-        { const?: string; required?: string[]; properties?: Record<string, unknown> }
-      >;
-      required: string[];
-    };
-    expect(schema.properties.schemaVersion?.const).toBe('material-cook/5');
-    expect(schema.properties.receipt?.required).toEqual(
-      expect.arrayContaining(['identity', 'derivedInterface']),
-    );
-    expect(schema.properties.receipt?.properties?.derivedInterface).toBeDefined();
-  });
-
-  it('defines the v4 identity, provenance, and generation contract', () => {
-    const schema = JSON.parse(
-      readFileSync(
-        fileURLToPath(new URL('../schema/material-cook.schema.json', import.meta.url)),
-        'utf8',
-      ),
-    ) as {
-      properties: Record<
-        string,
-        { const?: string; required?: string[]; properties?: Record<string, unknown> }
-      >;
-    };
-    expect(schema.properties.schemaVersion?.const).toBe('material-cook/5');
-    expect(schema.properties.receipt?.properties?.identity).toMatchObject({
-      type: 'object',
-      required: expect.arrayContaining([
-        'materialContractDigest',
-        'sourceRevision',
-        'sourceClosureDigest',
-        'layoutIdentity',
-        'programIdentity',
-        'pipelineIdentity',
-        'materialPublicationIdentity',
-        'cookIdentity',
-        'compilerFingerprint',
-        'wasm',
-        'artifactDigest',
-        'valueGeneration',
-        'dependencyGeneration',
-        'cookGeneration',
-      ]),
+  it('requires the current receipt identity, provenance, and derived interface in the JSON schema', () => {
+    expect(schema.properties.schemaVersion.const).toBe('material-cook/5');
+    expect(schema.properties.receipt).toMatchObject({
+      required: expect.arrayContaining(['identity', 'derivedInterface']),
+      properties: {
+        derivedInterface: expect.any(Object),
+        identity: {
+          type: 'object',
+          required: expect.arrayContaining([
+            'materialContractDigest',
+            'sourceRevision',
+            'sourceClosureDigest',
+            'layoutIdentity',
+            'programIdentity',
+            'pipelineIdentity',
+            'materialPublicationIdentity',
+            'cookIdentity',
+            'compilerFingerprint',
+            'wasm',
+            'artifactDigest',
+            'valueGeneration',
+            'dependencyGeneration',
+            'cookGeneration',
+          ]),
+        },
+      },
     });
-    expect(schema.properties.receipt?.required).toEqual(
-      expect.arrayContaining(['identity', 'derivedInterface']),
-    );
   });
 
   it('serializes a stable cooked DTO and derives an artifact digest', () => {
@@ -474,7 +369,6 @@ describe('cooked material schema', () => {
       ...entry,
       pass: 'second',
     })) as MaterialCookProgram['selections'];
-    const _selection = selections[0] as MaterialCookProgram['selections'][number];
     const distinct = seal({
       ...record,
       resolved: { ...record.resolved, passes },
@@ -501,39 +395,14 @@ describe('cooked material schema', () => {
     expect(validateCookedMaterialRecord(shared)).toMatchObject({ ok: true });
   });
 
-  it('keeps direct and scene-index selections unique under one published ABI', () => {
-    const primary = record.programs[0] as MaterialCookProgram;
-    const context = primary.selections[0]?.context;
-    if (context === undefined) throw new Error('fixture context is missing');
-    const modern = seal({
-      ...record,
-      programs: [
-        {
-          ...primary,
-          selections: [
-            {
-              pass: 'forward',
-              context,
-              address: 'direct',
-              entry: submissionAbi.directEntry,
-              abi: submissionAbi,
-            },
-            {
-              pass: 'forward',
-              context,
-              address: 'scene-index',
-              entry: submissionAbi.sceneIndexEntry,
-              abi: submissionAbi,
-            },
-          ],
-        },
-      ],
-    });
-    expect(validateCookedMaterialRecord(modern)).toMatchObject({ ok: true });
+  it('requires both entries of a paired raster ABI', () => {
+    const { programs } = seal(record);
+    const primary = programs[0] as MaterialCookProgram;
+    expect(validateCookedMaterialRecord(seal(record))).toMatchObject({ ok: true });
     expect(
       validateCookedMaterialRecord({
-        ...modern,
-        programs: [{ ...modern.programs[0], selections: [modern.programs[0]?.selections[0]] }],
+        ...record,
+        programs: [{ ...primary, selections: [primary.selections[0]] }],
       }),
     ).toMatchObject({
       ok: false,
@@ -554,17 +423,9 @@ describe('cooked material schema', () => {
       abi: directAbi,
     };
     const directOnly = seal({ ...record, programs: [{ ...primary, selections: [direct] }] });
-    const schema = JSON.parse(
-      readFileSync(new URL('../schema/material-cook.schema.json', import.meta.url), 'utf8'),
-    );
-    const validate = new Ajv({ strict: false }).compile(schema);
-    expect(
-      validate(JSON.parse(serializeCookedMaterialRecord(directOnly))),
-      JSON.stringify(validate.errors),
-    ).toBe(true);
-    expect(
-      validateCookedMaterialRecord(JSON.parse(serializeCookedMaterialRecord(directOnly))).ok,
-    ).toBe(true);
+    const json = JSON.parse(serializeCookedMaterialRecord(directOnly));
+    expect(validateJson(json), JSON.stringify(validateJson.errors)).toBe(true);
+    expect(validateCookedMaterialRecord(json).ok).toBe(true);
     const invalid = seal({
       ...record,
       programs: [
@@ -609,27 +470,19 @@ describe('cooked material schema', () => {
 
   it('rejects ambiguous selections, unpublished passes and unknown context axes', () => {
     const primary = record.programs[0] as MaterialCookProgram;
-    expect(
-      validateCookedMaterialRecord({
-        ...record,
+    const mutations = [
+      {
         programs: [primary, { ...primary, specializationKey: 'duplicate' }],
-      }),
-    ).toMatchObject({
-      ok: false,
-      error: { detail: { actual: 'ambiguous Pass/context selection' } },
-    });
-    expect(
-      validateCookedMaterialRecord({
-        ...record,
+        detail: { actual: 'ambiguous Pass/context selection' },
+      },
+      {
         resolved: {
           ...record.resolved,
           passes: [...record.resolved.passes, { name: 'missing', program: { module: 'other' } }],
         },
-      }),
-    ).toMatchObject({ ok: false, error: { detail: { actual: 'unpublished Pass' } } });
-    expect(
-      validateCookedMaterialRecord({
-        ...record,
+        detail: { actual: 'unpublished Pass' },
+      },
+      {
         programs: [
           {
             ...primary,
@@ -638,19 +491,21 @@ describe('cooked material schema', () => {
             ],
           },
         ],
-      }),
-    ).toMatchObject({
-      ok: false,
-      error: { detail: { field: 'programs[0].selections[0].context.arbitrary' } },
-    });
+        detail: { field: 'programs[0].selections[0].context.arbitrary' },
+      },
+    ];
+    for (const { detail, ...mutation } of mutations)
+      expect(validateCookedMaterialRecord({ ...record, ...mutation })).toMatchObject({
+        ok: false,
+        error: { detail },
+      });
   });
 
   it('rejects stale manifests after entry or context changes and rejects legacy publication fields', () => {
     const sealed = seal(record);
     const primary = record.programs[0] as MaterialCookProgram;
-    expect(
-      validateCookedMaterialRecord({
-        ...sealed,
+    for (const mutation of [
+      {
         programs: [
           {
             ...primary,
@@ -663,14 +518,11 @@ describe('cooked material schema', () => {
             ],
           },
         ],
-      }),
-    ).toMatchObject({ ok: false });
-    expect(
-      validateCookedMaterialRecord({ ...sealed, schemaVersion: 'material-cook/3' }),
-    ).toMatchObject({ ok: false });
-    expect(validateCookedMaterialRecord({ ...sealed, artifact: primary.artifact })).toMatchObject({
-      ok: false,
-    });
+      },
+      { schemaVersion: 'material-cook/3' },
+      { artifact: primary.artifact },
+    ])
+      expect(validateCookedMaterialRecord({ ...sealed, ...mutation })).toMatchObject({ ok: false });
   });
 
   it('rejects missing fields and unsupported schema versions', () => {
@@ -686,65 +538,36 @@ describe('cooked material schema', () => {
     });
   });
 
-  it('rejects a Standard record whose receipt layer plan is stale', () => {
+  it('admits the derived Standard layer plan and rejects stale or missing identities', () => {
     const standardPass = { name: 'forward', program: { module: 'forgeax::default-standard-pbr' } };
-    const standardPlan = deriveStandardLayerPlan(record.resolved.parameters, [standardPass]);
+    const { identity } = deriveStandardLayerPlan(record.resolved.parameters, [standardPass]);
     const standardRecord = seal({
       ...record,
       resolved: { ...record.resolved, passes: [standardPass] },
-      receipt: {
-        ...record.receipt,
-        derivedInterface: {
-          layoutIdentity: 'sha256:layout',
-          layerPlanIdentity: standardPlan.identity,
-        },
-      },
-    });
-    expect(validateCookedMaterialRecord(standardRecord)).toMatchObject({ ok: true });
-    expect(
-      validateCookedMaterialRecord({
-        ...standardRecord,
-        receipt: {
-          ...standardRecord.receipt,
-          derivedInterface: { layoutIdentity: 'sha256:layout', layerPlanIdentity: 'stale' },
-        },
-      }),
-    ).toMatchObject({
-      ok: false,
-      error: {
-        detail: { field: 'receipt.derivedInterface.layerPlanIdentity' },
-      },
-    });
-  });
-
-  it('rejects a Standard record whose receipt omits the layer plan identity', () => {
-    const standardPass = { name: 'forward', program: { module: 'forgeax::default-standard-pbr' } };
-    const standardPlan = deriveStandardLayerPlan(record.resolved.parameters, [standardPass]);
-    const standardRecord = seal({
-      ...record,
-      resolved: { ...record.resolved, passes: [standardPass] },
-      receipt: {
-        ...record.receipt,
-        derivedInterface: {
-          layoutIdentity: 'sha256:layout',
-          layerPlanIdentity: standardPlan.identity,
-        },
-      },
     });
     expect(
       validateCookedMaterialRecord({
         ...standardRecord,
         receipt: {
           ...standardRecord.receipt,
-          derivedInterface: { layoutIdentity: 'sha256:layout' },
+          derivedInterface: { layoutIdentity: 'sha256:layout', layerPlanIdentity: identity },
         },
       }),
-    ).toMatchObject({
-      ok: false,
-      error: {
-        detail: { field: 'receipt.derivedInterface.layerPlanIdentity' },
-      },
-    });
+    ).toMatchObject({ ok: true });
+    for (const derivedInterface of [
+      { layoutIdentity: 'sha256:layout', layerPlanIdentity: 'stale' },
+      { layoutIdentity: 'sha256:layout' },
+    ]) {
+      expect(
+        validateCookedMaterialRecord({
+          ...standardRecord,
+          receipt: { ...standardRecord.receipt, derivedInterface },
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: { detail: { field: 'receipt.derivedInterface.layerPlanIdentity' } },
+      });
+    }
   });
 
   it('admits a shared deep-frozen ABI once and keeps checking mutable ABIs', () => {

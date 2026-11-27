@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import type { GltfMeshIr } from '../parse-gltf.js';
 import { parseGltf } from '../parse-gltf.js';
+import { unwrapMeshAsset } from './bridge-test-helpers.js';
 
 const noopLoader = async (_: string) => new ArrayBuffer(0);
 
@@ -25,6 +26,7 @@ interface AccessorEntry {
   readonly componentType: number;
   readonly count: number;
   readonly type: string;
+  readonly normalized?: true;
 }
 
 function bytesToB64(bytes: Uint8Array): string {
@@ -35,6 +37,7 @@ interface SkinPrimitiveOptions {
   readonly includeJoints: boolean;
   readonly includeWeights: boolean;
   readonly jointsComponentType: number;
+  readonly weights?: Uint8Array | Uint16Array;
 }
 
 // glTF spec component-type IDs.
@@ -47,13 +50,26 @@ function buildSkinPrimitiveJson(opts: SkinPrimitiveOptions): unknown {
   const bufferViews: BufferViewEntry[] = [];
   const accessors: AccessorEntry[] = [];
 
-  function addBuf(bytes: Uint8Array, type: string, count: number, componentType: number): number {
+  function addBuf(
+    bytes: Uint8Array,
+    type: string,
+    count: number,
+    componentType: number,
+    normalized?: true,
+  ): number {
     const bufIdx = buffers.length;
     buffers.push({ uri: `data:application/octet-stream;base64,${bytesToB64(bytes)}` });
     const bvIdx = bufferViews.length;
     bufferViews.push({ buffer: bufIdx, byteOffset: 0, byteLength: bytes.byteLength });
     const acIdx = accessors.length;
-    accessors.push({ bufferView: bvIdx, byteOffset: 0, componentType, count, type });
+    accessors.push({
+      bufferView: bvIdx,
+      byteOffset: 0,
+      componentType,
+      count,
+      type,
+      ...(normalized ? { normalized } : {}),
+    });
     return acIdx;
   }
 
@@ -76,11 +92,17 @@ function buildSkinPrimitiveJson(opts: SkinPrimitiveOptions): unknown {
   }
   let weightsIdx: number | undefined;
   if (opts.includeWeights) {
-    const w = new Float32Array([
-      1, 0, 0, 0, 0.5, 0.5, 0, 0, 0.25, 0.25, 0.25, 0.25, 0.7, 0.1, 0.1, 0.1,
-    ]);
+    const w =
+      opts.weights ??
+      new Float32Array([1, 0, 0, 0, 0.5, 0.5, 0, 0, 0.25, 0.25, 0.25, 0.25, 0.7, 0.1, 0.1, 0.1]);
     const wBytes = new Uint8Array(w.buffer);
-    weightsIdx = addBuf(wBytes, 'VEC4', 4, FLOAT);
+    weightsIdx = addBuf(
+      wBytes,
+      'VEC4',
+      4,
+      w instanceof Uint8Array ? UBYTE : w instanceof Uint16Array ? 5123 : FLOAT,
+      opts.weights === undefined ? undefined : true,
+    );
   }
 
   const attributes: Record<string, number> = { POSITION: posIdx };
@@ -188,4 +210,27 @@ describe('parse-gltf-skin-attrs.unit.test.ts', () => {
       expect(mesh.positions[3]).toBeCloseTo(1);
     });
   });
+});
+
+it.each([
+  Uint8Array,
+  Uint16Array,
+])('preserves normalized %s source weights through glTF merge', async (ArrayType) => {
+  const unit = ArrayType === Uint8Array ? 255 : 65535;
+  const weights = new ArrayType([unit, 0, 0, 0, unit - 3, 3, 0, 0, unit, 0, 0, 0, unit, 0, 0, 0]);
+  const parsed = await parseGltf(
+    buildSkinPrimitiveJson({
+      includeJoints: true,
+      includeWeights: true,
+      jointsComponentType: UBYTE,
+      weights,
+    }),
+    noopLoader,
+    '/compact-skin.gltf',
+  );
+  if (!parsed.ok) throw parsed.error;
+  expect(parsed.value.meshes[0]?.weights0).toEqual(weights);
+  const mesh = unwrapMeshAsset(parsed.value.meshes);
+  expect(mesh.attributes.skinWeight).toEqual(weights);
+  expect(mesh.vertices.byteLength).toBe(4 * (56 + 4 * weights.BYTES_PER_ELEMENT));
 });

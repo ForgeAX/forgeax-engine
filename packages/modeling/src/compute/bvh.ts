@@ -269,6 +269,42 @@ export class TriangleBvh {
     return this.child.length;
   }
 
+  /** @internal Stackless preorder for a device-side occlusion query. */
+  _appendOcclusionTree(nodes: number[], triangles: number[]): number {
+    if (this.order.length === 0) return -1;
+    const visit = (node: number) => {
+      const record = nodes.length;
+      for (let c = 0; c < 3; c++) nodes.push(this.box[node * 6 + c] as number);
+      nodes.push(0);
+      for (let c = 3; c < 6; c++) nodes.push(this.box[node * 6 + c] as number);
+      nodes.push(0);
+      const child = this.child[node] as number;
+      if (child < 0) {
+        nodes[record + 3] = -(triangles.length / 12) - 1;
+        const start = -1 - child;
+        const count = this.count[node] as number;
+        for (let i = start; i < start + count; i++) {
+          const t = this.order[i] as number;
+          for (let k = 0; k < 3; k++) {
+            for (let c = 0; c < 3; c++) {
+              const a = this.corner(t, 0, c);
+              triangles.push(k === 0 ? a : this.corner(t, k, c) - a);
+            }
+            triangles.push(0);
+          }
+        }
+        nodes[record + 7] = (nodes.length / 8) * 16 + count;
+      } else {
+        visit(child);
+        visit(child + 1);
+        nodes[record + 7] = (nodes.length / 8) * 16;
+      }
+    };
+    const root = nodes.length / 8;
+    visit(0);
+    return root;
+  }
+
   private corner(t: number, k: number, c: number): number {
     return this.positions[(this.indices[t * 3 + k] as number) * 3 + c] as number;
   }

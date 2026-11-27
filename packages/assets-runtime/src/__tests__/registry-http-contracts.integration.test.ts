@@ -1,10 +1,11 @@
 import { createServer } from 'node:http';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { type AssetDecoderInput, type CatalogEntry, ok } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { defineAssetKind } from '../asset-kind';
 import { AssetRegistry } from '../asset-registry';
 import { type CatalogListener, createCatalogSource } from '../catalog-source';
+import { catalogPack } from './fixtures/catalog-pack';
 
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
@@ -14,10 +15,7 @@ interface Value {
 }
 const kind = defineAssetKind<Value>('http-review-value');
 function gate() {
-  let release = () => {};
-  const promise = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const { promise, resolve: release } = testGate();
   return { promise, release };
 }
 async function fixture(
@@ -58,29 +56,18 @@ async function fixture(
     });
   const publish = (revision: number, replaceSource = false) => {
     const packageUrl = `${origin}/value.pack.json`;
-    const produced = createRuntimePackPublication({
-      scopeId: 'asset-runtime',
-      sourcePath: 'http-values.pack',
-      sourceRevision: String(revision),
-      packageUrl,
-      pack: {
-        assets: (dependencies ? [A, B] : [A]).map((guid) => ({
-          guid,
-          kind: kind.kind,
-          payload: { value: guid, revision },
-          refs: dependencies && guid === A ? [B] : dependencies === 'cycle' ? [A] : [],
-          artifacts: {},
-        })),
-      },
-    });
+    const produced = catalogPack(
+      (dependencies ? [A, B] : [A]).map((guid) => ({
+        guid,
+        kind: kind.kind,
+        payload: { value: guid, revision },
+        refs: dependencies && guid === A ? [B] : dependencies === 'cycle' ? [A] : [],
+        artifacts: {},
+      })),
+      { sourcePath: 'http-values.pack', sourceRevision: String(revision), packageUrl },
+    );
     pack = produced.pack;
-    rows = produced.pack.assets.map(({ guid }) => ({
-      guid,
-      kind: kind.kind,
-      packageUrl,
-      sourcePath: 'http-values.pack',
-      publication: produced.publication,
-    }));
+    rows = produced.rows;
     if (replaceSource) registry.setCatalogSource(source());
     else listener({ added: [], changed: rows, removed: [] });
   };
@@ -148,22 +135,19 @@ it.each([
 ])('returns a structured error for malformed HTTP envelope %j and admits repaired content', async (envelope) => {
   const decoded = vi.fn(async ({ envelope }: AssetDecoderInput<Value>) => envelope.payload);
   const f = await fixture(false, decoded);
-  try {
-    const original = f.body() as Record<string, unknown>;
-    f.setBody({ ...original, assets: [envelope] });
-    const result = await f.registry.load(A, kind);
-    expect(result).toMatchObject({
-      ok: false,
-      error: { code: expect.any(String), hint: expect.any(String) },
-    });
-    expect(decoded).not.toHaveBeenCalled();
-    expect(f.registry.inspectSource()?.ready).toEqual([]);
-    f.setBody(original);
-    const handle = (await f.registry.load(A, kind)).unwrap();
-    expect(f.registry.read(handle).unwrap()).toMatchObject({ value: A, revision: 1 });
-  } finally {
-    await f.close();
-  }
+  onTestFinished(() => f.close());
+  const original = f.body() as Record<string, unknown>;
+  f.setBody({ ...original, assets: [envelope] });
+  const result = await f.registry.load(A, kind);
+  expect(result).toMatchObject({
+    ok: false,
+    error: { code: expect.any(String), hint: expect.any(String) },
+  });
+  expect(decoded).not.toHaveBeenCalled();
+  expect(f.registry.inspectSource()?.ready).toEqual([]);
+  f.setBody(original);
+  const handle = (await f.registry.load(A, kind)).unwrap();
+  expect(f.registry.read(handle).unwrap()).toMatchObject({ value: A, revision: 1 });
 });
 
 it.each([
@@ -249,12 +233,9 @@ it('keeps a valid newer HTTP publication after an old dependency rejects', async
 
 it('rejects eager dependency cycles atomically without deadlocking concurrent roots', async () => {
   const f = await fixture('cycle');
-  try {
-    const results = await Promise.all([f.registry.load(A, kind), f.registry.load(B, kind)]);
-    for (const result of results)
-      expect(result).toMatchObject({ ok: false, error: { code: 'asset-reference-invalid' } });
-    expect(f.registry.inspect().assets).toEqual([]);
-  } finally {
-    await f.close();
-  }
+  onTestFinished(() => f.close());
+  const results = await Promise.all([f.registry.load(A, kind), f.registry.load(B, kind)]);
+  for (const result of results)
+    expect(result).toMatchObject({ ok: false, error: { code: 'asset-reference-invalid' } });
+  expect(f.registry.inspect().assets).toEqual([]);
 });

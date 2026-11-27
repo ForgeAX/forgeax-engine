@@ -71,16 +71,21 @@ export type WaterGpuMeshZone = Readonly<{
 }>;
 export const waterGpuMeshResource = (zoneKey: string, kind: string) =>
   `water-gpu-${zoneKey}-${kind}`;
+export function waterGpuMeshViewBindingBytes(
+  draw: Pick<WaterGpuMeshDraw, 'materialCount' | 'tileCapacity'>,
+): number {
+  return draw.materialCount * 256 + draw.tileCapacity * 96;
+}
 export function waterGpuMeshBufferSizes(
   draw: Pick<WaterGpuMeshDraw, 'viewCount' | 'materialCount' | 'tileCapacity'>,
 ) {
   const rows = draw.viewCount * draw.materialCount,
     headerBytes = rows * 256;
-  const tileBytes = draw.tileCapacity * draw.viewCount * 96;
+  const bindingBytes = waterGpuMeshViewBindingBytes(draw) * draw.viewCount;
   return {
     headerBytes,
-    bindingBytes: headerBytes + tileBytes,
-    totalBytes: headerBytes * 2 + tileBytes,
+    bindingBytes,
+    totalBytes: headerBytes + bindingBytes,
     argsBytes: rows * 20 + 4,
   };
 }

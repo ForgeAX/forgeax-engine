@@ -1,5 +1,5 @@
 #define_import_path forgeax_atmosphere::sampling
-#import forgeax_view::common::{View, view_atmosphere_aerial_enabled}
+#import forgeax_view::common::{View, view_atmosphere_aerial_enabled, view_atmosphere_fast_ap}
 #import forgeax_atmosphere::optics::{AtmosphereTransport, atmosphere_integrate, atmosphere_sun_luminance}
 #import forgeax_atmosphere::coordinates::{atmosphere_observer, atmosphere_view_ray}
 
@@ -73,6 +73,30 @@ fn atmosphere_aerial_finish(v:View, point:AtmosphereAerialCoordinate, sampled:At
   let transmittance=mix(vec3<f32>(1.0),sampled.transmittance,point.nearWeight);
   return AtmosphereTransport(mix(luminance,exact.luminance,point.exactWeight),mix(transmittance,exact.transmittance,point.exactWeight));
 }
+struct FastAerialCoordinate {
+  uvw: vec3<f32>,
+  weight: f32,
+};
+fn atmosphere_fast_aerial_coordinate(v:View, world:vec3<f32>)->FastAerialCoordinate {
+  let clip=v.worldViewProj*vec4<f32>(world,1.0);
+  let uv=clip.xy/clip.w*vec2<f32>(0.5,-0.5)+vec2<f32>(0.5);
+  let ray=atmosphere_view_ray(v,uv);
+  let distance=length(world-ray.origin)*0.001-v.atmosphere.geometry.z;
+  let slice=sqrt(max(0.0,distance/v.atmosphereControl.z));
+  let weight=clamp(distance/(v.atmosphereControl.z*pow(0.5/16.0,2.0)),0.0,1.0);
+  return FastAerialCoordinate(vec3<f32>(uv,clamp(slice,0.5/16.0,1.0-0.5/16.0)),weight);
+}
+fn atmosphere_fast_finish(v:View, sample:vec4<f32>, weight:f32)->AtmosphereTransport {
+  return AtmosphereTransport(
+    sample.rgb*atmosphere_sun_luminance(v.lightColor)*weight,
+    vec3<f32>(mix(1.0,sample.a,weight)));
+}
+fn atmosphere_fast_aerial_sample(v:View, world:vec3<f32>, lut:texture_3d<f32>, filtering:sampler)->AtmosphereTransport {
+  if !view_atmosphere_aerial_enabled(v) {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
+  let point=atmosphere_fast_aerial_coordinate(v,world);
+  if point.weight==0.0 {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
+  return atmosphere_fast_finish(v,textureSampleLevel(lut,filtering,point.uvw,0.0),point.weight);
+}
 fn atmosphere_aerial_sample(v:View, worldPosition:vec3<f32>, transmittance:
 #ifdef STORAGE_BUFFER_AVAILABLE
 texture_2d<f32>
@@ -95,6 +119,7 @@ texture_2d<f32>
 #endif
 , luminance:texture_3d<f32>, extinction:texture_3d<f32>, filtering:sampler)->AtmosphereTransport {
   if !view_atmosphere_aerial_enabled(v) {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
+  if view_atmosphere_fast_ap(v) {return atmosphere_fast_aerial_sample(v,worldPosition,luminance,filtering);}
   let point=atmosphere_aerial_coordinate(v,worldPosition,vec3<f32>(textureDimensions(luminance)));
   if point.distance<=v.atmosphere.geometry.z {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
   var exact=AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));
@@ -104,22 +129,29 @@ texture_2d<f32>
   return atmosphere_aerial_finish(v,point,sampled,exact);
 }
 
-fn atmosphere_packed_aerial_load(lut:texture_2d<u32>, point:vec3<i32>)->AtmosphereTransport {
-  let p=vec3<u32>(clamp(point,vec3<i32>(0),vec3<i32>(31)));
-  let word=textureLoad(lut,vec2<i32>(i32(p.y*32u+p.x),i32(textureDimensions(lut).y-32u+p.z)),0);
+fn atmosphere_packed_aerial_load(lut:texture_2d<u32>, point:vec3<i32>, depth:u32)->AtmosphereTransport {
+  let p=vec3<u32>(clamp(point,vec3<i32>(0),vec3<i32>(31,31,i32(depth)-1)));
+  let word=textureLoad(lut,vec2<i32>(i32(p.y*32u+p.x),i32(textureDimensions(lut).y-depth+p.z)),0);
   let rg=unpack2x16float(word.x);let br=unpack2x16float(word.y);let gb=unpack2x16float(word.z);
   return AtmosphereTransport(vec3<f32>(rg,br.x),vec3<f32>(br.y,gb));
 }
 fn atmosphere_packed_aerial_mix(a:AtmosphereTransport,b:AtmosphereTransport,weight:f32)->AtmosphereTransport {
   return AtmosphereTransport(mix(a.luminance,b.luminance,weight),mix(a.transmittance,b.transmittance,weight));
 }
-fn atmosphere_packed_aerial_sample(lut:texture_2d<u32>, coordinate:vec3<f32>)->AtmosphereTransport {
-  let position=coordinate*32.0-0.5;let p=vec3<i32>(floor(position));let w=fract(position);
-  let a=atmosphere_packed_aerial_mix(atmosphere_packed_aerial_load(lut,p),atmosphere_packed_aerial_load(lut,p+vec3<i32>(1,0,0)),w.x);
-  let b=atmosphere_packed_aerial_mix(atmosphere_packed_aerial_load(lut,p+vec3<i32>(0,1,0)),atmosphere_packed_aerial_load(lut,p+vec3<i32>(1,1,0)),w.x);
-  let c=atmosphere_packed_aerial_mix(atmosphere_packed_aerial_load(lut,p+vec3<i32>(0,0,1)),atmosphere_packed_aerial_load(lut,p+vec3<i32>(1,0,1)),w.x);
-  let d=atmosphere_packed_aerial_mix(atmosphere_packed_aerial_load(lut,p+vec3<i32>(0,1,1)),atmosphere_packed_aerial_load(lut,p+vec3<i32>(1,1,1)),w.x);
+fn atmosphere_packed_aerial_sample(lut:texture_2d<u32>, coordinate:vec3<f32>, depth:u32)->AtmosphereTransport {
+  let position=coordinate*vec3<f32>(32.0,32.0,f32(depth))-0.5;let p=vec3<i32>(floor(position));let w=fract(position);
+  let a=atmosphere_packed_aerial_mix(atmosphere_packed_aerial_load(lut,p,depth),atmosphere_packed_aerial_load(lut,p+vec3<i32>(1,0,0),depth),w.x);
+  let b=atmosphere_packed_aerial_mix(atmosphere_packed_aerial_load(lut,p+vec3<i32>(0,1,0),depth),atmosphere_packed_aerial_load(lut,p+vec3<i32>(1,1,0),depth),w.x);
+  let c=atmosphere_packed_aerial_mix(atmosphere_packed_aerial_load(lut,p+vec3<i32>(0,0,1),depth),atmosphere_packed_aerial_load(lut,p+vec3<i32>(1,0,1),depth),w.x);
+  let d=atmosphere_packed_aerial_mix(atmosphere_packed_aerial_load(lut,p+vec3<i32>(0,1,1),depth),atmosphere_packed_aerial_load(lut,p+vec3<i32>(1,1,1),depth),w.x);
   return atmosphere_packed_aerial_mix(atmosphere_packed_aerial_mix(a,b,w.y),atmosphere_packed_aerial_mix(c,d,w.y),w.z);
+}
+fn atmosphere_fast_packed_aerial_sample(v:View, world:vec3<f32>, lut:texture_2d<u32>)->AtmosphereTransport {
+  if !view_atmosphere_aerial_enabled(v) {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
+  let point=atmosphere_fast_aerial_coordinate(v,world);
+  if point.weight==0.0 {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
+  let sample=atmosphere_packed_aerial_sample(lut,point.uvw,16u);
+  return atmosphere_fast_finish(v,vec4<f32>(sample.luminance,sample.transmittance.r),point.weight);
 }
 fn atmosphere_aerial_sample_packed_tables(v:View, worldPosition:vec3<f32>, transmittance:
 #ifdef STORAGE_BUFFER_AVAILABLE
@@ -143,12 +175,13 @@ texture_2d<f32>
 #endif
 , lut:texture_2d<u32>, filtering:sampler)->AtmosphereTransport {
   if !view_atmosphere_aerial_enabled(v) {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
+  if view_atmosphere_fast_ap(v) {return atmosphere_fast_packed_aerial_sample(v,worldPosition,lut);}
   let point=atmosphere_aerial_coordinate(v,worldPosition,vec3<f32>(32.0));
   if point.distance<=v.atmosphere.geometry.z {return AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));}
   var exact=AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));
   if point.exactWeight>0.0 {exact=atmosphere_aerial_integrate(v,point.origin,point.direction,point.distance,transmittance,multiple,filtering,u32(max(64.0,v.atmosphereControl.x)));}
   if point.exactWeight>=1.0 {return exact;}
-  return atmosphere_aerial_finish(v,point,atmosphere_packed_aerial_sample(lut,point.coordinate),exact);
+  return atmosphere_aerial_finish(v,point,atmosphere_packed_aerial_sample(lut,point.coordinate,32u),exact);
 }
 
 #ifndef STORAGE_BUFFER_AVAILABLE

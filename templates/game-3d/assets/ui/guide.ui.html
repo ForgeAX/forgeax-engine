@@ -2,6 +2,10 @@
   <strong>3C starter</strong>
   <span data-ui-slot="lock">Click to lock camera, or hold right mouse to look</span>
   <small data-ui-slot="hint">Mouse look · WASD move · Space jump · Shift run · T transform · Esc release</small>
+  <div class="checkpoint">
+    <button type="button" data-ui-part="save-checkpoint">Save checkpoint</button>
+    <span data-ui-part="checkpoint-status" aria-live="polite"></span>
+  </div>
 </section>
 <section class="hud" aria-label="Player status" aria-live="off">
   <span data-ui-part="hud-height">Height 0.0 m</span>

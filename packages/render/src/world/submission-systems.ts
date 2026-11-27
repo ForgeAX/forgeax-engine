@@ -1,11 +1,8 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { defineResource, defineSystem } from '@forgeax/engine-ecs';
 import type { RenderResourceScope } from '../publication/resource-scope';
-import { materialSamplesTarget } from '../record/target-capture-graph';
-import type { RenderableSnapshot } from '../render-system-extract';
 import {
   markFramePending,
-  missingDrawEvidence,
   projectFramePresentation,
   projectResidualDisplayRows,
   skyCubemapPending,
@@ -18,7 +15,6 @@ import {
   recordFailureError,
   recordRetirementError,
 } from '../render-system-record-attempt';
-import type { FrameList } from '../scene/frame-list';
 import {
   RenderRecordCommitOrder,
   RenderRecordRetireOrder,
@@ -199,10 +195,13 @@ export function registerSubmissionSystems(world: World): void {
       views.forEach((row) => {
         const entity = row.entity;
 
-        const staged = recordHistoryOf(
+        const history = recordHistoryOf(
           world,
           requireViewField(world, entity, ViewRecordHistory, 'state'),
-        ).staged;
+        );
+        history.finishUniformWrites?.();
+        history.finishUniformWrites = undefined;
+        const staged = history.staged;
         if (staged.length === 0) return;
         const owner = ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state'));
         for (const record of staged.splice(0)) {
@@ -295,16 +294,25 @@ function verifySubmittedPresentation(
   const displayRows =
     gpuOwned === undefined
       ? outcome.presentationRenderables
-      : projectResidualDisplayRows(frame, gpuOwned, draws.gpuSelection);
-  const renderables = captureWritableRows(internals, displayRows);
-  const missing =
-    presentation.presentation === 'pending'
-      ? undefined
-      : missingDrawEvidence(renderables, draws.presentedDraws, sourceScope, internals);
-  if (missing !== undefined) markFramePending(presentation, missing);
+      : projectResidualDisplayRows(
+          frame,
+          gpuOwned,
+          draws.gpuSelection,
+          attempt.mode === 'capture' ? undefined : frame.cameras[0],
+        );
+  const admits = outcome.captureAdmits;
+  const renderables = admits
+    ? displayRows.filter((row) =>
+        row.materials.length
+          ? row.materials.some((material) => admits(row, material))
+          : admits(row, row.material),
+      )
+    : displayRows;
   if (presentation.presentation === 'ready') {
     presentation.presentation = projectFramePresentation({
       renderables,
+      admits,
+      draws: draws.presentedDraws,
       ...(gpuOwned === undefined ? {} : { coveredBindings: draws.gpuSelection.coveredBindings() }),
       preparedSourceScope: sourceScope,
       internals,
@@ -314,27 +322,6 @@ function verifySubmittedPresentation(
     });
   }
   verifySubmittedShadows(presentation, outcome.lights, directionalShadowReady);
-}
-
-/**
- * A capture view never draws a row whose material samples its own target
- * (the capture graph excludes that same-pass attachment/binding conflict),
- * so presentation evidence is required only for the rows it can write.
- */
-function captureWritableRows(
-  internals: ViewSettlementOwner['internals'],
-  rows: FrameList<RenderableSnapshot>,
-): FrameList<RenderableSnapshot> {
-  const targets = new Set(
-    recordContext(internals).captureView?.state.work.map((work) => work.target),
-  );
-  if (targets.size === 0) return rows;
-  const samplesCapture = (material: RenderableSnapshot['materials'][number]): boolean => {
-    for (const target of targets) if (materialSamplesTarget(material.snapshot, target)) return true;
-    return false;
-  };
-  const writable = (row: RenderableSnapshot) => !row.materials.some(samplesCapture);
-  return rows.every(writable) ? rows : rows.filter(writable);
 }
 
 /**

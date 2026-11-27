@@ -282,7 +282,7 @@ reading renderer private state:
 | `fallbackReason` | `rhi-null-structural` or `candidate-failed`; legacy `webgl2-unsupported` remains a wire label |
 | `lastKnownGood` | Whether the previous admitted profile was retained |
 | `pixelEvidence` | `available` or `not-available`; structural evidence is not pixel proof |
-| `deviceGeneration` / `graphGeneration` | 当前 inspection result 的 generation identity |
+| `deviceGeneration` / `graphGeneration` | Generation identity of the current inspection result |
 | `cascadeCount`, `mapSize`, `shadowMapBytes`, `writerPasses`, `blockerTaps`, `filterTapUpperBound`, `seamTapUpperBound` | Bounded CSM and tap-budget facts |
 
 For `error.code === 'shadow-invalid-config'`, use the structured properties
@@ -623,10 +623,12 @@ never re-exports the moved domain APIs.
 
 ### Render Worker source assembly
 
-The internal `createPublicationAssets` assembly loads an AssetRegistry and
-metadata-only ShaderRegistry without a GPU. App uses it for the source realm
-of the explicit `render-worker` tier; the child uses the ordinary runtime
-Renderer assembly and owns GPU resource lifetime. See the
+The split Engine realm stages its AssetRegistry and waits for its CPU shader
+catalog before starting World plugins. The Render Worker admits the same
+shader publication in parallel and forks its own verified catalog into the
+ordinary Renderer assembly. Device startup remains at the App commit boundary.
+The internal `createPublicationAssets` entry waits for catalog readiness before
+returning the source AssetRegistry. See the
 [App execution contract](../app/README.md#execution-tiers).
 
 ### Planar water capture

@@ -1,3 +1,6 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-image
 
 ## Source registration
@@ -8,9 +11,10 @@ Texture source descriptors derive layout, format, color space and mip policy fro
 
 ## 3D density source contract
 
-体积密度仍由 image producer 生成标准 `TextureAsset`：`shape.viewDimension: '3d'`、
-`shape.extent.depth`、`colorSpace: 'linear'` 与显式 `mips` 必须同时存在。Meta 保持
-GUID/sourceKey；Pack body 与 receipt 提供 digest/generation 证据。
+The image producer emits volume density as a standard `TextureAsset` with
+`shape.viewDimension: '3d'`, `shape.extent.depth`, `colorSpace: 'linear'`
+and explicit `mips`. Meta retains GUID/sourceKey; the Pack body and receipt
+provide digest/generation evidence.
 
 ```mermaid
 sequenceDiagram
@@ -22,8 +26,8 @@ sequenceDiagram
   P-->>M: CookReceipt generation
 ```
 
-缺少 sibling、布局或 receipt 时返回结构化错误。修复同一 sourceKey 后重新 import/cook，
-不要向 runtime 注入 1×1 或其它 stand-in 纹理。
+Missing siblings, layouts or receipts produce structured errors. Repair the same
+sourceKey and import/cook again; never inject a 1x1 or other stand-in texture at runtime.
 
 > **Disk-to-memory image importer for forgeax-engine.** Pure functions translate `*.jpg` / `*.png` / `*.hdr` source files into `TextureAsset` / `EquirectAsset` PODs (raw `.bin` or Basis `.ktx2`) + `external-asset-package` sidecar JSON. GPU upload lives in `@forgeax/engine-runtime` (charter P5: producer / consumer split).
 
@@ -218,7 +222,7 @@ HDR equirectangular sources (`.hdr`) are decoded at build-time by `imageImporter
 
 The sidecar (`.hdr.meta.json`) declares `subAssets[0].kind: 'equirect'` (a dedicated asset kind; the prior `cube-texture` kind + its `importSettings.cubeFaceSize`/`specularMipLevels` are removed -- the equirect-to-cubemap projection params are decided internally by the render-system). At build-catalog time, the `.hdr` extension passes through as a `kind: 'equirect'` catalog row with `ImageMetadata(format: 'rgba16float')`. The `vite-plugin-pack` import step stores the f16 payload as an asset-local Pack v2 artifact. At runtime, `assets.load(guid, 'equirect')` loads that local artifact through `equirectContribution` -- transparent to the consumer. The loaded `EquirectAsset` binds declaratively to `Skylight.equirect` / `SkyboxBackground.equirect`; the equirect-to-cubemap projection + IBL precompute run engine-internally.
 
-## 4 步 recipe
+## Four-Step Recipe
 
 ```ts
 // Node-only sub-export — fs read + decode in one call
@@ -270,18 +274,18 @@ keep this package guide focused on the producer subset instead of repeating the
 closed union. A `switch (err.code)` over that subset is exhaustive for this
 function's documented result path.
 
-## 形态铁律
+## Invariants
 
-- **二态分离** -- 本包仅做磁盘 -> 内存翻译；GPU 上传 (`copyExternalImageToTexture` / `writeTexture`) 全部在 `@forgeax/engine-render` 内，本包 grep `device.queue.writeTexture` 零命中（CI 闸门）
-- **同型镜像 in-flight gltf loader** -- `subAssetKey { kind, name?, indexFallback }` 与 `feat-20260515-gltf-loader-via-asset-system` 完全等价（image 单子资产场景退化为 `kind='image'` / `indexFallback='images/0'`）
-- **disk schema 复用 meta.schema.json** -- `*.meta.json` 走 `external-asset-package` kind，不新增 schema kind（plan-strategy D-4）
-- **byte-identical reimport** -- 第二次 `forgeax asset import` 产出与第一次 `git diff` 输出空（AC-16）
+- **Separate the two states** -- This package translates disk data into memory only. GPU uploads (`copyExternalImageToTexture` / `writeTexture`) belong to `@forgeax/engine-render`; CI requires zero `device.queue.writeTexture` matches here.
+- **Match the in-flight glTF loader** -- `subAssetKey { kind, name?, indexFallback }` matches `feat-20260515-gltf-loader-via-asset-system` exactly (a single image uses `kind='image'` / `indexFallback='images/0'`).
+- **Reuse meta.schema.json** -- `*.meta.json` uses kind `external-asset-package`, without adding a schema kind (plan-strategy D-4).
+- **Byte-identical reimport** -- A second `forgeax asset import` produces no diff against the first (AC-16).
 - **Current source boundary** -- KTX2 / Basis are handled by the image importer; EXR, cubemap face, array layer, and video texture remain outside this package contract.
 
-## 相关包
+## Related Packages
 
 - [`@forgeax/engine-types`](../types) -- `ImageErrorCode` / `ImageErrorDetail` / `IMAGE_ERROR_HINTS` / `ImageMeta` / `DecodedImage` POD SSOT (math-free)
-- [`@forgeax/engine-pack`](../pack) -- `AssetGuid.random()` UUIDv7 生成 + `external-asset-package` schema + scanner 6-step fail-fast (本包不修改 scanner 行为)
+- [`@forgeax/engine-pack`](../pack) -- `AssetGuid.random()` UUIDv7 generation, the `external-asset-package` schema and six-step fail-fast scanner (this package does not change scanner behavior).
 - [`@forgeax/engine-render`](../render) -- Renderer-owned texture residency and GPU upload from the managed asset.
 
 The image sidecar producer emits one texture. `toAssetPack(meta)` depends only on sidecar facts, and `reimportReuseMeta(existing)` depends only on persisted identity. Neither operation requires decoded pixel bytes. Reuse preserves the first matching source key or unnamed legacy texture at source index zero.
@@ -303,3 +307,25 @@ The offline Basis path resolves sidecar controls once with `basisEncodeParamsFor
 A null result keeps the uncompressed import path; otherwise pass those parameters
 to `encodeTextureToKtx2(pixels, width, height, params)`. Encode results and failures
 report the codec mode (`etc1s`, `uastc-ldr`, or `uastc-hdr`) directly.
+
+## Node image encoding workers
+
+Build hosts can own `createNodeImageEncoderPool` from
+`@forgeax/engine-image/encode-pool` and construct `createImageImporter` from
+`@forgeax/engine-image/image-importer` with
+`{ encode: pool.encode.bind(pool), maxInFlight: pool.maxWorkers }`. The default
+importer retains its serial encoder and declares no source concurrency. The
+worker-backed importer exposes only independent-source preparation; publication
+remains ordered by the existing Meta owner. Dispose the pool with its build
+session. Runtime/browser Image exports never load Node worker dependencies.
+
+Admission reserves one GiB per worker, accounts owned source/mip bytes, and uses
+at most four workers within CPU, quarter-machine/container and half-free-memory
+limits. Caller limits only narrow admission. Each worker is an independent Node process with an explicit one-GiB old-space
+limit and an unchanged Basis WASM encoder. Advanced IPC preserves typed bytes;
+`maxObservedHeapBytes` reports the maximum actual V8 heap ceiling observed in
+completed worker responses. Parent `NODE_OPTIONS` cannot override the child
+command-line heap limit. Full dimensions, options and mip bytes are copied
+before transfer; caller buffers remain usable. Cancellation terminates its active
+worker, queued work releases its input budget, and disposal awaits termination.
+Encoding effort, quality, dimensions and container output remain unchanged.

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink } from 'node:fs/promises';
+import { access, readFile, realpath, symlink } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -20,17 +20,17 @@ import {
 } from '@forgeax/engine-tool-runtime';
 import { err, ok } from '@forgeax/engine-types';
 import { WebSocketServer } from 'ws';
+import { createWorkspaceSelection } from './backend-lifetime.js';
 import { traceBackendStartup } from './backend-startup.js';
 import {
   assertPluginSourceInputs,
   discoverPluginAssets,
   type PluginSourceInventory,
 } from './build/plugin-assets.js';
-import { compileNodePluginPrograms } from './build/plugin-programs-node.js';
+import { compileNodePluginPrograms, openNodePluginStage } from './build/plugin-programs-node.js';
 import { readProjectFacts } from './project.js';
 import type { ProjectFacts } from './types.js';
 import { devKitWorkspacePlugin } from './workspace-plugin.js';
-import { createWorkspaceSelection } from './workspace-selection.js';
 
 export interface DevKitBackend {
   readonly host: BackendHost;
@@ -163,12 +163,10 @@ export async function createDevKitBackend(
       if (!hostRoot) throw new Error(`Host Pack must define plugin/main: ${hostPack ?? root}`);
       hostInventory = inventory;
       hostSourceRoot = facts.root;
-      const directory = resolve(root, '.forgeax', 'host');
-      await mkdir(directory, { recursive: true });
-      const temporary = await mkdtemp(resolve(directory, 'session-'));
+      const { path: temporary, dispose: disposeStage } = await openNodePluginStage(root, 'host');
       const hostFacts = { ...facts, roots: { ...facts.roots, host: hostRoot } };
       await host.context.effect(async function* () {
-        yield () => rm(temporary, { recursive: true, force: true });
+        yield disposeStage;
         const compiled = await traceBackendStartup('host-compile', () =>
           compileNodePluginPrograms(
             hostFacts,

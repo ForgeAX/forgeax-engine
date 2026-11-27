@@ -46,12 +46,16 @@ export class StreamBudget {
 }
 interface Segment {
   readonly node: AudioBufferSourceNode;
-  readonly buffer: AudioBuffer;
   readonly frame: number;
   readonly at: number;
   readonly until: number;
   readonly bytes: number;
 }
+
+export type PcmStreamFetcher = (
+  url: string,
+  init: { signal: AbortSignal; cache: 'no-store'; headers: { Range: string } },
+) => Promise<Response>;
 
 /** Three native windows + at most one pending read per play. No file-sized allocation. */
 export class PcmStreamPlayer {
@@ -84,6 +88,7 @@ export class PcmStreamPlayer {
     options: { position: number; paused: boolean; rate: number; loop: boolean },
     private readonly input: () => AudioNode,
     private readonly ended: () => void,
+    private readonly fetchStream: PcmStreamFetcher = (url, init) => fetch(url, init),
   ) {
     this.manifest = clip.stream;
     this.context = context;
@@ -212,7 +217,6 @@ export class PcmStreamPlayer {
         /* Already ended. */
       }
       segment.node.disconnect();
-      segment.node.buffer = null;
       this.budget.pcmBytes -= segment.bytes;
       this.pcmBytes -= segment.bytes;
     }
@@ -253,7 +257,6 @@ export class PcmStreamPlayer {
       if (!segment) break;
       segment.node.onended = null;
       segment.node.disconnect();
-      segment.node.buffer = null;
       this.budget.pcmBytes -= segment.bytes;
       this.pcmBytes -= segment.bytes;
     }
@@ -304,7 +307,7 @@ export class PcmStreamPlayer {
       let accountedPcm = 0;
       try {
         const start = this.manifest.dataOffset + chunkStart * this.manifest.channels * 2;
-        const response = await fetch(this.manifest.url, {
+        const response = await this.fetchStream(this.manifest.url, {
           signal: controller.signal,
           cache: 'no-store',
           headers: { Range: `bytes=${start}-${start + encoded - 1}` },
@@ -385,7 +388,6 @@ export class PcmStreamPlayer {
         node.start(at, (frame - chunkStart) / this.manifest.sampleRate, duration);
         this.segments.push({
           node,
-          buffer,
           frame,
           at,
           until: at + duration / this.rate,

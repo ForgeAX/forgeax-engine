@@ -283,6 +283,13 @@ included) are reconciled back to the derived value; the owner's own
 publications are consumed before returning. `Children` remains a read-only relationship projection;
 there is no duplicate Scene graph or per-node matrix cache.
 
+Ordinary propagation excludes Disabled rows. A valid disabled child remains in
+its parent's relationship mirror and is skipped without changing its derived
+matrix. Re-enabling it restores ordinary parent-first evaluation. A participating
+descendant cannot use a disabled Transform ancestor; preparation rejects that
+combination. Disabled does not repair a malformed relationship or missing pair
+encountered during a participating hierarchy walk.
+
 Removing `ChildOf` is a structural root transition. Even when the authored
 `Transform` is unchanged, the next propagation composes and publishes that
 entity as a flat local root; ordinary same-value hierarchy recomputation still
@@ -393,3 +400,52 @@ default root case. If diagnostics report an invalid hierarchy, fix the scene
 relation and resolve again; do not add a render-only parent or bypass the
 scene graph. Camera, picking, lifecycle, assets, and VFX shadow behavior are
 out of scope for this package.
+
+## Internal instance preparation
+
+`@forgeax/engine-scene/internal` exposes owner-only continuations for keyed
+compilation, instance construction, initial disabled Transform preparation and
+child-first retirement. Synchronous instantiation drives the same compiler and
+materialization algorithm without yielding. The split build shares component
+and instance-state identities with the public entry.
+
+The calling owner supplies fixed closure/schema guards, retains every partial
+member and records author Disabled intent separately from its temporary tag.
+Before each resume it validates ownership; initial Transform preparation reads
+and writes only the complete owned roster, parent first, including disabled
+members. An author-disabled ancestor of a participating descendant is rejected.
+No FrameArena view or borrowed World array may survive a continuation.
+The source guard uses an independent StateProjection cursor over the closed
+source vocabulary; unrelated world edits can advance that cursor, while an
+owned source edit or structural/generation change invalidates it. Its initial
+World scan and later index work belong to the preparation budget. Asset/schema
+guards remain separate, and legitimate derived outputs are not authored inputs.
+
+`prepareSceneRosterParticipation` qualifies a fixed, wholly Disabled roster and
+its ancestor inputs. It preserves author Disabled intent and issues exact,
+owner-local observations. A switch requires the current observation, validates
+fixed content and source facts before writing, then changes only Disabled in one
+synchronous legal source boundary. World qualifies and moves the affected rows
+in its existing Disabled batch. Scene validates the counted structural changes
+and authored source facts before issuing the successor. External guards cannot
+reenter acceptance or refresh an old observation. Arbitrary structural edits
+and edit-and-restore invalidate qualification.
+
+This internal source operation does not accept Render or Physics participation.
+The App coordinator must fence those owners before switching and handle a failed
+source operation immediately. A write or post-write qualification failure keeps
+participation unconfirmed, including when some or all ECS writes already took
+effect. Disposal drops qualification and leaves Scene cleanup with the caller.
+Report the synchronous World migration and source change projection with the
+acceptance cost. Native readiness is established by the consuming owners.
+
+Source-reference custody transfers existing holds before materialization; the
+managed root callback then performs only the once-only handoff. The custodian
+owns later AssetRegistry/shared decrements. Scene retirement requires stopped
+participation and that custody handoff; its work budget covers planning and at
+most one leaf despawn per quantum. Failed retirement preserves its cursor and
+remaining ownership. It does not prove native or GPU retirement.
+
+These primitives do not implement or advertise a Level service. Render staging,
+static native participation, App scheduling, Worker acceptance and full-frame
+performance qualification remain separate owner responsibilities.

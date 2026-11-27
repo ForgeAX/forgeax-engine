@@ -341,7 +341,15 @@ pub fn emit_reflection(validated: &ValidatedModule, options_json: &str) -> Resul
     let options: ReflectionOptions =
         serde_json::from_str(options_json).unwrap_or(ReflectionOptions {
             dynamic_offsets: Vec::new(),
+            value_member_reads: None,
         });
+    if options
+        .value_member_reads
+        .as_deref()
+        .is_some_and(|value| value != "shader-value-member-reads/1")
+    {
+        return Err(JsError::new("unsupported value member reads capability"));
+    }
     let output = reflection_output(&validated.module, &validated.info, &options)
         .map_err(|error| JsError::new(&error))?;
     serde_json::to_string(&output)
@@ -361,7 +369,12 @@ fn reflection_output(
         schema_version: "shader-reflection/3",
         bound_globals: derive_bound_globals(module, info, &layouter)?,
         uv_set_count: derive_uv_set_count(module),
-        entry_points: entry_reads::derive(module, info),
+        entry_points: entry_reads::derive(
+            module,
+            info,
+            &layouter,
+            options.value_member_reads.is_some(),
+        )?,
         bindings: derive_bgls(module, info, options),
     })
 }
@@ -384,6 +397,8 @@ fn compute_interface(module: &Module, info: &ModuleInfo) -> Result<serde_json::V
 struct ReflectionOptions {
     #[serde(default)]
     dynamic_offsets: Vec<DynamicOffsetSpec>,
+    #[serde(default)]
+    value_member_reads: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

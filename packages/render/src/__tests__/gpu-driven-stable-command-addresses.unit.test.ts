@@ -10,8 +10,11 @@ import {
   type SubmissionPlan,
 } from '../gpu-driven/batch-topology';
 import { FilteredPlanContributionOwner } from '../gpu-driven/filtered-plan-contributions';
+import {
+  PreparedRasterBundleCache,
+  PreparedRasterPass,
+} from '../gpu-driven/prepared-raster-bundle';
 import { MaterialResource } from '../material-resource';
-import { RenderBundleCache } from '../record/render-bundle-cache';
 import { RenderScene } from '../scene/render-scene';
 import { createFilterPlanFixture } from './gpu-driven-filter-plan-fixture';
 import { expectFilteredPlan } from './gpu-driven-filtered-plan-assertions';
@@ -72,7 +75,7 @@ function sourceFixture(firstInstances = 1) {
 
 it('retains unaffected source and shadow command windows through removal and cardinality shrink', () => {
   const f = sourceFixture();
-  const before = f.topology.query(f.topology.sourcePlan(), undefined);
+  const before = f.topology.query(f.topology.sourcePlan(), undefined).active;
   const rebuilt = f.topology.inspect().batchesRebuilt;
   const selected = buildBatchAlignedSubmission(
     before,
@@ -82,13 +85,13 @@ it('retains unaffected source and shadow command windows through removal and car
     before.batches.slice(1).map((batch) => [batch.visibleBase, batch.indirectOffset]),
   );
   f.topology.apply(f.scene.apply([{ kind: 'remove', entityKey: 1 }]));
-  const after = f.topology.query(f.topology.sourcePlan(), undefined);
+  const after = f.topology.query(f.topology.sourcePlan(), undefined).active;
   expect(after.batches.at(0)).toBe(before.batches.at(1));
   expect(after.batches.at(1)).toBe(before.batches.at(2));
   expect(f.topology.inspect().batchesRebuilt).toBe(rebuilt);
 
   const g = sourceFixture(65);
-  const large = g.topology.query(g.topology.sourcePlan(), undefined);
+  const large = g.topology.query(g.topology.sourcePlan(), undefined).active;
   const original = g.snapshots[0];
   if (original?.instances === undefined) throw Error('Missing fixture instances');
   g.topology.apply(
@@ -104,7 +107,7 @@ it('retains unaffected source and shadow command windows through removal and car
       },
     ]),
   );
-  const small = g.topology.query(g.topology.sourcePlan(), undefined);
+  const small = g.topology.query(g.topology.sourcePlan(), undefined).active;
   expect(small.batches.at(1)).toBe(large.batches.at(1));
   expect(small.batches.at(2)).toBe(large.batches.at(2));
   expect(small.batches.at(0)?.candidates).toHaveLength(64);
@@ -114,7 +117,7 @@ it('retains actual filtered main and shadow windows when an unrelated group disa
   const f = createFilterPlanFixture();
   const prepared = f.prepare();
   const main = new FilteredPlanContributionOwner();
-  const before = main.update(prepared, f.bindings);
+  const before = main.update(prepared, f.bindings).active;
   const reduced = {
     ...f.source,
     candidateCount: 2,
@@ -125,7 +128,7 @@ it('retains actual filtered main and shadow windows when an unrelated group disa
       }))
       .filter((batch) => batch.candidates.length),
   };
-  const after = main.update(f.prepare(reduced), f.bindings);
+  const after = main.update(f.prepare(reduced), f.bindings).active;
   const original = before.plan.batches.at(1);
   expect([...(after.plan.batches.at(0)?.candidates ?? [])]).toEqual([
     ...(original?.candidates ?? []),
@@ -170,7 +173,7 @@ function expectDisjointRanges(plan: SubmissionPlan) {
 
 it('reclaims retired ranges through repeated growth and reuse without moving surviving batches', () => {
   const f = sourceFixture();
-  const initial = f.topology.query(f.topology.sourcePlan(), undefined);
+  const initial = f.topology.query(f.topology.sourcePlan(), undefined).active;
   const original = f.snapshots[0];
   if (original?.instances === undefined) throw Error('Missing fixture instances');
   for (let cycle = 0; cycle < 60; cycle++) {
@@ -186,17 +189,17 @@ it('reclaims retired ranges through repeated growth and reuse without moving sur
       },
     };
     f.topology.apply(f.scene.apply([{ kind: 'update', entityKey: 1, snapshot }]));
-    const grown = f.topology.query(f.topology.sourcePlan(), undefined);
+    const grown = f.topology.query(f.topology.sourcePlan(), undefined).active;
     expect(grown.batches.at(1)).toBe(initial.batches.at(1));
     expect(grown.batches.at(2)).toBe(initial.batches.at(2));
     expect(grown.batches.at(0)?.candidates).toHaveLength(instanceCount);
     expectDisjointRanges(grown);
     expect(grown.visibleCapacity).toBeLessThanOrEqual(384);
     f.topology.apply(f.scene.apply([{ kind: 'remove', entityKey: 1 }]));
-    expectDisjointRanges(f.topology.query(f.topology.sourcePlan(), undefined));
+    expectDisjointRanges(f.topology.query(f.topology.sourcePlan(), undefined).active);
   }
   f.topology.rebuild(f.scene.slotsSnapshot());
-  const rebuilt = f.topology.query(f.topology.sourcePlan(), undefined);
+  const rebuilt = f.topology.query(f.topology.sourcePlan(), undefined).active;
   expectDisjointRanges(rebuilt);
   expect(rebuilt.visibleCapacity).toBe(128);
 });
@@ -205,14 +208,14 @@ it('reuses filtered holes across binding splits, merges and a complete reset', (
   const f = createFilterPlanFixture({ sharedGeometry: true });
   const prepared = f.prepare();
   const owner = new FilteredPlanContributionOwner();
-  const initial = owner.update(prepared, f.bindings);
+  const initial = owner.update(prepared, f.bindings).active;
   const originalB = initial.plan.batches.at(1);
   const keyA = [...f.bindings.keys()][0];
   if (originalB === undefined || keyA === undefined) throw Error('Missing fixture binding');
   for (let cycle = 0; cycle < 60; cycle++) {
     const split = cycle % 2 === 0;
     const bindings = new Map(f.bindings).set(keyA, split ? 'C' : 'A');
-    const result = owner.update(prepared, bindings);
+    const result = owner.update(prepared, bindings).active;
     expect(result.plan.batches).toHaveLength(split ? 3 : 2);
     expect(result.plan.candidateCount).toBe(6);
     expect(
@@ -227,7 +230,7 @@ it('reuses filtered holes across binding splits, merges and a complete reset', (
     expect(result.plan.visibleCapacity).toBeLessThanOrEqual(3 * 2 * 64);
   }
   owner.clear();
-  const reset = owner.update(prepared, f.bindings);
+  const reset = owner.update(prepared, f.bindings).active;
   expectFilteredPlan(reset, initial);
   expect(
     reset.plan.batches.map((batch) => [batch.batchId, batch.visibleBase, batch.indirectOffset]),
@@ -237,105 +240,64 @@ it('reuses filtered holes across binding splits, merges and a complete reset', (
   expectDisjointRanges(reset.plan);
 });
 
-it('reuses physical indirect segments after deletion while rejecting a changed pipeline at the same address', async () => {
+it.each([
+  'pipeline',
+  'group',
+] as const)('keeps surviving native bundles when another batch retires or changes its %s', async (change) => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  const indirect = device.createBuffer({ size: 512, usage: 0x180 }).unwrap();
+  const indirect = device.createBuffer({ size: 512, usage: 0x1a0 }).unwrap();
   const pipelines = Array.from({ length: 4 }, () =>
     device.createRenderPipeline({} as RenderPipelineDescriptor).unwrap(),
   );
-  const cache = new RenderBundleCache({ colorFormats: [] });
-  const frame = (draws: readonly (readonly [number, number])[]) => {
-    const counters = { hits: 0, misses: 0 };
-    const encoder = device.createCommandEncoder().unwrap();
-    const pass = encoder.beginRenderPass({ colorAttachments: [] });
-    cache.encode(
-      device,
-      pass,
-      (commands) => {
-        for (const [pipeline, offset] of draws) {
-          const handle = pipelines[pipeline];
-          if (handle === undefined) throw Error('Missing fixture pipeline');
-          commands.setPipeline(handle);
-          commands.drawIndirect(indirect, offset);
-        }
-      },
-      counters,
-    );
-    pass.end();
-    return counters;
-  };
-  const original = [
-    [0, 0],
-    [1, 20],
-    [2, 40],
-  ] as const;
-  frame(original);
-  frame(original);
-  expect(frame(original)).toEqual({ hits: 3, misses: 0 });
-  expect(
-    frame([
-      [1, 20],
-      [2, 40],
-    ]),
-  ).toEqual({ hits: 2, misses: 0 });
-  expect(
-    frame([
-      [3, 20],
-      [2, 40],
-    ]),
-  ).toEqual({ hits: 1, misses: 1 });
-  device.destroyBuffer(indirect);
-});
-
-it('matches the complete effective binding commands when deletion changes an overwritten inherited prelude', async () => {
-  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  const indirect = device.createBuffer({ size: 512, usage: 0x180 }).unwrap();
-  const pipeline = device.createRenderPipeline({} as RenderPipelineDescriptor).unwrap();
   const layout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const groups = Array.from({ length: 4 }, () =>
     device.createBindGroup({ layout, entries: [] }).unwrap(),
   );
-  const cache = new RenderBundleCache({ colorFormats: [] });
-  const frame = (draws: readonly (readonly [number, number])[]) => {
-    const counters = { hits: 0, misses: 0 };
-    const encoder = device.createCommandEncoder().unwrap();
-    const pass = encoder.beginRenderPass({ colorAttachments: [] });
-    cache.encode(
-      device,
-      pass,
-      (commands) => {
-        for (const [group, offset] of draws) {
-          const handle = groups[group];
-          if (handle === undefined) throw Error('Missing fixture group');
-          commands.setPipeline(pipeline);
-          commands.setBindGroup(0, handle);
-          commands.drawIndirect(indirect, offset);
-        }
-      },
-      counters,
-    );
-    pass.end();
-    return counters;
-  };
-  const original = [
-    [0, 0],
-    [1, 20],
-    [2, 40],
-  ] as const;
-  frame(original);
-  frame(original);
-  expect(frame(original)).toEqual({ hits: 3, misses: 0 });
-  expect(
-    frame([
-      [1, 20],
-      [2, 40],
-    ]),
-  ).toEqual({ hits: 2, misses: 0 });
-  expect(
-    frame([
-      [3, 20],
-      [2, 40],
-    ]),
-  ).toEqual({ hits: 1, misses: 1 });
-  device.destroyBuffer(indirect);
+  const pass = new PreparedRasterPass({ colorFormats: [] });
+  const batches = Array.from({ length: 3 }, (_, index) => ({
+    owner: new PreparedRasterBundleCache(),
+    address: index * 20,
+    variant: index,
+  }));
+  const counters = { hits: 0, builds: 0, commands: 0, evictions: 0 };
+  const prepare = () =>
+    batches.map(({ owner, address, variant }) => {
+      const view = groups[change === 'group' ? variant : 0];
+      const pipeline = pipelines[change === 'pipeline' ? variant : 0];
+      if (!view || !pipeline) throw Error('Missing fixture binding');
+      return owner.resolveOne(
+        pass,
+        device,
+        {
+          pipeline,
+          view,
+          viewOffset: 0,
+          material: view,
+          materialOffset: undefined,
+          mesh: view,
+          meshOffsets: [],
+          vertex: indirect,
+          indexFormat: 'uint16',
+          indirect,
+          indirectOffset: address,
+          indexed: false,
+          windows: [view],
+        },
+        counters,
+      );
+    });
+  const original = prepare();
+  expect(prepare()).toEqual(original);
+  batches.shift()?.owner.retire(pass, counters);
+  const remaining = prepare();
+  expect(remaining[0]).toBe(original[1]);
+  expect(remaining[1]).toBe(original[2]);
+  const first = batches[0];
+  if (!first) throw Error('Missing surviving batch');
+  first.variant = 3;
+  const changed = prepare();
+  expect(changed[0]).not.toBe(original[1]);
+  expect(changed[1]).toBe(original[2]);
+  expect(counters).toMatchObject({ hits: 6, builds: 4, evictions: 1 });
+  device.destroyBuffer(indirect).unwrap();
 });

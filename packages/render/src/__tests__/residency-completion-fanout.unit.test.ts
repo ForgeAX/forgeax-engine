@@ -216,3 +216,54 @@ describe('shared residency submission completion', () => {
     expect((error as AggregateError).errors).toEqual(failures);
   });
 });
+
+it.each([
+  'destroy',
+  'evict',
+] as const)('rejects the released lease after a delayed submission triggers a throwing %s', async (effect) => {
+  let finish!: () => void;
+  const submitted = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const failure = Error(`native ${effect} failed`);
+  const destroy = vi.fn(() => {
+    if (effect === 'destroy') throw failure;
+  });
+  const lifetime = new ResidencyLifetime(destroy);
+  const evict = vi.fn(() => {
+    if (effect === 'evict') throw failure;
+    lifetime.retire();
+  });
+  const lease = lifetime.retain(evict);
+  lease.track(submitted);
+  const released = lease.release(true);
+  expect(released).toBeDefined();
+  let outcome: unknown;
+  void released?.then(
+    () => {
+      outcome = 'accepted';
+    },
+    (cause) => {
+      outcome = cause;
+    },
+  );
+  finish();
+  await submitted;
+  await vi.waitFor(() => expect(outcome).toBe(failure), { timeout: 100 });
+  expect(lease.release(false)).toBe(released);
+  expect(() => lifetime.retire()).toThrow(failure);
+  expect(evict).toHaveBeenCalledTimes(1);
+  expect(destroy).toHaveBeenCalledTimes(effect === 'destroy' ? 1 : 0);
+});
+
+it('keeps a synchronous failed physical retirement faulted on repeated release', () => {
+  const failure = Error('native destroy failed');
+  const destroy = vi.fn(() => {
+    throw failure;
+  });
+  const lifetime = new ResidencyLifetime(destroy);
+  const lease = lifetime.retain(() => lifetime.retire());
+  expect(() => lease.release(true)).toThrow(failure);
+  expect(() => lease.release(false)).toThrow(failure);
+  expect(destroy).toHaveBeenCalledTimes(1);
+});

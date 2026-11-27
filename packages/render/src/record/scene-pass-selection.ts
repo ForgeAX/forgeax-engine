@@ -1,5 +1,5 @@
 import type { CameraSnapshot } from '../render-contract';
-import type { ValidatedRenderable } from './frame-snapshot';
+import type { DrawRows, ValidatedRenderable } from './frame-snapshot';
 
 /** Closed owner-declared selections that can be re-read without a recorded frame. */
 export type ScenePassSelection =
@@ -11,7 +11,7 @@ export type ScenePassSelection =
 
 export type ScenePassSelectionCamera = Pick<CameraSnapshot, 'outline'>;
 
-const EMPTY_ENTRIES: readonly ValidatedRenderable[] = Object.freeze([]);
+const EMPTY_ENTRIES: DrawRows = Object.freeze([]);
 
 type EntitySelection = { readonly entities: readonly number[] };
 
@@ -44,15 +44,15 @@ function selected(entry: ValidatedRenderable, selection: EntitySelection): boole
 }
 
 export function selectScenePassPipelineEntries(
-  entries: readonly ValidatedRenderable[] | undefined,
+  entries: DrawRows | undefined,
   kind: ScenePassSelection | undefined,
   camera: ScenePassSelectionCamera | undefined,
-): readonly ValidatedRenderable[] {
+): DrawRows {
   const rows = entries ?? EMPTY_ENTRIES;
   if (kind === undefined || rows.length === 0) return rows;
   if (camera === undefined) return EMPTY_ENTRIES;
   const selection = resolveScenePassSelection(kind, camera);
-  const first = rows[0];
+  const first = rows.at(0);
   if (first !== undefined && rows.length === 1)
     return selected(first, selection) ? rows : EMPTY_ENTRIES;
   if (rows.every((entry) => selected(entry, selection))) return rows;

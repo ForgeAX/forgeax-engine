@@ -1,11 +1,15 @@
 import { R_MIN } from '@forgeax/engine-types';
 import type { ProbeBlendInspection } from '../inspection-types';
+import { at, nodes, put, remove } from './frame-tree';
+import { TreeFrame } from './frame-tree-list';
 import {
   PROBE_BLEND_RECORD_BYTE_SIZE,
   PROBE_BLEND_RECORD_CAPACITY,
   type ProbeBlendRecord,
   type ProbeBlendRecordSentinel,
 } from './probe-blend-record';
+import { ProbeInfluences } from './probe-influences';
+import { captureProbeObjects, type ProbeObjects, probeObjectChanges } from './probe-object-changes';
 
 export interface ProbeBlendContributor {
   readonly identity: string;
@@ -36,6 +40,8 @@ export interface ProbeBlendBufferProjection {
   readonly baseRevision: number;
   /** Producer-computed lane capacity, including the slot-zero sentinel. */
   readonly capacity: number;
+  /** Number of live rows, available without materializing a full upload. */
+  readonly recordCount?: number;
   readonly records: readonly {
     readonly cacheKey: number;
     readonly record: ProbeBlendRecord;
@@ -84,7 +90,7 @@ export interface ProbeAdmissionResult {
 }
 
 export interface ProbeSceneProjectionInput {
-  readonly objects: readonly ProbeSceneObjectInput[];
+  readonly objects: ProbeObjects;
   readonly probes: readonly ProbeSceneProbeInput[];
   /** Optional analytic oracle input; records never store or replace Sky. */
   readonly skyIrradiance?: readonly [number, number, number];
@@ -197,28 +203,34 @@ export function admitProbeContributors(
   radiusMinimum = R_MIN,
 ): ProbeAdmissionResult {
   const active = candidates.filter((candidate) => contributorIsActive(candidate, radiusMinimum));
-  const overflowed = active.length > PROBE_BLEND_RECORD_CAPACITY;
-  // Admission is a deterministic stable prefix, not an all-or-nothing gate.
-  // Sort the complete active set by identity before clipping so query order
-  // cannot change the selected contributors.
-  const stableActive = active
-    .slice()
-    .sort((left, right) => left.identity.localeCompare(right.identity));
-  const admitted = stableActive.slice(0, PROBE_BLEND_RECORD_CAPACITY);
-  const rejected = stableActive.slice(PROBE_BLEND_RECORD_CAPACITY);
-  const scaleRadius = active.reduce(
+  active.sort((left, right) => left.identity.localeCompare(right.identity));
+  return describeActiveProbes(active, radiusMinimum);
+}
+
+function describeActiveProbes(
+  stableActive: readonly ProbeBlendContributor[],
+  radiusMinimum: number,
+): ProbeAdmissionResult {
+  const overflowed = stableActive.length > PROBE_BLEND_RECORD_CAPACITY;
+  const admitted = overflowed ? stableActive.slice(0, PROBE_BLEND_RECORD_CAPACITY) : stableActive;
+  const rejected = overflowed ? stableActive.slice(PROBE_BLEND_RECORD_CAPACITY) : [];
+  const scaleRadius = stableActive.reduce(
     (minimum, candidate) => Math.min(minimum, candidate.radius),
-    active[0]?.radius ?? radiusMinimum,
+    stableActive[0]?.radius ?? radiusMinimum,
   );
+  const activeIdentities = Object.freeze(stableActive.map((candidate) => candidate.identity));
+  const admittedIdentities = overflowed
+    ? Object.freeze(activeIdentities.slice(0, PROBE_BLEND_RECORD_CAPACITY))
+    : activeIdentities;
   const receipt: ProbeAdmissionReceipt = {
-    activeIdentities: stableActive.map((candidate) => candidate.identity),
-    admittedIdentities: admitted.map((candidate) => candidate.identity),
-    rejectedIdentities: rejected.map((candidate) => candidate.identity),
-    stableOrder: admitted.map((candidate) => candidate.identity),
+    activeIdentities,
+    admittedIdentities,
+    rejectedIdentities: overflowed ? activeIdentities.slice(PROBE_BLEND_RECORD_CAPACITY) : [],
+    stableOrder: admittedIdentities,
     capacity: PROBE_BLEND_RECORD_CAPACITY,
     ...(overflowed ? { overflowReason: 'active-count-exceeds-capacity' as const } : {}),
     scaleRadius,
-    finite: stableActive.every((candidate) => Number.isFinite(candidate.radius)),
+    finite: true,
   };
   return {
     active: stableActive,
@@ -229,7 +241,7 @@ export function admitProbeContributors(
       ? {
           error: {
             code: 'capacity-exceeded' as const,
-            activeCount: active.length,
+            activeCount: stableActive.length,
             capacity: PROBE_BLEND_RECORD_CAPACITY,
             receipt,
           },
@@ -265,16 +277,19 @@ export function neumaierSum(values: readonly number[]): number {
   let correction = 0;
   for (const value of values) {
     const next = sum + value;
-    if (Math.abs(sum) >= Math.abs(value)) correction += sum - next + value;
-    else correction += value - next + sum;
+    correction += additionError(sum, next, value);
     sum = next;
   }
   return sum + correction;
 }
 
+function additionError(sum: number, next: number, value: number): number {
+  return Math.abs(sum) >= Math.abs(value) ? sum - next + value : value - next + sum;
+}
+
 /** Round a finite analytic value at the single f32 boundary. */
 export function roundProbeToF32(value: number): number | undefined {
-  return Number.isFinite(value) ? new Float32Array([value])[0] : undefined;
+  return Number.isFinite(value) ? Math.fround(value) : undefined;
 }
 
 export function scaledProbeWeight(
@@ -326,86 +341,79 @@ function sh9Irradiance(
   return result;
 }
 
-function vectorNeumaierSum(values: readonly (readonly number[])[], width: number): number[] {
-  return Array.from({ length: width }, (_, channel) =>
-    neumaierSum(values.map((value) => value[channel] ?? 0)),
-  );
-}
-
+/** The input has already passed the admission boundary. Accumulate each SH channel
+ * directly from the ordered coefficients, retaining binary64 compensation until packing. */
 function blendProbeCoefficients(
   contributors: readonly ProbeBlendContributor[],
   radiusMinimum: number,
-): ProbeBlendCoefficients | undefined {
-  if (
-    contributors.length > PROBE_BLEND_RECORD_CAPACITY ||
-    contributors.some((contributor) => !contributorIsActive(contributor, radiusMinimum))
-  ) {
-    return undefined;
-  }
-  const rStar = contributors.reduce(
-    (minimum, contributor) => Math.min(minimum, contributor.radius),
-    contributors[0]?.radius ?? radiusMinimum,
-  );
-  const rawTerms = contributors.map((contributor) => {
-    const { coverage } = scaledProbeWeight(contributor.distance, contributor.radius, radiusMinimum);
-    const scaledRatio = rStar / contributor.radius;
-    return {
-      contributor,
-      coverage,
-      // Diagnostic q is never used for Q, alpha, C, or SH accumulation.
-      q: coverage / (contributor.radius * contributor.radius),
-      scaledQ: coverage * scaledRatio * scaledRatio,
-    };
-  });
-  // The frozen minimum radius bounds rStar/r_i by one. The kernel consumes
-  // only scaledQ, never diagnostic q or a reciprocal-square value.
-  const scaledQLogOffset = 0;
-  const finiteTerms = rawTerms;
-  if (finiteTerms.some((term) => !Number.isFinite(term.scaledQ))) return undefined;
-  const Q = neumaierSum(finiteTerms.map((term) => term.scaledQ));
-  const terms = finiteTerms.map((term) => ({
-    identity: term.contributor.identity,
-    distance: term.contributor.distance,
-    radius: term.contributor.radius,
-    coverage: term.coverage,
-    q: term.q,
-    scaledQ: term.scaledQ,
-    qHat: term.scaledQ,
-    alpha: Q > 0 ? term.scaledQ / Q : 0,
-  }));
+) {
+  let rStar = contributors[0]?.radius ?? radiusMinimum;
+  for (const contributor of contributors) rStar = Math.min(rStar, contributor.radius);
+  const terms: (ProbeBlendTerm & { alpha: number })[] = [];
+  let sum = 0;
+  let correction = 0;
   let product = 1;
-  for (const term of finiteTerms) product *= 1 - term.coverage;
+  for (const contributor of contributors) {
+    const { distance, radius } = contributor;
+    const ratio = distance / radius;
+    const coverage = 1 - ratio * ratio;
+    const radiusRatio = rStar / radius;
+    const scaledQ = coverage * radiusRatio * radiusRatio;
+    if (!Number.isFinite(scaledQ)) return undefined;
+    const next = sum + scaledQ;
+    correction += additionError(sum, next, scaledQ);
+    sum = next;
+    product *= 1 - coverage;
+    terms.push({
+      identity: contributor.identity,
+      distance,
+      radius,
+      coverage,
+      q: coverage / (radius * radius),
+      scaledQ,
+      qHat: scaledQ,
+      alpha: 0,
+    });
+  }
+  const Q = sum + correction;
   const C = 1 - product;
   const S = 1 - C;
-  const weightedSh = finiteTerms.map((term) =>
-    Array.from(term.contributor.irradiance, (value) => value * (Q > 0 ? term.scaledQ / Q : 0)),
-  );
-  const SHPreblend = vectorNeumaierSum(weightedSh, 27).map((value) => value * C);
-  const finite =
-    Number.isFinite(Q) &&
-    Number.isFinite(C) &&
-    Number.isFinite(S) &&
-    SHPreblend.every(Number.isFinite) &&
-    finiteTerms.every((term) => Number.isFinite(term.scaledQ));
-  const receipt: ProbeAdmissionReceipt = {
-    activeIdentities: contributors.map((contributor) => contributor.identity),
-    admittedIdentities: contributors.map((contributor) => contributor.identity),
-    rejectedIdentities: [],
-    stableOrder: contributors.map((contributor) => contributor.identity),
-    capacity: PROBE_BLEND_RECORD_CAPACITY,
-    scaleRadius: rStar,
-    finite,
-  };
+  for (const term of terms) term.alpha = Q > 0 ? term.scaledQ / Q : 0;
+  const SHPreblend = new Array<number>(27);
+  let finite = Number.isFinite(Q) && Number.isFinite(C) && Number.isFinite(S);
+  for (let channel = 0; channel < SHPreblend.length; channel++) {
+    let channelSum = 0;
+    let channelCorrection = 0;
+    for (let i = 0; i < terms.length; i++) {
+      const value =
+        ((contributors[i] as ProbeBlendContributor).irradiance[channel] as number) *
+        (terms[i] as ProbeBlendTerm).alpha;
+      const next = channelSum + value;
+      channelCorrection += additionError(channelSum, next, value);
+      channelSum = next;
+    }
+    const coefficient = (channelSum + channelCorrection) * C;
+    SHPreblend[channel] = coefficient;
+    finite &&= Number.isFinite(coefficient);
+  }
+  return { terms, rStar, Q, C, S, SHPreblend, finite, scaledQLogOffset: 0 };
+}
+
+/** With no overflow the active, admitted and stable orders are the same immutable sequence. */
+function blendedReceipt(
+  terms: readonly ProbeBlendTerm[],
+  scaleRadius: number,
+  finite: boolean,
+): ProbeAdmissionReceipt {
+  const identities = Object.freeze(terms.map((term) => term.identity));
   return {
-    terms,
-    rStar,
-    Q,
-    C,
-    S,
-    SHPreblend,
+    activeIdentities: identities,
+    admittedIdentities: identities,
+    rejectedIdentities: [],
+    stableOrder: identities,
+    capacity: PROBE_BLEND_RECORD_CAPACITY,
+    scaleRadius,
     finite,
-    receipt,
-    scaledQLogOffset,
   };
 }
 
@@ -417,7 +425,12 @@ export function blendLightProbes(input: ProbeBlendInput): ProbeBlendResult {
   const radiusMinimum = input.radiusMinimum ?? R_MIN;
   const normal = input.normal;
   const sky = input.skyIrradiance;
-  if (!finiteVector(normal, 3) || !finiteVector(sky, 3)) {
+  if (
+    !finiteVector(normal, 3) ||
+    !finiteVector(sky, 3) ||
+    input.contributors.length > PROBE_BLEND_RECORD_CAPACITY ||
+    input.contributors.some((contributor) => !contributorIsActive(contributor, radiusMinimum))
+  ) {
     return invalidInputResult(radiusMinimum, 'invalid-admitted-prefix');
   }
   const coefficients = blendProbeCoefficients(input.contributors, radiusMinimum);
@@ -429,20 +442,11 @@ export function blendLightProbes(input: ProbeBlendInput): ProbeBlendResult {
   ) as [number, number, number];
   return {
     ...coefficients,
+    receipt: blendedReceipt(coefficients.terms, coefficients.rStar, coefficients.finite),
     skyIrradiance: [sky[0], sky[1], sky[2]],
     diffuse,
     finite: coefficients.finite && diffuse.every(Number.isFinite),
   };
-}
-
-function vectorDistance(
-  left: readonly [number, number, number],
-  right: readonly [number, number, number],
-): number {
-  const dx = left[0] - right[0];
-  const dy = left[1] - right[1];
-  const dz = left[2] - right[2];
-  return Math.hypot(dx, dy, dz);
 }
 
 function encodeProbeRecord(
@@ -485,10 +489,6 @@ function encodeProbeRecord(
     lastKnownGood,
     ...(sentinel === undefined ? {} : { sentinel }),
   };
-}
-
-function sameList(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function sameVector3(
@@ -542,16 +542,63 @@ function sameSkyFacts(left: ProbeSceneProjectionInput, right: ProbeSceneProjecti
   );
 }
 
+type ProbeUploadRow = ProbeBlendBufferProjection['records'][number];
+
+interface ProbeReceiver {
+  readonly upload: ProbeUploadRow;
+  readonly contributors: readonly ProbeBlendTerm[];
+  readonly qHatSum: number;
+  readonly rStar: number;
+  readonly coverage: number;
+  readonly fallbackReason?: string | undefined;
+  readonly error?: ProbeAdmissionError | undefined;
+}
+
+const noTerms: readonly ProbeBlendTerm[] = Object.freeze([]);
+const zeroSh: readonly number[] = Object.freeze(new Array<number>(27).fill(0));
+
+/** Slot order chooses the representative receiver; tree weight locates the first current error.
+ * Each issued frame owns both its GPU rows and the facts that explain them. */
+class ProbeRecordFrame extends TreeFrame<ProbeReceiver> {
+  private uploaded?: readonly ProbeUploadRow[];
+  private valuesBySlot?: readonly ProbeBlendRecord[];
+  private observedReceipt?: ProbeAdmissionReceipt;
+
+  get receipt(): ProbeAdmissionReceipt {
+    if (this.observedReceipt !== undefined) return this.observedReceipt;
+    const first = this.at(0);
+    this.observedReceipt =
+      first?.error?.receipt ??
+      blendedReceipt(first?.contributors ?? noTerms, first?.rStar ?? R_MIN, true);
+    return this.observedReceipt;
+  }
+
+  get error(): ProbeAdmissionError | undefined {
+    return this.weight === 0 ? undefined : at(this.root, 0)?.node.value.error;
+  }
+
+  get uploadRows(): readonly ProbeUploadRow[] {
+    this.uploaded ??= Object.freeze(Array.from(nodes(this.root), (node) => node.value.upload));
+    return this.uploaded;
+  }
+
+  get records(): readonly ProbeBlendRecord[] {
+    this.valuesBySlot ??= Object.freeze(
+      Array.from(nodes(this.root), (node) => node.value.upload.record),
+    );
+    return this.valuesBySlot;
+  }
+}
+
+export function projectedProbeCount(projection: ProbeBlendBufferProjection | undefined): number {
+  return projection?.recordCount ?? projection?.records.length ?? 0;
+}
+
 /** Renderer-owned bounded projection; admission is explicit and fail-closed. */
 export class ProbeBlendSceneProjection {
   private previous?: ProbeSceneProjectionInput;
-  private records = new Map<number, ProbeBlendRecord>();
-  private lastError: ProbeAdmissionError | undefined;
-  private lastReceipt = emptyReceipt(R_MIN);
-  private lastActiveContributorCount = 0;
-  private lastAdmittedProbeCount = 0;
-  private lastCoverage = 0;
-  private lastFinite = true;
+  private records = new ProbeRecordFrame();
+  private influences?: ProbeInfluences | undefined;
   private lastSky: ProbeSceneProjectionInput['sky'] = {
     available: false,
     irradiance: [0, 0, 0],
@@ -569,28 +616,21 @@ export class ProbeBlendSceneProjection {
     dirtyRecords: Object.freeze([]),
     removedCacheKeys: Object.freeze([]),
   });
-  private resultRecords: readonly ProbeBlendRecord[] = Object.freeze([]);
-  private recordFacts = new Map<
-    number,
-    {
-      readonly contributors: readonly ProbeBlendTerm[];
-      readonly qHatSum: number;
-      readonly rStar: number;
-      readonly fallbackReason: string | undefined;
-    }
-  >();
-
   getRecord(objectKey: number): ProbeBlendRecord | undefined {
-    return this.records.get(objectKey);
+    return this.records.get(0, objectKey)?.upload.record;
   }
 
   captureRecordLookup(): (objectKey: number) => ProbeBlendRecord | undefined {
     const records = this.records;
-    return (objectKey) => records.get(objectKey);
+    return (objectKey) => records.get(0, objectKey)?.upload.record;
   }
 
   hasRecords(): boolean {
-    return this.records.size > 0;
+    return this.records.length > 0;
+  }
+
+  hasLocalInputs(): boolean {
+    return (this.previous?.probes.length ?? 0) > 0;
   }
 
   /** Stable upload projection; rebuilt only when probe/object facts change. */
@@ -599,15 +639,18 @@ export class ProbeBlendSceneProjection {
   }
 
   inspect(): ProbeBlendInspection {
+    const frame = this.records;
+    const receipt = frame.receipt;
+    const coverage = frame.at(0)?.coverage ?? 0;
     return {
-      activeContributorCount: this.lastActiveContributorCount,
-      admittedProbeCount: this.lastAdmittedProbeCount,
-      coverage: this.lastCoverage,
-      skyResidualFraction: 1 - this.lastCoverage,
-      finite: this.lastFinite,
-      errorCode: this.lastError?.code,
-      records: [...this.records.values()].map((record) => {
-        const facts = this.recordFacts.get(record.objectKey);
+      activeContributorCount: receipt.activeIdentities.length,
+      admittedProbeCount: receipt.admittedIdentities.length,
+      coverage,
+      skyResidualFraction: 1 - coverage,
+      finite: frame.records.every((record) => record.bytes.length === PROBE_BLEND_RECORD_BYTE_SIZE),
+      errorCode: frame.error?.code,
+      records: Array.from(nodes(frame.root), ({ value: facts }) => {
+        const record = facts.upload.record;
         return {
           objectKey: record.objectKey,
           generation: record.generation,
@@ -619,7 +662,7 @@ export class ProbeBlendSceneProjection {
           lastKnownGood: record.lastKnownGood,
           sentinel: record.sentinel,
           probeBlendIndex: record.objectKey,
-          contributors: (facts?.contributors ?? []).map((term) => ({
+          contributors: facts.contributors.map((term) => ({
             identity: term.identity,
             distance: term.distance,
             radius: term.radius,
@@ -628,9 +671,9 @@ export class ProbeBlendSceneProjection {
             qHat: term.qHat,
             alpha: term.alpha,
           })),
-          qHatSum: facts?.qHatSum ?? 0,
-          rStar: facts?.rStar ?? R_MIN,
-          fallbackReason: facts?.fallbackReason,
+          qHatSum: facts.qHatSum,
+          rStar: facts.rStar,
+          fallbackReason: facts.fallbackReason,
         };
       }),
       sky: {
@@ -643,249 +686,167 @@ export class ProbeBlendSceneProjection {
       dirtyVisitCount: this.lastDirtyVisitCount,
       dirtyReasons: [...this.lastDirtyReasons],
       receipt: {
-        activeIdentities: [...this.lastReceipt.activeIdentities],
-        admittedIdentities: [...this.lastReceipt.admittedIdentities],
-        rejectedIdentities: [...this.lastReceipt.rejectedIdentities],
-        stableOrder: [...this.lastReceipt.stableOrder],
-        capacity: this.lastReceipt.capacity,
-        scaleRadius: this.lastReceipt.scaleRadius,
-        finite: this.lastReceipt.finite,
-        overflowReason: this.lastReceipt.overflowReason,
+        activeIdentities: [...receipt.activeIdentities],
+        admittedIdentities: [...receipt.admittedIdentities],
+        rejectedIdentities: [...receipt.rejectedIdentities],
+        stableOrder: [...receipt.stableOrder],
+        capacity: receipt.capacity,
+        scaleRadius: receipt.scaleRadius,
+        finite: receipt.finite,
+        overflowReason: receipt.overflowReason,
       },
     };
   }
 
   apply(input: ProbeSceneProjectionInput): ProbeSceneProjectionResult {
-    const dirtyReasons: ProbeSceneDirtyReason[] = [];
-    const affectedObjectKeys = new Set<number>();
+    const reasons = new Set<ProbeSceneDirtyReason>();
     const previous = this.previous;
-    if (
-      previous !== undefined &&
-      previous.objects === input.objects &&
-      input.worldRevision === previous.worldRevision &&
-      sameProbeFacts(input.probes, previous.probes) &&
-      sameSkyFacts(input, previous)
-    ) {
-      return {
-        records: this.resultRecords,
-        contributors: [],
-        activeContributorCount: this.lastActiveContributorCount,
-        admittedProbeCount: this.lastAdmittedProbeCount,
-        coverage: this.lastCoverage,
-        skyResidualFraction: 1 - this.lastCoverage,
-        dirtyReasons: [],
-        affectedObjectKeys: [],
-        visits: 0,
-        allocations: 0,
-        uploads: 0,
-        receipt: this.lastReceipt,
-        ...(this.lastError === undefined ? {} : { error: this.lastError }),
-      };
+    const probeFactsChanged =
+      previous === undefined || !sameProbeFacts(input.probes, previous.probes);
+    const skyChanged = previous === undefined || !sameSkyFacts(input, previous);
+    if (previous !== undefined) {
+      if (
+        input.worldRevision !== previous.worldRevision ||
+        input.lastKnownGood !== previous.lastKnownGood
+      )
+        reasons.add('world');
+      if (probeFactsChanged) reasons.add('probe-fact');
+      if (skyChanged) reasons.add('sky');
     }
-    const objectKeys = input.objects.map((object) => String(object.objectKey)).sort();
-    const previousObjectKeys =
-      previous?.objects.map((object) => String(object.objectKey)).sort() ?? [];
-    if (previous === undefined || !sameList(objectKeys, previousObjectKeys)) {
-      dirtyReasons.push('object-boundary');
-      for (const object of input.objects) affectedObjectKeys.add(object.objectKey);
-    }
-    if (previous !== undefined && input.worldRevision !== previous.worldRevision)
-      dirtyReasons.push('world');
-    if (previous !== undefined && !sameProbeFacts(input.probes, previous.probes))
-      dirtyReasons.push('probe-fact');
-    if (previous !== undefined && !sameSkyFacts(input, previous)) dirtyReasons.push('sky');
-    const previousObjects = new Map(previous?.objects.map((object) => [object.objectKey, object]));
-    for (const object of input.objects) {
-      const oldObject = previousObjects.get(object.objectKey);
-      if (oldObject === undefined) {
-        affectedObjectKeys.add(object.objectKey);
+    const objects = captureProbeObjects(input.objects, previous?.objects);
+    const accepted: ProbeSceneProjectionInput = {
+      ...input,
+      objects,
+      probes: probeFactsChanged
+        ? input.probes.map((probe) => ({
+            ...probe,
+            position: [...probe.position] as const,
+            irradiance: Array.from(probe.irradiance),
+          }))
+        : previous.probes,
+      ...(input.sky === undefined
+        ? {}
+        : {
+            sky: skyChanged
+              ? { ...input.sky, irradiance: [...input.sky.irradiance] as const }
+              : previous.sky,
+          }),
+      ...(input.skyIrradiance === undefined
+        ? {}
+        : {
+            skyIrradiance: skyChanged
+              ? ([...input.skyIrradiance] as const)
+              : previous.skyIrradiance,
+          }),
+    };
+    const { affected, removed } = probeObjectChanges(
+      objects,
+      previous?.objects,
+      reasons.size !== 0,
+      reasons,
+    );
+    const uniqueDirtyReasons = [...reasons];
+    if (probeFactsChanged)
+      this.influences =
+        accepted.probes.length === 0 ? undefined : new ProbeInfluences(accepted.probes);
+    const influences = this.influences;
+    let root = this.records.root;
+    const dirtyRecords: ProbeUploadRow[] = [];
+    const removedCacheKeys: number[] = [];
+    const retire = (key: number): void => {
+      if (this.records.get(0, key) === undefined) return;
+      root = remove(root, 0, key);
+      removedCacheKeys.push(key);
+    };
+    for (const key of removed) retire(key);
+    for (const object of affected.values()) {
+      if (influences === undefined) {
+        retire(object.objectKey);
         continue;
       }
-      if (!sameVector3(object.position, oldObject.position)) {
-        dirtyReasons.push('object-position');
-        affectedObjectKeys.add(object.objectKey);
-      }
-      if (object.generation !== oldObject.generation) {
-        dirtyReasons.push('generation');
-        affectedObjectKeys.add(object.objectKey);
-      }
-    }
-    if (
-      dirtyReasons.includes('world') ||
-      dirtyReasons.includes('probe-fact') ||
-      dirtyReasons.includes('sky')
-    )
-      for (const object of input.objects) affectedObjectKeys.add(object.objectKey);
-    const uniqueDirtyReasons = [...new Set(dirtyReasons)];
-    if (previous !== undefined && uniqueDirtyReasons.length === 0) {
-      return {
-        records: [...this.records.values()],
-        contributors: [],
-        activeContributorCount: this.lastActiveContributorCount,
-        admittedProbeCount: this.lastAdmittedProbeCount,
-        coverage: this.lastCoverage,
-        skyResidualFraction: 1 - this.lastCoverage,
-        dirtyReasons: [],
-        affectedObjectKeys: [],
-        visits: 0,
-        allocations: 0,
-        uploads: 0,
-        receipt: this.lastReceipt,
-        ...(this.lastError === undefined ? {} : { error: this.lastError }),
+      const active = influences.at(object.position);
+      const overflow =
+        active.length > PROBE_BLEND_RECORD_CAPACITY
+          ? describeActiveProbes(active, R_MIN)
+          : undefined;
+      const admitted = overflow?.admitted ?? active;
+      const blend = admitted.length === 0 ? undefined : blendProbeCoefficients(admitted, R_MIN);
+      // Valid finite positive radii bound rStar / radius to [0, 1].
+      // Only the public numerical oracle accepts unadmitted inputs.
+      const lastKnownGood =
+        input.lastKnownGood ?? this.getRecord(object.objectKey)?.lastKnownGood ?? false;
+      const sentinel = blend !== undefined ? undefined : lastKnownGood ? 'no-active' : 'no-lkg';
+      const record = encodeProbeRecord(
+        object.objectKey,
+        object.generation,
+        blend?.C ?? 0,
+        blend?.SHPreblend ?? zeroSh,
+        true,
+        blend !== undefined,
+        blend !== undefined || lastKnownGood,
+        sentinel,
+      );
+      const upload = { cacheKey: object.objectKey, record };
+      const receiver: ProbeReceiver = {
+        upload,
+        contributors: blend?.terms ?? noTerms,
+        qHatSum: blend?.Q ?? 0,
+        rStar: blend?.rStar ?? R_MIN,
+        coverage: blend?.C ?? 0,
+        fallbackReason: overflow === undefined ? sentinel : 'capacity-exceeded-stable-prefix',
+        error: overflow?.error,
       };
+      root = put(root, receiver, 0, object.objectKey, receiver.error === undefined ? 0 : 1);
+      dirtyRecords.push(upload);
     }
-    const nextRecords = new Map(this.records);
-    const currentObjectKeys = new Set(input.objects.map((object) => object.objectKey));
-    for (const objectKey of nextRecords.keys()) {
-      if (!currentObjectKeys.has(objectKey)) {
-        nextRecords.delete(objectKey);
-        this.recordFacts.delete(objectKey);
-      }
-    }
-    let firstTerms: readonly ProbeBlendTerm[] = [];
-    let firstReceipt = emptyReceipt(R_MIN);
-    let firstError: ProbeAdmissionError | undefined;
-    let firstActiveCount = 0;
-    let firstAdmittedCount = 0;
-    let firstCoverage = 0;
-    let firstObjectSeen = false;
-    let visited = 0;
-    for (const object of input.objects) {
-      if (!affectedObjectKeys.has(object.objectKey)) continue;
-      visited += 1;
-      const candidates = input.probes.map((probe) => ({
-        identity: probe.identity,
-        admitted: probe.admitted,
-        distance: vectorDistance(object.position, probe.position),
-        radius: probe.radius,
-        irradiance: probe.irradiance,
-      }));
-      const admission = admitProbeContributors(candidates);
-      if (!firstObjectSeen) {
-        firstObjectSeen = true;
-        firstActiveCount = admission.active.length;
-        firstAdmittedCount = admission.admitted.length;
-        firstReceipt = admission.receipt;
-      }
-      const previousRecord = this.records.get(object.objectKey);
-      const lastKnownGood = input.lastKnownGood ?? previousRecord?.lastKnownGood ?? false;
-      let record: ProbeBlendRecord;
-      if (admission.error !== undefined) firstError ??= admission.error;
-      if (admission.admitted.length === 0) {
-        if (input.probes.length === 0) {
-          nextRecords.delete(object.objectKey);
-          this.recordFacts.delete(object.objectKey);
-          continue;
-        }
-        const sentinel: ProbeBlendRecordSentinel = lastKnownGood ? 'no-active' : 'no-lkg';
-        record = encodeProbeRecord(
-          object.objectKey,
-          object.generation,
-          0,
-          new Array(27).fill(0),
-          true,
-          false,
-          lastKnownGood,
-          sentinel,
-        );
-        this.recordFacts.set(object.objectKey, {
-          contributors: [],
-          qHatSum: 0,
-          rStar: R_MIN,
-          fallbackReason: admission.error?.code ?? sentinel,
-        });
-      } else {
-        const blend = blendProbeCoefficients(admission.admitted, R_MIN);
-        if (blend === undefined) {
-          firstError ??= {
-            code: 'invalid-admitted-prefix',
-            activeCount: admission.active.length,
-            capacity: PROBE_BLEND_RECORD_CAPACITY,
-            receipt: admission.receipt,
-          };
-          firstReceipt = admission.receipt;
-          continue;
-        }
-        record = encodeProbeRecord(
-          object.objectKey,
-          object.generation,
-          blend.C,
-          blend.SHPreblend,
-          true,
-          true,
-          true,
-          undefined,
-        );
-        this.recordFacts.set(object.objectKey, {
-          contributors: blend.terms,
-          qHatSum: blend.Q,
-          rStar: blend.rStar,
-          fallbackReason:
-            admission.error === undefined ? undefined : 'capacity-exceeded-stable-prefix',
-        });
-        if (firstTerms.length === 0) firstTerms = blend.terms;
-        firstCoverage = blend.C;
-      }
-      nextRecords.set(object.objectKey, record);
-      firstError ??= admission.error;
-    }
-    const allocations = previous === undefined ? nextRecords.size : 0;
-    const resultRecords = Object.freeze([...nextRecords.values()]);
-    const result = {
-      records: resultRecords,
-      contributors: firstTerms,
-      activeContributorCount: firstActiveCount,
-      admittedProbeCount: firstAdmittedCount,
-      coverage: firstCoverage,
-      skyResidualFraction: 1 - firstCoverage,
+    const frame = root === this.records.root ? this.records : new ProbeRecordFrame(root);
+    const representative = frame.at(0);
+    const coverage = representative?.coverage ?? 0;
+    const error = frame.error;
+    const result: ProbeSceneProjectionResult = {
+      get records() {
+        return frame.records;
+      },
+      contributors: representative?.contributors ?? noTerms,
+      activeContributorCount:
+        representative?.error?.activeCount ?? representative?.contributors.length ?? 0,
+      admittedProbeCount: representative?.contributors.length ?? 0,
+      coverage,
+      skyResidualFraction: 1 - coverage,
       dirtyReasons: uniqueDirtyReasons,
-      affectedObjectKeys: [...affectedObjectKeys].sort((left, right) => left - right),
-      visits: visited,
-      allocations,
-      uploads: nextRecords.size,
-      receipt: firstReceipt,
-      ...(firstError === undefined ? {} : { error: firstError }),
+      affectedObjectKeys: [...affected.keys()].sort((left, right) => left - right),
+      visits: affected.size,
+      allocations: dirtyRecords.length,
+      uploads: dirtyRecords.length,
+      get receipt() {
+        return frame.receipt;
+      },
+      ...(error === undefined ? {} : { error }),
     };
-    const projectedRecords = Object.freeze(
-      [...nextRecords].map(([objectKey, record]) => Object.freeze({ cacheKey: objectKey, record })),
-    );
-    const dirtyRecords = Object.freeze(
-      projectedRecords.filter(({ record }) => affectedObjectKeys.has(record.objectKey)),
-    );
-    const removedCacheKeys = Object.freeze(
-      [...this.records.keys()].filter((objectKey) => !nextRecords.has(objectKey)),
-    );
-    const capacity = projectedRecords.reduce(
-      (value, { record }) => Math.max(value, record.objectKey + 2),
-      1,
-    );
-    this.previous = input;
-    this.records = nextRecords;
-    this.resultRecords = resultRecords;
-    const baseRevision = this.bufferProjection.revision;
-    this.bufferProjection = Object.freeze({
-      sourceIdentity: this.bufferProjectionSource,
-      revision: baseRevision + 1,
-      baseRevision,
-      capacity,
-      records: projectedRecords,
-      dirtyRecords,
-      removedCacheKeys,
-    });
-    this.lastError = firstError;
-    this.lastReceipt = firstReceipt;
-    this.lastActiveContributorCount = firstActiveCount;
-    this.lastAdmittedProbeCount = firstAdmittedCount;
-    this.lastCoverage = firstCoverage;
-    this.lastFinite = this.resultRecords.every(
-      (record) => record.bytes.length === PROBE_BLEND_RECORD_BYTE_SIZE,
-    );
+    this.previous = accepted;
+    if (frame !== this.records) {
+      this.records = frame;
+      const baseRevision = this.bufferProjection.revision;
+      const last = frame.at(-1);
+      this.bufferProjection = Object.freeze({
+        sourceIdentity: this.bufferProjectionSource,
+        revision: baseRevision + 1,
+        baseRevision,
+        capacity: last === undefined ? 1 : last.upload.cacheKey + 2,
+        recordCount: frame.length,
+        get records() {
+          return frame.uploadRows;
+        },
+        dirtyRecords: Object.freeze(dirtyRecords),
+        removedCacheKeys: Object.freeze(removedCacheKeys),
+      });
+    }
     this.lastSky =
-      input.sky ??
-      (input.skyIrradiance === undefined
+      accepted.sky ??
+      (accepted.skyIrradiance === undefined
         ? { available: false, irradiance: [0, 0, 0] as const, fallbackReason: 'no-skylight' }
-        : { available: true, irradiance: input.skyIrradiance });
-    this.lastDirtyVisitCount = visited;
+        : { available: true, irradiance: accepted.skyIrradiance });
+    this.lastDirtyVisitCount = affected.size;
     this.lastDirtyReasons = uniqueDirtyReasons;
     return result;
   }

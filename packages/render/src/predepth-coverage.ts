@@ -1,24 +1,26 @@
+import {
+  materialDepthCoversEntry,
+  materialDepthFragmentEntry,
+  PREDEPTH_FRAGMENT_ENTRY,
+} from '@forgeax/engine-shader';
 import type {
   MaterialProgramAbi,
   MaterialRenderState,
   ShaderEntryPointReads,
 } from '@forgeax/engine-types';
 
-/** Logical depth-pass entry; older stock templates retain their AO coverage entry. */
-export const PREDEPTH_FRAGMENT_ENTRY = 'fs_depth_masked';
+import type { DispatchEntry } from './render-system-extract';
+
+export { PREDEPTH_FRAGMENT_ENTRY } from '@forgeax/engine-shader';
 
 type DepthProgram = {
-  readonly receipt?: Pick<MaterialProgramAbi, 'positionBounds' | 'sceneDepth'>;
-  readonly program: { readonly entryPoints?: readonly ShaderEntryPointReads[] };
-  readonly fragmentEntry?: string;
+  readonly receipt?: Pick<MaterialProgramAbi, 'positionBounds' | 'sceneDepth'> | undefined;
+  readonly program: { readonly entryPoints?: readonly ShaderEntryPointReads[] | undefined };
+  readonly fragmentEntry?: string | undefined;
 };
 
 export function predepthFragmentEntry(artifact: DepthProgram): string {
-  return artifact.program.entryPoints?.some(
-    (entry) => entry.stage === 'fragment' && entry.name === PREDEPTH_FRAGMENT_ENTRY,
-  )
-    ? PREDEPTH_FRAGMENT_ENTRY
-    : 'fs_ao_input';
+  return materialDepthFragmentEntry(artifact.program);
 }
 
 /** Same stock position/Surface coverage, with no duplicated depth/mask/storage effects. */
@@ -27,10 +29,6 @@ export function predepthCoversMaterial(
   state: MaterialRenderState | undefined,
 ): boolean {
   if (
-    (artifact?.fragmentEntry !== undefined &&
-      artifact.fragmentEntry !== 'fs_main' &&
-      artifact.fragmentEntry !== 'fs_opaque' &&
-      artifact.fragmentEntry !== 'fs_forward_screen') ||
     artifact?.receipt?.positionBounds !== 'standard-input' ||
     artifact.receipt.sceneDepth !== undefined ||
     state?.depthWriteEnabled === false ||
@@ -41,22 +39,37 @@ export function predepthCoversMaterial(
     state?.alphaToCoverageEnabled === true
   )
     return false;
-  const entries = artifact.program.entryPoints;
-  const pureCoverage = (name: string) => {
-    const effects = entries?.find(
-      (entry) => entry.stage === 'fragment' && entry.name === name,
-    )?.effects;
-    return (
-      effects !== undefined &&
-      !effects.writesDepth &&
-      !effects.writesSampleMask &&
-      !effects.writesStorage
-    );
-  };
-  return (
-    pureCoverage(predepthFragmentEntry(artifact)) &&
-    pureCoverage(artifact.fragmentEntry ?? 'fs_main') &&
-    // A normal-demanding single-sample primary uses this same Surface entry.
-    (!entries?.some((entry) => entry.name === 'fs_ao_input') || pureCoverage('fs_ao_input'))
-  );
+  if (predepthFragmentEntry(artifact) !== PREDEPTH_FRAGMENT_ENTRY) return false;
+  return materialDepthCoversEntry(artifact.program, artifact.fragmentEntry ?? 'fs_main');
+}
+
+/** Geometry coverage supplied by one authored forward pass. */
+export type ForwardShadowCoverage = 'empty' | 'covered' | 'incompatible';
+
+export function forwardShadowPassCoverage(
+  draw: Pick<
+    DispatchEntry,
+    'tags' | 'queue' | 'renderState' | 'materialShaderId' | 'vertexEntry' | 'fragmentEntry'
+  >,
+): ForwardShadowCoverage {
+  if (
+    draw.tags.LightMode !== 'Forward' ||
+    draw.queue >= 3000 ||
+    draw.renderState?.blend !== undefined
+  )
+    return 'empty';
+  const state = draw.renderState;
+  const depthCompare = state?.depthCompare ?? 'less';
+  if (
+    draw.materialShaderId !== 'forgeax::default-standard-pbr' ||
+    (draw.vertexEntry !== undefined && draw.vertexEntry !== 'vs_main') ||
+    (draw.fragmentEntry !== undefined && draw.fragmentEntry !== 'fs_main') ||
+    state?.depthWriteEnabled === false ||
+    (depthCompare !== 'less' && depthCompare !== 'less-equal') ||
+    state?.stencil !== undefined ||
+    state?.alphaToCoverageEnabled === true ||
+    state?.outputs?.some((output) => output.blend !== undefined) === true
+  )
+    return 'incompatible';
+  return 'covered';
 }

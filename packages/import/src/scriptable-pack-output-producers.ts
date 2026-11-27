@@ -1,5 +1,7 @@
 import { ktx2Bc5SourceMismatch } from '@forgeax/engine-codec';
+import { packMeshBin } from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import type { NativeCookDraft } from '@forgeax/engine-pack/native-cooker';
 import {
   ANIMATION_CLIP_SAMPLES_ARTIFACT,
   encodeAnimationClipSamples,
@@ -23,6 +25,7 @@ import type {
   MeshAsset,
   ParticleEffectAsset,
   RenderPipelineAsset,
+  Result,
   SamplerAsset,
   SceneAsset,
   SkeletonAsset,
@@ -45,7 +48,6 @@ import {
 import { cookWaterAsset, validateWaterRuntimeAsset } from '@forgeax/engine-water';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import { packMeshBin } from './mesh-bin.js';
 import { encodeMeshDistanceFieldProduct } from './mesh-distance-field-product';
 import {
   type AssetOutputInput,
@@ -221,27 +223,24 @@ function meshDataProduct(input: AssetOutputInput): AssetOutputProduct {
 function meshProduct(input: AssetOutputInput): AssetOutputProduct {
   const prepared = meshDataProduct(input);
   const mesh = prepared.payload as MeshAsset;
-  const refs = prepared.refs;
+  const packed = packMeshBin(
+    mesh,
+    input.sourceKey,
+    prepared.refs.map((reference) => reference.guid),
+    'static-streams',
+  );
+  if (!packed.ok) throw packed.error;
+  const bytes = packed.value;
+  const version = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
   return {
     ...prepared,
-    // The binary body owns geometry. Keeping the author arrays in JSON as well
-    // duplicates bytes and creates two competing payloads at runtime admission.
+    // One binary body owns geometry for both raster and CPU readers.
     payload: { kind: 'mesh' },
     artifacts: {
       body: {
         mediaType: 'application/x-forgeax-mesh',
-        assetCodec: { name: 'mesh-binary', version: '5' },
-        bytes: (() => {
-          const packed = packMeshBin(
-            mesh,
-            input.sourceKey,
-            refs.map((reference) => reference.guid),
-          );
-          if (!packed.ok) {
-            throw packed.error;
-          }
-          return packed.value;
-        })(),
+        assetCodec: { name: 'mesh-binary', version: String(version) },
+        bytes,
       },
     },
   };
@@ -474,6 +473,7 @@ function ordinaryPodProduct(input: AssetOutputInput): AssetOutputProduct {
         const terrain = asset as TerrainAsset;
         const dependencies = [
           ...terrain.grids,
+          ...(terrain.weightDetail === undefined ? [] : [terrain.weightDetail.texture]),
           ...terrain.layers.flatMap((layer) =>
             layer.blend === 'height' ? [layer.material, layer.height] : [layer.material],
           ),
@@ -730,9 +730,50 @@ export const materialAssetOutputProducer = createSafeProducer(
   materialProduct,
 );
 
+/** Native cookers produce GUIDs; the material output producer owns the persisted references. */
+export async function projectNativeMaterial(
+  guid: string,
+  sourceKey: string,
+  draft: NativeCookDraft,
+  retainedRefs?: readonly AssetRef[],
+): Promise<
+  Result<AssetOutputProduct, ImportError | { expected: string; actualGuid?: string; ref?: string }>
+> {
+  if (draft.guid.toLowerCase() !== guid.toLowerCase())
+    return err({ expected: 'the cooker to preserve the material GUID', actualGuid: draft.guid });
+  const asset = draft.payload;
+  if (
+    asset === null ||
+    typeof asset !== 'object' ||
+    Array.isArray(asset) ||
+    !('kind' in asset) ||
+    asset.kind !== 'material'
+  )
+    return err({ expected: 'the cooker to return a material payload' });
+  const projected = await materialAssetOutputProducer.produce({
+    guid,
+    sourceKey,
+    asset: asset as MaterialAsset,
+  });
+  if (!projected.ok) return projected;
+  const refs = [...projected.value.refs];
+  const seen = new Set(refs.map((ref) => ref.guid.toLowerCase()));
+  for (const ref of [...(retainedRefs ?? []), ...draft.refs.map((guid) => ({ guid }))]) {
+    const parsed = AssetGuid.parse(ref.guid);
+    if (!parsed.ok)
+      return err({ expected: 'the cooker refs to contain valid AssetGuid values', ref: ref.guid });
+    const key = ref.guid.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      refs.push(retainedRefs === undefined ? { guid: AssetGuid.format(parsed.value) } : ref);
+    }
+  }
+  return ok({ ...projected.value, refs });
+}
+
 export const meshAssetDataProducer = meshProducer('mesh-data/2', meshDataProduct);
 
-export const meshAssetOutputProducer = meshProducer('mesh-binary/7', meshProduct);
+export const meshAssetOutputProducer = meshProducer('mesh-binary/8', meshProduct);
 const nativeTextureAssetOutputProducer = createSafeProducer(
   'texture',
   'texture-pack/3',

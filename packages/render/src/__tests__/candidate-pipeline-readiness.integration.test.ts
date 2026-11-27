@@ -95,6 +95,10 @@ struct CandidateVertex { @location(0) position: vec3<f32> }
 @vertex fn vs_temporal(input: CandidateVertex) -> @builtin(position) vec4<f32> {
   return vec4<f32>(input.position, 1.0);
 }
+@vertex fn vs_coverage(input: CandidateVertex) -> @builtin(position) vec4<f32> {
+  return vec4<f32>(input.position, 1.0);
+}
+@fragment fn fs_coverage() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
 @fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
 @fragment fn fs_opaque() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
 @fragment fn fs_gbuffer() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
@@ -276,7 +280,11 @@ async function fixture(
   host.onError((error) => errors.push(error));
   const renderer = exposeRenderer(host);
   expect(
-    renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'deferred', ssao: false }).ok,
+    renderer.setProfile({
+      ...renderer.inspect().profile,
+      renderPath: 'deferred',
+      ambientOcclusion: { enabled: false },
+    }).ok,
   ).toBe(true);
   const assets = host.assetRegistry;
   const world = new World({ assets });
@@ -396,13 +404,19 @@ async function fixture(
     return submitted.receipt;
   };
   let firstReady = false;
+  let pendingReason: string | undefined;
   for (let frame = 0; frame < 30; frame++) {
-    if ((await draw()).presentation === 'ready') {
+    const receipt = await draw();
+    if (receipt.presentation === 'ready') {
       firstReady = true;
       break;
     }
+    pendingReason = JSON.stringify(receipt.presentationPendingReason);
   }
-  expect(firstReady).toBe(true);
+  expect(
+    firstReady,
+    `initial presentation pending: ${pendingReason}; errors: ${JSON.stringify(errors)}`,
+  ).toBe(true);
   expect(asyncPipelines.mock.calls.some(([descriptor]) => newLayout(descriptor))).toBe(false);
   hold = true;
   const release = () => {
@@ -472,6 +486,33 @@ async function fixture(
   };
 }
 
+it.each([
+  'forward',
+  'deferred',
+] as const)('reports each applied configuration on a moving %s scene with one physical graph', async (renderPath) => {
+  const f = await fixture('color');
+  const profile = { ...f.renderer.inspect().profile, renderPath };
+  try {
+    expect(f.renderer.setProfile({ ...profile, configurationRevision: 1 }).ok).toBe(true);
+    let ready = await f.draw();
+    for (let i = 0; ready.presentation !== 'ready' && i < 30; i++) ready = await f.draw();
+    expect(ready.presentation).toBe('ready');
+    expect(ready.configurationRevision).toBe(1);
+    const physical = f.renderer.inspect().recoveryEvidence.graph;
+    expect(physical.ready).toBe(true);
+    for (let revision = 2; revision <= 61; revision++) {
+      expect(f.renderer.setProfile({ ...profile, configurationRevision: revision }).ok).toBe(true);
+      f.world.set(f.entity, Transform, { pos: [revision / 200, 0, 0] }).unwrap();
+      const receipt = await f.draw();
+      expect(receipt.presentation).toBe('ready');
+      expect(receipt.configurationRevision).toBe(revision);
+      expect(f.renderer.inspect().recoveryEvidence.graph).toEqual(physical);
+    }
+  } finally {
+    await f.dispose();
+  }
+});
+
 it('keeps the accepted graph when a real custom scene pipeline waits for its PSO', async () => {
   const f = await fixture('color', false, false, false, false, [], standardPipeline);
   const renderer = f.renderer;
@@ -513,6 +554,9 @@ it('keeps the accepted graph when a real custom scene pipeline waits for its PSO
     };
     const encodedBefore = draws.mock.calls.length + indirectDraws.mock.calls.length;
     const acquiredBefore = acquire.mock.calls.length;
+    expect(
+      renderer.setProfile({ ...renderer.inspect().profile, configurationRevision: 8 }).ok,
+    ).toBe(true);
     const widthBefore = f.canvas.width;
     f.canvas.width = widthBefore + 8;
     f.canvas.height += 4;
@@ -560,6 +604,7 @@ it('keeps the accepted graph when a real custom scene pipeline waits for its PSO
     const barrier = await f.submit();
     const pending = barrier.receipt;
     expect(pending.presentation).toBe('pending');
+    expect(pending.configurationRevision).not.toBe(8);
     expect(pending.presentationPendingReason?.code).toBe('scene-pipeline-preparation');
     expect(f.held.some((descriptor) => newLayout(descriptor))).toBe(true);
     expect(acceptedGraph()).toEqual(before);
@@ -605,6 +650,7 @@ it('keeps the accepted graph when a real custom scene pipeline waits for its PSO
         );
     }
     if (ready === undefined) throw new Error('candidate pipeline did not recover within 60 draws');
+    expect(ready.receipt.configurationRevision).toBe(8);
     expect(draws.mock.calls.length + indirectDraws.mock.calls.length).toBeGreaterThan(
       encodedBefore,
     );
@@ -1202,8 +1248,8 @@ it.each([
     expect(f.renderer.inspect().perFramePassNames).toContain('standard-final');
     expect(f.renderer.inspect().output).toMatchObject({
       displayEncoded: true,
-      intermediateFormat: 'rgba16float',
-      standardOutputColor: { format: 'rgba16float', domain: 'display-encoded' },
+      intermediateFormat: 'rgba8unorm',
+      standardOutputColor: { format: 'rgba8unorm', domain: 'display-encoded' },
     });
     expect(
       Array.from(worker.consumed(changedView, f.world.getResource(FixedTime).tick).bindings),
@@ -1872,7 +1918,7 @@ it('prepares the reflected CPU point-shadow layout before accepting replacement 
       })
       .unwrap();
     const receipt = await f.draw();
-    expect(receipt.presentation).toBe('ready');
+    expect(receipt.presentation, JSON.stringify(receipt.presentationPendingReason)).toBe('ready');
     expect(f.asyncPipelines).toHaveBeenCalledTimes(compileCount);
     expect(f.renderer.dynamicGeometryReceipt(accepted)).toMatchObject({
       frameId: receipt.frameId,
@@ -2369,8 +2415,8 @@ it('invalidates prepared candidate raster credentials when the actual graph is r
     expect(f.renderer.inspect().perFramePassNames).toContain('standard-final');
     expect(f.renderer.inspect().output).toMatchObject({
       displayEncoded: true,
-      intermediateFormat: 'rgba16float',
-      standardOutputColor: { format: 'rgba16float', domain: 'display-encoded' },
+      intermediateFormat: 'rgba8unorm',
+      standardOutputColor: { format: 'rgba8unorm', domain: 'display-encoded' },
     });
     expect(prepared.isCurrent()).toBe(false);
     await prepared.release();

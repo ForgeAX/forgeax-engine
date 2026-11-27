@@ -375,8 +375,18 @@ describe('M4 dark-gradient fixture contract', () => {
 });
 
 it('validates native Grade/Final observations with the same complete pixel report', () => {
-  const report = { ...VALID_REPORT, observation: { ...VALID_REPORT.observation, passNames: ['standard-grade', 'standard-final'] } };
+  const { standardOutputColor } = VALID_REPORT.observation;
+  if (standardOutputColor === undefined) throw new Error('Missing the fixture FXAA input');
+  const report = {
+    ...VALID_REPORT,
+    observation: {
+      ...VALID_REPORT.observation,
+      passNames: ['standard-grade', 'standard-final'],
+      standardOutputColor: { ...standardOutputColor, format: 'rgba8unorm' },
+    },
+    surface: { ...VALID_REPORT.surface, intermediateFormat: 'rgba8unorm' },
+  };
   expect(validateDarkGradientFixtureReport(report).ok).toBe(true);
   expect(isDarkGradientFxaaGraph(report.observation)).toBe(true);
-  expect(isDarkGradientFxaaGraph({ ...report.observation, standardOutputColor: { format: 'rgba8unorm', domain: 'display-encoded' } })).toBe(false);
+  expect(validateDarkGradientFixtureReport({ ...report, surface: VALID_REPORT.surface }).ok).toBe(false);
 });

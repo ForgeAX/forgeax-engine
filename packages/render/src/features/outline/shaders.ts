@@ -13,6 +13,7 @@ struct Params { visible: vec4<f32>, hidden: vec4<f32> };
 @group(1) @binding(2) var<uniform> params: Params;
 `;
 const depth = '@group(1) @binding(3) var depth: texture_depth_2d;';
+const depthMsaa = '@group(1) @binding(3) var depth: texture_depth_multisampled_2d;';
 const packed = /* wgsl */ `${vertex}
 ${depth}
 @fragment fn fs_main(in: Output) -> @location(0) vec4<f32> {
@@ -22,21 +23,48 @@ ${depth}
   let bits = bitcast<u32>(z);
   return vec4<f32>(vec4<u32>(bits, bits >> 8u, bits >> 16u, bits >> 24u) & vec4<u32>(255u));
 }`;
-function classify(msaa: boolean): string {
-  return /* wgsl */ `${vertex}
-@group(1) @binding(3) var depth: ${msaa ? 'texture_depth_multisampled_2d' : 'texture_depth_2d'};
+const packedMsaa = /* wgsl */ `${vertex}
+${depthMsaa}
+@fragment fn fs_main(in: Output) -> @location(0) vec4<f32> {
+  let p = vec2<i32>(in.position.xy);
+  return vec4<f32>(textureLoad(depth, p, 0), textureLoad(depth, p, 1),
+                  textureLoad(depth, p, 2), textureLoad(depth, p, 3));
+}`;
+const visibility = /* wgsl */ `
+fn isVisible(selected: f32, scene: f32) -> bool {
+  return selected >= scene - max(scene * 0.000002, 1e-12);
+}
+fn scenePixel(uv: vec2<f32>) -> vec2<i32> {
+  let size = vec2<i32>(textureDimensions(depth));
+  return min(vec2<i32>(uv * vec2<f32>(size)), size - vec2<i32>(1));
+}`;
+const classify = /* wgsl */ `${vertex}
+${depth}
+${visibility}
 @fragment fn fs_main(in: Output) -> @location(0) vec4<f32> {
   let p = vec2<i32>(in.position.xy);
   let packed = vec4<u32>(textureLoad(source, p, 0));
   let selected = bitcast<f32>(packed.x | (packed.y << 8u) | (packed.z << 16u) | (packed.w << 24u));
   if (selected <= 0.0) { return vec4<f32>(0.0); }
-  let q = min(vec2<i32>(in.uv * vec2<f32>(textureDimensions(depth))), vec2<i32>(textureDimensions(depth)) - vec2<i32>(1));
-  var scene = textureLoad(depth, q, 0);
-  ${msaa ? 'for (var s = 1; s < 4; s++) { scene = max(scene, textureLoad(depth, q, s)); }' : ''}
-  let visible = select(0.0, 1.0, selected >= scene - max(scene * 0.000002, 1e-12));
+  let scene = textureLoad(depth, scenePixel(in.uv), 0);
+  let visible = select(0.0, 1.0, isVisible(selected, scene));
   return vec4<f32>(visible, 1.0 - visible, 1.0, 1.0);
 }`;
-}
+const classifyMsaa = /* wgsl */ `${vertex}
+${depthMsaa}
+${visibility}
+@fragment fn fs_main(in: Output) -> @location(0) vec4<f32> {
+  let p = scenePixel(in.uv);
+  let selected = textureLoad(source, p, 0);
+  if (all(selected <= vec4<f32>(0.0))) { return vec4<f32>(0.0); }
+  // Cross-sample depth comparisons misclassify sloped surfaces as self-occluded.
+  for (var sample = 0; sample < 4; sample++) {
+    if (selected[sample] > 0.0 && isVisible(selected[sample], textureLoad(depth, p, sample))) {
+      return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+    }
+  }
+  return vec4<f32>(0.0, 1.0, 1.0, 1.0);
+}`;
 const horizontal = /* wgsl */ `${vertex}
 @fragment fn fs_main(in: Output) -> @location(0) vec4<f32> {
   let p = vec2<i32>(in.position.xy);
@@ -75,15 +103,23 @@ const LEGACY_OUTLINE_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclaratio
   },
   {
     kind: 'fullscreen-program' as const,
+    name: 'forgeax.outline.depth.msaa',
+    source: packedMsaa,
+    reads: ['scene-color', depthRead],
+    depthSampleCount: 4 as const,
+  },
+  {
+    kind: 'fullscreen-program' as const,
     name: 'forgeax.outline.classify',
-    source: classify(false),
+    source: classify,
     reads: ['scene-color', depthRead],
   },
   {
     kind: 'fullscreen-program' as const,
     name: 'forgeax.outline.classify.msaa',
-    source: classify(true),
-    reads: ['scene-color', depthRead],
+    source: classifyMsaa,
+    reads: [{ key: 'scene-color', sampleType: 'unfilterable-float' as const }, depthRead],
+    depthSampleCount: 4 as const,
   },
   {
     kind: 'fullscreen-program' as const,

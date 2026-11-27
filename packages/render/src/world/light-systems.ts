@@ -71,7 +71,14 @@ function commitShadow({ frameState }: ViewSettlementOwner): void {
         : null
       : (cache.next ?? previous);
   if (next === previous) return;
-  frameState.directionalShadowCache = next;
+  const target =
+    next !== null && frameState.compiledFrameGraph?.directionalShadowViewCount === 'current'
+      ? frameState.shadowDepthLayers?.allocation('directional-shadow-depth')
+      : undefined;
+  frameState.directionalShadowCache =
+    next !== null && target !== undefined && next.depthTarget !== target
+      ? { ...next, depthTarget: target }
+      : next;
   if (next !== null) frameState.shadowCandidate = { ...staged, lease: undefined };
   previous?.meshReads.release();
 }

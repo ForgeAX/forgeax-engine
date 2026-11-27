@@ -1,17 +1,23 @@
 import { validateCookedMaterialRecord } from '@forgeax/engine-pack/material-cook';
-import { type MaterialAsset, TERRAIN_MATERIAL_PARAMETERS } from '@forgeax/engine-types';
+import {
+  type MaterialAsset,
+  TERRAIN_MATERIAL_PARAMETERS,
+  TERRAIN_WEIGHT_DETAIL_PARAMETERS,
+} from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { createMaterialPackCooker } from '../pack-cooker.js';
 
 it.each([
-  false,
-  true,
-])('cooks the fixed Terrain color and shadow roots through NativeCooker (ids=%s)', async (ids) => {
-  const module = `forgeax::standard-terrain${ids ? '-ids' : ''}`;
+  '',
+  '-ids',
+  '-detail',
+])('cooks the fixed Terrain color and shadow roots through NativeCooker (suffix=%s)', async (suffix) => {
+  const module = `forgeax::standard-terrain${suffix}`;
+  const detail = suffix === '-detail';
   const source: MaterialAsset = {
     kind: 'material',
     colorSpace: 'linear',
-    parameters: TERRAIN_MATERIAL_PARAMETERS,
+    parameters: detail ? TERRAIN_WEIGHT_DETAIL_PARAMETERS : TERRAIN_MATERIAL_PARAMETERS,
     passes: [
       { name: 'forward', program: { module }, renderState: { tags: { LightMode: 'Forward' } } },
       {
@@ -27,7 +33,7 @@ it.each([
     ],
   };
   const draft = await createMaterialPackCooker([], { profile: 'webgpu-storage' }).cook({
-    guid: `terrain-material-${ids}`,
+    guid: `terrain-material${suffix || '-weights'}`,
     source,
   });
   const record = validateCookedMaterialRecord(
@@ -55,7 +61,8 @@ it.each([
     .map((program) => new TextDecoder().decode(program.artifact.bytes))
     .join('\n');
   expect(wgsl).toContain('terrainVertex');
-  expect(wgsl.includes('pairWeights')).toBe(ids);
+  expect(wgsl.includes('pairWeights')).toBe(suffix === '-ids');
+  expect(wgsl.includes('terrainWeightDetail_sampler')).toBe(detail);
   expect(wgsl).not.toContain('waterBodyData');
   expect(wgsl).not.toContain('evaluateWaterWavesForward');
 }, 60_000);

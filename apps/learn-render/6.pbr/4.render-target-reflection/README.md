@@ -1,15 +1,18 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # RenderTarget, CubeCamera, and ReflectionProbe
 
 > [!NOTE]
 > This Engine-owned consumer demonstrates the public render-target contract used by the PBR reflection path.
 
-## 这个示例展示什么
+## What This Example Shows
 
 The normal example creates a cube `RenderTarget`, exposes its texture as a `texture_cube` material source, and uses `CubeCamera` to fill the six faces with six deterministic colors. After the six-face candidate is promoted, the display mesh samples that same cube source and the browser smoke checks its actual canvas pixel. The optional reflection mode continues to exercise `ReflectionProbe` raw capture and roughness mip levels.
 
 The Browser and Dawn evidence scripts run the same public consumer. A healthy renderer intentionally returns `renderer-state-invalid` from `recover()`; that is the documented healthy-recover guard, not device-loss evidence. Actual recovery is an owner invalidation/rebuild path and stale receipts cannot be observed after the device generation changes.
 
-## 渲染流程
+## Rendering Flow
 
 ```mermaid
 flowchart LR
@@ -21,7 +24,7 @@ flowchart LR
   Material --> Display[Main display camera]
 ```
 
-## 引擎用法
+## Engine Usage
 
 ```ts
 const targetResult = renderer.createRenderTarget({
@@ -144,7 +147,7 @@ reinspect. The fixture publishes detached evidence and never exposes live GPU
 handles or creates another report owner. `artifacts/ssr-fallback/README.md` is the
 machine-facing index for evidence level, locator, and recovery semantics.
 
-## 与 LO 原版的差异
+## Differences From the Original LO Example
 
 | Dimension | LearnOpenGL-style approach | ForgeAX approach |
 |:--|:--|:--|
@@ -153,7 +156,7 @@ machine-facing index for evidence level, locator, and recovery semantics.
 | Readback | Caller reads pixels after issuing ad-hoc synchronization | A matching `FrameReceipt` is required before observing a readback ticket |
 | Failure handling | String logs or unchecked API errors | Structured `err.code`, `err.expected`, `err.hint`, and discriminated `err.detail` guide recovery |
 
-## 运行
+## Run
 
 ```bash
 pnpm --filter @forgeax/app-learn-render-6-pbr-4-render-target-reflection dev

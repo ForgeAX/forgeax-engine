@@ -8,17 +8,19 @@ import type { TypedShadowTargets } from '../typed-shadow-passes';
  * single-layer medium passes all spread this one value.
  */
 export interface StandardForwardReceiverInputs {
+  readonly materialSceneDepth?: boolean | undefined;
   readonly sampled: readonly RenderPipelineTarget[];
   readonly directionalShadow?: RenderPipelineTarget;
-  readonly shadowMoments?: RenderPipelineTarget;
-  readonly spotShadow: RenderPipelineTarget;
+  readonly spotShadow?: RenderPipelineTarget;
   readonly cloudShadow?: RenderPipelineTarget;
   readonly ssao?: RenderPipelineTarget;
   readonly extraAccesses: readonly GraphAccess[];
 }
 
 export function standardForwardReceiverInputs(input: {
+  readonly materialSceneDepth?: boolean | undefined;
   readonly shadows: TypedShadowTargets;
+  readonly projectedDirectional?: RenderPipelineTarget | undefined;
   readonly cloudShadow: RenderPipelineTarget | undefined;
   /** The native lane shares AO and Forward surface data through this sampled binding. */
   readonly ssao?: RenderPipelineTarget | undefined;
@@ -26,15 +28,18 @@ export function standardForwardReceiverInputs(input: {
   /** The display's PlanarReflection capture, sampled by mirroring receivers. */
   readonly planarReflection?: GraphTextureView | undefined;
 }): StandardForwardReceiverInputs {
-  const { directional, spot, point, moments } = input.shadows;
-  const { cloudShadow, ssao } = input;
+  const { directional, spot, point } =
+    input.projectedDirectional === undefined ? input.shadows : {};
+
+  const { cloudShadow } = input;
+  const ssao = input.projectedDirectional ?? input.ssao;
   return {
-    sampled: [directional, spot, point, moments, cloudShadow, ssao].filter(
+    materialSceneDepth: input.materialSceneDepth,
+    sampled: [directional, spot, point, cloudShadow, ssao].filter(
       (target): target is RenderPipelineTarget => target !== undefined,
     ),
     ...(directional === undefined ? {} : { directionalShadow: directional }),
-    spotShadow: spot,
-    ...(moments === undefined ? {} : { shadowMoments: moments }),
+    ...(spot === undefined ? {} : { spotShadow: spot }),
     ...(cloudShadow === undefined ? {} : { cloudShadow }),
     ...(ssao === undefined ? {} : { ssao }),
     extraAccesses:

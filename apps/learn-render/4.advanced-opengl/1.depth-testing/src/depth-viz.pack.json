@@ -1,11 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "58918de1-d01a-526d-9e34-5dbf5fc7b410",
+  "schemaVersion": "3.0.0",
+  "packageId": "249dc8dd-173f-5c52-8b33-fb3bfb444c9c",
+  "assets": {
+    "depth-viz.wgsl": {
       "kind": "material",
-      "sourceKey": "depth-viz.wgsl",
       "payload": {
         "kind": "material",
         "passes": [
@@ -35,5 +33,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

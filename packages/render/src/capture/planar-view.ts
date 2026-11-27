@@ -7,6 +7,8 @@ export interface PlanarReflectionViewInput {
   readonly plane: ArrayLike<number>;
   /** World-space offset into the retained half space. */
   readonly clipBias: number;
+  /** Extra vertical half-angle in degrees, applied before oblique clipping. */
+  readonly extraFovDegrees?: number;
 }
 
 /** Three Reflector's reflected eye/forward/up, with a WebGPU [0,1] oblique near plane. */
@@ -17,6 +19,7 @@ export function buildPlanarReflectionView(input: PlanarReflectionViewInput) {
     throw new PlanarReflectionInvalidError('plane');
   if (!Number.isFinite(input.clipBias) || input.clipBias < 0)
     throw new PlanarReflectionInvalidError('clipBias');
+  const extraFovDegrees = validatePlanarExtraFov(input.extraFovDegrees);
   if (
     input.world.length !== 16 ||
     input.projection.length !== 16 ||
@@ -45,8 +48,7 @@ export function buildPlanarReflectionView(input: PlanarReflectionViewInput) {
   const target = position.map((v, i) => v + (forward[i] ?? 0));
   const view = mat4.lookAt(mat4.create(), position, target, up);
   const world = mat4.invert(mat4.create(), view);
-  const projection = mat4.create();
-  projection.set(input.projection);
+  const projection = planarCaptureProjection(input.projection, extraFovDegrees);
   const inverse = mat4.invert(mat4.create(), projection);
   // Covectors transform by transpose(cameraWorld). Bias is measured in world meters.
   const biasedPlane = [...normal, (plane[3] ?? 0) - input.clipBias];
@@ -67,4 +69,26 @@ export function buildPlanarReflectionView(input: PlanarReflectionViewInput) {
     projection[i * 4 + 2] = (projection[i * 4 + 3] ?? 0) - (clip[i] ?? 0) / denominator;
   const viewProjection = mat4.multiply(mat4.create(), projection, view);
   return { position, world, view, projection, viewProjection, plane };
+}
+
+function validatePlanarExtraFov(extraFovDegrees = 0): number {
+  if (!(extraFovDegrees >= 0 && extraFovDegrees < 90))
+    throw new PlanarReflectionInvalidError('captureExtraFovDegrees');
+  return extraFovDegrees;
+}
+
+/** Copy the lens before widening it and applying the capture's oblique clip. */
+function planarCaptureProjection(source: Float32Array, extraFovDegrees: number): Float32Array {
+  const projection = new Float32Array(source);
+  if (extraFovDegrees === 0 || projection[11] === 0) return projection;
+
+  const tangent = 1 / (projection[5] ?? 1);
+  const halfFov = Math.atan(tangent);
+  const widenedHalfFov = Math.min(
+    halfFov + extraFovDegrees * (Math.PI / 180),
+    Math.max(halfFov, Math.PI * 0.499),
+  );
+  const scale = tangent / Math.tan(widenedHalfFov);
+  for (const index of [0, 5, 8, 9]) projection[index] = (projection[index] ?? 0) * scale;
+  return projection;
 }

@@ -25,18 +25,21 @@ describe('GPU draw receipt routing', () => {
       ),
     );
     let reads = 0;
-    const batches = topology.query(topology.sourcePlan(), undefined).batches.map((batch) => ({
-      ...batch,
-      candidates: new Proxy(
-        batch.candidates.filter((candidate) => candidate.primitiveIndex % 2 === 0),
-        {
-          get(target, key, receiver) {
-            if (key === Symbol.iterator || (typeof key === 'string' && /^\d+$/.test(key))) reads++;
-            return Reflect.get(target, key, receiver);
+    const batches = topology
+      .query(topology.sourcePlan(), undefined)
+      .active.batches.map((batch) => ({
+        ...batch,
+        candidates: new Proxy(
+          batch.candidates.filter((candidate) => candidate.primitiveIndex % 2 === 0),
+          {
+            get(target, key, receiver) {
+              if (key === Symbol.iterator || (typeof key === 'string' && /^\d+$/.test(key)))
+                reads++;
+              return Reflect.get(target, key, receiver);
+            },
           },
-        },
-      ),
-    }));
+        ),
+      }));
     const selection = new GpuDrawSelection(batches);
     expect(reads).toBe(0);
     const selected = scene.slotAt(42);

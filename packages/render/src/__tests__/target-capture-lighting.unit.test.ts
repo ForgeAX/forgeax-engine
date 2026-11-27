@@ -14,13 +14,15 @@ import type { CubeCaptureGraphState, CubeCaptureGraphWork } from '../record/targ
 import {
   disposeTargetCaptureLighting,
   disposeTargetCaptures,
+  finishTargetCaptureLighting,
   prepareTargetCaptureLighting,
 } from '../record/target-capture-lighting';
-import { POINTS_LINES_VIEW_BUFFER_SIZE, writePointsLinesViewUbo } from '../record/view-ubo';
+import { POINTS_LINES_VIEW_SLOT_STRIDE, writePointsLinesViewUbo } from '../record/view-ubo';
 import { getOrCreateSsaoFallbackTexture, resetSsaoResources } from '../ssao-buffers';
 import type { RenderTarget } from '../targets/contracts';
 import { createRenderTargetPhysical, destroyRenderTargetPhysical } from '../targets/physical';
 import type { ViewLights } from '../world/render-lights';
+import * as viewPointsLines from '../world/view-points-lines';
 import { earthAtmosphere } from './atmosphere-fixture';
 import { STANDARD_CLUSTER_TEST_ABI } from './cluster-test-abi';
 
@@ -49,7 +51,7 @@ function pipeline(device: RhiDevice): PipelineState {
     hdrpClusterMembershipPipeline: null,
     hdrpClusterMembershipBindGroupLayout: null,
     pointsLinesViewBuffer: device
-      .createBuffer({ size: POINTS_LINES_VIEW_BUFFER_SIZE, usage: 0x48 })
+      .createBuffer({ size: POINTS_LINES_VIEW_SLOT_STRIDE, usage: 0x48 })
       .unwrap(),
   } as unknown as PipelineState;
 }
@@ -89,6 +91,7 @@ describe('target capture lighting ownership', () => {
     const transparent = required(first.scenePasses.transparent);
     expect(opaque).not.toBe(transparent);
     expect(opaque.camera?.()).toBe(firstCamera);
+    finishTargetCaptureLighting(f.owner);
     const nextCamera = { ...firstCamera, position: vec3.create(3, 2, 1) };
     const nextWork = { ...required(f.owner.work[0]), faceCamera: nextCamera };
     f.owner.work = [nextWork];
@@ -142,6 +145,12 @@ describe('target capture lighting ownership', () => {
         distance: 0,
         clipBias: 0,
         distortion: 0,
+        distanceFadeStartM: 0.6,
+        distanceFadeEndM: 1,
+        angleFadeStartDegrees: 20,
+        angleFadeEndDegrees: 30,
+        captureCullMask: 0xffffffff,
+        captureExtraFovDegrees: 0,
         resolutionScale: 1,
         generateMipmaps: false,
         updateIntervalFrames: 4,
@@ -206,6 +215,7 @@ describe('target capture lighting ownership', () => {
 
   it('releases a partial private allocation and can retry without retiring parent buffers', async () => {
     const f = await fixture();
+    using _pointDemand = vi.spyOn(viewPointsLines, 'preparedPointsLinesSlots').mockReturnValue(1);
     const failure = new RhiError({
       code: 'internal-error',
       expected: 'capture buffer allocation',
@@ -228,6 +238,7 @@ describe('target capture lighting ownership', () => {
   });
   it('fences every capture resource while leaving the parent fallback and Points/Lines buffer alive', async () => {
     const f = await fixture();
+    using _pointDemand = vi.spyOn(viewPointsLines, 'preparedPointsLinesSlots').mockReturnValue(1);
     const parentFallback = required(getOrCreateSsaoFallbackTexture(f.runtime));
     const captured = f.prepare();
     const fallback = required(getOrCreateSsaoFallbackTexture(captured.runtime));
@@ -268,6 +279,7 @@ describe('target capture lighting ownership', () => {
 
   it('replaces buffers on device change and retires the old capture through its creation device', async () => {
     const f = await fixture();
+    using _pointDemand = vi.spyOn(viewPointsLines, 'preparedPointsLinesSlots').mockReturnValue(1);
     const old = f.prepare();
     const oldPointsBuffer = old.pipeline.pointsLinesViewBuffer;
     const oldFallback = required(getOrCreateSsaoFallbackTexture(old.runtime));
@@ -325,12 +337,14 @@ describe('target capture lighting ownership', () => {
       return view.pipeline.viewUniformBuffer;
     };
     const buffers = writers.map(prepare);
+    finishTargetCaptureLighting(f.owner);
     expect(new Set(buffers).size).toBe(3);
     expect(new Set(passes).size).toBe(3);
     const destroy = vi.spyOn(f.gpu, 'destroyBuffer');
     // A later frame with one writer reuses ordinal 0 and retires the others.
     f.owner.work = [required(writers[2])];
     expect(prepare(required(writers[2]))).toBe(buffers[0]);
+    finishTargetCaptureLighting(f.owner);
     await Promise.resolve();
     await Promise.resolve();
     expect(destroy).toHaveBeenCalledWith(buffers[1]);
@@ -340,10 +354,53 @@ describe('target capture lighting ownership', () => {
     await Promise.resolve();
   });
 
+  it('claims current writers once and drops every target after an empty capture batch', async () => {
+    const f = await fixture();
+    const targets = [{}, {}, {}];
+    const camera = makeZeroCameraFallbackSnapshot();
+    const destroy = vi.spyOn(f.gpu, 'destroyBuffer');
+    const first = new Map<object, unknown[]>();
+    for (let frame = 0; frame < 100; frame++) {
+      const count = frame % 2 ? 9 : 12;
+      const seen = new Map<object, unknown[]>();
+      for (let index = 0; index < count; index++) {
+        const target = required(targets[index % targets.length]);
+        const { pipeline } = prepareTargetCaptureLighting(
+          f.owner,
+          { target, faceCamera: camera, candidateGeneration: frame },
+          f.runtime,
+          f.state,
+          f.basePipeline,
+          lights,
+        );
+        let writers = seen.get(target);
+        if (writers === undefined) {
+          writers = [];
+          seen.set(target, writers);
+        }
+        if (frame !== 0 && writers.length < 3)
+          expect(pipeline.viewUniformBuffer).toBe(first.get(target)?.[writers.length]);
+        writers.push(pipeline.viewUniformBuffer);
+        if (frame === 0) first.set(target, writers);
+      }
+      finishTargetCaptureLighting(f.owner);
+      expect(f.owner.lightingViews?.size).toBe(3);
+      expect(seen.values().next().value?.length).toBe(count / 3);
+      expect(new Set([...seen.values()].flat()).size).toBe(count);
+    }
+    finishTargetCaptureLighting(f.owner);
+    expect(f.owner.lightingViews).toBeUndefined();
+    await f.gpu.queue.onSubmittedWorkDone();
+    for (const buffers of first.values())
+      for (const buffer of buffers) expect(destroy).toHaveBeenCalledWith(buffer);
+  });
+
   it('keeps different camera payloads at the same Points/Lines draw slot in separate buffers', async () => {
     const f = await fixture();
+    using _pointDemand = vi.spyOn(viewPointsLines, 'preparedPointsLinesSlots').mockReturnValue(1);
     const first = f.prepare(0);
     const second = f.prepare(1);
+    finishTargetCaptureLighting(f.owner);
     const payloads: Uint8Array[] = [];
     const upload = f.gpu.queue.writeBuffer.bind(f.gpu.queue);
     const write = vi.spyOn(f.gpu.queue, 'writeBuffer').mockImplementation((...args) => {

@@ -14,6 +14,7 @@ import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import {
   type ProjectedRasterClass,
+  rasterClassFor,
   selectRasterPipeline,
 } from '../gpu-driven/production-raster-classes';
 import { prepareBatchRows } from '../gpu-driven/production-raster-prepare';
@@ -30,6 +31,7 @@ import type { StandardTopologyInputValue } from '../pipeline/standard-lighting/t
 import { worldRenderResources } from '../publication/resource-scope';
 import { clusteredLightingActive } from '../record/frame-gpu-driven';
 import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record/frame-snapshot';
+import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import { ensureShadowDepthLayers } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
@@ -53,16 +55,28 @@ function updateSnapshot(value: RenderableSnapshot) {
   };
 }
 
-it('selects the typed AO input pipeline for material-normal rasterization', () => {
-  const pipelineFor = vi.fn();
-  const aoInputPipelineFor = vi.fn();
-  const aoInputMsaaPipelineFor = vi.fn();
-  const batch = {
-    pipelines: { pipelineFor, aoInputPipelineFor, aoInputMsaaPipelineFor },
-  } as unknown as ProjectedRasterClass;
+it('selects the dedicated colorless coverage pipeline', () => {
+  const predepthPipelineFor = vi.fn();
+  const batch = { pipelines: { predepthPipelineFor } } as unknown as ProjectedRasterClass;
+  expect(selectRasterPipeline(batch, 'fs_depth_masked', false)).toBe(predepthPipelineFor);
+});
 
-  expect(selectRasterPipeline(batch, 'fs_ao_input', false)).toBe(aoInputPipelineFor);
-  expect(selectRasterPipeline(batch, 'fs_ao_input_msaa', false)).toBe(aoInputMsaaPipelineFor);
+it('keeps an authored Forward program without proven depth coverage out of the GPU scene prepasses', () => {
+  const cls = {
+    artifact: {
+      material: 'game::filmic',
+      program: { entryPoints: [{ name: 'fs_main', stage: 'fragment', bindings: [] }] },
+    },
+  } as unknown as ProjectedRasterClass;
+  const live = {
+    classKey: 'test',
+    recordingClassKey: 'test',
+    batch: { visibleCapacity: 1, batchId: 0, key: {} },
+  } as unknown as import('../gpu-driven/live-raster').LiveRasterBatch;
+  const classes = new Map([['test', cls]]);
+  expect(rasterClassFor(classes, true, live, undefined, 'fs_depth_masked')).toBeUndefined();
+  expect(rasterClassFor(classes, true, live, undefined, 'fs_main')).toBe(cls);
+  expect(rasterClassFor(classes, false, live, undefined, 'fs_depth_masked')).toBe(cls);
 });
 
 it('preserves the explicit Forward screen entry and the prepared Cluster authority', () => {
@@ -174,7 +188,7 @@ it.each([
         ...standardPbrInputs(device, shader, viewLayout),
         scene: {
           scene: availability.scene,
-          plan: topology.query(topology.sourcePlan(), undefined),
+          plan: topology.query(topology.sourcePlan(), undefined).active,
           slots: projection.slotsSnapshot(),
           slotAt: projection.slotAt,
         },
@@ -381,7 +395,7 @@ it.each([
     topology.apply(delta);
   };
   apply(false);
-  expect(topology.query(topology.sourcePlan(), undefined).batches.length).toBe(2);
+  expect(topology.query(topology.sourcePlan(), undefined).active.batches.length).toBe(2);
   const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
   const sharedMesh = mesh(device);
   const prepare = () => {
@@ -391,7 +405,7 @@ it.each([
           ...pbr,
           scene: {
             scene: availability.scene,
-            plan: topology.query(topology.sourcePlan(), undefined),
+            plan: topology.query(topology.sourcePlan(), undefined).active,
             slots: projection.slotsSnapshot(),
             slotAt: projection.slotAt,
           },
@@ -447,6 +461,8 @@ it.each([
     compiledFrameGraph: null,
     compiledFrameGraphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),
+    materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+    meshBindGroupCache: new WeakMap(),
     activePipeline,
     installedPipelineConfig: undefined,
   } as unknown as RenderFrameState;
@@ -503,12 +519,13 @@ it.each([
     const pipelineCount = pipelines.mock.calls.length;
     apply(true);
     current = prepare();
-    expect(topology.query(topology.sourcePlan(), undefined).batches.length).toBe(2);
+    expect(topology.query(topology.sourcePlan(), undefined).active.batches.length).toBe(2);
     expect(current.topologySignature()).toBe(firstSignature);
     encode(first).unwrap();
     expect(bound.mock.calls.some(([index, value]) => index === 1 && value === materialGroupB)).toBe(
       true,
     );
+    current = prepare();
     const next = compile();
     if (next === null) throw Error('missing changed graph');
     encode(next).unwrap();
@@ -573,7 +590,7 @@ it('separates physical layouts, specializations and selected programs after reso
     const projection = new RenderScene();
     const topology = new BatchTopology();
     topology.apply(projection.apply([updateSnapshot(source)]));
-    const batch = topology.query(topology.sourcePlan(), undefined).batches.at(0);
+    const batch = topology.query(topology.sourcePlan(), undefined).active.batches.at(0);
     if (batch === undefined) throw Error('missing admitted batch');
     const binding = batch.binding;
     if (binding === undefined) throw Error('missing shared binding');
@@ -746,7 +763,7 @@ it.each([
           } as PipelineState,
           scene: {
             scene: availability.scene,
-            plan: topology.query(topology.sourcePlan(), undefined),
+            plan: topology.query(topology.sourcePlan(), undefined).active,
             slots: projection.slotsSnapshot(),
             slotAt: projection.slotAt,
           },
@@ -814,6 +831,8 @@ it.each([
     compiledFrameGraph: null,
     compiledFrameGraphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),
+    materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+    meshBindGroupCache: new WeakMap(),
     activePipeline,
     installedPipelineConfig: undefined,
   } as unknown as RenderFrameState;
@@ -966,7 +985,7 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
           ...inputs,
           scene: {
             scene: availability.scene,
-            plan: topology.query(topology.sourcePlan(), undefined),
+            plan: topology.query(topology.sourcePlan(), undefined).active,
             slots: projection.slotsSnapshot(),
             slotAt: projection.slotAt,
           },
@@ -1018,6 +1037,8 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
     compiledFrameGraph: null,
     compiledFrameGraphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),
+    materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+    meshBindGroupCache: new WeakMap(),
     activePipeline,
     installedPipelineConfig: undefined,
   } as unknown as RenderFrameState;
@@ -1139,8 +1160,7 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
   }
 });
 
-it('omits side-effect-free no-output Unlit recording without changing GPU ownership', async () => {
-  const { rasterClassFor } = await import('../gpu-driven/production-raster-classes');
+it('omits side-effect-free no-output Unlit recording without changing GPU ownership', () => {
   const cls = {
     artifact: { material: 'forgeax::default-unlit', pass: 'forward' },
     renderState: { colorWriteMask: 0, depthWriteEnabled: false },

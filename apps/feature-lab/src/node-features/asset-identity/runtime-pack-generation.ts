@@ -1,5 +1,9 @@
 import { AssetRegistry, validateAssetPublication } from '@forgeax/engine/assets-runtime';
-import { createBoxGeometry } from '@forgeax/engine/geometry';
+import {
+  copyMeshAttribute,
+  createBoxGeometry,
+  meshAssetContribution,
+} from '@forgeax/engine/geometry';
 import {
   prepareRuntimePackContent,
   type RuntimePackCacheEntry,
@@ -23,7 +27,7 @@ function producer(cache?: Map<string, RuntimePackCacheEntry>): RuntimePackProduc
         state.rows,
         fetcher,
         { catalog: value.catalog, fetcher: value.fetch },
-        { dependencies },
+        { dependencies, decoders: [meshAssetContribution] },
       ),
     imports: {
       geometry: {
@@ -36,20 +40,27 @@ function producer(cache?: Map<string, RuntimePackCacheEntry>): RuntimePackProduc
 }
 
 function reader(source: RuntimePackProducer): AssetRegistry {
-  const assets = new AssetRegistry({ shaderRegistry: {} as never });
+  const assets = new AssetRegistry({
+    scopeId: 'feature-lab-runtime-pack',
+    shaderRegistry: {} as never,
+  });
+  assets.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
   assets.setCatalogSource(source.catalog, source.fetch);
   return assets;
 }
 
 async function positions(source: RuntimePackProducer, packageId: string): Promise<string> {
   const assets = reader(source);
-  const guid = AssetGuid.format(AssetGuid.derive(definePackageId(packageId), 'box'));
-  const handle = await assets.load(guid, 'mesh');
-  const loaded = handle.ok ? assets.read(handle.value) : handle;
-  assets.dispose();
-  return loaded.ok
-    ? JSON.stringify(Array.from(loaded.value.attributes.position as ArrayLike<number>))
-    : `error:${loaded.error.code}`;
+  try {
+    const guid = AssetGuid.format(AssetGuid.derive(definePackageId(packageId), 'box'));
+    const handle = await assets.load(guid, 'mesh');
+    const loaded = handle.ok ? assets.read(handle.value) : handle;
+    return loaded.ok
+      ? JSON.stringify(Array.from(copyMeshAttribute(loaded.value, 'position') ?? []))
+      : `error:${loaded.error.code}`;
+  } finally {
+    assets.dispose();
+  }
 }
 
 const generator: RuntimePackContent = {
@@ -165,7 +176,7 @@ export default defineFeature({
     );
 
     const saved = JSON.parse(JSON.stringify(live.snapshot()));
-    checks.equal('snapshot is runtime-pack-source/2', saved.schemaVersion, 'runtime-pack-source/2');
+    checks.equal('snapshot is runtime-pack-source/3', saved.schemaVersion, 'runtime-pack-source/3');
     live.dispose();
     source.dispose();
     cache.clear();

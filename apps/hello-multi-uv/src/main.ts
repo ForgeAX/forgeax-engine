@@ -40,7 +40,7 @@ import type {
 import './multi-uv-demo.wgsl';
 import './multi-uv-demo-false.wgsl';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import inheritancePackUrl from './multi-uv-inheritance.pack.json?url';
+import inheritancePackUrl from './multi-uv-inheritance.runtime-pack.json?url';
 import depthFalsifierShader from './post-depth-falsifier.wgsl';
 import depthOverlayShader from './post-depth-overlay.wgsl';
 import depthOverlayMsaaShader from './post-depth-overlay-msaa.wgsl';

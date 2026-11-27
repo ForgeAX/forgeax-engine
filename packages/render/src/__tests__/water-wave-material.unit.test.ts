@@ -27,6 +27,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import { RendererContractFailureError } from '../errors/render';
 import { getOrCreateHdrpBuffers, resetHdrpBuffers } from '../hdrp-buffers';
+import type { ValidatedRenderable } from '../record/frame-snapshot';
 import {
   admitWaterMeshDraws,
   excludeWaterMeshRowsFromMaterialSelection,
@@ -57,6 +58,7 @@ import {
   waterMaterialDrawBinding,
   waterMaterialFrameBindGroupLayoutEntries,
   waterMaterialFrameBindingResources,
+  waterMaterialSystemBindGroup,
 } from '../water/wave-material';
 import { STANDARD_CLUSTER_TEST_ABI } from './cluster-test-abi';
 
@@ -89,7 +91,7 @@ describe('WaterInfo submission frame alignment', () => {
         targetFormat: 'rgba32float',
         viewIdentity: 'camera:1',
       },
-    } as unknown as _InternalRenderPipelineContext['validatedOrdered'][number]['source'];
+    } as unknown as ValidatedRenderable['source'];
     const runtime = {
       device,
       deviceGeneration: 2,
@@ -364,8 +366,7 @@ describe('Water shadow record admission reuse', () => {
       expect(f.getBindings).toHaveBeenCalledTimes(2);
 
       let getterReads = 0;
-      const customSource =
-        {} as _InternalRenderPipelineContext['validatedOrdered'][number]['source'];
+      const customSource = {} as ValidatedRenderable['source'];
       Object.defineProperty(customSource, 'waterOwner', {
         get: () => {
           getterReads++;
@@ -404,7 +405,7 @@ describe('Water shadow record admission reuse', () => {
     try {
       const ownerSource = {
         waterOwner: f.owner,
-      } as _InternalRenderPipelineContext['validatedOrdered'][number]['source'];
+      } as ValidatedRenderable['source'];
       const ownerRows = [{ renderableIndex: 0, source: ownerSource }] as const;
       const ownerClosure = finalizeWaterMaterialAdmissionDraws(ownerRows);
       expect(ownerClosure).toBeUndefined();
@@ -437,7 +438,7 @@ describe('Water shadow record admission reuse', () => {
       const tileSource = {
         waterOwner: tileOwner,
         waterMeshTiles: firstTiles,
-      } as _InternalRenderPipelineContext['validatedOrdered'][number]['source'];
+      } as ValidatedRenderable['source'];
       const tileRows = [{ renderableIndex: 1, source: tileSource }] as const;
       const tileClosure = finalizeWaterMaterialAdmissionDraws(tileRows);
       expect(tileClosure).toBeUndefined();
@@ -456,6 +457,24 @@ describe('Water shadow record admission reuse', () => {
   });
 });
 
+it('admits empty native Water membership and independently inspects supplemental view geometry', () => {
+  const f = waterRecordCacheFixture();
+  try {
+    const native = { mayHaveWaterSources: false };
+    const empty = finalizeWaterMaterialAdmissionDraws([]);
+    const read = vi.spyOn(f.rows, Symbol.iterator);
+    expect(finalizeWaterMaterialAdmissionDraws(f.rows, native)).toBe(empty);
+    expect(read).not.toHaveBeenCalled();
+    expect(finalizeWaterMaterialAdmissionDraws(f.rows, native, 1)?.draws[0]?.owner).toBe(f.owner);
+    expect(finalizeWaterMaterialAdmissionDraws(f.rows)?.draws[0]?.owner).toBe(f.owner);
+    expect(
+      finalizeWaterMaterialAdmissionDraws(f.rows, { mayHaveWaterSources: true })?.draws[0]?.owner,
+    ).toBe(f.owner);
+  } finally {
+    f.dispose();
+  }
+});
+
 it('captures immutable Water closure facts without sealing the mutable draw owner addresses', () => {
   const owner = ownWaterMaterialOwner({
     guid: bodyA,
@@ -467,7 +486,7 @@ it('captures immutable Water closure facts without sealing the mutable draw owne
   });
   const source = ownWaterMaterialAdmissionSource({
     waterOwner: owner,
-  }) as _InternalRenderPipelineContext['validatedOrdered'][number]['source'];
+  }) as ValidatedRenderable['source'];
   const row = { renderableIndex: 3, source };
   const rows = [row];
   const first = finalizeWaterMaterialAdmissionDraws(rows);
@@ -496,7 +515,7 @@ function waterRecordCacheFixture() {
   });
   const source = ownWaterMaterialAdmissionSource({
     waterOwner: owner,
-  }) as _InternalRenderPipelineContext['validatedOrdered'][number]['source'];
+  }) as ValidatedRenderable['source'];
   const rows = [{ renderableIndex: 0, source }];
   const drawClosure = finalizeWaterMaterialAdmissionDraws(rows);
   const camera = { entityKey: 1, position: [0, 0, 5] as [number, number, number] };
@@ -931,6 +950,43 @@ function bufferDevice(failAt?: string) {
 }
 
 describe('Water material frame ABI', () => {
+  it('retains the native group across Water receipts and distinguishes tile ranges', () => {
+    const { upload } = uploadFixture();
+    const gpu = bufferDevice();
+    const buffers = uploadWaterMaterialFrame(gpu.device, upload).unwrap();
+    const resources = waterMaterialFrameBindingResources({
+      upload,
+      buffers,
+      bodyTargetNames: new Map(),
+      bodyTargetFormats: new Map(),
+      viewIdentity: 'view-a',
+      deviceGeneration: 2,
+      frameGeneration: 9,
+    });
+    const layout = {} as import('@forgeax/engine-rhi').BindGroupLayout;
+    const createBindGroup = vi.fn(() => ok({} as BindGroup));
+    const device = { createBindGroup };
+    const entryPoints = [
+      { name: 'vs_main', stage: 'vertex', bindings: [{ group: 2, binding: 22 }] },
+    ] as const;
+    const mesh = { buffer: {} as Buffer, size: 256 };
+    const tiles = { buffer: {} as Buffer, size: 256 };
+    const first = waterMaterialSystemBindGroup(device, layout, resources, entryPoints, {
+      mesh,
+      tiles,
+    });
+    const next = { ...resources, frameGeneration: 10 };
+    expect(waterMaterialSystemBindGroup(device, layout, next, entryPoints, { mesh, tiles })).toBe(
+      first,
+    );
+    expect(createBindGroup).toHaveBeenCalledOnce();
+    const resized = { ...tiles, size: 512 };
+    expect(
+      waterMaterialSystemBindGroup(device, layout, next, entryPoints, { mesh, tiles: resized }),
+    ).not.toBe(first);
+    expect(createBindGroup).toHaveBeenCalledTimes(2);
+  });
+
   it('refreshes an independent-only cache when an actual Info view arrives within the same frame', () => {
     const { upload } = uploadFixture();
     const gpu = bufferDevice();

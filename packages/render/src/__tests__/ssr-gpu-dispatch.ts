@@ -1,7 +1,10 @@
+import { encodeMipmapLevel, getOrCreateMipmapPipeline } from '@forgeax/engine-assets-runtime';
 import { mat4 } from '@forgeax/engine-math';
-import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
+import { type GraphTextureView, RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate } from '@forgeax/engine-rhi-webgpu';
+import viewSource from '../../../shader/src/common.wgsl?raw';
+import depthPyramidSampleSource from '../../../shader/src/depth-pyramid-sample.wgsl?raw';
 import gbufferSource from '../../../shader/src/standard-gbuffer.wgsl?raw';
 import { makeShaderDeviceAdapter } from '../assembly/material-shader-policy';
 import { addDepthPyramidPasses } from '../depth-pyramid/graph';
@@ -22,6 +25,12 @@ import type { RenderPipelineFrame } from '../render-pipeline';
 import { admitSsrSpatial } from '../ssr/admission';
 import { addSsrCompositionPass } from '../ssr/compose';
 import { addSsrSpatialPasses } from '../ssr/graph';
+import {
+  fullSsrColorViewport,
+  ssrColorExtent,
+  writeSsrColorViewport,
+} from '../ssr/scene-color-input';
+import { WATER_SSR_DEFAULT_PROFILE, WATER_SSR_PARAMS_BYTES } from '../ssr/water-profile';
 
 export const SSR_GPU_PROBE_WIDTH = 64;
 export const SSR_GPU_PROBE_HEIGHT = 32;
@@ -34,6 +43,22 @@ fn surfaces(uv: vec2<f32>) -> vec2<f32> {
   let receiver = select(20.0, 6.0 / max(1.0 - dx, 0.001), dx < 1.0);
   let wall = select(20.0, 2.0 / max(dx, 0.001), dx > 0.0);
   return vec2<f32>(min(min(receiver, wall), 20.0), select(0.0, 1.0, wall < receiver));
+}
+`;
+
+// A flat source supplies an exact depth at each HZB level. Keep the mirror
+// narrower than a mip-1 texel so the step can leave it via the clear gap.
+const SSR_PLANAR_RECEIVER_DEPTH = 2;
+const SSR_PLANAR_SOURCE_DEPTH = 2.25;
+const SSR_PLANAR_RECEIVER_START = 28;
+const SSR_PLANAR_RECEIVER_END = 30;
+const SSR_PLANAR_SURFACES = /* wgsl */ `
+fn surfaces(uv: vec2<f32>) -> vec2<f32> {
+  let x = uv.x * ${SSR_GPU_PROBE_WIDTH}.0;
+  let receiver = x >= ${SSR_PLANAR_RECEIVER_START}.0 && x < ${SSR_PLANAR_RECEIVER_END}.0;
+  let source = uv.x >= 0.5;
+  let distance = select(20.0, ${SSR_PLANAR_RECEIVER_DEPTH}.0, receiver);
+  return vec2<f32>(select(distance, ${SSR_PLANAR_SOURCE_DEPTH}, source), f32(source));
 }
 `;
 
@@ -86,6 +111,13 @@ fn seed_ssr_occluder(@builtin(vertex_index) index : u32) -> @builtin(position) v
 }
 `;
 
+export const SSR_PROBE_SHADER_IDENTIFIERS = [
+  'forgeax_depth_pyramid::seed',
+  'forgeax_depth_pyramid::reduce',
+  'forgeax_ssr::trace',
+  'forgeax_ssr::compose',
+] as const;
+
 export interface SsrShaderManifest {
   readonly entries: readonly { readonly wgsl: string }[];
 }
@@ -105,6 +137,8 @@ function readTracePixels(
 export interface SsrGpuDispatchOptions {
   readonly quality?: import('../quality').RenderQualityBudgets['ssr'];
   readonly execution?: 'compute' | 'fragment';
+  readonly gbuffer?: 'full' | 'compact';
+  readonly waterTrace?: 'current' | 'history';
   /** Authoring maxDistance written through the shared View UBO. */
   readonly maxDistance?: number;
   /** Exercise the binary View-UBO enable sentinel without changing admission. */
@@ -113,19 +147,12 @@ export interface SsrGpuDispatchOptions {
   readonly excludedSource?: boolean;
   readonly excludedReceiver?: boolean;
   readonly coordinateSource?: boolean;
-  /** A recessed grout strip, not a painted line on a flat wall. */
-  readonly recessedSource?: boolean;
+  readonly planarCoordinateSource?: boolean;
+  readonly halfHitColor?: boolean;
 }
 
 function probeSurfaces(options: SsrGpuDispatchOptions) {
-  return options.recessedSource
-    ? SSR_TEST_SURFACES.replace(
-        'let wall = select(20.0, 2.0 / max(dx, 0.001), dx > 0.0);',
-        `let dy = (1.0 - uv.y * 2.0) / 1.732050808;
-  let front = 2.0 / max(dx, 0.001);
-  let wall = select(20.0, select(front, 2.12 / max(dx, 0.001), abs(dy * front) < 0.5), dx > 0.0);`,
-      )
-    : SSR_TEST_SURFACES;
+  return options.planarCoordinateSource ? SSR_PLANAR_SURFACES : SSR_TEST_SURFACES;
 }
 
 /** SSR sources plus the depth-pyramid sources its trace reads. */
@@ -143,7 +170,6 @@ export function sourcesFromManifest(manifest: SsrShaderManifest): SsrProbeShader
     seed: source('depth_pyramid_seed'),
     reduce: source('depth_pyramid_reduce'),
     trace: source('ssr_trace'),
-    temporal: source('ssr_temporal'),
     compose: source('vs_ssr_compose'),
   };
 }
@@ -157,17 +183,46 @@ function ssrHitUnweight(words: readonly number[], p: number, half: (value: numbe
   return 1 / Math.max(1 - Math.max(0, luma), 2 ** -11);
 }
 
+function decodeSsrHalf(value: number) {
+  const exponent = (value >> 10) & 31;
+  return (
+    (value & 0x8000 ? -1 : 1) *
+    (exponent === 0
+      ? (value & 1023) * 2 ** -24
+      : (1 + (value & 1023) / 1024) * 2 ** (exponent - 15))
+  );
+}
+
+/** Exact UV for a reflection from the left panel onto the fronto-parallel source. */
+export function ssrPlanarCoordinateErrors(words: readonly number[]) {
+  // The mirror normal (sqrt(3)/2, 0, 1/2) reflects -Z into
+  // (sqrt(3)/2, 0, -1/2). The orthographic viewport spans two world units.
+  const offset = ((SSR_PLANAR_SOURCE_DEPTH - SSR_PLANAR_RECEIVER_DEPTH) * Math.sqrt(3)) / 2;
+  const errors: number[] = [];
+  for (let y = 0; y < SSR_GPU_PROBE_HEIGHT; y++) {
+    for (let x = SSR_PLANAR_RECEIVER_START; x < SSR_PLANAR_RECEIVER_END; x++) {
+      const u = (x + 0.5) / SSR_GPU_PROBE_WIDTH + offset;
+      const v = (y + 0.5) / SSR_GPU_PROBE_HEIGHT;
+      // Mip 1 covers four scene pixels. Stay one such cell inside the source,
+      // so the analytic plane and the furthest-depth sample agree.
+      if (u < 0.5 + 4 / SSR_GPU_PROBE_WIDTH || v < 0.2 || v > 0.8) continue;
+      const p = (y * SSR_GPU_PROBE_WIDTH + x) * 4;
+      if (decodeSsrHalf(words[p + 3] ?? 0) <= 0.2) continue;
+      const unweight = ssrHitUnweight(words, p, decodeSsrHalf);
+      errors.push(
+        Math.max(
+          Math.abs(decodeSsrHalf(words[p] ?? 0) * unweight - u),
+          Math.abs(decodeSsrHalf(words[p + 1] ?? 0) * unweight - v),
+        ),
+      );
+    }
+  }
+  return errors;
+}
+
 /** Exact mirror/wall intersection independent of the production march. */
 export function ssrCoordinateErrors(words: readonly number[], recessedSource = false) {
-  const half = (value: number) => {
-    const exponent = (value >> 10) & 31;
-    return (
-      (value & 0x8000 ? -1 : 1) *
-      (exponent === 0
-        ? (value & 1023) * 2 ** -24
-        : (1 + (value & 1023) / 1024) * 2 ** (exponent - 15))
-    );
-  };
+  const half = decodeSsrHalf;
   const errors: number[] = [];
   for (let y = 0; y < SSR_GPU_PROBE_HEIGHT; y++) {
     for (let x = 0; x < SSR_GPU_PROBE_WIDTH; x++) {
@@ -226,14 +281,25 @@ export function ssrCoordinateErrors(words: readonly number[], recessedSource = f
 }
 
 /** Execute the production ray-depth function with genuine camera projections. */
-export async function runSsrViewDistanceProbe(device: RhiDevice, source: string) {
+export async function runSsrViewDistanceProbe(device: RhiDevice) {
+  const viewType = viewSource
+    .slice(
+      viewSource.indexOf('struct AtmosphereMedium'),
+      viewSource.indexOf('// Direct Mesh draws'),
+    )
+    .replace(/^#.*$/gm, '');
+  const pyramidSampling = depthPyramidSampleSource.replace(/^#.*$/gm, '');
   const module = createShaderModuleImmediate(device, {
-    code: `${source}
+    code: `${viewType}
+${pyramidSampling}
+@group(0) @binding(5) var<uniform> view: View;
 @group(1) @binding(0) var<storage, read_write> depthProbe : array<vec4<f32>>;
+fn probeViewDistance(z: f32) -> f32 {
+  let clip = view.worldViewProj * vec4<f32>(0.0, 0.0, z, 1.0);
+  return linearizeViewDepth(clip.z / clip.w, view.temporalProjection);
+}
 @compute @workgroup_size(1) fn probe_ssr_view_distance() {
-  depthProbe[0] = vec4<f32>(
-    projectWorldViewDistance(vec3<f32>(0.0, 0.0, -6.58)),
-    projectWorldViewDistance(vec3<f32>(0.0, 0.0, -12.0)), 0.0, 0.0);
+  depthProbe[0] = vec4<f32>(probeViewDistance(-6.58), probeViewDistance(-12.0), 0.0, 0.0);
 }`,
   }).unwrap();
   const viewLayout = device
@@ -314,7 +380,6 @@ export function admittedSsrSpatial() {
       near: 0.1,
       far: 100,
       screenSpaceReflection: {
-        waterTemporal: 0,
         maxDistance: 40,
         thickness: 0.2,
         maxRoughness: 0.6,
@@ -383,8 +448,13 @@ export async function prepareSsrGpuDispatch(
 
 function seedSceneSource(options: SsrGpuDispatchOptions) {
   let source = SSR_GPU_SCENE_SEED_WGSL.replace(SSR_TEST_SURFACES, probeSurfaces(options));
-  if (options.coordinateSource)
+  if (options.coordinateSource || options.planarCoordinateSource)
     source = source.replace('vec3<f32>(0.9, 0.18, 0.04)', 'vec3<f32>(uv, 0.5)');
+  if (options.planarCoordinateSource)
+    source = source.replace(
+      'vec3<f32>(0.853553391, 0.50, 0.853553391)',
+      'vec3<f32>(0.933012702, 0.50, 0.75)',
+    );
   if (options.sourceBackFacing)
     source = source.replace('vec3<f32>(0.0, 0.50, 0.50)', 'vec3<f32>(1.0, 0.50, 0.50)');
   if (options.excludedSource)
@@ -484,6 +554,22 @@ struct SeedOutputs {
     )
     .replace(/textureStore\(fallback, vec2<i32>\(id.xy\), ([^;]+)\);/, 'output.fallback = $1;')
     .replace(/textureStore\(temporal, vec2<i32>\(id.xy\), ([^;]+)\);/, 'output.temporal = $1;');
+  if (options.gbuffer !== undefined) {
+    const compact = options.gbuffer === 'compact';
+    source = source.replace(
+      /output.normal = [^;]+;/,
+      `let words = encodeStandardGBufferNormal(receiverNormal * 2.0 - 1.0, select(0.1, 0.8, wall), 0.7, false);
+       let valid = id.x != 1u;
+       output.normal = ${compact ? 'select(0u, words.x & 0x3fffffffu, valid)' : 'select(vec2u(0), words, valid)'};
+       ${compact ? 'output.context = select(0u, ((words.y & 255u) << 16u) | 0xa1006633u, valid);' : ''}`,
+    );
+    source = compact
+      ? source.replace(
+          '@location(3) temporal: vec4<f32>,',
+          '@location(3) temporal: vec4<f32>,\n  @location(4) context: u32,',
+        )
+      : source.replace('@location(1) normal: u32,', '@location(1) normal: vec2<u32>,');
+  }
   source =
     source.trim().slice(0, -1) +
     'return output; }\n' +
@@ -502,9 +588,10 @@ struct SeedOutputs {
         entryPoint: 'seed_ssr_scene_fragment',
         targets: [
           { format: 'rgba16float' },
-          { format: 'r32uint' },
+          { format: options.gbuffer === 'full' ? 'rg32uint' : 'r32uint' },
           { format: 'rgba16float' },
           { format: 'rgba16float' },
+          ...(options.gbuffer === 'compact' ? [{ format: 'r32uint' as const }] : []),
         ],
       },
       primitive: { topology: 'triangle-list' },
@@ -517,10 +604,10 @@ function seedOccluderPipeline(
   options: SsrGpuDispatchOptions,
   createModule: typeof createShaderModuleImmediate,
 ) {
-  const module = createModule(device, {
-    code: SSR_GPU_OCCLUDER_WGSL.replace(SSR_TEST_SURFACES, probeSurfaces(options)),
-    label: 'ssr-occluder-seed',
-  });
+  let source = SSR_GPU_OCCLUDER_WGSL.replace(SSR_TEST_SURFACES, probeSurfaces(options));
+  if (options.planarCoordinateSource)
+    source = source.replace('0.1 * (20.0 - z) / (19.9 * z)', '(20.0 - z) / 19.9');
+  const module = createModule(device, { code: source, label: 'ssr-occluder-seed' });
   if (!module.ok) throw module.error;
   return device
     .createRenderPipeline({
@@ -538,7 +625,62 @@ function seedOccluderPipeline(
     .unwrap();
 }
 
-/** Run repeated actual SSR graph dispatches and read back the scene and traced radiance. */
+async function seedHitColor(
+  device: RhiDevice,
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  source: GraphTextureView,
+  createModule: typeof createShaderModuleImmediate,
+  halfHitColor: boolean | undefined,
+) {
+  if (!halfHitColor) return source;
+  const format = 'rgba16float';
+  (
+    await getOrCreateMipmapPipeline(device, format, async (device, descriptor) =>
+      createModule(device, descriptor),
+    )
+  ).unwrap();
+  const size = ssrColorExtent({ width: SSR_GPU_PROBE_WIDTH, height: SSR_GPU_PROBE_HEIGHT });
+  const texture = graph.createTexture('ssr-half-hit-color', { format, size }).unwrap();
+  const view = graph.view(texture, { dimension: '2d' }).unwrap();
+  graph
+    .addRasterPass('ssr-half-hit-color-downsample', {
+      accesses: [
+        { resource: source, usage: 'sampled-read' },
+        { resource: view, usage: 'color-attachment' },
+      ],
+      colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store' }],
+      encodeDirect: (pass, _frame, resources) =>
+        encodeMipmapLevel(device, pass, resources.textureView(source).unwrap(), format).unwrap(),
+    })
+    .unwrap();
+  return view;
+}
+
+function ssrProbeView(options: SsrGpuDispatchOptions) {
+  const viewPayload = new Float32Array(VIEW_UNIFORM_BYTES / Float32Array.BYTES_PER_ELEMENT);
+  const projection = mat4.create();
+  if (options.planarCoordinateSource) mat4.orthographicReverseZ(projection, -1, 1, 1, -1, 0.1, 20);
+  else mat4.perspectiveReverseZ(projection, Math.PI / 3, 2, 0.1, 20);
+  const inverseProjection = mat4.create();
+  mat4.invert(inverseProjection, projection);
+  viewPayload.set(projection, 0);
+  viewPayload.set(inverseProjection, 44);
+  viewPayload.set(projection, 196);
+  viewPayload.set(projection, 212);
+  // The depth-pyramid seed linearizes the depth attachment through the shared View
+  // projection range; keep this carrier's identity matrices paired with the
+  // same finite perspective range used by the admission fixture.
+  viewPayload[228] = 0.1;
+  viewPayload[229] = 20;
+  viewPayload[230] = Number(options.planarCoordinateSource === true);
+  viewPayload[236] = options.maxDistance ?? 12;
+  viewPayload[237] = 0.2;
+  viewPayload[238] = 0.6;
+  viewPayload[239] = options.enabled === false ? 0 : 1;
+  writeSsrQualityLanes(viewPayload, options.quality);
+  return viewPayload;
+}
+
 export async function runSsrGpuDispatch(
   device: RhiDevice,
   shaders: SsrProbeShaderSources,
@@ -570,7 +712,7 @@ export async function runSsrGpuDispatch(
   const color = (
     label: string,
     extent = { width: SSR_GPU_PROBE_WIDTH, height: SSR_GPU_PROBE_HEIGHT },
-    format: 'rgba16float' | 'rgba8unorm' | 'r32uint' = 'rgba16float',
+    format: 'rgba16float' | 'rgba8unorm' | 'r32uint' | 'rg32uint' = 'rgba16float',
   ) => {
     const texture = graph
       .createTexture(label, {
@@ -581,7 +723,17 @@ export async function runSsrGpuDispatch(
     const view = graph.view(texture, { label: `${label}.view` }).unwrap();
     return { texture, view };
   };
-  const normal = color('gbuffer-normal', undefined, 'r32uint');
+  const normal = color(
+    'gbuffer-normal',
+    undefined,
+    options.gbuffer === 'full' ? 'rg32uint' : 'r32uint',
+  );
+  const context =
+    options.gbuffer === 'compact' ? color('gbuffer-b', undefined, 'r32uint') : undefined;
+  const gbufferInputs = {
+    ...(options.gbuffer === undefined ? {} : { gbufferV2: true }),
+    ...(context === undefined ? {} : { compactMaterial: context.view }),
+  };
   const response = color('gbuffer-response');
   const scene = color('scene-color');
   const fallback = color('reflection-fallback');
@@ -593,28 +745,9 @@ export async function runSsrGpuDispatch(
       usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
     })
     .unwrap();
-  const viewPayload = new Float32Array(VIEW_UNIFORM_BYTES / Float32Array.BYTES_PER_ELEMENT);
-  const projection = mat4.create();
-  mat4.perspectiveReverseZ(projection, Math.PI / 3, 2, 0.1, 20);
-  const inverseProjection = mat4.create();
-  mat4.invert(inverseProjection, projection);
-  viewPayload.set(projection, 0);
-  viewPayload.set(inverseProjection, 44);
-  viewPayload.set(projection, 196);
-  viewPayload.set(projection, 212);
-  // The depth-pyramid seed linearizes the depth attachment through the shared View
-  // projection range; keep this carrier's identity matrices paired with the
-  // same finite perspective range used by the admission fixture.
-  viewPayload[228] = 0.1;
-  viewPayload[229] = 20;
-  viewPayload[230] = 0;
-  viewPayload[236] = options.maxDistance ?? 12;
-  viewPayload[237] = 0.2;
-  viewPayload[238] = 0.6;
-  viewPayload[239] = options.enabled === false ? 0 : 1;
-  writeSsrQualityLanes(viewPayload, options.quality);
+  const viewPayload = ssrProbeView(options);
   const wroteView = device.queue.writeBuffer(viewUniformBuffer, 0, viewPayload);
-  if (!wroteView.ok) throw wroteView.error;
+  wroteView.unwrap();
   const view = graph
     .importBuffer(
       'ssr-view',
@@ -622,14 +755,6 @@ export async function runSsrGpuDispatch(
       () => viewUniformBuffer,
     )
     .unwrap();
-  const traceExtent = {
-    width: SSR_GPU_PROBE_WIDTH,
-    height: SSR_GPU_PROBE_HEIGHT,
-  };
-  const previousHistory = color('ssr-history-previous', traceExtent);
-  const outputHistory = color('ssr-history-output', traceExtent);
-  const previousSurface = color('ssr-history-previous-surface', traceExtent, 'rgba8unorm');
-  const outputSurface = color('ssr-history-output-surface', traceExtent, 'rgba8unorm');
   const seed = graph.addRasterPass('seed-inputs', {
     accesses: [
       { resource: depthAttachment, usage: 'depth-stencil-write' },
@@ -675,7 +800,7 @@ export async function runSsrGpuDispatch(
     },
     encode: () => undefined,
   });
-  if (!seed.ok) throw seed.error;
+  seed.unwrap();
   let occluderPipeline: ReturnType<typeof seedOccluderPipeline> | undefined;
   const occluder = graph.addRasterPass('seed-ssr-occluder', {
     accesses: [{ resource: depthAttachment, usage: 'depth-stencil-write' }],
@@ -693,17 +818,24 @@ export async function runSsrGpuDispatch(
       pass.draw(6, 1, 0, 0);
     },
   });
-  if (!occluder.ok) throw occluder.error;
+  occluder.unwrap();
   let sceneSeedState: ReturnType<typeof seedSceneState> | undefined;
   let rasterSeed: ReturnType<typeof seedSceneRasterState> | undefined;
+  const sceneSeedTargets = [
+    scene,
+    normal,
+    fallback,
+    currentTemporal,
+    ...(context === undefined ? [] : [context]),
+  ];
   const seededScene =
-    options.execution === 'fragment'
+    options.execution === 'fragment' || options.gbuffer !== undefined
       ? graph.addRasterPass('seed-ssr-scene-pattern-fragment', {
-          accesses: [scene, normal, fallback, currentTemporal].map(({ view }) => ({
+          accesses: sceneSeedTargets.map(({ view }) => ({
             resource: view,
             usage: 'color-attachment' as const,
           })),
-          colorAttachments: [scene, normal, fallback, currentTemporal].map(({ view }) => ({
+          colorAttachments: sceneSeedTargets.map(({ view }) => ({
             view,
             loadOp: 'clear',
             storeOp: 'store',
@@ -768,7 +900,7 @@ export async function runSsrGpuDispatch(
             void frame;
           },
         });
-  if (!seededScene.ok) throw seededScene.error;
+  seededScene.unwrap();
   const responseSeed = graph.addRasterPass('seed-ssr-response', {
     accesses: [{ resource: response.view, usage: 'color-attachment' }],
     colorAttachments: [
@@ -781,113 +913,79 @@ export async function runSsrGpuDispatch(
     ],
     encode: () => undefined,
   });
-  if (!responseSeed.ok) throw responseSeed.error;
-  const historySeed = graph.addRasterPass('seed-ssr-history', {
-    accesses: [
-      { resource: previousHistory.view, usage: 'color-attachment' },
-      { resource: outputHistory.view, usage: 'color-attachment' },
-      { resource: previousSurface.view, usage: 'color-attachment' },
-      { resource: outputSurface.view, usage: 'color-attachment' },
-    ],
-    colorAttachments: [
-      {
-        view: previousHistory.view,
-        loadOp: 'clear',
-        storeOp: 'store',
-        clearValue: { r: 0.3, g: 0.2, b: 0.1, a: 0.5 },
-      },
-      {
-        view: outputHistory.view,
-        loadOp: 'clear',
-        storeOp: 'store',
-        clearValue: { r: 0, g: 0, b: 0, a: 0 },
-      },
-      {
-        view: previousSurface.view,
-        loadOp: 'clear',
-        storeOp: 'store',
-        clearValue: { r: 0.5, g: 0.5, b: 1, a: 1 },
-      },
-      {
-        view: outputSurface.view,
-        loadOp: 'clear',
-        storeOp: 'store',
-        clearValue: { r: 0, g: 0, b: 0, a: 0 },
-      },
-    ],
-    encode: () => undefined,
-  });
-  if (!historySeed.ok) throw historySeed.error;
-  const temporalParamsBuffer = device
-    .createBuffer({
-      label: 'ssr-temporal-params',
-      size: 32,
-      usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
-    })
-    .unwrap();
-  const temporalParamsData = new ArrayBuffer(32);
-  const temporalParamsView = new DataView(temporalParamsData);
-  temporalParamsView.setUint32(0, 1, true);
-  temporalParamsView.setFloat32(4, 0.9, true);
-  temporalParamsView.setFloat32(8, 0.1, true);
-  temporalParamsView.setFloat32(12, 0.5, true);
-  const wroteTemporalParams = device.queue.writeBuffer(
-    temporalParamsBuffer,
-    0,
-    new Uint8Array(temporalParamsData),
-  );
-  if (!wroteTemporalParams.ok) throw wroteTemporalParams.error;
-  const temporalParams = graph
-    .importBuffer(
-      'ssr-temporal-params',
-      { size: 32, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST },
-      () => temporalParamsBuffer,
-    )
-    .unwrap();
+  responseSeed.unwrap();
+  const water = options.waterTrace;
   const depthPyramid = addDepthPyramidPasses(graph, {
+    reduction: 'furthest',
     execution: options.execution ?? 'compute',
     depth: depthSample,
     width: SSR_GPU_PROBE_WIDTH,
     height: SSR_GPU_PROBE_HEIGHT,
     view,
   });
-  if (!depthPyramid.ok) throw depthPyramid.error;
-  const pyramid = depthPyramid.value.pyramid;
+  const pyramid = depthPyramid.unwrap().pyramid;
+  let waterParamsBuffer: import('@forgeax/engine-rhi').Buffer | undefined;
+  const waterParams = () => {
+    const size = WATER_SSR_PARAMS_BYTES;
+    const usage = GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST;
+    const buffer = device.createBuffer({ label: 'water-ssr-probe-params', size, usage }).unwrap();
+    waterParamsBuffer = buffer;
+    const values = new DataView(new ArrayBuffer(size));
+    const viewport = fullSsrColorViewport(SSR_GPU_PROBE_WIDTH, SSR_GPU_PROBE_HEIGHT);
+    writeSsrColorViewport(values, 0, viewport);
+    writeSsrColorViewport(values, 32, viewport);
+    const profile = WATER_SSR_DEFAULT_PROFILE;
+    for (const [index, value] of [water === 'history' ? 1 : 0, 1, profile.intensity, 0].entries())
+      values.setFloat32(64 + index * 4, value, true);
+    device.queue.writeBuffer(buffer, 0, values.buffer).unwrap();
+    return graph.importBuffer('water-ssr-probe-params', { size, usage }, () => buffer).unwrap();
+  };
+  const hitColor = await seedHitColor(
+    device,
+    graph,
+    scene.view,
+    createModule,
+    options.halfHitColor,
+  );
   const projected = addSsrSpatialPasses(graph, {
     quality: options.quality,
     admission: admittedSsrSpatial(),
     execution: options.execution ?? 'compute',
     width: SSR_GPU_PROBE_WIDTH,
     height: SSR_GPU_PROBE_HEIGHT,
-    depth: depthSample,
-    normal: normal.view,
-    scene: scene.view,
-    fallback: fallback.view,
-    currentTemporal: currentTemporal.view,
+    scene: hitColor,
     view,
     depthPyramid: pyramid,
-    temporal: {
-      profile: 'opaque',
-      previousHistory: previousHistory.view,
-      outputHistory: outputHistory.view,
-      previousSurface: previousSurface.view,
-      outputSurface: outputSurface.view,
-      params: temporalParams,
-    },
-  });
-  if (!projected.ok) throw projected.error;
-  const resources = projected.value.resources;
-  if (resources === undefined) throw new Error('SSR spatial resources missing');
-  addSsrCompositionPass(graph, {
-    execution: options.execution ?? 'compute',
-    mipLevelCount: resources.mipLevelCount ?? 1,
-    scene: { ...scene, format: 'rgba16float', sampleCount: 1 },
-    radiance: resources.radiancePyramid ?? resources.trace.view,
-    fallback: fallback.view,
-    response: response.view,
+    depth: depthSample,
     normal: normal.view,
-    view,
-  }).unwrap();
+    ...gbufferInputs,
+    fallback: fallback.view,
+    currentTemporal: currentTemporal.view,
+    ...(water === undefined
+      ? {}
+      : {
+          origin: {
+            depth: depthSample,
+            normal: normal.view,
+            coverage: fallback.view,
+            inputParams: waterParams(),
+            ...(water === 'history' ? { sceneColorHistory: fallback.view } : {}),
+          },
+        }),
+  });
+  const resources = projected.unwrap().resources;
+  if (resources === undefined) throw new Error('SSR spatial resources missing');
+  if (water === undefined)
+    addSsrCompositionPass(graph, {
+      execution: options.execution ?? 'compute',
+      scene: { ...scene, format: 'rgba16float', sampleCount: 1 },
+      radiance: resources.trace.view,
+      fallback: fallback.view,
+      response: response.view,
+      normal: normal.view,
+      ...gbufferInputs,
+      view,
+    }).unwrap();
 
   const bytesPerRow = Math.ceil((SSR_GPU_PROBE_WIDTH * 8) / 256) * 256;
   const readbackBuffer = device
@@ -906,7 +1004,7 @@ export async function runSsrGpuDispatch(
     .unwrap();
   const pyramidReadbackBuffer = device
     .createBuffer({
-      label: 'depth-pyramid-readback',
+      label: 'hzb-readback',
       size: bytesPerRow * SSR_GPU_PROBE_HEIGHT,
       usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
     })
@@ -942,7 +1040,7 @@ export async function runSsrGpuDispatch(
       );
     },
   });
-  if (!copy.ok) throw copy.error;
+  copy.unwrap();
   const traceReadback = graph
     .importBuffer(
       'ssr-trace-readback',
@@ -974,10 +1072,10 @@ export async function runSsrGpuDispatch(
       );
     },
   });
-  if (!traceCopy.ok) throw traceCopy.error;
+  traceCopy.unwrap();
   const pyramidReadback = graph
     .importBuffer(
-      'depth-pyramid-readback',
+      'hzb-readback',
       {
         size: bytesPerRow * SSR_GPU_PROBE_HEIGHT,
         usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
@@ -987,7 +1085,7 @@ export async function runSsrGpuDispatch(
     .unwrap();
   const pyramidLevel0 = pyramid.levels[0];
   if (pyramidLevel0 === undefined) throw new Error('depth pyramid mip 0 missing');
-  const pyramidCopy = graph.addCopyPass('depth-pyramid-readback', {
+  const pyramidCopy = graph.addCopyPass('hzb-readback', {
     accesses: [
       { resource: pyramidLevel0, usage: 'copy-src' },
       { resource: pyramidReadback, usage: 'copy-dst' },
@@ -1008,42 +1106,7 @@ export async function runSsrGpuDispatch(
       );
     },
   });
-  if (!pyramidCopy.ok) throw pyramidCopy.error;
-  const surfaceReadbackBuffer = device
-    .createBuffer({
-      size: bytesPerRow * traceExtent.height,
-      usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
-    })
-    .unwrap();
-  const surfaceReadback = graph
-    .importBuffer(
-      'ssr-surface-readback',
-      {
-        size: bytesPerRow * traceExtent.height,
-        usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
-      },
-      () => surfaceReadbackBuffer,
-    )
-    .unwrap();
-  graph
-    .addCopyPass('ssr-surface-readback', {
-      accesses: [
-        { resource: outputSurface.view, usage: 'copy-src' },
-        { resource: surfaceReadback, usage: 'copy-dst' },
-      ],
-      encode: ({ encoder, resources: resolver }) => {
-        encoder.copyTextureToBuffer(
-          { texture: resolver.texture(outputSurface.texture).unwrap() },
-          {
-            buffer: resolver.buffer(surfaceReadback).unwrap(),
-            bytesPerRow,
-            rowsPerImage: traceExtent.height,
-          },
-          { width: traceExtent.width, height: traceExtent.height, depthOrArrayLayers: 1 },
-        );
-      },
-    })
-    .unwrap();
+  pyramidCopy.unwrap();
   const compiled = graph
     .compile({
       device,
@@ -1053,9 +1116,9 @@ export async function runSsrGpuDispatch(
   const pixels: number[][] = [];
   const tracePixels: number[][] = [];
   const pyramidPixels: number[][] = [];
-  let surfacePixels: number[] = [];
   const bindGroupCounts = { createBindGroup: 0, keys: [] as string[] };
   const runtime = runtimeFor(device, createModule);
+  let composedPixels: number[] = [];
   for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
     const encoder = device.createCommandEncoder({ label: `ssr-gpu-probe-${frameIndex}` }).unwrap();
     const frame = {
@@ -1075,10 +1138,8 @@ export async function runSsrGpuDispatch(
         `Stable SSR dispatch recreated a bind group at ${frameIndex}: ${JSON.stringify(bindGroupCounts)}`,
       );
     }
-    const finished = encoder.finish();
-    if (!finished.ok) throw finished.error;
-    const submitted = device.queue.submit([finished.value]);
-    if (!submitted.ok) throw submitted.error;
+    const finished = encoder.finish().unwrap();
+    device.queue.submit([finished]).unwrap();
     await device.queue.onSubmittedWorkDone();
     // These independent copies share one completed submission. Request all
     // mappings together instead of paying three browser/driver round trips
@@ -1091,6 +1152,11 @@ export async function runSsrGpuDispatch(
     const range = mapped.getMappedRange().unwrap();
     const readbackWords = new Uint16Array(range.slice(0, bytesPerRow * SSR_GPU_PROBE_HEIGHT));
     pixels.push([...readbackWords.slice(0, 4)]);
+    if (frameIndex === frameCount - 1 && options.gbuffer !== undefined)
+      composedPixels = readTracePixels(range, bytesPerRow, {
+        width: SSR_GPU_PROBE_WIDTH,
+        height: SSR_GPU_PROBE_HEIGHT,
+      });
     mapped.unmap();
     const traceRange = traceMapped.getMappedRange().unwrap();
     tracePixels.push(readTracePixels(traceRange, bytesPerRow, resources.trace));
@@ -1111,22 +1177,13 @@ export async function runSsrGpuDispatch(
     }
     pyramidPixels.push(pyramidFrame);
     pyramidMapped.unmap();
-    if (frameIndex === frameCount - 1) {
-      const mapped = (await surfaceReadbackBuffer.mapAsync(GPU_BUFFER_USAGE_MAP_READ)).unwrap();
-      const bytes = new Uint8Array(mapped.getMappedRange().unwrap().slice(0));
-      surfacePixels = Array.from({ length: traceExtent.height }, (_, y) => [
-        ...bytes.slice(y * bytesPerRow, y * bytesPerRow + traceExtent.width * 4),
-      ]).flat();
-      mapped.unmap();
-    }
   }
   const info = compiled.inspect();
   (await compiled.retire()).unwrap();
   device.destroyBuffer(readbackBuffer).unwrap();
   device.destroyBuffer(traceReadbackBuffer).unwrap();
   device.destroyBuffer(pyramidReadbackBuffer).unwrap();
-  device.destroyBuffer(surfaceReadbackBuffer).unwrap();
-  device.destroyBuffer(temporalParamsBuffer).unwrap();
+  if (waterParamsBuffer !== undefined) device.destroyBuffer(waterParamsBuffer).unwrap();
   device.destroyBuffer(viewUniformBuffer).unwrap();
   return {
     pixel: pixels[0] ?? [],
@@ -1134,7 +1191,7 @@ export async function runSsrGpuDispatch(
     tracePixels: Object.freeze(tracePixels),
     traceExtent: { width: resources.trace.width, height: resources.trace.height },
     pyramidPixels: Object.freeze(pyramidPixels),
-    surfacePixels: Object.freeze(surfacePixels),
+    composedPixels: Object.freeze(composedPixels),
     passNames: info.passes.map((pass) => pass.name),
     resourceNames: info.resources.map((resource) => resource.label),
   };

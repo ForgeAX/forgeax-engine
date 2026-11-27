@@ -56,6 +56,7 @@ function scopedMaterialFixture() {
     meshStorageBuffer: { buffer: {} },
     skylightFallback: {
       irradianceView: {},
+      skySh: {},
       prefilterView: {},
       brdfLutView: {},
       sampler: {},
@@ -63,10 +64,9 @@ function scopedMaterialFixture() {
     },
   };
   const skylight = {
-    irradianceView: {},
+    skySh: {},
     irradianceSampler: {},
     prefilterView: {},
-    skylightPrefilterView: {},
     prefilterSampler: {},
     brdfLutView: {},
     intensityBuffer: {},
@@ -239,7 +239,7 @@ it('compares actual layout, World, device generation and complete physical mater
     f.state.defaultWhiteTextureView = {};
   });
   replace(() => {
-    Object.assign(f.skylight, { skylightPrefilterView: {} });
+    Object.assign(f.skylight, { prefilterSampler: {} });
   });
   replace(() => {
     Object.assign(f.skylight, { intensityBuffer: {} });
@@ -278,8 +278,12 @@ it('compares actual layout, World, device generation and complete physical mater
   expect(held.every((binding) => binding.handle !== anotherLayout.handle)).toBe(true);
   expect(held.every((binding) => binding.handle !== anotherWorld.handle)).toBe(true);
   for (const call of f.createBindGroup.mock.calls) {
-    const entry = call[0].entries.find((entry) => entry.binding === 47);
-    expect(entry?.resource.kind).toBe('textureView');
+    const prefilter = call[0].entries.find(
+      ({ resource }) =>
+        resource.kind === 'textureView' && resource.value === f.skylight.prefilterView,
+    );
+    expect(prefilter).toBeDefined();
+    expect(call[0].entries.some((entry) => entry.binding === 47)).toBe(false);
     expect(call[0].entries.some((entry) => entry.binding === 46)).toBe(true);
   }
   for (const binding of held) binding.release().unwrap();
@@ -398,8 +402,8 @@ it.each([
     );
   }
   expect(entries?.find((entry) => entry.binding === userRegion.length)?.resource).toEqual({
-    kind: 'textureView',
-    value: f.skylight.irradianceView,
+    kind: 'buffer',
+    value: { buffer: f.skylight.skySh, size: 112 },
   });
   expect(f.createBuffer.mock.calls).toHaveLength(1);
   expect(f.writeBuffer.mock.lastCall?.[2].byteLength).toBeGreaterThanOrEqual(16);
@@ -620,4 +624,68 @@ it.each([
   if (result.ok) throw new Error('Expected malformed reference failure');
   expect(result.error.message).toContain('asset-handle-invalid');
   expect(f.createBindGroup).not.toHaveBeenCalled();
+});
+
+it('keeps custom lit values, real IBL and scoped ownership without Standard-only bindings', () => {
+  const f = scopedMaterialFixture();
+  vi.spyOn(f.assets.shaderRegistry, 'findMaterialArtifact').mockReturnValue(
+    ok({
+      receipt: { bindings: 'render-lit-material-and-scene-depth' },
+      program: {},
+      paramSchema: f.schema,
+    } as never),
+  );
+  const first = f.acquire();
+  const second = f.acquire();
+  expect(second.handle).toBe(first.handle);
+  const entries = f.createBindGroup.mock.lastCall?.[0].entries ?? [];
+  expect(entries.map((entry) => entry.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+  expect(entries.find((entry) => entry.binding === 3)?.resource.value).toEqual({
+    buffer: f.skylight.skySh,
+    size: 112,
+  });
+  expect(entries.find((entry) => entry.binding === 8)?.resource.value).toEqual({
+    buffer: f.skylight.intensityBuffer,
+  });
+  expect(entries.find((entry) => entry.binding === 5)?.resource.value).toBe(
+    f.skylight.prefilterView,
+  );
+  expect(new Float32Array(f.writeBuffer.mock.calls[0]?.[2].buffer ?? new ArrayBuffer(0))[0]).toBe(
+    0.25,
+  );
+  f.setValue(0.75);
+  const changed = f.acquire();
+  expect(changed.handle).not.toBe(first.handle);
+  expect(new Float32Array(f.writeBuffer.mock.calls[1]?.[2].buffer ?? new ArrayBuffer(0))[0]).toBe(
+    0.75,
+  );
+  first.release().unwrap();
+  second.release().unwrap();
+  changed.release().unwrap();
+  expect(f.destroyBuffer).toHaveBeenCalledTimes(2);
+  expect(f.scope).toHaveLength(0);
+});
+
+it('does not allocate a user UBO or dynamic offset for empty custom lit materials', () => {
+  const f = scopedMaterialFixture();
+  f.schema.splice(0);
+  vi.spyOn(f.assets.shaderRegistry, 'findMaterialArtifact').mockReturnValue(
+    ok({
+      receipt: { bindings: 'render-lit-material-and-scene-depth' },
+      program: {},
+      paramSchema: [],
+    } as never),
+  );
+  const binding = f.acquire();
+  expect(f.createBuffer).not.toHaveBeenCalled();
+  expect(binding).not.toHaveProperty('dynamicOffsets');
+  expect(f.createBindGroup.mock.lastCall?.[0].entries.map((entry) => entry.binding)).toEqual([
+    0, 1, 2, 3, 4, 5,
+  ]);
+  expect(f.createBindGroup.mock.lastCall?.[0].entries[0]?.resource.value).toEqual({
+    buffer: f.skylight.skySh,
+    size: 112,
+  });
+  binding.release().unwrap();
+  expect(f.scope).toHaveLength(0);
 });

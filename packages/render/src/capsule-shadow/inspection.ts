@@ -1,6 +1,6 @@
 import type { RenderableSnapshot } from '../render-system-extract';
 import { type FrameList, sparseRowsOf } from '../scene/frame-list';
-import type { MaterialFrame } from '../scene/material-dispatch';
+import { hasShadowPasses, type MaterialFrame } from '../scene/material-dispatch';
 import type { CapsuleShadowFallbackReason } from './world-capsules';
 
 /**
@@ -57,7 +57,7 @@ export function capsuleShadowParticipates(
     const accepted = materials?.get(material);
     if (accepted === undefined)
       throw new Error('Capsule shadow requires the accepted material frame');
-    return accepted.passes.some((pass) => pass.tags.LightMode === 'ShadowCaster');
+    return hasShadowPasses(accepted);
   };
   return source.materials.length === 0 ? hasPass(source.material) : source.materials.some(hasPass);
 }

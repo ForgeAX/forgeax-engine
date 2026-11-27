@@ -1,3 +1,6 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-import
 
 The IES importer declares `.ies` single-output registration through `capabilities.sourceFormats`. DevKit uses that declaration to author an `ies-profile` sidecar; native import still validates the LM-63 input and owns the cooked output.
@@ -9,15 +12,15 @@ the complete cooked output before runtime adoption.
 
 ## Authoring and recovery index
 
-## 灯光资产 producer 入口
+## Lighting Asset Producer Entry Points
 
-三条最短入口：
+Three direct entry points:
 
-1. `RectAreaLight`、`SpotLight` 与 `LightProbe` 由 render 的 ECS schema 创作，scene producer 只外化 `shared<T>` GUID。
-2. `iesImporter` 只在 build-time 接受 LM-63 Type C `TILT=NONE`，输出固定 cooked `IesProfileAsset`；runtime 不解析 `.ies` 文本。
-3. `SpotLight.cookie` 走现有 `TextureAsset`/image producer；不要建立 Cookie registry 或第二条采样路径。
+1. Author `RectAreaLight`, `SpotLight` and `LightProbe` through render's ECS schemas; the scene producer externalizes only `shared<T>` GUIDs.
+2. At build time, `iesImporter` accepts LM-63 Type C `TILT=NONE` and emits a fixed cooked `IesProfileAsset`; runtime never parses `.ies` text.
+3. `SpotLight.cookie` uses the existing `TextureAsset`/image producer. Do not introduce a Cookie registry or a second sampling path.
 
-producer 持有 authored/source authority，Pack 产出 published 记录，Catalog 是 admitted/current 的投影；失败只返回结构化 `import-failed` 并保留原 GUID，修复 producer 后按同 GUID 重试。`lastKnownGood` 只可预览，不能冒充 verified/current。
+The producer owns authored/source authority, Pack emits published records, and Catalog projects admitted/current state. Failures return structured `import-failed` errors and preserve the original GUID; repair the producer and retry with that GUID. `lastKnownGood` supports preview only and cannot stand in for verified/current evidence.
 
 Extended-lighting imports keep the same source key across Rect, Spot modifier,
 Probe, and recovery carriers. IES is a build-time Type C `TILT=NONE` producer;
@@ -25,11 +28,9 @@ Cookie uses the existing texture producer; Probe and Sky are not new asset
 registries. A failed publish is a structured producer result, and runtime must
 not parse source text, invent a cooked payload, or promote LKG to current.
 
-Concurrent equivalent sidecar publication on Windows can report `EPERM` while
-replacing the destination. Import accepts that result only when the existing
-file matches the complete requested body byte for byte, then removes its own
-temporary file. Different bytes or other filesystem errors retain publication
-failure and DDC/LKG rollback; the destination is never removed as a workaround.
+Development Meta publication stores a single verified Pack payload, receipt
+and artifact closure under the accepted DDC key. The development route binds
+that payload to its active scope and serves it from the accepted generation.
 
 The IES producer reads the complete 13-field LM-63 numeric header. Type C
 horizontal tables support axial, quadrant, 0–180° bilateral, 90–270° bilateral
@@ -65,7 +66,7 @@ The import contract is [`schemas/asset-authority.schema.json`](../../schemas/ass
 
 | Need | Entry | Boundary |
 |:--|:--|:--|
-| Inspect producer evidence | Pack CLI `lookup` and `verify` JSON output | Read Catalog and receipt facts; do not parse messages |
+| Inspect producer evidence | `forgeax asset inspect --subject <guid> --catalog <path> --json` | Read Catalog and receipt facts; do not parse messages |
 | Rebuild | Registered importer through `runImport` | Write Pack/DDC output through the shared finalizer |
 | Recover failed output | Fix source or Meta, then cold cook | Never return raw source as a runtime projection |
 | Preview old output | Explicit Catalog last-known-good locator | Read-only preview; not current and not publishable |
@@ -154,9 +155,8 @@ Authored material outputs use the registered `material` NativeCooker,
 including Engine Standard roots and parent-only children. Cooking resolves the
 current Pack's GUID-linked material table before publication; external ancestors
 are observed content dependencies from the same staged generation. A shipped template is source ownership, not a
-published per-material program: the producer must retain its admitted ray-hit and
-Card derivatives as well as raster programs. Direct Pack v3 uses the same rule;
-legacy Pack v2 already-published Engine materials retain their transport contract.
+published per-material program: the producer retains its admitted ray-hit and
+Card derivatives as well as raster programs. The direct Pack uses the same producer.
 
 The same map also accepts explicit `PackCookSource` rows for custom kinds.
 Their `execution: 'cooked'` and `source` fields dispatch through the existing
@@ -177,8 +177,7 @@ only `readByGuid()` creates a content dependency.
 
 Development and build hosts use `createDeclaredPackAssetSnapshotSource()` to
 materialize external Pack or Meta content on the first actual read. A direct v3
-Pack entry cooks independently; Meta and legacy importers retain whole-source
-ownership. Reading one direct entry does not cook its sibling reference targets.
+Pack entry cooks independently. Meta importers retain whole-source ownership. Reading one direct entry does not cook its sibling reference targets.
 One inventory invocation retains private snapshots only for the owners read in that
 invocation, using the existing staged-owner concurrency and retry rules.
 Unknown GUIDs remain worklist misses; known producer failures retain their
@@ -196,20 +195,11 @@ packages; each asset retains its local artifact key, media type, codec, delivery
 metadata and integrity descriptor. Different bytes produce different paths. The
 ordinary Pack/Catalog reader continues to verify every requested decoded body.
 
-Hosts that already discover output keys use `createScriptablePackProduction()`
-for one build generation. `inspect(source)` evaluates its owner and actual
-content dependencies once; `produce(source)` finalizes the retained product
-without repeating generation or encoding. Source keys come from discovery,
-not a second authored output manifest. The existing worklist remains the route
-for sources whose output identities are not yet known.
-
-The generation fixes definitions, parameters, source closures, external snapshots
-and cookers. Start a new generation after any input change or terminal failure;
-the returned products are borrowed read-only build data. Inspection does not
-publish or activate plugin assets. The host still validates the complete GUID
-reference/deletion graph and current source revision before atomic publication.
-Local owner failures never fall through to an older external snapshot. Concurrent
-content cycles return the same structured stalled-worklist failure as serial cycles.
+Hosts with known output GUIDs can stage local owners with
+`createScriptablePackStagedAssetSnapshotSource()`. The snapshot fixes one
+generation, shares reads of each local owner, and fails content cycles without
+falling back to an older publication. The production worklist also accepts a
+declared external snapshot and discovers the outputs of ScriptablePack sources.
 
 The worklist defaults to serial admission. `maxConcurrency` refills idle lanes
 without waiting for a slow earlier subject, while retaining at most twice the
@@ -266,17 +256,30 @@ identities needed to prepare new code; it does not expose transport URLs.
 | `generate` / `withdraw` | Produce a complete parameter-instance output set, or withdraw its publication. GUIDs derive from instance packageId and sourceKey; consumer handles remain independently owned. |
 | `snapshot` / `exportSource` / `restore` | Preserve original definitions, accepted instance inputs and reachable fixed dependency recipes. Restore re-admits into the current scope; it does not install plugins. |
 
+Set `runtime: { dependencies, execution: 'task-worker' }` on a generator whose
+build can run in a separate realm. App's Engine Worker supplies its existing
+Task Worker pool. The task receives the generator's verified module and fixed
+dependency data. A build can check `context.task?.aborted` and await
+`context.task?.yield()` in its long loops. A host without a working Task Worker
+reports execution failure for this requirement and leaves the prior publication available.
+Ordinary Runtime Packs with named outputs prefer a Task Worker when the host supplies
+one. Otherwise they run in the producer's realm. Parameterized generators without an
+execution declaration run in the producer's realm. Exact replay depends on the program
+and inputs.
+
 Durable metadata is plain lossless JSON; binary leaves use owned Uint8/16/32 or
 Float32 views. Pack's `copyPackData` rejects accessors, functions, sparse arrays,
 subclasses and shared mutable storage without executing caller hooks. It preserves
 view offsets and backing aliases while excluding unrelated backing bytes.
 
-The `runtime-pack-source/2` snapshot uses Pack's `encodePackData` / `decodePackData`
+The `runtime-pack-source/3` snapshot derives fixed recipe outputs from the retained publication and still reads version 2. It uses Pack's `encodePackData` / `decodePackData`
 for its explicit little-endian binary table at snapshot and source-export boundaries:
 JSON paths identify typed views, and Base64 encodes each shared backing once.
 Recovery checks kinds, alignment, ranges and complete table usage before replaying
 the fixed dependency graph. Version 1 snapshots are rejected explicitly. Original
 source and fixed recipes remain durable; cache entries remain disposable.
+Snapshots of generated instances retain the accepted output identities in the
+recipe roots. Restore compares the complete replayed output set before admission.
 
 `admit` and `generate` return `RuntimePackPublicationReceipt`: identity, status,
 publication evidence and Catalog rows. They do not copy the full source or mesh
@@ -425,8 +428,9 @@ flowchart LR
   (the **GUID import-stable iron law**) and stamps them onto the PODs.
 - The **import runner** (`runImport(meta, registry, fs)`) dispatches a sidecar
   by its top-level `importer` string key to the registered `Importer`,
-  validates the produced GUID set against the declared set, and folds the
-  result into a DDC `.pack.json` document. The reserved key **`importer:
+  validates the produced GUID set against the declared set, and returns the
+  terminal product and Cook products. Use `projectImportPack(product, meta)`
+  when a caller needs an explicit logical Pack view. The reserved key **`importer:
   'shader'`** is skipped — shader sidecars are consumed by
   `@forgeax/engine-vite-plugin-shader`'s orthogonal transform pipeline.
 - **`ImportTransport`** (interface in `@forgeax/engine-types`) bridges the
@@ -538,12 +542,13 @@ Material, Mesh, and Scene producers. Material output derives
 parent/texture/sampler refs. Material texture references serialize as
 `{ texture: refsIndex, sampler?: refsIndex }`, including GUID string shorthand;
 bare numeric values remain scalars in children without a local parameter schema.
-Mesh output derives default-material refs. Its `mesh-binary/7` producer emits
-the `mesh-binary/5` body and admitted distance-field sidecars; the alternative
-data producer is `mesh-data/2`. These producer versions invalidate cached
-publications when the output contract changes, without changing the Mesh
-body codec. The binary body owns geometry; its JSON payload carries only kind
-and optional distance-field metadata. Scene output uses the definition-bound neutral schema
+Mesh output derives default-material refs. The `mesh-binary/8` producer emits
+a v7 stream body for eligible rigid triangle meshes and interleaved v5 or v6
+bodies for other meshes. Distance fields are separate sidecars. The
+alternative data producer is `mesh-data/2`. The producer version invalidates
+cached publications when the output contract changes. The binary body owns
+geometry. Its JSON payload carries only kind and optional distance-field
+metadata. Scene output uses the definition-bound neutral schema
 through the shared ECS externalization contract. A specialized host may instead
 register only the admitted kinds:
 
@@ -560,21 +565,16 @@ projection facts to geometry and records one stable digest, mask, stride,
 cardinality, and payload length in the artifact header. Material defaults are
 references into the producer refs table; GUID strings are not duplicated in the
 binary metadata. V5 writes morph targets as contiguous float32 streams; only
-target/channel masks and weights remain in JSON. Published v4 artifacts remain
-readable. `packMeshBin` is the encoder; the former version-suffixed export is removed.
+target/channel masks and weights remain in JSON. V6 adds the packed tangent
+basis. V7 stores position, tangent basis, UV and color streams in the single
+vertex section. Published v4 through v6 artifacts remain readable.
+`packMeshBin` is the encoder.
 
 > [!IMPORTANT]
 > A producer Result error contains `subject`, `sourceKey`, `expected`,
 > `actual`, and a re-cook recovery hint. Failed validation returns no artifact,
 > so the importer cannot publish a partial mesh product. v2/v3 mesh binaries
 > are not compatibility inputs.
-
-For prebuilt ordinary Pack dependencies, use
-`createScriptablePackFileAssetSnapshotSource({ assetRoots })` from the same
-package. It recursively indexes validated `.pack.json` assets by GUID and
-returns private `ScriptablePackAssetSnapshot` clones with deterministic
-generation/digest evidence; missing, malformed, unreadable, and colliding
-inputs remain structured `Result` errors.
 
 At the low-level `buildScriptablePack` boundary, `assetSource` is optional only
 when `build` never calls `reader.readByGuid`. The first attempted content read
@@ -609,8 +609,8 @@ const result = await runImport(
   registry,
   fs,
 );
-if (result.ok) {
-  console.log('DDC .pack.json:', result.value.pack);
+if (result.ok && !('skipped' in result.value)) {
+  console.log('Produced assets:', result.value.product.assets);
 }
 ```
 

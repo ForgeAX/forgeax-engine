@@ -5,14 +5,19 @@ import {
   distanceFieldMeshDigest,
   MESH_DISTANCE_FIELD_GENERATION_VERSION,
 } from './distance-field';
-import { decodeMeshDistanceField, validateMeshDistanceField } from './distance-field-artifact';
+import {
+  decodeMeshDistanceField,
+  validateDistanceFieldSourceIdentity,
+  validateMeshDistanceField,
+} from './distance-field-artifact';
+import { MESH_DISTANCE_FIELD_ARTIFACT_VERSION } from './distance-field-artifact-layout';
 import { copyMeshAttribute } from './mesh-storage';
 import { visibilityDistanceFieldSourceDigest } from './visibility-distance-field';
 
 /** Existing asset codec profile binds this builder policy without a second identity field. */
 export const MESH_VISIBILITY_DISTANCE_FIELD_CODEC = {
   name: 'mesh-distance-field',
-  version: '4',
+  version: String(MESH_DISTANCE_FIELD_ARTIFACT_VERSION),
   profile: `sampled-visibility/${MESH_DISTANCE_FIELD_GENERATION_VERSION}`,
 } as const;
 export const MESH_GEOMETRIC_DISTANCE_FIELD_CODEC = {
@@ -113,6 +118,8 @@ export async function validateMeshDistanceFieldAttachment(
   if (!source.ok) return source;
   const valid = validateMeshDistanceField(field);
   if (!valid.ok) return valid;
+  const identity = await validateDistanceFieldSourceIdentity(field);
+  if (!identity.ok) return identity;
   const meshDigest = await distanceFieldMeshDigest(source.value.positions, source.value.indices);
   return validateSourceIdentity(field, meshDigest, source.value.triangleSidedness);
 }

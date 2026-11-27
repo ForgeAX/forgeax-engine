@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 
 import { fbxImporter } from '@forgeax/engine-fbx';
 import { gltfImporter } from '@forgeax/engine-gltf';
-import { ImporterRegistry, runImport } from '@forgeax/engine-import';
+import { ImporterRegistry, projectImportPack, runImport } from '@forgeax/engine-import';
 import { imageImporter } from '@forgeax/engine-image/image-importer';
 import * as UPNG from 'upng-js';
 
@@ -23,7 +23,7 @@ function bytes(path) {
 
 function digest(result) {
   const hash = createHash('sha256');
-  hash.update(JSON.stringify(result.pack.assets));
+  hash.update(JSON.stringify(projectImportPack(result.product).assets));
   for (const [guid, payload] of [...(result.bins ?? new Map())].sort(([a], [b]) => a.localeCompare(b))) {
     hash.update(guid);
     hash.update(payload);
@@ -32,7 +32,7 @@ function digest(result) {
 }
 
 function guidSet(result) {
-  return result.pack.assets.map((asset) => asset.guid).sort().join(',');
+  return projectImportPack(result.product).assets.map((asset) => asset.guid).sort().join(',');
 }
 
 async function importOnce(importer, meta, sourceBytes) {

@@ -6,7 +6,7 @@ struct RigidPrimitive {
 }
 struct RigidProjection { point:vec3<f32>, distance:f32 }
 @group(0) @binding(17) var<storage,read> rigidPrimitives:array<RigidPrimitive>;
-@group(0) @binding(18) var<storage,read> instances:array<Instance>;
+@group(0) @binding(18) var<storage,read> instances:array<RawInstance>;
 @group(0) @binding(19) var<storage,read> fields:array<u32>;
 ${SDF_SAMPLE_WGSL}
 fn rigidProject(primitive:RigidPrimitive,position:vec3<f32>)->RigidProjection {
@@ -46,10 +46,14 @@ fn rigidSample(element:u32,position:vec3<f32>)->vec4<f32> {
   let primitive=rigidPrimitives[element];let projection=rigidProject(primitive,position);
   var distance=projection.distance;
   if(p[24].x>0.5&&primitive.field.x>0.5){
-    let instance=instances[u32(primitive.field.x)-1u];
-    let local=(instance.inverse*vec4<f32>(position,1.0)).xyz;
-    let scale=1.0/max(max(length(vec3<f32>(instance.inverse[0].x,instance.inverse[1].x,instance.inverse[2].x)),length(vec3<f32>(instance.inverse[0].y,instance.inverse[1].y,instance.inverse[2].y))),length(vec3<f32>(instance.inverse[0].z,instance.inverse[1].z,instance.inverse[2].z)));
-    distance=sdfValue(instance,local)*scale;
+    let row=u32(primitive.field.x)-1u;
+    // Static fields are CPU-admitted; their finite transforms may contain subnormals.
+    if(row<sdfInstanceRowCount()){
+      let instance=sdfInstanceAt(row);
+      let local=(instance.inverse*vec4<f32>(position,1.0)).xyz;
+      let scale=1.0/max(max(length(vec3<f32>(instance.inverse[0].x,instance.inverse[1].x,instance.inverse[2].x)),length(vec3<f32>(instance.inverse[0].y,instance.inverse[1].y,instance.inverse[2].y))),length(vec3<f32>(instance.inverse[0].z,instance.inverse[1].z,instance.inverse[2].z)));
+      distance=sdfValue(instance,local)*scale;
+    }
   }
   return vec4<f32>(rigidPointVelocity(primitive,projection.point),distance);
 }

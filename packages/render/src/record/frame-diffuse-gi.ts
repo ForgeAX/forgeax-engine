@@ -166,6 +166,7 @@ function prepareIrradianceField(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   scene: PersistentGpuDrivenState | undefined,
+  visibleSurface: VisibleSurfaceProjection | undefined,
   sourceScope: RenderResourceScope,
   lights: ViewLights,
   camera: CameraSnapshot,
@@ -196,6 +197,11 @@ function prepareIrradianceField(
     height: size.height,
     // Screen Probes own the diffuse view gather; Lite reflections stay field-owned.
     gatherView: fieldGi.gather === 'irradiance-field',
+    farRadiance:
+      fieldGi.gather === 'screen-probe' &&
+      fieldGi.probes.integration === 'screen-space' &&
+      internals.device.caps.rayQuery.supported,
+    visibleSurface,
     focus: [camera.position[0] ?? 0, camera.position[1] ?? 0, camera.position[2] ?? 0],
   });
   return fieldGi.gather === 'irradiance-field' ? frameState.irradianceField.ready : undefined;
@@ -233,10 +239,20 @@ function prepareScreenProbe(
     return frameState.screenProbe?.ready;
   }
   frameState.screenProbe ??= new RendererScreenProbe();
+  const field = frameState.irradianceField?.ready;
+  const plannedTraversal = frameState.irradianceField?.plannedTraversal;
+  const softwareTracing = profile.softwareTracing;
   frameState.screenProbe.prepare({
+    reconstruction: 'current-support',
     runtime: internals,
+    visibleSurface: internals.standardProfile?.visibleSurface === true,
     profile,
-    field: frameState.irradianceField?.ready,
+    field,
+    plannedTraversal,
+    plannedFarRadiance: frameState.irradianceField?.plannedFarRadiance,
+    ...((field?.traversal ?? plannedTraversal) === 'global-sdf' && softwareTracing !== undefined
+      ? { softwareWorld: { kind: 'mesh-df', policy: softwareTracing } as const }
+      : {}),
     width: size.width,
     height: size.height,
   });
@@ -304,6 +320,7 @@ export function prepareFrameDiffuseGi(
       internals,
       frameState,
       scene,
+      visibleSurface,
       sourceScope,
       lights,
       camera,

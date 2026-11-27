@@ -136,8 +136,8 @@ for (const coreState of ['absent', 'timeout', 'wrong-shared-fingerprint']) {
   }
 }
 
-for (const coreState of ['complete', 'missing', 'interrupted', 'cancelled']) {
-  const coreComplete = coreState === 'complete';
+for (const coreState of ['complete', 'complete-split', 'missing', 'interrupted', 'cancelled']) {
+  const coreComplete = coreState.startsWith('complete');
   test(`shared transfer timeout retains only complete verified core inputs: ${coreState}`, async () => {
     const root = mkdtempSync(join(tmpdir(), 'forgeax-core-shared-timeout-'));
     const oldSha = process.env.EXPECTED_PRODUCT_SHA;
@@ -166,98 +166,116 @@ for (const coreState of ['complete', 'missing', 'interrupted', 'cancelled']) {
       writeFileSync(join(directory, file), content);
     };
     try {
-      const preparation = main(
-        [
-          '--consumer',
-          'app-shard',
-          '--artifact-ids',
-          '1',
-          '--shared-artifact-id',
-          '2',
-          '--input-fingerprint',
-          'fixture',
-        ],
-        {
-          root,
-          runCommand: async (command) => {
-            const scriptIndex = command.findIndex((arg) => arg.startsWith('scripts/'));
-            const [script, ...args] = command.slice(scriptIndex);
-            if (script.endsWith('download-artifact-with-retry.mjs')) {
-              const id = args[args.indexOf('--artifact-ids') + 1];
-              assert.ok(args.includes('--idle-timeout-ms'));
-              assert.equal(args[args.indexOf('--idle-timeout-ms') + 1], '25000');
-              transfers.push(`start-${id}`);
-              if (id === '2') return { status: 124, failure: 'shared transfer timeout' };
-              await new Promise((done) => setImmediate(done));
-              transfers.push(`finish-${id}`);
-              const stage = args[args.indexOf('--path') + 1];
-              put(stage, 'packages/fixture/dist/index.mjs');
-              if (coreState !== 'missing') put(stage, 'packages/fbx/pkg/fbx-wasm.mjs');
-              if (coreState === 'cancelled')
-                return { status: 130, cancelled: 'SIGTERM', failure: 'core transfer cancelled' };
-              if (coreState === 'interrupted')
-                return { status: 124, failure: 'core extraction interrupted' };
-            } else if (script.endsWith('verify-build-artifact-input.mjs')) {
-              const result = spawnSync(
-                process.execPath,
-                [
-                  resolve(script),
-                  ...args,
-                  '--contract',
-                  join(root, 'scripts/ci/build-artifact-contract.json'),
-                ],
-                { encoding: 'utf8' },
-              );
-              return { status: result.status, failure: result.stdout + result.stderr };
-            } else if (script === 'scripts/build.mjs') {
-              recovered.push(existsSync(join(root, 'packages/fbx/pkg/fbx-wasm.mjs')));
-              assert.equal(
-                recovered.at(-1),
-                coreComplete,
-                'native source input was discarded or incomplete core was published',
-              );
-              put(root, 'packages/fixture/dist/index.mjs', 'rebuilt');
-              put(root, 'packages/fbx/pkg/fbx-wasm.mjs', 'rebuilt native');
-            } else if (script.endsWith('build-shared-app-inputs.mjs')) {
-              // Source admission must replace the smaller orchestration heap,
-              // without an explicit caller cap blocking the shared producer.
-              const heap = spawnSync(
-                command[0],
-                [
-                  ...command.slice(1, scriptIndex),
-                  '--input-type=module',
-                  '-e',
-                  `import v8 from 'node:v8'; import {admitShaderSourceBudget} from '${new URL('../../lib/shader-source-budget.mjs', import.meta.url).href}'; admitShaderSourceBudget(); console.log(v8.getHeapStatistics().heap_size_limit)`,
-                ],
-                {
-                  encoding: 'utf8',
-                  env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=2048' },
-                },
-              );
-              assert.equal(heap.status, 0, heap.stderr);
-              const expected = shaderProducerHeapSize(runnerResources());
-              const observed = Number(heap.stdout.trim().split('\n').at(-1)) / 1024 ** 2;
-              assert.ok(
-                observed >= expected && observed < expected + 512,
-                `cold shared recovery must admit the source budget: ${heap.stdout}`,
-              );
-              put(root, 'shared-app-inputs/shaders/manifest.json', '{}');
-              put(
-                root,
-                'shared-app-inputs/manifest.json',
-                JSON.stringify({ inputFingerprint: 'fixture' }),
-              );
-            }
-            return { status: 0 };
+      const prepare = (mode, ...recovery) =>
+        main(
+          [
+            '--consumer',
+            'app-shard',
+            '--artifact-ids',
+            '1',
+            '--shared-artifact-id',
+            '2',
+            '--input-fingerprint',
+            'fixture',
+            '--mode',
+            mode,
+            ...recovery,
+          ],
+          {
+            root,
+            runCommand: async (command) => {
+              const scriptIndex = command.findIndex((arg) => arg.startsWith('scripts/'));
+              const [script, ...args] = command.slice(scriptIndex);
+              if (script.endsWith('download-artifact-with-retry.mjs')) {
+                const id = args[args.indexOf('--artifact-ids') + 1];
+                assert.ok(args.includes('--idle-timeout-ms'));
+                assert.equal(args[args.indexOf('--idle-timeout-ms') + 1], '25000');
+                assert.equal(args[args.indexOf('--range-minimum-bytes') + 1], '33554432');
+                transfers.push(`start-${id}`);
+                if (id === '2') return { status: 124, failure: 'shared transfer timeout' };
+                await new Promise((done) => setImmediate(done));
+                transfers.push(`finish-${id}`);
+                const stage = args[args.indexOf('--path') + 1];
+                put(stage, 'packages/fixture/dist/index.mjs');
+                if (coreState !== 'missing') put(stage, 'packages/fbx/pkg/fbx-wasm.mjs');
+                if (coreState === 'cancelled')
+                  return { status: 130, cancelled: 'SIGTERM', failure: 'core transfer cancelled' };
+                if (coreState === 'interrupted')
+                  return { status: 124, failure: 'core extraction interrupted' };
+              } else if (script.endsWith('verify-build-artifact-input.mjs')) {
+                const result = spawnSync(
+                  process.execPath,
+                  [
+                    resolve(script),
+                    ...args,
+                    '--contract',
+                    join(root, 'scripts/ci/build-artifact-contract.json'),
+                  ],
+                  { encoding: 'utf8' },
+                );
+                return { status: result.status, failure: result.stdout + result.stderr };
+              } else if (script === 'scripts/build.mjs') {
+                recovered.push(existsSync(join(root, 'packages/fbx/pkg/fbx-wasm.mjs')));
+                assert.equal(
+                  recovered.at(-1),
+                  coreComplete,
+                  'native source input was discarded or incomplete core was published',
+                );
+                put(root, 'packages/fixture/dist/index.mjs', 'rebuilt');
+                put(root, 'packages/fbx/pkg/fbx-wasm.mjs', 'rebuilt native');
+              } else if (script.endsWith('build-shared-app-inputs.mjs')) {
+                // Source admission must replace the smaller orchestration heap,
+                // without an explicit caller cap blocking the shared producer.
+                const heap = spawnSync(
+                  command[0],
+                  [
+                    ...command.slice(1, scriptIndex),
+                    '--input-type=module',
+                    '-e',
+                    `import v8 from 'node:v8'; import {admitShaderSourceBudget} from '${new URL('../../lib/shader-source-budget.mjs', import.meta.url).href}'; admitShaderSourceBudget(); console.log(v8.getHeapStatistics().heap_size_limit)`,
+                  ],
+                  {
+                    encoding: 'utf8',
+                    env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=2048' },
+                  },
+                );
+                assert.equal(heap.status, 0, heap.stderr);
+                const expected = shaderProducerHeapSize(runnerResources());
+                const observed = Number(heap.stdout.trim().split('\n').at(-1)) / 1024 ** 2;
+                assert.ok(
+                  observed >= expected && observed < expected + 512,
+                  `cold shared recovery must admit the source budget: ${heap.stdout}`,
+                );
+                put(root, 'shared-app-inputs/shaders/manifest.json', '{}');
+                put(
+                  root,
+                  'shared-app-inputs/manifest.json',
+                  JSON.stringify({ inputFingerprint: 'fixture' }),
+                );
+              }
+              return { status: 0 };
+            },
           },
-        },
-      );
+        );
+      const preparation =
+        coreState === 'complete-split'
+          ? prepare('restore').then((receipt) => {
+              assert.equal(receipt.source, 'pending');
+              assert.equal(receipt.retainedCore, true);
+              assert.deepEqual(recovered, []);
+              return prepare('build', '--retained-core', String(receipt.retainedCore));
+            })
+          : prepare('auto');
       if (coreState === 'cancelled') {
         await assert.rejects(preparation, (error) => Boolean(error.cancelled));
         assert.deepEqual(recovered, [], 'cancellation must win over the earlier shared timeout');
       } else {
         await preparation;
-        assert.deepEqual(recovered, [coreComplete]);
+        assert.deepEqual(recovered, coreComplete ? [] : [false]);
+        assert.equal(
+          readFileSync(join(root, 'packages/fixture/dist/index.mjs'), 'utf8'),
+          coreComplete ? 'current source bytes' : 'rebuilt',
+        );
       }
       assert.ok(
         transfers.indexOf('start-2') < transfers.indexOf('finish-1'),
@@ -637,6 +655,10 @@ for (const mutation of ['none', 'wasm', 'glue', 'source', 'core-missing']) {
               );
               cpSync(compiler, join(stage, 'shared-app-inputs/compiler'), { recursive: true });
             } else if (script === 'scripts/build.mjs') {
+              recovered = true;
+              throw new Error('source recovery requested');
+            } else if (script.endsWith('build-shared-app-inputs.mjs')) {
+              assert.notEqual(mutation, 'core-missing', 'missing Core must rebuild first');
               recovered = true;
               throw new Error('source recovery requested');
             }

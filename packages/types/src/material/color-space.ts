@@ -57,21 +57,46 @@ export function materialValuesToLinearRuntime(
   values: Readonly<Record<string, MaterialValue | null>> | undefined,
   parameters: readonly MaterialColorParameterSchema[],
   assetColorSpace?: MaterialColorSpace,
+  overrides?: readonly MaterialColorParameterSchema[],
 ): Readonly<Record<string, MaterialValue | null>> {
   if (values === undefined) return {};
+  return compileMaterialColorProjection(parameters, assetColorSpace, overrides)(values);
+}
+
+/** Bind authored transfer functions to their declaration once. Each call reads current values. */
+export function compileMaterialColorProjection(
+  parameters: readonly MaterialColorParameterSchema[],
+  assetColorSpace?: MaterialColorSpace,
+  overrides?: readonly MaterialColorParameterSchema[],
+): (
+  values: Readonly<Record<string, MaterialValue | null>>,
+) => Readonly<Record<string, MaterialValue | null>> {
   const colorSpaces = new Map<string, MaterialColorSpace>();
   for (const parameter of parameters) {
     const colorSpace = materialParameterColorSpace(parameter, assetColorSpace);
     if (colorSpace !== undefined) colorSpaces.set(parameter.name, colorSpace);
   }
 
-  const runtimeValues: Record<string, MaterialValue | null> = {};
-  for (const [name, value] of Object.entries(values)) {
-    const colorSpace = colorSpaces.get(name);
-    runtimeValues[name] =
-      colorSpace !== undefined && Array.isArray(value)
-        ? authoredColorToLinear(value, colorSpace)
-        : value;
+  // An authored declaration replaces the shader declaration, including a color
+  // redeclared as a plain numeric vector. Undeclared fields inherit the shader.
+  if (overrides !== undefined) {
+    for (const parameter of overrides) {
+      const colorSpace = materialParameterColorSpace(parameter, assetColorSpace);
+      if (colorSpace === undefined) colorSpaces.delete(parameter.name);
+      else colorSpaces.set(parameter.name, colorSpace);
+    }
   }
-  return runtimeValues;
+  return (values) => {
+    const runtimeValues: Record<string, MaterialValue | null> = {};
+    for (const name in values) {
+      if (!Object.hasOwn(values, name)) continue;
+      const value = values[name] as MaterialValue | null;
+      const colorSpace = colorSpaces.get(name);
+      runtimeValues[name] =
+        colorSpace !== undefined && Array.isArray(value)
+          ? authoredColorToLinear(value, colorSpace)
+          : value;
+    }
+    return runtimeValues;
+  };
 }

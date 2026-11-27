@@ -54,7 +54,7 @@ import type {
 } from '@forgeax/engine-types';
 import { IMPORT_ERROR_HINTS, ImportError } from '@forgeax/engine-types';
 import { imageError } from './errors.js';
-import type { CompressionMode, EncodedTexture } from './ktx2-encode.js';
+import type { CompressionMode, EncodedTexture, ImageBasisEncoder } from './ktx2-encode.js';
 import { basisEncodeParamsFor, encodeTextureToKtx2 } from './ktx2-encode.js';
 import { importCubeSource } from './lut/cube-producer.js';
 import { parseImage } from './parse-image.js';
@@ -612,6 +612,7 @@ async function cookLdrImage(
   mimeType: Parameters<ImportContext['decodeImage']>[1],
   settings: Readonly<Record<string, unknown>>,
   mipmap: boolean,
+  encode?: ImageBasisEncoder,
 ) {
   const colorSpace: ImageColorSpace = settings.colorSpace === 'srgb' ? 'srgb' : 'linear';
   const downscaleMaxDimension =
@@ -631,7 +632,13 @@ async function cookLdrImage(
   let encoded: EncodedTexture | null = null;
   const params = basisEncodeParamsFor(compressionMode, { colorSpace, isHdr: false, mipmap });
   if (params !== null) {
-    const result = await encodeTextureToKtx2(image.bytes, image.width, image.height, params);
+    const result = await encodeTextureToKtx2(
+      image.bytes,
+      image.width,
+      image.height,
+      params,
+      encode,
+    );
     if (!result.ok) return result;
     encoded = result.value;
   }
@@ -660,7 +667,7 @@ function cookedMipPolicy(ktx2: EncodedTexture | null, mipmap: boolean): TextureM
   return mipmap ? { kind: 'generate' } : { kind: 'none' };
 }
 
-async function importImage(ctx: ImportContext): Promise<ImportResult> {
+async function importImage(ctx: ImportContext, encode?: ImageBasisEncoder): Promise<ImportResult> {
   if (ctx.source.toLowerCase().endsWith('.texture.json')) {
     return importTextureSource(ctx);
   }
@@ -776,6 +783,7 @@ async function importImage(ctx: ImportContext): Promise<ImportResult> {
     mime,
     ctx.importSettings,
     mipmapTokenToBoolean(ctx.importSettings.mipmap),
+    encode,
   );
   if (!cooked.ok) {
     const error = cooked.error;
@@ -869,40 +877,40 @@ async function decodeEmbeddedKtx2(
 }
 
 /** Bind the image producer to the generic importer runner's decode seam. */
-export const decodeImageForImport: ImportContext['decodeImage'] = async (
-  bytes,
-  mimeType,
-  importSettings,
-) => {
-  if (mimeType === 'image/ktx2') return decodeEmbeddedKtx2(bytes, importSettings);
-  const cooked = await cookLdrImage(
-    bytes,
-    mimeType,
-    importSettings,
-    importSettings.mipmap === true,
-  );
-  if (!cooked.ok) {
-    if ('mode' in cooked.error) {
-      throw new Error(
-        `embedded texture compression failed (${cooked.error.code} / ${cooked.error.mode}): ${cooked.error.reason}`,
-      );
+function imageDecoder(encode?: ImageBasisEncoder): ImportContext['decodeImage'] {
+  return async (bytes, mimeType, importSettings) => {
+    if (mimeType === 'image/ktx2') return decodeEmbeddedKtx2(bytes, importSettings);
+    const cooked = await cookLdrImage(
+      bytes,
+      mimeType,
+      importSettings,
+      importSettings.mipmap === true,
+      encode,
+    );
+    if (!cooked.ok) {
+      if ('mode' in cooked.error) {
+        throw new Error(
+          `embedded texture compression failed (${cooked.error.code} / ${cooked.error.mode}): ${cooked.error.reason}`,
+        );
+      }
+      return { ok: false as const, error: cooked.error };
     }
-    return { ok: false as const, error: cooked.error };
-  }
-  const { texture, encoded } = cooked.value;
-  return {
-    ok: true as const,
-    value: {
-      texture,
-      bytes: texture.data,
-      mediaType: encoded === null ? mimeType : 'image/ktx2',
-      assetCodec:
-        encoded === null
-          ? { name: 'rgba8', version: '1' }
-          : { name: 'basis', profile: encoded.mode },
-    },
+    const { texture, encoded } = cooked.value;
+    return {
+      ok: true as const,
+      value: {
+        texture,
+        bytes: texture.data,
+        mediaType: encoded === null ? mimeType : 'image/ktx2',
+        assetCodec:
+          encoded === null
+            ? { name: 'rgba8', version: '1' }
+            : { name: 'basis', profile: encoded.mode },
+      },
+    };
   };
-};
+}
+export const decodeImageForImport = imageDecoder();
 
 /**
  * The image {@link Importer}. Register it into an `ImporterRegistry` so the
@@ -919,9 +927,31 @@ export const decodeImageForImport: ImportContext['decodeImage'] = async (
  */
 export const imageImporter: Importer = {
   key: 'image',
-  import: importImage,
+  import: (ctx) => importImage(ctx),
   capabilities: { sourceFormats, decodeImage: decodeImageForImport },
 };
 
 export { cubeLutBytes, parseCubeLut } from './lut/cube-parser.js';
 export { importCubeSource, produceCubeTexture } from './lut/cube-producer.js';
+
+/** Isolate producer encoding without changing default serial image semantics. */
+export function createImageImporter(options: {
+  readonly encode: ImageBasisEncoder;
+  readonly maxInFlight: number;
+}): Importer {
+  if (
+    !Number.isSafeInteger(options.maxInFlight) ||
+    options.maxInFlight < 1 ||
+    options.maxInFlight > 4
+  )
+    throw new RangeError('Image importer concurrency must be in 1..4');
+  return {
+    key: 'image',
+    import: (ctx) => importImage(ctx, options.encode),
+    capabilities: {
+      sourceFormats,
+      decodeImage: imageDecoder(options.encode),
+      ...(options.maxInFlight > 1 ? { parallelPreparation: true as const } : {}),
+    },
+  };
+}

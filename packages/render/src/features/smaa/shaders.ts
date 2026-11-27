@@ -1,3 +1,5 @@
+import { SMAA_BLEND_WGSL } from '@forgeax/engine-shader';
+import type { PostProcessShaderEntry } from '../../fullscreen-post-process-pass';
 import type { RenderFeatureFullscreenProgramDeclaration } from '../plan';
 
 // SMAA 1x Medium, adapted from Three.js r184 SMAANode and SMAA v2.8.
@@ -13,23 +15,29 @@ struct Output { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f3
 `;
 
 const edges = /* wgsl */ `${vertex}
-fn color(p: vec2<i32>) -> vec3<f32> {
-  return textureLoad(source, clamp(p, vec2<i32>(0), vec2<i32>(textureDimensions(source)) - 1), 0).rgb;
+fn color(uv: vec2<f32>, size: vec2<i32>) -> vec3<f32> {
+  let p = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1);
+  return textureLoad(source, p, 0).rgb;
 }
 fn delta(a: vec3<f32>, b: vec3<f32>) -> f32 {
   let d = abs(a - b);
   return max(max(d.r, d.g), d.b);
 }
 @fragment fn fs_main(in: Output) -> @location(0) vec4<f32> {
-  let p = vec2<i32>(in.position.xy);
-  let c = color(p);
-  let d = vec2<f32>(delta(c, color(p + vec2<i32>(-1, 0))), delta(c, color(p + vec2<i32>(0, -1))));
+  let size = vec2<i32>(textureDimensions(source));
+  // Search at the display extent, with point samples from the pre-Tonemap view.
+  let dx = vec2<f32>(dpdx(in.uv.x), 0.0);
+  let dy = vec2<f32>(0.0, dpdy(in.uv.y));
+  let uv = in.uv;
+  let c = color(uv, size);
+  let d = vec2<f32>(delta(c, color(uv - dx, size)), delta(c, color(uv - dy, size)));
   var edge = step(vec2<f32>(0.1), d);
-  if (dot(edge, vec2<f32>(1.0)) == 0.0) { return vec4<f32>(0.0); }
-  let opposite = vec2<f32>(delta(c, color(p + vec2<i32>(1, 0))), delta(c, color(p + vec2<i32>(0, 1))));
-  let distant = vec2<f32>(delta(c, color(p + vec2<i32>(-2, 0))), delta(c, color(p + vec2<i32>(0, -2))));
+  if (dot(edge, vec2<f32>(1.0)) == 0.0) { discard; }
+  let opposite = vec2<f32>(delta(c, color(uv + dx, size)), delta(c, color(uv + dy, size)));
+  let distant = vec2<f32>(delta(c, color(uv - 2.0 * dx, size)), delta(c, color(uv - 2.0 * dy, size)));
   let contrast = max(max(d, opposite), distant);
   edge *= step(vec2<f32>(0.5 * max(contrast.x, contrast.y)), d);
+  if (dot(edge, vec2<f32>(1.0)) == 0.0) { discard; }
   return vec4<f32>(edge, 0.0, 0.0);
 }`;
 
@@ -69,7 +77,7 @@ fn area(distance: vec2<f32>, crossing: vec2<f32>) -> vec2<f32> {
 @fragment fn fs_main(in: Output) -> @location(0) vec4<f32> {
   let pixel = 1.0 / vec2<f32>(textureDimensions(source));
   let uv = in.uv;
-  let e = edge(uv);
+  let e = textureLoad(source, vec2<i32>(in.position.xy), 0).rg;
   var result = vec4<f32>(0.0);
   if (e.g > 0.0) {
     let left = search(uv + pixel * vec2<f32>(-0.25, -0.125), false, false, pixel);
@@ -94,28 +102,25 @@ fn area(distance: vec2<f32>, crossing: vec2<f32>) -> vec2<f32> {
 
 const blend = /* wgsl */ `${vertex}
 @group(1) @binding(2) var blendTexture: texture_2d<f32>;
-fn weight(p: vec2<i32>) -> vec4<f32> {
-  return textureLoad(blendTexture, clamp(p, vec2<i32>(0), vec2<i32>(textureDimensions(blendTexture)) - 1), 0);
-}
+${SMAA_BLEND_WGSL}
 @fragment fn fs_main(in: Output) -> @location(0) vec4<f32> {
-  let p = vec2<i32>(in.position.xy);
-  let current = weight(p);
-  let a = vec4<f32>(current.r, weight(p + vec2<i32>(0, 1)).g, current.b, weight(p + vec2<i32>(1, 0)).a);
-  let color = textureLoad(source, p, 0);
-  if (dot(a, vec4<f32>(1.0)) < 0.00001) { return color; }
-  var offset = vec2<f32>(select(-a.b, a.a, a.a > a.b), select(-a.r, a.g, a.g > a.r));
-  if (abs(offset.x) > abs(offset.y)) { offset.y = 0.0; } else { offset.x = 0.0; }
-  let q = clamp(p + vec2<i32>(sign(offset)), vec2<i32>(0), vec2<i32>(textureDimensions(source)) - 1);
-  // Standard supplies linear LDR; preserve that domain, including alpha, until its one OETF.
-  return mix(color, textureLoad(source, q, 0), max(abs(offset.x), abs(offset.y)));
+  return smaaBlend(source, blendTexture, vec2<i32>(in.position.xy));
 }`;
 
-export const SMAA_PROGRAMS: readonly RenderFeatureFullscreenProgramDeclaration[] = [
-  { kind: 'fullscreen-program', name: 'forgeax.smaa.edges', source: edges, reads: ['scene-color'] },
+export const SMAA_PROGRAMS: readonly (RenderFeatureFullscreenProgramDeclaration &
+  Pick<PostProcessShaderEntry, 'stencilMask'>)[] = [
+  {
+    kind: 'fullscreen-program',
+    name: 'forgeax.smaa.edges',
+    source: edges,
+    reads: ['scene-color'],
+    stencilMask: 'write',
+  },
   {
     kind: 'fullscreen-program',
     name: 'forgeax.smaa.weights',
     source: weights,
+    stencilMask: 'test',
     reads: ['smaa-edges', 'smaa-area', 'smaa-search'],
   },
   {

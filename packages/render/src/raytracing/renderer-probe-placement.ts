@@ -587,15 +587,15 @@ export class RendererProbePlacement {
                     candidates: pair.global.cards.candidates[candidate],
                     samples: pair.global.cards.samples[candidate],
                     diagnostics: pair.global.cards.diagnostics[candidate],
-                    capture: (pass) => {
+                    capture: (pass, phase) => {
                       if (captureSlice === undefined)
                         throw new Error('native Card capture recorded without a scheduled slice');
-                      if (captureSlice.clear) {
-                        const cleared = cardRegion.capture.clearTiles(pass, captureSlice);
+                      if (captureSlice.clear || phase === 'identity') {
+                        const cleared = cardRegion.capture.clearTiles(pass, captureSlice, phase);
                         if (!cleared.ok) return cleared;
                       }
-                      const result = cardRegion.capture.recordPass(pass, captureSlice);
-                      if (result.ok) encoded |= 32;
+                      const result = cardRegion.capture.recordPass(pass, captureSlice, phase);
+                      if (result.ok && phase === 'identity') encoded |= 32;
                       return result;
                     },
                     lookup: (...args) => {

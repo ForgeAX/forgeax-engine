@@ -8,6 +8,7 @@ import { stripVTControlCharacters } from 'node:util';
 
 import { chromium } from 'playwright';
 import browserLaunch from '../../../scripts/ci/browser-launch.json' with { type: 'json' };
+import zhCN from '../src/locales/zh-CN.json' with { type: 'json' };
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repositoryRoot = resolve(packageRoot, '..', '..');
@@ -61,15 +62,18 @@ try {
   await page.locator('[data-forgeax-ready="true"]').waitFor();
   // Software GPU runs retain the 300-frame requirement without a 30s FPS floor.
   await page.waitForFunction(() => {
-    const text = document.querySelector('[data-forgeax-status]')?.textContent ?? '';
-    const matched = text.match(/FRAMEID\s*(\d+)/i);
-    return Number(matched?.[1] ?? 0) >= 300;
+    return Number(document.querySelector('[data-forgeax-fact="frameId"]')?.textContent ?? 0) >= 300;
   }, null, { timeout: 180_000 }).catch(async (cause) => {
     const status = await page.locator('[data-forgeax-status]').innerText();
     throw new Error(`DSH did not reach 300 frames: ${status}`, { cause });
   });
   const iframe = page.locator('iframe[data-forgeax-engine-frame="real"]');
   await iframe.waitFor();
+  const originalFrame = await iframe.elementHandle();
+  await page.locator('[data-forgeax-language]').selectOption('zh-CN');
+  assert(await page.locator('[data-forgeax-preview-toggle]').innerText() === zhCN.hidePreview, 'panel uses selected language');
+  assert(await iframe.getAttribute('title') === zhCN.previewTitle, 'preview accessibility title uses selected language');
+  assert(await page.evaluate(node => node === document.querySelector('iframe[data-forgeax-engine-frame="real"]'), originalFrame), 'language switching preserves the Engine iframe');
 
   const beforePath = join(evidenceDir, 'dsh-engine-before.png');
   const afterPath = join(evidenceDir, 'dsh-engine-after.png');
@@ -77,9 +81,9 @@ try {
   const before = await iframe.screenshot();
   const beforeStatus = await page.locator('[data-forgeax-status]').innerText();
 
-  await page.getByRole('button', { name: 'Toggle Engine state' }).click();
+  await page.locator('[data-forgeax-control="toggle"]').click();
   await page.waitForFunction(() =>
-    (document.querySelector('[data-forgeax-status]')?.textContent ?? '').match(/STATE\s*1/i),
+    document.querySelector('[data-forgeax-fact="state"]')?.textContent === '1',
   );
   await page.waitForTimeout(300);
   await page.screenshot({ path: afterPath });
@@ -89,7 +93,7 @@ try {
 
   const openRequests = await countStatusRequests(page, 2200);
   assert(openRequests >= 1 && openRequests <= 3, `visible panel status pull must be bounded: ${openRequests}`);
-  await page.getByRole('button', { name: 'Hide preview' }).click();
+  await page.locator('[data-forgeax-preview-toggle="true"]').click();
   await page.waitForTimeout(100);
   const hiddenRequests = await countStatusRequests(page, 1400);
   assert(hiddenRequests === 0, `hidden panel must stop status pull: ${hiddenRequests}`);

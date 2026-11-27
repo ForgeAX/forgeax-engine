@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from 'vitest';
 // The mount source, so the test follows the current default pointer-events rule.
 import { mountUi } from '../../../ui/src/mount';
-import { clickTargetInPage } from '../play-click-target';
+import { clickTargetInPage } from '../play-input-page';
 
 afterEach(() => {
   document.body.replaceChildren();

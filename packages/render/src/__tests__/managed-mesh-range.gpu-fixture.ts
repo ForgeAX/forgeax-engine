@@ -1,11 +1,22 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import {
+  deriveVertexBufferLayoutFromProjection,
+  meshAttributeLayout,
+  packVertexAttributes,
+} from '@forgeax/engine-geometry';
 import { _internal_getRawDevice, rhi } from '@forgeax/engine-rhi-webgpu';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { toGpuVertexBufferLayouts } from '../assembly/webgpu-vertex-layouts';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { bindMeshVertexStreams } from '../device/mesh-vertex-streams';
 
-export async function verifyManagedMeshRange(channel: 'vertices' | 'indices') {
+export async function verifyManagedMeshRange(
+  channel: 'vertices' | 'indices',
+  withUv = false,
+  splitSource = false,
+) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const raw = _internal_getRawDevice(device);
   assert(raw);
@@ -46,10 +57,21 @@ export async function verifyManagedMeshRange(channel: 'vertices' | 'indices') {
         1,
       )
     : new Float32Array(9);
+  const attributes = {
+    position: values,
+    ...(withUv ? { uv: new Float32Array((values.length / 3) * 2) } : {}),
+  };
   const source: MeshAsset = {
     kind: 'mesh',
-    vertices: values,
-    attributes: { position: values },
+    vertices: withUv
+      ? packVertexAttributes(
+          attributes,
+          values.length / 3,
+          splitSource ? 'static-streams' : 'interleaved',
+        ).unwrap().vertices
+      : values,
+    attributes: splitSource ? meshAttributeLayout(attributes) : attributes,
+    ...(splitSource ? { attributeStorage: 'static-streams' as const } : {}),
     ...(indexed ? { indices: Uint16Array.of(0, 1, 2) } : {}),
     submeshes: [
       {
@@ -64,9 +86,12 @@ export async function verifyManagedMeshRange(channel: 'vertices' | 'indices') {
   };
   const first = assets.create(source).unwrap(),
     second = assets.copy(first).unwrap();
-  const mesh = (handle: AssetHandle<'mesh'>) => records.borrow<MeshAsset>(handle).unwrap();
-  const old = store.ensureResident(first, mesh(first)).unwrap();
+  const mesh = (handle: AssetHandle<'mesh'>) => records.borrowMeshForPresentation(handle).unwrap();
+  const fixed = records.pin<MeshAsset>(first).unwrap();
+  if (splitSource) expect(fixed.value.attributeStorage).toBe('static-streams');
+  const old = store.ensureResident(first, fixed.value).unwrap();
   const sibling = store.ensureResident(second, mesh(second)).unwrap();
+  expect(old.vertexStreams?.length).toBe(withUv ? 2 : undefined);
   expect(sibling.vertexBuffer).toBe(old.vertexBuffer);
   const lease = store.retainMeshResidency(first);
   assert(lease);
@@ -92,9 +117,9 @@ struct Out { @builtin(position) position: vec4f, @location(0) value: vec3f };
       vertex: {
         module: shader,
         entryPoint: 'vertex',
-        buffers: [
-          { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
-        ],
+        buffers: toGpuVertexBufferLayouts(
+          deriveVertexBufferLayoutFromProjection(old.layoutProjection),
+        ),
       },
       fragment: { module: shader, entryPoint: 'fragment', targets: [{ format: 'rgba8unorm' }] },
       primitive: { topology: 'triangle-list' },
@@ -113,7 +138,7 @@ struct Out { @builtin(position) position: vec4f, @location(0) value: vec3f };
       ],
     });
     pass.setPipeline(pipeline);
-    pass.setVertexBuffer(0, entry.vertexBuffer.handle);
+    bindMeshVertexStreams(pass, entry.vertexBuffer.handle, entry.vertexStreams);
     if (entry.indexBuffer === null) pass.draw(3);
     else {
       pass.setIndexBuffer(entry.indexBuffer.handle, entry.indexFormat);
@@ -147,6 +172,7 @@ struct Out { @builtin(position) position: vec4f, @location(0) value: vec3f };
             },
       )
       .unwrap();
+    if (splitSource) expect(mesh(first).attributeStorage).toBe('static-streams');
     const batch = observer.read().unwrap(),
       change = batch.changes[0];
     assert(change);
@@ -173,6 +199,7 @@ struct Out { @builtin(position) position: vec4f, @location(0) value: vec3f };
     expect(await render(blue)).toEqual([0, 0, 255, 255]);
     expect(await raw.popErrorScope()).toBeNull();
   } finally {
+    fixed.dispose();
     await lease.release(false);
     observer.dispose();
     store.destroyAll();

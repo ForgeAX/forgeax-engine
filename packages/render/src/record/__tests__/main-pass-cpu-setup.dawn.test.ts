@@ -3,8 +3,20 @@ import { createShaderModule } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
 import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { nativeDeviceFixture } from '../../__tests__/native-device-fixture';
+import {
+  projectViewLayout,
+  retainPipelineView,
+  retainViewGroup,
+  retainViewLayout,
+  viewForPipeline,
+} from '../../environment/bindings';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
-import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
+import { flushMeshDrawUploads } from '../mesh-ssbo';
+import {
+  CPU_SETUP_SHADER,
+  cpuSetupFixture,
+  nativeGeometryFixture,
+} from './main-pass-cpu-setup-fixture';
 
 it('preserves native pixels through sparse claims, CPU fallback and replacement devices', async () => {
   for (let generation = 0; generation < 2; generation++) {
@@ -135,26 +147,28 @@ it('restores native geometry after Points/Lines without relying on GPU-only CPU 
   Object.assign(last.source, { transform: { world: moved } });
   device.queue.writeBuffer(f.meshUniformBuffer, 3 * 256, moved).unwrap();
   const viewBuffer = device.createBuffer({ size: 2048, usage: 64 | 8 }).unwrap();
-  const viewLayout = device
-    .createBindGroupLayout({
-      entries: [0, 10].map((binding) => ({
-        binding,
-        visibility: 1,
-        buffer: { type: 'uniform', hasDynamicOffset: true },
-      })),
-    })
-    .unwrap();
-  const viewGroup = device
-    .createBindGroup({
-      layout: viewLayout,
-      entries: [0, 10].map((binding) => ({
-        binding,
-        resource: { kind: 'buffer', value: { buffer: viewBuffer, size: 256 } },
-      })),
-    })
-    .unwrap();
+  const viewEntries = [
+    { binding: 0, visibility: 1, buffer: { type: 'uniform' as const, hasDynamicOffset: true } },
+  ];
+  const viewLayout = device.createBindGroupLayout({ entries: viewEntries }).unwrap();
+  retainViewLayout(viewLayout, viewEntries);
+  const resources = [
+    { binding: 0, resource: { kind: 'buffer' as const, value: { buffer: viewBuffer, size: 256 } } },
+  ];
+  const viewGroup = device.createBindGroup({ layout: viewLayout, entries: resources }).unwrap();
+  retainViewGroup(viewGroup, viewLayout, resources);
+  const pointsLayout = projectViewLayout(
+    device,
+    viewLayout,
+    new Map([
+      [0, 1],
+      [10, 1],
+    ]),
+  );
   const pipeline = f.createPipeline(shader, viewLayout);
-  const pointsPipeline = f.createPipeline(pointsShader, viewLayout);
+  const pointsPipeline = f.createPipeline(pointsShader, pointsLayout);
+  retainPipelineView(pointsPipeline, pointsLayout);
+  const pointsGroup = viewForPipeline(device, pointsPipeline, viewGroup, viewBuffer);
   Object.assign(f.c.runtime, {
     getMaterialShaderPipelineEntry: (id: string) => ({
       pipeline: id === 'forgeax::points-lines' ? pointsPipeline : pipeline,
@@ -196,11 +210,13 @@ it('restores native geometry after Points/Lines without relying on GPU-only CPU 
     const pass = encoder.beginRenderPass({
       colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }],
     });
-    pass.setBindGroup(0, viewGroup, [0, 0]);
+    pass.setBindGroup(0, viewGroup, [0]);
     if (!oracle) f.record(pass);
     else
       for (const entry of [first, points, ...(omitLast ? [] : [last])]) {
         pass.setPipeline(entry === points ? pointsPipeline : pipeline);
+        if (entry === points) pass.setBindGroup(0, pointsGroup, [0, 0]);
+        else pass.setBindGroup(0, viewGroup, [0]);
         pass.setBindGroup(1, f.materialGroup, [0]);
         pass.setBindGroup(2, f.meshGroup, [entry === last ? 3 * 256 : 0]);
         pass.setBindGroup(3, identityGroup);
@@ -235,6 +251,73 @@ it('restores native geometry after Points/Lines without relying on GPU-only CPU 
   } finally {
     f.dispose();
     device.destroyBuffer(viewBuffer).unwrap();
+    device.destroyBuffer(readback).unwrap();
+    device.destroyTexture(target).unwrap();
+    native.destroy();
+  }
+});
+
+it.each([
+  'all',
+  'selected',
+  'alternating',
+] as const)('records exact pixels as physical offsets change for 60 frames (%s)', async (mode) => {
+  const { device, native } = await nativeDeviceFixture();
+  native.pushErrorScope('validation');
+  const shader = (await createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, shader);
+  const prepared = nativeGeometryFixture(f, mode !== 'all');
+  const target = device
+    .createTexture({
+      size: { width: 64, height: 32 },
+      format: 'rgba8unorm',
+      usage: 16 | 1,
+    })
+    .unwrap();
+  const view = device.createTextureView(target, {}).unwrap();
+  const readback = device.createBuffer({ size: 256 * 32, usage: 1 | 8 }).unwrap();
+  const buffer = f.c.pipelineState.materialUniformBuffer.buffer;
+  if (buffer === null) throw new Error('missing material buffer');
+  device.queue.writeBuffer(buffer, 512, Float32Array.of(0.1, 0.8, 0.3, 1)).unwrap();
+  const render = async (offset: number) => {
+    const encoder = device.createCommandEncoder().unwrap();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }],
+    });
+    f.receipts.length = 0;
+    const materialOffset = (slot: number) => (slot === 0 ? offset : 0);
+    prepared.record(pass, materialOffset);
+    pass.end();
+    flushMeshDrawUploads(device.queue, f.c.pipelineState.meshStorageBuffer);
+    encoder.copyTextureToBuffer(
+      { texture: target },
+      { buffer: readback, bytesPerRow: 256, rowsPerImage: 32 },
+      { width: 64, height: 32, depthOrArrayLayers: 1 },
+    );
+    device.queue.submit([encoder.finish().unwrap()]).unwrap();
+    await device.queue.onSubmittedWorkDone();
+    const mapped = (await readback.mapAsync(1)).unwrap();
+    const bytes = new Uint8Array(mapped.getMappedRange().unwrap().slice(0));
+    mapped.unmap();
+    expect(f.receipts).toEqual([
+      { entity: 1, submesh: 0 },
+      { entity: 2, submesh: 0 },
+    ]);
+    return bytes;
+  };
+  try {
+    const reference = [await render(0), await render(512)];
+    expect(equalBytes(reference[0] as Uint8Array, reference[1] as Uint8Array)).toBe(false);
+    for (let frame = 0; frame < 60; frame++) {
+      const variant = mode === 'alternating' ? frame % 2 : Number(frame >= 30);
+      expect(equalBytes(await render(variant * 512), reference[variant] as Uint8Array)).toBe(true);
+    }
+    expect(prepared.selectionReads).toBe(2 * (2 + 60));
+    expect(f.errors).toEqual([]);
+    const error = await native.popErrorScope();
+    expect(error, error?.message).toBeNull();
+  } finally {
+    f.dispose();
     device.destroyBuffer(readback).unwrap();
     device.destroyTexture(target).unwrap();
     native.destroy();

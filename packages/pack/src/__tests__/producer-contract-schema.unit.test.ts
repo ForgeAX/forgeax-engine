@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { validateProducerContract, validateProducerOutputs } from '../producer-contract.js';
-import { validateMeta, validatePack } from '../schema-compiled.js';
+import { validateMeta, validatePackV2 } from '../schema-compiled.js';
 
 const GUID = '01890000-0000-7000-8000-aaaaaaaaaaaa';
 
@@ -46,7 +46,7 @@ describe('producer contract schema and semantic validation', () => {
 
   it('accepts structured fields on internal pack assets', () => {
     const pack = {
-      schemaVersion: '1.0.0',
+      schemaVersion: '2.0.0',
       kind: 'internal-text-package',
       ...producerFields(),
       assets: [
@@ -58,21 +58,22 @@ describe('producer contract schema and semantic validation', () => {
           sourceIndex: 0,
           payload: {},
           refs: [],
+          artifacts: {},
         },
       ],
     };
-    expect(validatePack(pack)).toBe(true);
+    expect(validatePackV2(pack)).toBe(true);
     expect(validateProducerContract(pack.assets[0]).ok).toBe(true);
   });
 
-  it('rejects an authoring Pack asset without explicit execution', () => {
+  it('rejects a package-owned Runtime Pack asset without explicit execution', () => {
     const pack = {
       schemaVersion: '2.0.0',
       kind: 'internal-text-package',
       packageId: 'pkg/authoring',
       assets: [{ guid: GUID, kind: 'host/blob', payload: {}, refs: [], artifacts: {} }],
     };
-    expect(validatePack(pack)).toBe(false);
+    expect(validatePackV2(pack)).toBe(false);
   });
 
   it('rejects duplicate and sourceIndex-only imported output declarations', () => {

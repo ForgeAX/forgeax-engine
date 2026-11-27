@@ -44,7 +44,7 @@
   "dependencies": {
     "@forgeax/engine-types": "workspace:*",
     "css-tree": "^3.2.1",
-    "i18next": "26.0.10",
+    "i18next": "26.3.4",
     "parse5": "^7.3.0"
   },
   "devDependencies": {

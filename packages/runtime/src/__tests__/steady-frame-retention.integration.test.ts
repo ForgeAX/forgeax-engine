@@ -13,10 +13,7 @@ import {
 import { rhi } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import {
-  buildEngineShaderManifest,
-  publishShaderManifest,
-} from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { installDefaultAssetDecoders } from '../asset-contributions';
 import { createRenderer } from '../createRenderer';
@@ -26,12 +23,7 @@ import { testAssets } from './helpers/runtime-assets';
 const manifestPath = process.env.SHADOW_ADMISSION_SHADER_MANIFEST;
 const contents =
   manifestPath === undefined
-    ? await (async () => {
-        const built = await buildEngineShaderManifest();
-        return JSON.stringify(
-          'toJSON' in built ? built : publishShaderManifest(built.entries, built.materialShaders),
-        );
-      })()
+    ? JSON.stringify(await buildEngineShaderTemplateManifest())
     : Uint8Array.from(readFileSync(manifestPath)).buffer;
 
 function frameRequest(lease: RenderReadLease) {

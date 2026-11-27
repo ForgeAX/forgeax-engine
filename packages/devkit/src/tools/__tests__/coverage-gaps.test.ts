@@ -6,14 +6,8 @@ import {
 } from '@forgeax/engine-tool-runtime';
 import { describe, expect, it } from 'vitest';
 import {
-  type BenchmarkRecipe,
-  type BenchmarkSample,
-  createAdmissionReport,
-  summarizeBenchmarkSamples,
-} from '../benchmark/report.js';
-import { calculateSampleStatistics } from '../benchmark/statistics.js';
-import {
   authorPluginCreateDescriptor,
+  defaultToolDescriptors,
   describeTool,
   listTools,
   loadToolCatalog,
@@ -30,26 +24,16 @@ import {
   createAuthorContribution,
   createBuildContribution,
   createDefaultContributions,
-} from '../contributions.js';
-import { runLibraryTool } from '../library.js';
-import {
-  createCapabilityToken,
-  createMigrationRecipe,
-  createMigrationRoster,
-  resolveMigration,
-} from '../migration.js';
-import { analyzePreviewArtifacts } from '../offline-analysis.js';
-import {
   createOfflineAnalysisContribution,
   createPreviewContributions,
-} from '../preview-contributions.js';
+} from '../contributions.js';
+import { runLibraryTool } from '../execution.js';
+import { analyzePreviewArtifacts } from '../offline-analysis.js';
 import {
   type PreviewCarrierRoute,
   runCarrierPreviewRoute,
   runPreviewHost,
 } from '../preview-host.js';
-import { createResourceProbe } from '../realms.js';
-import { createServiceExecutor } from '../service.js';
 import { createAuthenticatedLoopbackService } from '../service-transport.js';
 
 const manifest = createArtifactManifest({
@@ -85,7 +69,7 @@ const target = {
 };
 
 describe('DevKit tool coverage contracts', () => {
-  it('covers provider, resource ownership, cache, and realm capability', () => {
+  it('covers carrier lease ownership', () => {
     const machine = createCarrierStateMachine({
       projectId: 'p',
       consumerId: 'c',
@@ -107,19 +91,6 @@ describe('DevKit tool coverage contracts', () => {
     expect(machine.lease({ consumerId: 'wrong', bearerToken: 'wrong', now: 1 })).toMatchObject({
       ok: false,
     });
-    const probe = createResourceProbe();
-    probe.observe('page', 'unowned');
-    const owner = probe.owner('host');
-    owner.observe('process', 'p1');
-    owner.observe('port', 'port1');
-    owner.release('port', 'port1');
-    expect(probe.snapshot()).toMatchObject({ process: ['p1'], port: [], page: ['unowned'] });
-    owner.stop();
-    expect(probe.snapshot().process).toEqual([]);
-    expect(() => probe.owner('host')).not.toThrow();
-    expect(() => probe.owner('host')).toThrow('resource-owner-duplicate');
-    probe.release('page', 'unowned');
-    expect(() => owner.observe('fiber', 'after-stop')).toThrow('resource-owner-stopped');
   });
 
   it('covers preview contributions, offline analysis, and child composition', async () => {
@@ -286,7 +257,7 @@ describe('DevKit tool coverage contracts', () => {
     expect(createAuthorContribution().descriptor.id).toBe('asset.plugin.create');
   });
 
-  it('covers authenticated service transport and executor fallback/error paths', async () => {
+  it('covers authenticated service transport', async () => {
     const service = await createAuthenticatedLoopbackService({
       bearerToken: 'service-token',
       handler: async (request) => ({ outcome: 'succeeded', result: request.args, artifacts: [] }),
@@ -294,59 +265,15 @@ describe('DevKit tool coverage contracts', () => {
       expectedRecipeDigest: 'recipe',
     });
     try {
-      const serviceIdentity = {
-        descriptorDigest: 'descriptor',
-        recipeDigest: 'recipe',
-        workloadClass: 'preview.real-project-webgpu',
-        codeDigest: 'sha256:code',
-        browserVersion: 'Chromium 140',
-      };
-      const serviceContribution = createOfflineAnalysisContribution();
-      const executor = createServiceExecutor({
-        contribution: serviceContribution,
-        privateExecutor: async () => ({
-          outcome: 'succeeded',
-          result: { runId: 'private' },
-          artifacts: [],
-        }),
-        transport: service.transport,
-        admission: {
-          schema: 'forgeax.tool-service-admission-ref.v1',
-          reportDigest: `sha256:${'a'.repeat(64)}`,
-          toolId: serviceContribution.descriptor.id,
-          ...serviceIdentity,
-          backend: 'webgpu',
-          frameCount: 300,
-          samples: { privateCold: 30, privateWarm: 30, serviceCold: 30, serviceWarm: 30 },
-          correctness: {
-            terminalEquivalent: true,
-            artifactIntegrity: true,
-            freshReplay: true,
-            hiddenParity: true,
-            drawCalls: 2,
-            nonBlackPixels: 100,
-          },
-          performance: {
-            privateMedianMs: 100,
-            privateP95Ms: 120,
-            privateMaxMs: 140,
-            privateRssBytes: 1000,
-            serviceMedianMs: 70,
-            serviceP95Ms: 90,
-            serviceMaxMs: 145,
-            serviceRssBytes: 1100,
-          },
-          cleanupPassed: true,
-          evictionPassed: true,
-        },
-        ...serviceIdentity,
-        bearerToken: 'service-token',
+      const request = { descriptorDigest: 'descriptor', recipeDigest: 'recipe', args: { id: 1 } };
+      await expect(service.transport.request(request, 'service-token')).resolves.toEqual({
+        outcome: 'succeeded',
+        result: request.args,
+        artifacts: [],
       });
-      expect(await executor.run({ manifest })).toMatchObject({ outcome: 'succeeded' });
-      expect(await executor.run({ manifest }, { recipeDigest: 'wrong' })).toMatchObject({
-        outcome: 'failed',
-        failure: { code: 'tool-domain-failed' },
-      });
+      await expect(
+        service.transport.request({ ...request, recipeDigest: 'wrong' }, 'service-token'),
+      ).rejects.toThrow('service recipe digest mismatch');
       expect(
         (await fetch(service.endpoint.replace('/run', '/wrong'), { method: 'GET' })).status,
       ).toBe(404);
@@ -369,28 +296,9 @@ describe('DevKit tool coverage contracts', () => {
         ).status,
       ).toBe(400);
       await service.close();
-      expect(await executor.run({ manifest })).toMatchObject({
-        outcome: 'failed',
-        failure: { code: 'tool-run-disconnected' },
-      });
-      const privateExecutor = createServiceExecutor({
-        contribution: createOfflineAnalysisContribution(),
-        privateExecutor: async () => ({
-          outcome: 'succeeded',
-          result: { runId: 'private' },
-          artifacts: [],
-        }),
-        transport: service.transport,
-        descriptorDigest: 'd',
-        recipeDigest: 'r',
-        workloadClass: 'preview.real-project-webgpu',
-        codeDigest: 'sha256:code',
-        browserVersion: 'Chromium 140',
-      });
-      expect(await privateExecutor.run({ manifest })).toMatchObject({
-        outcome: 'succeeded',
-        result: { runId: 'private' },
-      });
+      await expect(service.transport.request(request, 'service-token')).rejects.toThrow(
+        'service transport is disconnected',
+      );
     } finally {
       await service.close();
     }
@@ -424,6 +332,14 @@ describe('DevKit tool coverage contracts', () => {
     expect(describeTool(catalog, 'missing')).toBeUndefined();
     expect(
       rebuildToolCatalog([createBuildContribution()], catalog, { authorityDigest: 'sha256:a' }),
+    ).toEqual(catalog);
+    const staleProjection = materializeToolDescriptorCatalog(defaultToolDescriptors, {
+      authorityDigest: 'sha256:a',
+    });
+    expect(
+      rebuildToolCatalog([createBuildContribution()], staleProjection, {
+        authorityDigest: 'sha256:a',
+      }),
     ).toEqual(catalog);
     expect(
       rebuildToolCatalog([createBuildContribution()], undefined, { authorityDigest: 'sha256:b' }),
@@ -469,100 +385,5 @@ describe('DevKit tool coverage contracts', () => {
       rebuildToolCatalog([createBuildContribution()], custom, { authorityDigest: 'sha256:a' }),
     ).toMatchObject({ digest: expect.stringMatching(/^sha256:/) });
     expect(() => rebuildToolCatalog([], undefined, {})).toThrow();
-    const migrationRoster = createMigrationRoster();
-    const probe = {
-      realm: 'host' as const,
-      catalogDigest: 'sha256:c',
-      rhiBackend: 'webgpu' as const,
-      evidence: ['rhi-tape', 'profile-capture'] as const,
-      carrier: false,
-      service: true,
-    };
-    expect(() =>
-      createCapabilityToken('preview.run', { ...probe, catalogDigest: '' }, '1.0.0', probe),
-    ).toThrow();
-    expect(() =>
-      createMigrationRecipe({ operation: 'preview.run', args: { world: true } }),
-    ).toThrow();
-    expect(
-      resolveMigration(migrationRoster, 'preview.run', { ...probe, rhiBackend: 'null' }),
-    ).toMatchObject({ ok: false });
-    expect(
-      resolveMigration(migrationRoster, 'preview.run', { ...probe, realm: 'engine' }),
-    ).toMatchObject({ ok: false });
-    expect(
-      resolveMigration(migrationRoster, 'preview.run', { ...probe, evidence: [] }),
-    ).toMatchObject({ ok: false });
-  });
-
-  it('covers benchmark statistics and admission rejection reasons', () => {
-    expect(() => calculateSampleStatistics([])).toThrow();
-    expect(calculateSampleStatistics([1, 3])).toMatchObject({ median: 2, p95: 3, max: 3 });
-    expect(summarizeBenchmarkSamples([])).toMatchObject({ samples: 0, cleanupPassed: false });
-    const recipe: BenchmarkRecipe = {
-      snapshotDigest: 's',
-      backend: 'webgpu',
-      viewport: [1, 1],
-      inputDigest: 'i',
-      frameCount: 1,
-      rhiDebug: true,
-      profiler: true,
-      carrierRendezvous: false,
-      digest: 'recipe',
-    };
-    const sample = (
-      mode: BenchmarkSample['mode'],
-      phase: BenchmarkSample['phase'],
-      overrides: Partial<BenchmarkSample> = {},
-    ): BenchmarkSample => ({
-      mode,
-      phase,
-      durationMs: mode === 'private' ? 100 : 50,
-      peakRssBytes: mode === 'private' ? 100 : 90,
-      exclusivePhasesMs: { execute: 1, capture: 2 },
-      rhiDebugOverheadMs: 1,
-      carrierRendezvousMs: 1,
-      cleanupPassed: true,
-      evictionPassed: true,
-      recipeDigest: recipe.digest,
-      ...overrides,
-    });
-    const incomplete = createAdmissionReport(recipe, [sample('private', 'cold')], {
-      sampleCountPerPhase: 1,
-      medianImprovement: 0.2,
-      p95Improvement: 0.1,
-      maxRegression: 0.1,
-      peakRssMultiplier: 1.25,
-    });
-    expect(incomplete.valid).toBe(false);
-    expect(incomplete.reasons).toContain('sample count is incomplete');
-    const rejected = createAdmissionReport(
-      recipe,
-      [
-        sample('private', 'cold', { recipeDigest: 'wrong', cleanupPassed: false }),
-        sample('private', 'warm', { evictionPassed: false }),
-        sample('service', 'cold', { durationMs: 200, peakRssBytes: 200 }),
-        sample('service', 'warm', { durationMs: 200, peakRssBytes: 200 }),
-      ],
-      {
-        sampleCountPerPhase: 1,
-        medianImprovement: 0.2,
-        p95Improvement: 0.1,
-        maxRegression: 0.1,
-        peakRssMultiplier: 1.25,
-      },
-    );
-    expect(rejected.reasons).toEqual(
-      expect.arrayContaining([
-        'recipe identity drifted',
-        'cleanup failed',
-        'eviction failed',
-        'private and service samples were not alternated',
-        'median improvement threshold missed',
-        'p95 improvement threshold missed',
-        'max regression threshold exceeded',
-        'peak RSS threshold exceeded',
-      ]),
-    );
   });
 });

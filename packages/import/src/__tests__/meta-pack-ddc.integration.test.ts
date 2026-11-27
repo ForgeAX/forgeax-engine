@@ -1,24 +1,22 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { deepStrictEqual } from 'node:assert/strict';
+import { readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
 import { ok } from '@forgeax/engine-types';
 import { afterEach, expect, it } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 import type { RunImportMeta } from '../import-runner.js';
 import { ImporterRegistry } from '../importer-registry.js';
 import { produceSourcePackage } from '../source-package.js';
 import { createSourcePackageBuildDdc } from '../source-package-build-product.js';
 
 const GUID = '01900000-0000-7000-8000-0000000000f1';
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+const scratch = temporaryDirectories();
+afterEach(scratch.clear);
 
 async function fixture(material = false, inheritedFs = false) {
-  const root = await mkdtemp(join(tmpdir(), 'forgeax-meta-pack-ddc-'));
-  roots.push(root);
+  const root = await scratch.make('forgeax-meta-pack-ddc-');
   const source = join(root, 'source.bin'),
     sibling = join(root, 'sibling.bin'),
     cacheRoot = join(root, 'ddc');
@@ -217,7 +215,7 @@ it('does not reimport or recook a real material after its Meta Pack hits existin
   const first = await f.run(),
     second = await f.run();
   expect(f.counts).toEqual({ importer: 1, cooker: 1 });
-  expect(second.product).toEqual(first.product);
+  deepStrictEqual(second.product, first.product);
   f.setCookerRevision('native-v2');
   await f.run();
   await f.run();

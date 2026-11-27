@@ -1,4 +1,16 @@
-import { type ArtifactDescriptor, err, ok, type Result } from '@forgeax/engine-types';
+import { type ArtifactDescriptor, encodeBase64, err, ok, type Result } from '@forgeax/engine-types';
+
+export function artifactDigestHex(digest: Uint8Array): string {
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/** Producer digests can use hex or base64 with an optional algorithm prefix. */
+export function matchesArtifactSha256(expected: string, digest: Uint8Array): boolean {
+  const value = expected.startsWith('sha256:') ? expected.slice(7) : expected;
+  return /^[0-9a-f]{64}$/i.test(value)
+    ? value.toLowerCase() === artifactDigestHex(digest)
+    : value === encodeBase64(digest);
+}
 
 export function storedArtifactRangeIssue(descriptor: ArtifactDescriptor): string | undefined {
   const range = descriptor.byteRange;
@@ -36,6 +48,34 @@ export function decodedArtifactRangeIssue(descriptor: ArtifactDescriptor): strin
     descriptor.delivery !== undefined
     ? 'invalid decoded artifact range'
     : undefined;
+}
+
+/** Validate the common descriptor fields required by verified runtime and fixed Packs. */
+export function runtimeArtifactDescriptorIssue(value: unknown) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return 'descriptor';
+  const descriptor = value as ArtifactDescriptor;
+  const { mediaType, integrity, contentEncoding, byteLength = -1, path } = descriptor;
+  if (typeof mediaType !== 'string') return 'mediaType';
+  if (decodedArtifactRangeIssue(descriptor) !== undefined) return 'decodedRange';
+  if (
+    integrity !== undefined &&
+    (Array.isArray(integrity) ||
+      integrity?.algorithm !== 'sha256' ||
+      typeof integrity.digest !== 'string')
+  )
+    return 'integrity';
+  if (storedArtifactRangeIssue(descriptor) !== undefined) return 'byteRange';
+  if (typeof path !== 'string' || !path) return 'path';
+  if (
+    !mediaType ||
+    integrity === undefined ||
+    !/^sha256:[0-9a-f]{64}$/i.test(integrity.digest) ||
+    (contentEncoding !== 'identity' && contentEncoding !== 'zstd') ||
+    !Number.isSafeInteger(byteLength) ||
+    byteLength < 0
+  )
+    return 'delivery';
+  return undefined;
 }
 
 /** Select the original artifact bytes before its individual integrity check. */

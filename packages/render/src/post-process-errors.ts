@@ -192,9 +192,9 @@ const POST_PROCESS_POLICY = {
   },
   'ssao-parameter-invalid': {
     expected:
-      'valid AO algorithm, quality, finite non-negative thickness/exponent/intensity, falloff in [0, 1] and resolutionScale in [0.25, 1]',
+      'valid AO method, quality, finite non-negative thickness/exponent/intensity, falloff in [0, 1] and resolutionScale in [0.25, 1]',
     hint: () =>
-      'Inspect detail.paramName; use algorithm gtao, ssao or spiral-ssao, application lighting/scene-color, sceneColorStrength in [0, 1], explicit sampleCount integer 1..64, quality low/medium/high, non-negative finite intensity/thickness/distanceExponent, distanceFallOff in [0, 1], resolutionScale in [0.25, 1]. For a camera companion, use the AMBIENT_OCCLUSION_* constants or remove AmbientOcclusion; for a Standard profile, correct config.ssao.<paramName> or disable AO with config.ssao = false.',
+      'Use the reported parameter name to correct the Standard ambient occlusion options. Choose ssao or gtao on the project. Set enabled to false in the project or camera to disable AO.',
   },
   'ssao-radius-non-positive': {
     expected: 'SSAO radius must be > 0',
@@ -202,7 +202,7 @@ const POST_PROCESS_POLICY = {
       const d = detail as SsaoRadiusNonPositiveDetail;
       return (
         `SSAO parameter '${d.paramName}' is ${d.value}, must be greater than 0. ` +
-        `Set AmbientOcclusion.${d.paramName} or config.ssao.${d.paramName} to a positive value (default 0.25); remove AmbientOcclusion or set config.ssao = false to disable AO.`
+        `Set AmbientOcclusion.${d.paramName} or ambientOcclusion.${d.paramName} to a positive value (default 2 meters). Set enabled to false to disable AO.`
       );
     },
   },
@@ -212,7 +212,7 @@ const POST_PROCESS_POLICY = {
       const d = detail as SsaoBiasNegativeDetail;
       return (
         `SSAO parameter '${d.paramName}' is ${d.value}, must be >= 0. ` +
-        `Set AmbientOcclusion.${d.paramName} or config.ssao.${d.paramName} to a non-negative value (default 0); remove AmbientOcclusion or set config.ssao = false to disable AO.`
+        `Set AmbientOcclusion.${d.paramName} or ambientOcclusion.${d.paramName} to a non-negative value (default 3). Set enabled to false to disable AO.`
       );
     },
   },

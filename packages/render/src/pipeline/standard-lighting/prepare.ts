@@ -5,17 +5,20 @@ import { createStandardClusterLayout, type StandardClusterLayout } from './layou
 import type { StandardLightFrame } from './light-frame';
 import { deriveStandardMembership, type StandardClusterMembership } from './membership';
 import type { StandardClusterMembershipOwner } from './membership-owner';
+import type { projectLightSlotWork } from './slot-work';
 
 export type { StandardLightFrame } from './light-frame';
 
 export interface PreparedStandardLighting extends StandardClusterMembership {
   readonly directional: StandardLightFrame['directional'];
   readonly local: StandardLightFrame['local'];
+  readonly slotWork?: ReturnType<typeof projectLightSlotWork>;
   readonly layout: StandardClusterLayout;
   readonly renderPath: NonNullable<StandardLightFrame['renderPath']>;
   readonly maxLights: number;
   /** Point/spot/rect lights dropped over the limit; `local` holds the rest. */
   readonly droppedLocalLights: number;
+  readonly deferredChannelProjection?: number;
   /** Camera terms the membership was derived with; read by on-demand inspection. */
   readonly camera?: Pick<StandardLightFrame, 'view' | 'projection' | 'near' | 'far'>;
 }
@@ -25,8 +28,12 @@ export function prepareStandardLighting(
   directLightSlotCapacity: number = frame.lightCount,
   scratch?: ClusterBinScratch,
   owner?: StandardClusterMembershipOwner,
+  slotWork?: ReturnType<typeof projectLightSlotWork>,
 ): Result<PreparedStandardLighting, RenderError> {
-  const layout = createStandardClusterLayout(directLightSlotCapacity, frame.grid);
+  const layout =
+    owner === undefined
+      ? createStandardClusterLayout(directLightSlotCapacity, frame.grid)
+      : owner.graphLayout.layout(directLightSlotCapacity, frame.grid);
   const membership =
     owner === undefined
       ? deriveStandardMembership(frame, layout, scratch)
@@ -35,22 +42,31 @@ export function prepareStandardLighting(
   const derived = membership.value;
   return ok({
     // Forward the list lazily: a spread would materialize it for GPU producers.
+    publication: derived.publication,
     clusterGrid: derived.clusterGrid,
     get lightIndexList() {
       return derived.lightIndexList;
     },
-    lightBounds: derived.lightBounds,
+    boundsColumn: derived.boundsColumn,
+    get lightBounds() {
+      return derived.lightBounds;
+    },
     membershipLightCount: derived.membershipLightCount,
     membershipEntryCount: derived.membershipEntryCount,
+    occupiedClusterCount: derived.occupiedClusterCount,
     clusterEntryCapK: derived.clusterEntryCapK,
     droppedClusterEntries: derived.droppedClusterEntries,
     scratch: derived.scratch,
     directional: frame.directional,
     local: frame.local,
+    ...(slotWork === undefined ? {} : { slotWork }),
     layout,
     renderPath: frame.renderPath,
     maxLights: frame.lightCount,
     droppedLocalLights: frame.droppedLocalLights ?? 0,
+    ...(frame.deferredChannelProjection === undefined
+      ? {}
+      : { deferredChannelProjection: frame.deferredChannelProjection }),
     camera: { view: frame.view, projection: frame.projection, near: frame.near, far: frame.far },
   });
 }

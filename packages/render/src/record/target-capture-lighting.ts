@@ -26,10 +26,9 @@ interface CaptureLightingView {
   readonly viewBuffer: import('@forgeax/engine-rhi').Buffer;
   readonly pointsLinesView: ReturnType<typeof createPointsLinesViewBuffer>;
 }
-// Keyed by a writer's ordinal among this frame's writers of its target: each
-// needs its own view uniform because queue writes all land before submission,
-// while a cube writing one face per frame keeps reusing ordinal 0.
-const views = new WeakMap<CubeCaptureGraphState, Map<object, Map<number, CaptureLightingView>>>();
+// Every writer simultaneously submitted to one target needs a distinct uniform.
+// The complete capture batch assigns ordinals in encoding order and trims its tail.
+export type CaptureLightingViews = Map<object, { writers: CaptureLightingView[]; used: number }>;
 
 function retireView(view: CaptureLightingView): void {
   view.atmosphere?.release();
@@ -43,10 +42,24 @@ function retireView(view: CaptureLightingView): void {
   void device.queue.onSubmittedWorkDone().then(release, release);
 }
 
+export function finishTargetCaptureLighting(owner: CubeCaptureGraphState): void {
+  const targets = owner.lightingViews;
+  if (targets === undefined) return;
+  for (const [target, group] of targets) {
+    while (group.writers.length > group.used)
+      retireView(group.writers.pop() as CaptureLightingView);
+    if (group.used === 0) targets.delete(target);
+    group.used = 0;
+  }
+  if (targets.size === 0) delete owner.lightingViews;
+}
+
 export function disposeTargetCaptureLighting(owner: CubeCaptureGraphState): void {
-  for (const layers of views.get(owner)?.values() ?? [])
-    for (const view of layers.values()) retireView(view);
-  views.delete(owner);
+  const targets = owner.lightingViews;
+  if (targets === undefined) return;
+  delete owner.lightingViews;
+  for (const group of targets.values()) for (const view of group.writers) retireView(view);
+  targets.clear();
 }
 
 /** Recovery and final disposal retire the complete capture generation together. */
@@ -66,7 +79,7 @@ function prepareCaptureClusterExtent(view: CaptureLightingView): void {
     !view.runtime.device.caps.storageBuffer &&
     selected?.kind === 'atmosphere' &&
     !selected.atmosphere.backgroundOnly
-      ? { width: 0, height: 0, atmosphere: true }
+      ? { atmosphere: true }
       : undefined;
 }
 
@@ -87,31 +100,20 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
   /** The face's cascades, fitted in RenderPrepare by `render-capture-fit`. */
   captureLights: ViewLights,
 ) {
-  let retained = views.get(owner);
-  if (retained === undefined) {
-    retained = new Map();
-    views.set(owner, retained);
+  owner.lightingViews ??= new Map();
+  const targets = owner.lightingViews;
+  let group = targets.get(work.target);
+  if (group === undefined) {
+    group = { writers: [], used: 0 };
+    targets.set(work.target, group);
   }
-  for (const [target, layers] of retained) {
-    const writers =
-      owner.work.filter((item) => item.target === target).length +
-      (owner.reflectionProbes?.work.filter((item) => item.rawTexture === target).length ?? 0);
-    for (const [ordinal, view] of layers) {
-      if (view.runtime.device === runtime.device && ordinal < writers) continue;
-      retireView(view);
-      layers.delete(ordinal);
-    }
-    if (layers.size === 0) retained.delete(target);
+  if (group.writers.length > 0 && group.writers[0]?.runtime.device !== runtime.device) {
+    for (const view of group.writers) retireView(view);
+    group.writers.length = 0;
+    group.used = 0;
   }
-  let layers = retained.get(work.target);
-  if (layers === undefined) {
-    layers = new Map();
-    retained.set(work.target, layers);
-  }
-  // Reflection-probe work writes one face per frame, so it is absent here and keeps ordinal 0.
-  const peers: readonly CaptureLightingInput[] = owner.work;
-  const ordinal = Math.max(0, peers.filter((item) => item.target === work.target).indexOf(work));
-  let view = layers.get(ordinal);
+  const pointsLinesSlots = preparedPointsLinesSlots(runtime);
+  let view = group.writers[group.used];
   if (view === undefined) {
     const device = runtime.device;
     const buffer = device.createBuffer({
@@ -123,6 +125,7 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
     let pointsLines: ReturnType<typeof createPointsLinesViewBuffer>;
     try {
       pointsLines = createPointsLinesViewBuffer(device);
+      pointsLines.ensureCapacity(pointsLinesSlots);
     } catch (error) {
       device.destroyBuffer(buffer.value);
       throw error;
@@ -139,8 +142,11 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
       viewBuffer: buffer.value,
       pointsLinesView: pointsLines,
     };
-    layers.set(ordinal, view);
+    group.writers.push(view);
+  } else {
+    view.pointsLinesView.ensureCapacity(pointsLinesSlots);
   }
+  group.used++;
   if (work.candidateGeneration === undefined || view.generation !== work.candidateGeneration) {
     view.atmosphere?.release();
     delete view.atmosphere;
@@ -151,7 +157,10 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
       view.atmosphere = work.atmosphere?.retain() ?? retainAtmosphere(runtime, environment);
     }
   }
-  view.state = { ...frameState, hdrpClusterMembership: view.state.hdrpClusterMembership };
+  view.state = {
+    ...frameState,
+    hdrpClusterMembership: view.state.hdrpClusterMembership,
+  };
   settleAtmospherePublish(view.state, false);
   if (view.atmosphere !== undefined) {
     const frozen = view.atmosphere.storage.environment;
@@ -165,8 +174,6 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
   }
   view.scenePasses.camera = work.faceCamera;
   const cascades = captureLights.cascades;
-  // This frame's capture views grow to the slots `view-points-lines` prepared.
-  view.pointsLinesView.ensureCapacity(preparedPointsLinesSlots(runtime));
   const capturePipeline = {
     ...pipeline,
     perPassResources: {

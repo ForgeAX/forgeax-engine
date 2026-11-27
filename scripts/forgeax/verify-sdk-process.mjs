@@ -80,17 +80,29 @@ export function createSdkVerifierProcess(packageManager, runtime = {}) {
 
 /** Read through the installed candidate's public exports, never the verifier checkout. */
 export async function readSdkProjectDocument(execFileAsync, project, path, kind = 'json') {
-  if (kind !== 'json' && kind !== 'catalog') throw new Error(`sdk-project-document-kind:${kind}`);
-  const catalogRead = await execFileAsync(
+  if (kind !== 'json' && kind !== 'catalog' && kind !== 'direct-pack')
+    throw new Error(`sdk-project-document-kind:${kind}`);
+  const readDocument = `
+    import { readFile } from 'node:fs/promises';
+    import { decodeDocumentText } from '@forgeax/engine/codec';
+    const text = await decodeDocumentText(await readFile(process.argv[1]));
+    if (!text.ok) throw new Error(text.error.code);
+    let value = JSON.parse(text.value);
+    if (process.argv[2] === 'catalog') {
+      const { decodeCatalogWire } = await import('@forgeax/engine/pack');
+      value = decodeCatalogWire(value).unwrap();
+    } else if (process.argv[2] === 'direct-pack') {
+      const { parsePackSourceJson, projectDirectPackJson } = await import('@forgeax/engine/pack/source');
+      const pack = parsePackSourceJson(value).unwrap();
+      if (pack.format !== 'direct') throw new Error('sdk-project-document-not-direct-pack');
+      value = projectDirectPackJson(pack);
+    }
+    console.log(JSON.stringify(value));
+  `;
+  const documentRead = await execFileAsync(
     process.execPath,
-    [
-      '--input-type=module',
-      '--eval',
-      "import { readFile } from 'node:fs/promises'; import { decodeDocumentText } from '@forgeax/engine/codec'; import { decodeCatalogWire } from '@forgeax/engine/pack'; const text = await decodeDocumentText(await readFile(process.argv[1])); if (!text.ok) throw new Error(text.error.code); const value = JSON.parse(text.value); console.log(JSON.stringify(process.argv[2] === 'catalog' ? decodeCatalogWire(value).unwrap() : value));",
-      path,
-      kind,
-    ],
+    ['--input-type=module', '--eval', readDocument, path, kind],
     { cwd: project },
   );
-  return JSON.parse(catalogRead.stdout);
+  return JSON.parse(documentRead.stdout);
 }

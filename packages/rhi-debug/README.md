@@ -168,9 +168,9 @@ attachment-view mip size and format, draw/dispatch/drawIndirect counts, pipeline
 one-line-per-pass `summary.passLines`. `--label <regex>` adds `summary.resources[]`,
 the textures, buffers and views whose own or viewed-texture label matches. The summary
 and `rhi inspect` with the default `pipeline`/`bindings` fields read the tape only;
-`pixels`, `outputs`, `rhi read` and `rhi timing` need a replay device. macOS and
-Windows ship no prebuilt `dawn.node` by design (source build, `build:native`), so
-replay-backend-unavailable there is the expected state, not a platform-key bug.
+`pixels`, `outputs`, `rhi read` and `rhi timing` need a replay device. Install the
+[optional upstream Dawn provider](../dawn-node/README.md) in the game to use
+these commands on an installed Engine.
 `summarizePasses`, `summarizeResources` and `passLine` are the library forms.
 
 > [!WARNING]

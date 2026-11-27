@@ -1,5 +1,59 @@
 #define_import_path forgeax_view::common
 
+struct ReconstructedDepthSurface {
+  position : vec3<f32>,
+  normal : vec3<f32>,
+};
+
+fn depthSurfaceCameraFacing(worldViewProj : mat4x4<f32>, orthographic : bool) -> vec3<f32> {
+  let perspective = -vec3<f32>(worldViewProj[0].w, worldViewProj[1].w, worldViewProj[2].w);
+  let parallel = vec3<f32>(worldViewProj[0].z, worldViewProj[1].z, worldViewProj[2].z);
+  return normalize(select(perspective, parallel, orthographic));
+}
+
+fn depthSurfacePosition(pixel : vec2<f32>, inverseExtent : vec2<f32>, deviceZ : f32,
+    inverseProjection : mat4x4<f32>) -> vec3<f32> {
+  let ndc = (pixel + 0.5) * inverseExtent * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+  let p = inverseProjection * vec4<f32>(ndc, deviceZ, 1.0);
+  return p.xyz / p.w;
+}
+
+// Choose the one-sided depth difference that stays on the receiver plane.
+// A clear or off-screen neighbor cannot define that plane.
+fn depthSurfaceSlope(source : texture_depth_2d, pixel : vec2<i32>, axis : vec2<i32>,
+    extent : vec2<i32>, center : f32) -> f32 {
+  let previous = pixel - axis;
+  let next = pixel + axis;
+  let previousDepth = textureLoad(source, clamp(previous, vec2<i32>(0), extent - 1), 0);
+  let nextDepth = textureLoad(source, clamp(next, vec2<i32>(0), extent - 1), 0);
+  let previousValid = all(previous >= vec2<i32>(0)) && previousDepth > 0.0;
+  let nextValid = all(next < extent) && nextDepth > 0.0;
+  let d0 = center - previousDepth;
+  let d1 = nextDepth - center;
+  return select(
+    select(0.0, d1, nextValid), d0,
+    previousValid && (!nextValid || abs(d0) <= abs(d1)),
+  );
+}
+
+fn reconstructDepthSurface(source : texture_depth_2d, pixel : vec2<i32>, deviceZ : f32,
+    inverseProjection : mat4x4<f32>, fallbackNormal : vec3<f32>) -> ReconstructedDepthSurface {
+  let extent = vec2<i32>(textureDimensions(source));
+  let inverseExtent = 1.0 / vec2<f32>(extent);
+  let dx = depthSurfaceSlope(source, pixel, vec2<i32>(1, 0), extent, deviceZ);
+  let dy = depthSurfaceSlope(source, pixel, vec2<i32>(0, 1), extent, deviceZ);
+  let centerPixel = vec2<f32>(pixel);
+  let center = depthSurfacePosition(centerPixel, inverseExtent, deviceZ, inverseProjection);
+  let right = depthSurfacePosition(centerPixel + vec2<f32>(1.0, 0.0), inverseExtent,
+    max(deviceZ + dx, 1e-8), inverseProjection);
+  let down = depthSurfacePosition(centerPixel + vec2<f32>(0.0, 1.0), inverseExtent,
+    max(deviceZ + dy, 1e-8), inverseProjection);
+  let normal = cross(down - center, right - center);
+  let length2 = dot(normal, normal);
+  return ReconstructedDepthSurface(center,
+    select(fallbackNormal, normal * inverseSqrt(max(length2, 1e-20)), length2 > 1e-20));
+}
+
 // The texture view owns the texture transfer: an sRGB view decodes once during
 // textureSample, while a linear view is returned unchanged. Authored scalar
 // values are decoded by the material extraction path before the uniform upload.
@@ -42,13 +96,10 @@ fn linearToSrgbOetf(color : vec3<f32>) -> vec3<f32> {
   return select(high, low, safe <= vec3<f32>(0.0031308));
 }
 
-// Shared final-surface dither.  The output transform and FXAA are both
-// display-encoded fullscreen writers, so they must use one owner-level
-// algorithm rather than carrying subtly different copies in each pass.
-// The bounded shift is ±0.5/255 per channel, matching Three.js's optional
-// material dithering amplitude while the screen-space hash remains stable for
-// a still frame.  Callers decide whether this writer is the final 8-bit
-// boundary; intermediate float targets must leave it disabled.
+// Shared display-encoded dither. The bounded shift is ±0.5/255 per channel,
+// matching Three.js's optional material dithering amplitude. The screen-space
+// hash remains stable for a still frame. Apply dither once at the first
+// 8-bit color quantization while the sub-code values are still available.
 fn hash32(value : u32) -> u32 {
   var hash = value;
   hash = (hash ^ 61u) ^ (hash >> 16u);
@@ -86,14 +137,14 @@ fn ditherUnorm8(value : vec3<f32>, pixelPosition : vec2<f32>) -> vec3<f32> {
 // aligned with Bevy's bevy_view::common and matches charter proposition 5
 // (consistent abstraction - one View struct everywhere).
 
-// View UBO: 1312-byte payload, 1536-byte dynamic slot (256-byte alignment).
+// View UBO: 1392-byte payload, 1536-byte dynamic slot (256-byte alignment).
 // view-ubo.ts owns matching host writes. Existing fields retain their offsets:
 // [0..528) camera and directional-shadow facts; [528..784) spot matrices;
 // [784..1024) temporal and cloud-shadow facts; [1024..1120) clipping planes;
 // [1120..1136) clipping control (count, intersection, clipShadows, reserved);
 // [1136..1168) analytic fog (color+density, heightFalloff/maxOpacity/translucent slot/frame time);
 // [1168..1264) atmosphere medium; [1264..1280) atmosphere control;
-// [1280..1296) sky fog and Forward vertex-height inputs; [1296..1312) opaque SSR work budgets.
+// [1280..1296) sky fog and Forward vertex-height inputs; [1296..1312) opaque SSR work budgets, [1312..1376) compact subsurface profiles; [1376..1392) ground solar reference.
 struct AtmosphereMedium {
   originRadius: vec4<f32>, // world ground origin in km, ground radius
   rayleigh: vec4<f32>, // scattering RGB, density scale height
@@ -129,7 +180,7 @@ struct View {
   spotLightViewProj : array<mat4x4<f32>, 4>,
   temporalCurrentViewProj : mat4x4<f32>,
   temporalPreviousViewProj : mat4x4<f32>,
-  // x = near, y = far, z = 1 for orthographic and 0 for perspective.
+  // x = near, y = far, z = orthographic, w = projected Forward sun occupies R.
   temporalProjection : vec4<f32>,
   // Accepted camera origin at the previous submitted frame. This occupies
   // the existing tail padding and keeps temporal reprojection on one SSOT.
@@ -155,20 +206,45 @@ struct View {
   fogColorDensity : vec4<f32>,
   fogHeightOpacity : vec4<f32>,
   atmosphere : AtmosphereMedium,
-  // reference sample count (zero = LUT), sun radius, AP range km, flags (1 aerial perspective, 2 captured atmosphere sun).
+  // Reference samples (negative: fast samples per slice), sun radius, AP range in km.
+  // Flags: 1 AP, 2 sun, 4 scalar AP, 8 disable the fast height-fog sky term.
   atmosphereControl : vec4<f32>,
   // x = Fog.skyOpacity: scale of the fog opacity on background pixels under
   // an Atmosphere (1 = physical distant fog, 0 = sky unfogged).
   // y = admitted Forward vertex-height route; zero retains screen/capture
   // consumers. The View owner selects it, never the material author.
-  // z = perspective camera height density; w reserved.
+  // z = perspective camera height density; w packs Deferred channel projection
+  // in bits 0..19 and indirect specular controls in bits 20..21.
   fogSky : vec4<f32>,
-  // Opaque SSR trace scale, HiZ iterations, linear iterations and refinement.
+  // SSR trace scale, per-ray steps, rays per pixel and temporal sample phase.
   ssrQuality : vec4<f32>,
+  // Index + 1 is the compact GBuffer subsurface profile ID; zero entries are unused.
+  subsurfaceProfiles : array<vec4<u32>, 4>,
+  // CPU ground reference RGB. W = 0 for absent, 1 for ground direct lighting,
+  // 2 when surfaces request per-pixel transmittance.
+  groundSolar : vec4<f32>,
 };
 
-// Mesh contains only independent transform and temporal facts. Direct draws
-// bind aligned 256-byte slots; storage draws expose the 176-byte row.
+// The mirror-only route fades to the environment twice as early as GGX.
+fn screenSpaceReflectionRoughnessFade(roughness: f32, maxRoughness: f32, glossy: bool) -> f32 {
+  if (!(maxRoughness > 0.0)) { return 0.0; }
+  let slope = select(4.0, 2.0, glossy) / maxRoughness;
+  return clamp(2.0 - roughness * slope, 0.0, 1.0);
+}
+
+fn sampleSsrSceneColor(source: texture_2d<f32>, uv: vec2f) -> vec3f {
+  let size = textureDimensions(source, 0);
+  let position = clamp(uv * vec2f(size) - 0.5, vec2f(0.0), vec2f(size - 1u));
+  let lower = vec2i(floor(position));
+  let upper = min(lower + 1, vec2i(size) - 1);
+  let f = fract(position);
+  let a = mix(textureLoad(source, lower, 0).rgb, textureLoad(source, vec2i(upper.x, lower.y), 0).rgb, f.x);
+  let b = mix(textureLoad(source, vec2i(lower.x, upper.y), 0).rgb, textureLoad(source, upper, 0).rgb, f.x);
+  return mix(a, b, f.y);
+}
+
+// Direct Mesh draws bind aligned 256-byte slots, exposing a 208-byte storage
+// row or a 128-byte uniform row.
 struct Mesh {
   worldFromLocal : mat4x4<f32>,
 #if STORAGE_BUFFER_AVAILABLE == true
@@ -183,6 +259,8 @@ struct Mesh {
   // Instance-local atlas rectangle; surface.w bit 0 selects it.
   // Uniform Mesh also carries meshSurfaceFlags no-receive bit 1 in surface.w.
   spriteRegion : vec4<f32>,
+  drawParameters : vec4<f32>,
+  drawParametersExtra : vec4<f32>,
 };
 
 // GPU Scene rows read directly by scene-index vertex entries. Render derives
@@ -221,10 +299,15 @@ const GPU_SCENE_PRIMITIVE_REACTIVE : u32 = 8u;
 const GPU_SCENE_PRIMITIVE_MOTION_INVALID : u32 = 16u;
 // Persistent ShadowParticipation.receive opt-out.
 const GPU_SCENE_PRIMITIVE_NO_SHADOW_RECEIVE : u32 = 32u;
+const GPU_SCENE_PRIMITIVE_CAPSULE_SHADOW : u32 = 128u;
+const GPU_SCENE_PRIMITIVE_NO_SHADOW_CAST : u32 = 256u;
 
 // Mesh.temporal.y flag bits written by the host `meshSurfaceFlags`.
 fn meshMotionValid(flags : f32) -> bool { return (u32(flags) & 1u) != 0u; }
 fn meshReceivesShadows(flags : f32) -> bool { return (u32(flags) & 2u) == 0u; }
+fn meshGBufferObjectFlags(flags : u32) -> u32 {
+  return select(1u, 0u, (flags & 4u) != 0u) | select(0u, 2u, (flags & 8u) != 0u);
+}
 
 // Inverse-transpose direction without a redundant uploaded normal matrix.
 // Match engine-math's singular fallback; preserve determinant sign for mirrors.
@@ -302,7 +385,7 @@ struct DirectLightSlot {
   direction           : vec4<f32>, // row2: primary axis + second angular fact
   auxiliary           : vec4<f32>, // row3: auxiliary Rect axis
   metadata : vec4<u32>,
-  channels : vec4<u32>, // row5: lighting channels + Spot decay as f32 bits
+  channels : vec4<u32>, // row5: raw channels, Spot decay bits, projected Deferred channels, Forward shadow channel
 };
 
 @group(0) @binding(0) var<uniform> view : View;
@@ -312,6 +395,18 @@ fn viewDirectionToCamera(worldPosition : vec3<f32>) -> vec3<f32> {
   // column points toward the camera, including rotated and off-axis views.
   return normalize(select(view.cameraPos - worldPosition,
     view.inverseViewProj[2].xyz, view.temporalProjection.z > 0.5));
+}
+
+fn view_atmosphere_fast_ap(v: View) -> bool {
+  return (u32(v.atmosphereControl.w) & 4u) != 0u;
+}
+
+fn view_atmosphere_fast_ap_samples(v: View, slice: u32) -> u32 {
+  return max(1u,u32(ceil(f32(slice+1u)*max(-v.atmosphereControl.x,1.0))));
+}
+
+fn view_atmosphere_affects_height_fog(v: View) -> bool {
+  return (u32(v.atmosphereControl.w) & 8u) == 0u;
 }
 
 fn view_atmosphere_aerial_enabled(v: View) -> bool {
@@ -442,7 +537,6 @@ struct ShadowCasterCascade {
 // these declarations behind the same axis prevents a no-extension variant
 // from consuming texture budget or requiring absent bindings.
 #ifdef EXTENDED_LIGHTING_AVAILABLE
-@group(0) @binding(24) var shadowMoments : texture_2d_array<f32>;
 @group(0) @binding(9) var spotModifierSampler : sampler;
 @group(0) @binding(11) var iesProfileTexture : texture_2d_array<f32>;
 @group(0) @binding(12) var cookieTexture : texture_2d_array<f32>;
@@ -467,15 +561,13 @@ struct ShadowCasterCascade {
 #endif
 #endif
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-// The scene-index variant binds the whole GPU Scene tables in the slots the
-// direct variant gives `meshes`/`instances`, so a variant declares only one
-// family.
-@group(2) @binding(0) var<storage, read> sceneTransforms : array<GpuSceneTransform>;
+// Scene-index and Scene Direct share the resident Scene transform slot.
+@group(3) @binding(9) var<storage, read> sceneTransforms : array<GpuSceneTransform>;
 #else
 #ifdef GPU_SCENE_DIRECT
 #if STORAGE_BUFFER_AVAILABLE == true
-// Direct draws of a GPU Scene slot read its rows in place of `meshes`/`instances`.
-@group(2) @binding(0) var<storage, read> sceneTransforms : array<GpuSceneTransform>;
+// Direct draws read all resident rows from the Scene group.
+@group(3) @binding(9) var<storage, read> sceneTransforms : array<GpuSceneTransform>;
 #else
 // Texture-table direct draws keep this group; the transform table is in group(3).
 @group(2) @binding(0) var<uniform> meshes : array<Mesh, 128>;
@@ -615,6 +707,7 @@ struct SceneIndexDraw {
   // Retained ProbeBlendRecord identity: (primitive + 1, generation).
   probe : vec2<u32>,
   receivesShadows : bool,
+  gbufferObjectFlags : u32,
   lightingChannels : u32,
 };
 
@@ -629,6 +722,15 @@ fn sceneTransformPrevious(row : GpuSceneTransform, frame : u32) -> mat4x4<f32> {
     return sceneTransforms[row.previousIndex].currentWorld;
   }
   return row.currentWorld;
+}
+
+// Current-pose coverage skips the temporal stamp and previous transform rows.
+fn sceneIndexCurrentWorld(instanceRow : u32) -> mat4x4<f32> {
+  let instance = sceneInstances[instanceRow];
+  let primitive = scenePrimitives[instance.primitiveIndex];
+  let world = sceneTransforms[primitive.transformIndex].currentWorld;
+  if (instance.transformIndex == 0u) { return world; }
+  return world * sceneTransforms[instance.transformIndex].currentWorld;
 }
 
 fn sceneIndexDraw(instanceRow : u32) -> SceneIndexDraw {
@@ -652,6 +754,8 @@ fn sceneIndexDraw(instanceRow : u32) -> SceneIndexDraw {
   draw.probe = vec2<u32>(primitive.sourceIndex + 1u, primitive.generation);
   draw.lightingChannels = primitive.lightingChannels;
   draw.receivesShadows = (primitive.flags & GPU_SCENE_PRIMITIVE_NO_SHADOW_RECEIVE) == 0u;
+  draw.gbufferObjectFlags = select(1u, 0u, (primitive.flags & GPU_SCENE_PRIMITIVE_NO_SHADOW_CAST) != 0u) |
+    select(0u, 2u, (primitive.flags & GPU_SCENE_PRIMITIVE_CAPSULE_SHADOW) != 0u);
   return draw;
 }
 #else
@@ -816,3 +920,6 @@ fn applyLodCoverage(position : vec2<f32>, fade : f32) {
 fn lightingChannelsMatch(light : u32, receiver : u32) -> bool {
   return (light & receiver) != 0u;
 }
+
+// Shared screen-space surface input for Forward lighting.
+@group(0) @binding(29) var forwardScreenSurface: texture_2d<f32>;

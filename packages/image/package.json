@@ -47,6 +47,13 @@
     "./png": {
       "types": "./dist/png-encoder.d.ts",
       "import": "./dist/png-encoder.mjs"
+    },
+    "./encode-pool": {
+      "types": "./dist/node-encode-pool.d.ts",
+      "node": {
+        "import": "./dist/node-encode-pool.mjs"
+      },
+      "default": null
     }
   },
   "main": "./dist/index.mjs",

@@ -56,7 +56,7 @@ function fixture(count: number, primary = covered, secondary = residual) {
     GpuDrawSelection.fixed(
       topology
         .query(topology.sourcePlan(), undefined)
-        .batches.filter((batch) => batch.binding?.material === material),
+        .active.batches.filter((batch) => batch.binding?.material === material),
     );
   const roster = new ResidualRoster();
   const sync = (selection: GpuDrawSelection) =>
@@ -97,8 +97,17 @@ it('moves only the flipped batch when the GPU selection changes coverage', () =>
   const f = fixture(1_000);
   f.sync(f.select(covered));
   const before = { ...f.roster.work };
+  const previous = f.roster.slots;
+  const replacement = f.select(residual);
+  const edit = vi.spyOn(FrameSet.prototype, 'edit');
   // Covering the residual binding instead moves 8 + 1000 members, one batch each way.
-  f.sync(f.select(residual));
+  try {
+    f.sync(replacement);
+    expect(edit).toHaveBeenCalledTimes(1);
+  } finally {
+    edit.mockRestore();
+  }
+  expect(previous.size).toBe(8);
   expect(f.roster.work.batches - before.batches).toBe(2);
   expect(f.roster.work.members - before.members).toBe(1_008);
   expect(f.entities()).toHaveLength(1_000);
@@ -396,7 +405,7 @@ it.each([
     bounds.mockClear();
     const next = f.view.cull(f.current());
     expect(bounds).toHaveBeenCalledTimes(1);
-    expect(next.frame.cameraAdmission?.residual.size).toBe(count + 8);
+    expect(next.frame.cameraAdmission?.residual?.size).toBe(count + 8);
     expect(old.frame.cameraAdmission?.hidden.size).toBe(0);
     expect(old.frame.cameraVisible?.(row)).toBe(true);
     bounds.mockClear();
@@ -465,7 +474,10 @@ it('falls back to a complete residual test when the row journal cannot prove its
   const journal = f.scene.slotsSnapshot().journal;
   if (journal === undefined) throw new Error('Missing owned row journal');
   journal.reset();
+  // A one-frame delta is carried by the published row versions. Skipping a frame
+  // leaves only the journal to prove the delta, and a reset journal cannot.
   f.write([source(0, covered)]);
+  f.write([source(1, covered)]);
   const bounds = vi.spyOn(f.scene, 'writeCullingWorldBoundsAt');
   try {
     f.view.cull(f.current());
@@ -727,7 +739,7 @@ it('keeps a multi-submesh Skin source residual when only its first execution is 
   const row = { ...receiptRow().source, skinBinding: { skeleton: 7, joints: [19] } };
   topology.apply(scene.apply([{ kind: 'update', entityKey: row.entityKey, snapshot: row }]));
   const sourcePlan = topology.sourcePlan();
-  const executions = topology.query(sourcePlan, undefined).batches;
+  const executions = topology.query(sourcePlan, undefined).active.batches;
   expect(executions.length).toBe(2);
   const partial = GpuDrawSelection.fixed(
     executions.filter((batch) => batch.key.drawItemIndex === 2),

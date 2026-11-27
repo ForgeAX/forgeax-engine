@@ -65,7 +65,9 @@ test('CI prepares actual native Rapier declarations before a cold package typech
     const name = '      - name: Prepare native Rapier type inputs\n';
     const start = workflow.indexOf(name);
     assert.ok(start >= 0, 'the cold typecheck must acquire its generated native inputs');
-    assert.ok(start < workflow.indexOf('      - name: Package declaration typecheck\n'));
+    assert.ok(
+      start < workflow.indexOf('      - name: Emit package declarations for prepared inputs\n'),
+    );
     const sourcePreparation = workflow.indexOf('      - name: Prepare current Rapier WASM\n');
     assert.ok(sourcePreparation >= 0 && sourcePreparation < start);
     assert.match(

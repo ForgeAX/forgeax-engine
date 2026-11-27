@@ -1,7 +1,11 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { defineResource, defineSystem } from '@forgeax/engine-ecs';
 import { type RhiDevice, RhiError, type Texture } from '@forgeax/engine-rhi';
-import type { CompositeChannels, createViewCompositor } from '../assembly/view-compositor';
+import type {
+  CompositeChannels,
+  CompositeSource,
+  createViewCompositor,
+} from '../assembly/view-compositor';
 import { CubeCamera } from '../components/cube-camera';
 import type { StereoEye } from '../components/stereo-camera';
 import { CameraViewInvalidError } from '../errors/render';
@@ -58,11 +62,11 @@ export interface ViewRecorderState {
   readonly owner: ViewSettlementOwner;
   readonly composite: ReturnType<typeof createViewCompositor>;
   readonly target: RenderTarget | undefined;
-  output: { texture: Texture; width: number; height: number; eye?: StereoEye } | undefined;
+  output: (CompositeSource & { readonly eye?: StereoEye }) | undefined;
   viewport: ViewViewport;
   /** This view's composite input; rewritten in place when output, viewport or channels change. */
   readonly picture: {
-    texture: Texture;
+    source: CompositeSource | undefined;
     viewport: ViewViewport;
     channels: CompositeChannels;
   };
@@ -224,7 +228,7 @@ function ensureViewOutput(
   const texture = created.value;
   composition.replaced.push({ view, old: view.output, texture });
   view.output = { texture, width, height, ...(view.eye === undefined ? {} : { eye: view.eye }) };
-  view.picture.texture = texture;
+  view.picture.source = view.output;
 }
 
 /** A direct display retains its view owner, but no longer needs a cached picture. */
@@ -232,6 +236,7 @@ function releaseViewOutput(composition: ViewComposition, view: ViewRecorderState
   if (view.output === undefined) return;
   composition.replaced.push({ view, old: view.output, texture: undefined });
   view.output = undefined;
+  view.picture.source = undefined;
 }
 
 /** A surface can replace one complete picture; cadence, scaling and channels still need composition. */
@@ -287,7 +292,7 @@ export function settleViewOutputs(world: World, host: OutputHost, submitted: boo
     if (view.retired) texture = replacement.old?.texture;
     else if (!submitted) {
       view.output = replacement.old;
-      if (replacement.old !== undefined) view.picture.texture = replacement.old.texture;
+      view.picture.source = replacement.old;
     }
     if (texture !== undefined) {
       const released = texture;

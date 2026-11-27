@@ -21,6 +21,7 @@ import {
 import { writeHdrpClusterAndSsaoBuffers } from '../frame-lighting';
 import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../frame-snapshot';
 import { adoptViewGraph } from '../graph-adoption';
+import { MaterialBgAssemblyCache } from '../material-bg-assembly-cache';
 import type { PipelineState, RenderSystemInternals } from '../render-context';
 import {
   compileViewGraph,
@@ -71,6 +72,8 @@ describe('Cluster diagnostics use the installed compiled graph identity', () => 
       compiledFrameGraphGeneration: 0,
       compiledFrameGraph: null,
       retiredCompiledFrameGraphs: new Set(),
+      materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+      meshBindGroupCache: new WeakMap(),
       standardLightingGraphSignature: '',
       activePipeline,
       installedPipelineConfig: undefined,

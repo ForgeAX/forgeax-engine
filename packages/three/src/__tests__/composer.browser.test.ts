@@ -1,6 +1,7 @@
 import {
   AmbientLight,
   BoxGeometry,
+  Fog,
   Mesh,
   MeshStandardMaterial,
   PerspectiveCamera,
@@ -14,15 +15,31 @@ import { OutputPass } from '@forgeax/engine/three/addons/postprocessing/OutputPa
 import { Pass } from '@forgeax/engine/three/addons/postprocessing/Pass.js';
 import { RenderPass } from '@forgeax/engine/three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from '@forgeax/engine/three/addons/postprocessing/UnrealBloomPass.js';
+import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine-render';
 import { expect, it } from 'vitest';
 
-it('submits the Three composer GTAO and Bloom passes and retires them when disabled', {
+it.each([
+  { renderPath: 'forward', algorithm: 'ssao' },
+  { renderPath: 'deferred', algorithm: 'gtao' },
+] as const)('submits and retires Three composer $algorithm and Bloom work on $renderPath', {
   timeout: 120_000,
-}, async () => {
+}, async ({ renderPath, algorithm }) => {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 128;
   document.body.append(canvas);
-  const renderer = new WebGPURenderer({ canvas, antialias: true });
+  const renderer = new WebGPURenderer({
+    canvas,
+    antialias: renderPath === 'forward',
+    forgeax: {
+      renderer: {
+        standardProfile: {
+          ...DEFAULT_STANDARD_PROFILE,
+          renderPath,
+          ambientOcclusion: { enabled: false },
+        },
+      },
+    },
+  });
   const scene = new Scene();
   const camera = new PerspectiveCamera(45, 1, 0.1, 20);
   camera.position.set(3, 2, 4);
@@ -75,9 +92,21 @@ it('submits the Three composer GTAO and Bloom passes and retires them when disab
     for (let i = 0; i < 60; i++) await completedFrame();
     const lighting = () => renderer.inspect().renderer.standardLighting?.ambientOcclusion;
     const bloomState = () => renderer.inspect().renderer.bloom;
-    expect(lighting()?.status).toBe('active');
-    expect(bloomState()).toMatchObject({ state: 'active', passCount: 11, encodeCount: 11 });
+    expect(lighting()).toMatchObject({ status: 'active', algorithm });
+    expect(lighting()?.methodFallback).toBe(
+      renderPath === 'forward' ? 'forward-only-ssao' : undefined,
+    );
+    // The graph count also includes the Bloom prefilter and mip reduction.
+    expect(bloomState()).toMatchObject({ state: 'active', passCount: 13, encodeCount: 11 });
 
+    if (renderPath === 'forward') {
+      scene.fog = new Fog(0x204060, 2, 9);
+      await completedFrame();
+      const key = renderer.inspect().renderer.featureGraph?.last.topologyKey;
+      expect(key).toContain('"forwardDisplay"');
+      expect(key).toContain('"samples":4');
+      expect(bloomState()).toMatchObject({ state: 'active', encodeCount: 11 });
+    }
     gtao.enabled = false;
     await completedFrame();
     expect(lighting()?.status).toBe('off');
@@ -85,7 +114,7 @@ it('submits the Three composer GTAO and Bloom passes and retires them when disab
     gtao.enabled = true;
     bloom.enabled = false;
     await completedFrame();
-    expect(lighting()?.status).toBe('active');
+    expect(lighting()).toMatchObject({ status: 'active', algorithm });
     expect(bloomState().enabled).toBe(false);
 
     const custom = new Pass();

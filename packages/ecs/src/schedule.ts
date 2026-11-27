@@ -10,7 +10,11 @@ import {
 } from './errors';
 import { isSuspendedMemoryResult, MemoryError } from './memory-types';
 import type { Query, QueryDescriptor } from './query/query';
-import { beginScheduleCommandDrain, beginScheduleSystem } from './schedule-observation';
+import {
+  beginScheduleCommandDrain,
+  type ScheduleObservers,
+  scheduleObservers,
+} from './schedule-observation';
 import { FixedUpdate, isScheduleToken, type ScheduleToken, Update } from './schedule-token';
 import type { World } from './world';
 import { worldInternal } from './world-internal';
@@ -398,11 +402,17 @@ function findCyclePath(
   return nodes;
 }
 
-function poisonSystemFailure(world: World, systemName: string, cause: unknown): void {
+function poisonSystemFailure(
+  world: World,
+  systemName: string,
+  schedule: string,
+  cause: unknown,
+): void {
   const poison = world[worldInternal].poisonExecution;
   poison({
-    code: 'shared-kernel-failed',
-    kernelName: `system:${systemName}`,
+    code: 'system-failed',
+    systemName,
+    schedule,
     cause,
     partialWrite: true,
     retryable: false,
@@ -481,7 +491,7 @@ function invokeSystem(
   world: World,
   queries: Parameters<SystemRecord['descriptor']['fn']>[1],
   commandsBySystem: Map<SystemToken, ReturnType<typeof createCommandBuffer>> | undefined,
-  observation?: ReturnType<typeof beginScheduleSystem>,
+  observation?: ScheduleObservers,
 ): void {
   const name = system.name;
   const commands = record.deferredCommands
@@ -493,24 +503,24 @@ function invokeSystem(
   }
   let returnValue: unknown;
   try {
-    observation?.functionStart();
+    observation?.functionStart(scheduleName, name);
     try {
       returnValue = record.descriptor.fn(world, queries, commands ?? NO_COMMANDS);
     } finally {
-      observation?.functionEnd();
+      observation?.functionEnd(scheduleName, name);
     }
     if (isSuspendedMemoryResult(returnValue))
       throw new MemoryError({ kind: 'scope', reason: 'asynchronous' });
   } catch (error) {
     abortOutstandingCommands(commandsBySystem);
-    poisonSystemFailure(world, name, error);
+    poisonSystemFailure(world, name, scheduleName, error);
     throw createSystemFailedError(name, scheduleName, error);
   }
   if (returnValue && typeof returnValue === 'object' && 'ok' in returnValue) {
     const result = returnValue as { ok: boolean; error?: unknown };
     if (result.ok === false && result.error !== undefined) {
       abortOutstandingCommands(commandsBySystem);
-      poisonSystemFailure(world, name, result.error);
+      poisonSystemFailure(world, name, scheduleName, result.error);
       throw createSystemFailedError(name, scheduleName, result.error);
     }
   }
@@ -542,7 +552,8 @@ function runScheduleBody(
         const record = schedule.systems.get(name);
         /* istanbul ignore next -- sortedOrder comes from systems Map keys */
         if (!record) continue;
-        const observation = beginScheduleSystem(world, schedule.token.name, name.name);
+        const observation = world[scheduleObservers];
+        observation?.start(schedule.token.name, name.name);
         let outcome: 'skipped' | 'failed-before-invoke' | 'invoked' | 'failed-invoke' = 'skipped';
         try {
           try {
@@ -563,7 +574,7 @@ function runScheduleBody(
           if (schedule.suspendIf?.(world))
             return schedule.sortedOrder.slice(schedule.sortedOrder.indexOf(name) + 1);
         } finally {
-          observation?.end(outcome);
+          observation?.end(schedule.token.name, name.name, outcome);
         }
       }
       if (finalDrain && commandsBySystem !== undefined)
@@ -600,7 +611,8 @@ function runScheduleBody(
     const record = schedule.systems.get(name);
     /* istanbul ignore next -- defensive: sortedOrder comes from systems Map keys */
     if (!record) continue;
-    const observation = beginScheduleSystem(world, schedule.token.name, name.name);
+    const observation = world[scheduleObservers];
+    observation?.start(schedule.token.name, name.name);
     let outcome: 'skipped' | 'failed-before-invoke' | 'invoked' | 'failed-invoke' = 'skipped';
     try {
       flushPredecessorCommands(
@@ -651,7 +663,7 @@ function runScheduleBody(
       if (outcome === 'skipped') outcome = 'failed-before-invoke';
       throw cause;
     } finally {
-      observation?.end(outcome);
+      observation?.end(schedule.token.name, name.name, outcome);
     }
     // void return is treated as successful execution.
   }

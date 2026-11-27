@@ -2,7 +2,8 @@ import { World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { basisImages } from '../../../app/__tests__/render-worker-basis-data';
@@ -14,7 +15,9 @@ import { Materials } from '../materials';
 
 it('rehydrates an encoded texture before publishing a replacement renderer generation', async () => {
   const manifest = URL.createObjectURL(
-    new Blob([JSON.stringify(await buildEngineShaderManifest())], { type: 'application/json' }),
+    new Blob([JSON.stringify(await buildEngineShaderTemplateManifest())], {
+      type: 'application/json',
+    }),
   );
   let device: GPUDevice | undefined,
     target: GPUTexture | undefined,
@@ -43,7 +46,7 @@ it('rehydrates an encoded texture before publishing a replacement renderer gener
   const implementation = await createRenderer(
     { width: 64, height: 64, getContext: () => context },
     {},
-    { shaderManifestUrl: manifest },
+    { shaderManifestUrl: manifest, prepareShaderProgramCompiler },
     loadRhiPack(webgpu, {
       deviceLost: () =>
         new Promise((resolve) => {

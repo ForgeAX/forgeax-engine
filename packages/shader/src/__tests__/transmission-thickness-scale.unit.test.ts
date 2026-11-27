@@ -2,6 +2,10 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+const physicalInputs = readFileSync(
+  resolve(import.meta.dirname, '../material/standard-physical-inputs.wgsl'),
+  'utf8',
+);
 const shader = readFileSync(resolve(import.meta.dirname, '../default-standard-pbr.wgsl'), 'utf8');
 
 describe('standard transmission thickness scale contract', () => {
@@ -22,7 +26,9 @@ describe('standard transmission thickness scale contract', () => {
     expect(shader).toContain('let worldToLocal0 = vec3<f32>(');
     expect(shader).toContain('let worldRefractedDirection =');
     expect(shader).toMatch(
-      /finiteScalar\(material\.thickness, 0\.0\) \* length\(worldRefractedDirection\) \*\s+finiteScalar\(thicknessSample, 1\.0\)/,
+      /transmission\.thickness \* length\(worldRefractedDirection\) \* transmission\.thicknessSample/,
     );
+    expect(physicalInputs).toContain('finiteScalar(material.thickness, 0.0)');
+    expect(physicalInputs).toContain('finiteScalar(thicknessSample, 1.0)');
   });
 });

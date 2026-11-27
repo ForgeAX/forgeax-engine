@@ -25,6 +25,7 @@ const FORWARD_STORAGE_ROW = {
   CLUSTER_FORWARD_AVAILABLE: true,
   COVERAGE_ONLY: false,
   EXTENDED_LIGHTING_AVAILABLE: true,
+  FORWARD_INLINE_SSR: false,
   GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true,
   LOD_DITHER: false,
   PROBE_BLEND_AVAILABLE: false,
@@ -77,8 +78,8 @@ describe('directional PCSS receiver variant', () => {
     expect(code).toMatch(/@fragment\s+fn fs_main\(/);
     // The general receiver keeps the PCSS body and cascade pick; the simple
     // receiver removes both before codegen.
-    expect(/fn _samplePcssForCascade\w*\(/.test(code)).toBe(!simple);
-    expect(/fn _pickCascadeLayer\w*\(/.test(code)).toBe(!simple);
+    expect(/fn sampleDirectionalPcss\w*\(/.test(code)).toBe(!simple);
+    expect(/fn pickCascadeLayer\w*\(/.test(code)).toBe(!simple);
     // Full lighting keeps the actual RectArea, IES and Cookie sample paths.
     for (const resource of ['cookieTexture', 'ltcGgxTexture']) {
       expect(new RegExp(`textureSampleLevel\\(${resource}\\w*,`).test(code)).toBe(!lean);
@@ -106,7 +107,7 @@ describe('directional PCSS receiver variant', () => {
       ) ?? [];
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) {
-      expect(/fn _samplePcssForCascade\w*\(/.test(row.composedWgsl ?? ''), row.definesKey).toBe(
+      expect(/fn sampleDirectionalPcss\w*\(/.test(row.composedWgsl ?? ''), row.definesKey).toBe(
         true,
       );
     }

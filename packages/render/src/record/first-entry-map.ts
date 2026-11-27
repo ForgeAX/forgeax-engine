@@ -1,5 +1,5 @@
 /** A lookup's first key needs no separate hash table; further keys keep Map semantics. */
-export class FirstEntryMap<K, V> {
+export class FirstEntryTable<K, V> {
   private occupied = false;
   private key: K | undefined;
   private value: V | undefined;
@@ -22,7 +22,16 @@ export class FirstEntryMap<K, V> {
     if (this.overflow !== undefined) yield* this.overflow.values();
   }
 
-  *[Symbol.iterator](): IterableIterator<[K, V]> {
+  get size(): number {
+    return (this.occupied ? 1 : 0) + (this.overflow?.size ?? 0);
+  }
+
+  *keys(): IterableIterator<K> {
+    if (this.occupied) yield this.key as K;
+    if (this.overflow !== undefined) yield* this.overflow.keys();
+  }
+
+  *entries(): IterableIterator<[K, V]> {
     if (this.occupied) yield [this.key as K, this.value as V];
     if (this.overflow !== undefined) yield* this.overflow;
   }
@@ -42,5 +51,11 @@ export class FirstEntryMap<K, V> {
       this.overflow.set(key, value);
     }
     return this;
+  }
+}
+
+export class FirstEntryMap<K, V> extends FirstEntryTable<K, V> {
+  [Symbol.iterator](): IterableIterator<[K, V]> {
+    return this.entries();
   }
 }

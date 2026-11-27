@@ -1,11 +1,11 @@
 import { createServer, type ServerResponse } from 'node:http';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { type CatalogEntry, ok, snapshotLoadTimeline } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { defineAssetKind } from '../asset-kind';
 import { AssetRegistry } from '../asset-registry.js';
 import { bytesOf, readPackage } from '../internal/package-read.js';
 import { readArtifact } from '../registry/artifact-io.js';
+import { catalogPack } from './fixtures/catalog-pack';
 
 const GUID = '11111111-1111-4111-8111-111111111111';
 const PACK = {
@@ -61,13 +61,10 @@ async function server(initial: string, replies: readonly Reply[]) {
 async function loadPack(replies: readonly Reply[]) {
   const s = await server('', replies);
   const packageUrl = `${s.origin}/value.pack.json`;
-  const publication = createRuntimePackPublication({
-    scopeId: 'asset-runtime',
-    sourcePath: 'retry.pack',
-    sourceRevision: '1',
-    packageUrl,
-    pack: { assets: PACK.assets.map((entry) => ({ ...entry, refs: [], artifacts: {} })) },
-  });
+  const publication = catalogPack(
+    PACK.assets.map((entry) => ({ ...entry, refs: [], artifacts: {} })),
+    { sourcePath: 'retry.pack', packageUrl },
+  );
   s.publish(JSON.stringify(publication.pack), [
     {
       guid: GUID,
@@ -122,18 +119,15 @@ it('stops after three transient Pack failures', async () => {
 
 it('recovers an artifact whose response body is reset mid-transfer', async () => {
   const s = await server('artifact-bytes', ['reset-body']);
-  try {
-    const result = await readArtifact({
-      packageUrl: `${s.origin}/value.pack.json`,
-      guid: GUID,
-      artifactKey: 'body',
-      descriptor: { path: 'body.bin', mediaType: 'application/octet-stream' },
-    });
-    expect(result).toEqual({ ok: true, value: new TextEncoder().encode('artifact-bytes') });
-    expect(s.requests).toHaveLength(2);
-  } finally {
-    await s.close();
-  }
+  onTestFinished(() => s.close());
+  const result = await readArtifact({
+    packageUrl: `${s.origin}/value.pack.json`,
+    guid: GUID,
+    artifactKey: 'body',
+    descriptor: { path: 'body.bin', mediaType: 'application/octet-stream' },
+  });
+  expect(result).toEqual({ ok: true, value: new TextEncoder().encode('artifact-bytes') });
+  expect(s.requests).toHaveLength(2);
 });
 
 it('never retries an aborted read', async () => {

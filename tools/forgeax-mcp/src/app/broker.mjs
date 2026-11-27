@@ -4,7 +4,7 @@ import WebSocket from 'ws';
 import { createHostWebSocketClient } from '@forgeax/engine-host/transport';
 import { HTTP_BATCH_SIZE, SOURCE_OPEN_TOPIC, SOURCE_REPLY_SERVICE } from '../contract.ts';
 import { createWorkspaceRequest, VIEW_WORKSPACE_SERVICES } from '@forgeax/view/workspace/contract';
-import { bundlePackProgram } from './program-bundler.mjs';
+import { bundlePackProgram, taskPackProgramSources } from './program-bundler.mjs';
 const RESOURCE_BYTE_BUDGET = 256 * 1024 * 1024;
 const HOST_HANDSHAKE_TIMEOUT_MS = 10_000;
 export function createNetworkBroker(config, { bundle, trace = () => {}, hostIdleMs = 10000 } = {}) {
@@ -130,10 +130,18 @@ export function createNetworkBroker(config, { bundle, trace = () => {}, hostIdle
       url,
     };
   };
+  async function requestProgram(input, signal) {
+    if (input.kind !== 'worker') return store(await bundlePackProgram(input), 'text/javascript');
+    const bundler = broker.bundle ?? bundle;
+    if (!bundler) throw new Error('Bundler missing');
+    const { entryUrl, sources } = taskPackProgramSources(input, allow);
+    const result = await bundler(entryUrl, 'pack-worker', sources, signal);
+    return store(result.source, 'text/javascript');
+  }
   async function invoke(input, { signal } = {}) {
     lifetime.signal.throwIfAborted();
     const { action } = input;
-    if (action === 'program') return store(await bundlePackProgram(input), 'text/javascript');
+    if (action === 'program') return requestProgram(input, signal);
     if (action === 'http-batch') {
       if (!Array.isArray(input.requests) || input.requests.length < 1 || input.requests.length > HTTP_BATCH_SIZE)
         throw new Error(`HTTP batch requires one to ${HTTP_BATCH_SIZE} reads`);

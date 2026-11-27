@@ -1,9 +1,5 @@
 import {
-  addForwardOutputBloom,
-  addObservationCapturePass,
-  addTypedOutputTransformPass,
-  createRenderPipelineTarget,
-  createStandardForwardPipeline,
+  createPremultipliedForwardPipeline,
   type RenderPipeline,
 } from '@forgeax/engine-render/authoring';
 
@@ -11,32 +7,5 @@ import {
 export function createThreePipeline(
   format: 'rgba16float' | 'rgba8unorm' = 'rgba16float',
 ): RenderPipeline {
-  return createStandardForwardPipeline({
-    format,
-    domain: 'linear-hdr',
-    build(context, topology, color, _depth, surface) {
-      const output = createRenderPipelineTarget(context.graph, 'three-output', {
-        format: 'rgba8unorm',
-        size: 'surface',
-        domain: 'display-encoded',
-      });
-      if (!output.ok) return output;
-      const hdr = addForwardOutputBloom(context, topology, color);
-      if (!hdr.ok) return hdr;
-      const transformed = addTypedOutputTransformPass(context.graph, hdr.value, output.value, {
-        dither: false,
-        fragmentEntryPoint: 'fs_premultiplied',
-      });
-      if (!transformed.ok) return transformed;
-      if (context.observationCaptureDomains?.includes('final-display')) {
-        const capture = addObservationCapturePass(context.graph, output.value, 'final-display');
-        if (!capture.ok) return capture;
-      }
-      return addTypedOutputTransformPass(context.graph, output.value, surface.storage, {
-        outputOnly: true,
-        fragmentEntryPoint: 'fs_present',
-        dither: false,
-      });
-    },
-  });
+  return createPremultipliedForwardPipeline(format, 'three-output');
 }

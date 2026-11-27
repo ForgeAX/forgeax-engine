@@ -199,7 +199,7 @@ function withInstances(value: RenderableSnapshot, instanceCount: number): Render
   };
 }
 function execution(topology: BatchTopology): SubmissionPlan {
-  return topology.query(topology.sourcePlan(), undefined);
+  return topology.query(topology.sourcePlan(), undefined).active;
 }
 function topologyFor(...snapshots: readonly RenderableSnapshot[]): BatchTopology {
   const projection = new RenderScene();
@@ -276,29 +276,29 @@ describe('PBR prepared GPU-driven batch topology', () => {
     const a = snapshot(1, prepared());
     const b = snapshot(2, prepared());
     topology.apply(projection.apply([a, b].map(updateSnapshot)));
-    expect(topology.query(topology.sourcePlan(), undefined).batches).toHaveLength(1);
+    expect(topology.query(topology.sourcePlan(), undefined).active.batches).toHaveLength(1);
     const world = new Float32Array(b.transform.world);
     world[0] = -1;
     world[4] = 0.35;
     const mirrored = projection.apply([{ kind: 'update', entityKey: 2, world }]);
     expect(mirrored.contentUpdatedSlots).toHaveLength(1);
     topology.apply(mirrored);
-    expect(topology.query(topology.sourcePlan(), undefined).batches).toHaveLength(2);
+    expect(topology.query(topology.sourcePlan(), undefined).active.batches).toHaveLength(2);
     expect(
       new Set(
         topology
           .query(topology.sourcePlan(), undefined)
-          .batches.map((batch) => batch.key.reflected === true),
+          .active.batches.map((batch) => batch.key.reflected === true),
       ).size,
     ).toBe(2);
     world[12] = 1;
     const translated = projection.apply([{ kind: 'update', entityKey: 2, world }]);
     expect(translated.contentUpdatedSlots).toHaveLength(0);
     topology.apply(translated);
-    expect(topology.query(topology.sourcePlan(), undefined).batches).toHaveLength(2);
+    expect(topology.query(topology.sourcePlan(), undefined).active.batches).toHaveLength(2);
     world[0] = 1;
     topology.apply(projection.apply([{ kind: 'update', entityKey: 2, world }]));
-    expect(topology.query(topology.sourcePlan(), undefined).batches).toHaveLength(1);
+    expect(topology.query(topology.sourcePlan(), undefined).active.batches).toHaveLength(1);
     expect(a.material.snapshot.renderState).toBeUndefined();
     expect(b.material.snapshot.renderState).toBeUndefined();
   });
@@ -310,20 +310,20 @@ describe('PBR prepared GPU-driven batch topology', () => {
     projection.apply(values.map(updateSnapshot));
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const original = topology.query(topology.sourcePlan(), undefined);
+    const original = topology.query(topology.sourcePlan(), undefined).active;
     const remove = projection.apply([{ kind: 'remove', entityKey: 1 }]);
     topology.apply(remove);
-    const afterRemoval = topology.query(topology.sourcePlan(), undefined);
+    const afterRemoval = topology.query(topology.sourcePlan(), undefined).active;
     expect([...afterRemoval.batches]).toEqual(original.batches.slice(1));
     topology.apply(projection.apply([updateSnapshot(snapshot(100, prepared({ first: 9999 })))]));
-    const recycled = topology.query(topology.sourcePlan(), undefined);
+    const recycled = topology.query(topology.sourcePlan(), undefined).active;
     expect(recycled.batches.at(0)?.visibleBase).toBe(original.batches.at(0)?.visibleBase);
     expect(recycled.batches.at(0)?.indirectOffset).toBe(original.batches.at(0)?.indirectOffset);
     expect(recycled.batches.at(0)?.generation).not.toBe(original.batches.at(0)?.generation);
     const source = values[16];
     if (source === undefined) throw new Error('missing fixture row');
     topology.apply(projection.apply([updateSnapshot(withInstances(source, 63))]));
-    const within = topology.query(topology.sourcePlan(), undefined);
+    const within = topology.query(topology.sourcePlan(), undefined).active;
     const oldBatch = recycled.batches.find(
       (batch) => batch.key.first === source.gpuDrivenDraws?.[0]?.first,
     );
@@ -332,7 +332,7 @@ describe('PBR prepared GPU-driven batch topology', () => {
     expect(withinBatch?.indirectOffset).toBe(oldBatch?.indirectOffset);
     expect(withinBatch?.visibleCapacity).toBe(63);
     topology.apply(projection.apply([updateSnapshot(withInstances(source, 65))]));
-    const grown = topology.query(topology.sourcePlan(), undefined);
+    const grown = topology.query(topology.sourcePlan(), undefined).active;
     for (const batch of within.batches) {
       const next = grown.batches.find((entry) => entry.batchId === batch.batchId);
       if (batch.batchId !== oldBatch?.batchId) expect(next).toBe(batch);
@@ -357,7 +357,7 @@ describe('PBR prepared GPU-driven batch topology', () => {
     projection.apply(values.map(updateSnapshot));
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const before = topology.query(topology.sourcePlan(), undefined);
+    const before = topology.query(topology.sourcePlan(), undefined).active;
     topology.apply(
       projection.apply(
         values
@@ -365,7 +365,7 @@ describe('PBR prepared GPU-driven batch topology', () => {
           .map((value) => ({ kind: 'remove' as const, entityKey: value.entityKey })),
       ),
     );
-    const compact = topology.query(topology.sourcePlan(), undefined);
+    const compact = topology.query(topology.sourcePlan(), undefined).active;
     expect(compact.visibleCapacity).toBe(4096);
     expect(compact.batches.at(0)?.indirectOffset).toBe(before.batches.at(63)?.indirectOffset);
     expect(topology.inspect().windowCompactions).toBe(0);
@@ -377,10 +377,10 @@ describe('PBR prepared GPU-driven batch topology', () => {
       lods: [{ mesh: '00000000-0000-7000-8000-000000000001' as never, screenCoverage: 0.25 }],
     };
     topology.apply(projection.apply([updateSnapshot(withInstances(lod, 1024))]));
-    const large = topology.query(topology.sourcePlan(), undefined);
+    const large = topology.query(topology.sourcePlan(), undefined).active;
     expect(batchVisibleSpan(required(large.batches.at(0)))).toBe(2048);
     topology.apply(projection.apply([updateSnapshot(withInstances(lod, 1))]));
-    const small = topology.query(topology.sourcePlan(), undefined);
+    const small = topology.query(topology.sourcePlan(), undefined).active;
     expect(batchVisibleSpan(required(small.batches.at(0)))).toBe(128);
     expect(small.batches.at(0)?.indirectOffset).toBe(0);
     expect(topology.inspect().windowCompactions).toBe(0);
@@ -436,19 +436,19 @@ describe('PBR prepared GPU-driven batch topology', () => {
       vertexInputs: coloredReceipt.vertexInputs,
     });
     const topology = topologyFor(snapshot(1, prepared()), snapshot(2, colored));
-    expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(2);
-    expect(topology.query(topology.sourcePlan(), undefined).batches).toHaveLength(2);
+    expect(topology.query(topology.sourcePlan(), undefined).active.candidateCount).toBe(2);
+    expect(topology.query(topology.sourcePlan(), undefined).active.batches).toHaveLength(2);
     expect(
       new Set(
         topology
           .query(topology.sourcePlan(), undefined)
-          .batches.map((batch) => batch.binding?.geometry.receipt.vertexInputs.length),
+          .active.batches.map((batch) => batch.binding?.geometry.receipt.vertexInputs.length),
       ),
     ).toEqual(new Set([receipt.vertexInputs.length, coloredReceipt.vertexInputs.length]));
     expect(
       topology
         .query(topology.sourcePlan(), undefined)
-        .batches.map((batch) => executionFor(batch).route),
+        .active.batches.map((batch) => executionFor(batch).route),
     ).toEqual(['gpu', 'gpu']);
   });
   it('keeps numeric edits in place and patches only resource identity changes', () => {
@@ -485,11 +485,11 @@ describe('PBR prepared GPU-driven batch topology', () => {
     projection.apply([updateSnapshot(first), updateSnapshot(second), updateSnapshot(control)]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const before = topology.query(topology.sourcePlan(), undefined);
+    const before = topology.query(topology.sourcePlan(), undefined).active;
     const changed = resourceClassSnapshot(2, prepared(), 2);
     const delta = projection.apply([updateSnapshot(changed)]);
     expect(topology.apply(delta)).toBe(true);
-    const after = topology.query(topology.sourcePlan(), undefined);
+    const after = topology.query(topology.sourcePlan(), undefined).active;
     expect(after.candidateCount).toBe(before.candidateCount);
     expect(topology.inspect()).toMatchObject({ revision: 2, patches: 1, rebuilds: 1 });
     expect(after.batches).toHaveLength(3);
@@ -511,7 +511,7 @@ describe('PBR prepared GPU-driven batch topology', () => {
     });
     const custom = snapshot(4, prepared(), { materialShaderId: 'game::custom-shader' });
     const topology = topologyFor(snapshot(1, prepared()), blend, morphed(3), custom, morphed(5));
-    const plan = topology.query(topology.sourcePlan(), undefined);
+    const plan = topology.query(topology.sourcePlan(), undefined).active;
     expect(plan.candidateCount).toBe(5);
     expect(topology.inspect().ineligible).toBe(0);
     const morphBatches = plan.batches.filter((batch) => batch.key.morph === true);
@@ -580,7 +580,7 @@ describe('PBR prepared GPU-driven batch topology', () => {
     projection.apply([updateSnapshot(initial)]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const before = topology.query(topology.sourcePlan(), undefined);
+    const before = topology.query(topology.sourcePlan(), undefined).active;
     const allocationsBefore = topology.inspect().membershipAllocations ?? 0;
     const batchBefore = before.batches.at(0);
     expect(batchBefore).toBeDefined();
@@ -597,7 +597,7 @@ describe('PBR prepared GPU-driven batch topology', () => {
     // A batch shares one LOD chain across members, so the chain is part of
     // membership: an authored chain edit regroups instead of patching content.
     expect(topology.apply(updated)).toBe(true);
-    const after = topology.query(topology.sourcePlan(), undefined);
+    const after = topology.query(topology.sourcePlan(), undefined).active;
     expect(after.revision).toBeGreaterThan(before.revision);
     expect(after.batches).toHaveLength(1);
     expect(after.batches.at(0)?.candidates).toHaveLength(2);
@@ -609,14 +609,14 @@ describe('PBR prepared GPU-driven batch topology', () => {
   it('adopts shared numeric values without changing geometry membership or retained material snapshots', () => {
     const source = snapshot(1, prepared(), { materialHandle: 2000 });
     const topology = topologyFor(source);
-    const before = topology.query(topology.sourcePlan(), undefined);
+    const before = topology.query(topology.sourcePlan(), undefined).active;
     const material = source.material;
     const accepted = material.snapshot;
     material.adopt({ ...accepted, baseColor: vec3.create(0.5, 1, 1) });
-    expect(topology.query(topology.sourcePlan(), undefined)).toBe(before);
-    expect(topology.query(topology.sourcePlan(), undefined).batches.at(0)?.binding?.material).toBe(
-      material,
-    );
+    expect(topology.query(topology.sourcePlan(), undefined).active).toBe(before);
+    expect(
+      topology.query(topology.sourcePlan(), undefined).active.batches.at(0)?.binding?.material,
+    ).toBe(material);
     expect(material.snapshot.baseColor[0]).toBe(0.5);
     expect(accepted.baseColor[0]).toBe(1);
     expect(topology.inspect().contentPatches).toBe(0);
@@ -630,12 +630,13 @@ describe('PBR prepared GPU-driven batch topology', () => {
     projection.apply([updateSnapshot(snapshot(1, prepared()))]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    const before = topology.query(topology.sourcePlan(), undefined).batches.at(0);
+    const before = topology.query(topology.sourcePlan(), undefined).active.batches.at(0);
     if (before === undefined) throw new Error('expected a prepared batch');
     const edited = projection.apply([updateSnapshot(snapshot(1, prepared(), material))]);
     expect(topology.apply(edited)).toBe(true);
     expect(
-      topology.query(topology.sourcePlan(), undefined).batches.at(0)?.binding?.material.snapshot,
+      topology.query(topology.sourcePlan(), undefined).active.batches.at(0)?.binding?.material
+        .snapshot,
     ).toMatchObject(material);
     expect(before.binding?.material.snapshot).not.toMatchObject(material);
   });
@@ -647,7 +648,7 @@ describe('PBR prepared GPU-driven batch topology', () => {
     projection.apply([updateSnapshot(source)]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(1);
+    expect(topology.query(topology.sourcePlan(), undefined).active.candidateCount).toBe(1);
     expect(topology.inspect().ineligible).toBe(0);
   });
   it('updates candidate membership for Instances count transitions', () => {
@@ -656,17 +657,17 @@ describe('PBR prepared GPU-driven batch topology', () => {
     projection.apply([updateSnapshot(initial)]);
     const topology = new BatchTopology();
     topology.rebuild(projection.slotsSnapshot());
-    expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(1);
+    expect(topology.query(topology.sourcePlan(), undefined).active.candidateCount).toBe(1);
     const sameCount = projection.apply([updateInstances(withInstances(initial, 1))]);
     expect(sameCount.instanceUpdatedSlots).toHaveLength(1);
     expect(topology.apply(sameCount)).toBe(false);
-    expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(1);
+    expect(topology.query(topology.sourcePlan(), undefined).active.candidateCount).toBe(1);
     const expanded = projection.apply([updateInstances(withInstances(initial, 3))]);
     expect(topology.apply(expanded)).toBe(true);
-    expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(3);
+    expect(topology.query(topology.sourcePlan(), undefined).active.candidateCount).toBe(3);
     const empty = projection.apply([updateInstances(withInstances(initial, 0))]);
     expect(topology.apply(empty)).toBe(true);
-    expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(0);
+    expect(topology.query(topology.sourcePlan(), undefined).active.candidateCount).toBe(0);
     // An empty instance source is retained, but requests neither GPU nor CPU raster work.
     expect(projection.recordCount).toBe(1);
     expect(topology.inspect().ineligible).toBe(0);
@@ -697,7 +698,7 @@ describe('PBR prepared GPU-driven batch topology', () => {
       entityKey,
     }));
     const topology = topologyFor(...candidates);
-    const plan = topology.query(topology.sourcePlan(), undefined);
+    const plan = topology.query(topology.sourcePlan(), undefined).active;
     const inspection = topology.inspect();
     const resourceIdentities = new Set(
       plan.batches.map((batch) => batch.key.materialResourceClass),
@@ -711,7 +712,7 @@ describe('PBR prepared GPU-driven batch topology', () => {
       ineligible: 0,
     });
     expect(resourceIdentities).toHaveLength(resourceClassCount);
-    expect(topology.query(topology.sourcePlan(), undefined)).toBe(plan);
+    expect(topology.query(topology.sourcePlan(), undefined).active).toBe(plan);
     expect(topology.inspect().revision).toBe(1);
   }, 30000);
 });
@@ -736,14 +737,14 @@ it('looks up an instanced batch once per draw while preserving candidate order a
     get.mockRestore();
   }
   expect(lookups).toBe(1);
-  const plan = topology.query(topology.sourcePlan(), undefined);
+  const plan = topology.query(topology.sourcePlan(), undefined).active;
   expect(plan.candidateCount).toBe(1024);
   expect(plan.batches.at(0)?.contentEpoch).toBe(1023);
   expect(plan.batches.at(0)?.candidates.map((row) => row.instanceOrdinal)).toEqual(
     Array.from({ length: 1024 }, (_, i) => i),
   );
   topology.apply(projection.apply([{ kind: 'remove', entityKey: 100 }]));
-  expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(0);
+  expect(topology.query(topology.sourcePlan(), undefined).active.candidateCount).toBe(0);
 });
 it.each([
   1000, 10000,
@@ -756,7 +757,7 @@ it.each([
   );
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  const before = topology.query(topology.sourcePlan(), undefined);
+  const before = topology.query(topology.sourcePlan(), undefined).active;
   const removed = Math.floor(count / 2) + 1;
   const delta = projection.apply([{ kind: 'remove', entityKey: removed }]);
   const groups = (
@@ -769,7 +770,7 @@ it.each([
   });
   try {
     topology.apply(delta);
-    const after = topology.query(topology.sourcePlan(), undefined);
+    const after = topology.query(topology.sourcePlan(), undefined).active;
     expect(after.candidateCount).toBe(count - 1);
     expect(after.batches.length).toBe(count - 1);
     expect(before.candidateCount).toBe(count);
@@ -782,14 +783,14 @@ it.each([1000, 10000])('removes one member without copying the other %i group me
   projection.reset(Array.from({ length: count }, (_, index) => snapshot(index + 1, prepared())));
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  const before = topology.query(topology.sourcePlan(), undefined);
+  const before = topology.query(topology.sourcePlan(), undefined).active;
   const delta = projection.apply([{ kind: 'remove', entityKey: Math.floor(count / 2) + 1 }]);
   const sort = vi.spyOn(Array.prototype, 'sort').mockImplementation(() => {
     throw new Error('whole retained group sort');
   });
   try {
     topology.apply(delta);
-    const after = topology.query(topology.sourcePlan(), undefined);
+    const after = topology.query(topology.sourcePlan(), undefined).active;
     expect(after.candidateCount).toBe(count - 1);
     expect(before.candidateCount).toBe(count);
     expect(before.batches.at(0)?.candidates.length).toBe(count);
@@ -805,7 +806,7 @@ it('preserves the surviving physical execution window when unrelated batches ret
   projection.reset(values);
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  const before = topology.query(topology.sourcePlan(), undefined);
+  const before = topology.query(topology.sourcePlan(), undefined).active;
   const retained = required(before.batches.at(63));
   topology.apply(
     projection.apply(
@@ -815,7 +816,7 @@ it('preserves the surviving physical execution window when unrelated batches ret
       })),
     ),
   );
-  const after = topology.query(topology.sourcePlan(), undefined);
+  const after = topology.query(topology.sourcePlan(), undefined).active;
   const surviving = required(after.batches.at(0));
   expect(surviving.batchId).toBe(retained.batchId);
   expect(surviving.generation).toBe(retained.generation);
@@ -850,7 +851,7 @@ it('rejects stale cached plans after partial source membership publication and r
   projection.reset([snapshot(1, prepared())]);
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  const before = topology.query(topology.sourcePlan(), undefined);
+  const before = topology.query(topology.sourcePlan(), undefined).active;
   const delta = projection.apply([
     updateSnapshot(snapshot(2, prepared({ first: 36 }))),
     updateSnapshot(snapshot(3, prepared({ first: 72 }))),
@@ -872,11 +873,11 @@ it('rejects stale cached plans after partial source membership publication and r
   } finally {
     set.mockRestore();
   }
-  expect(() => topology.query(topology.sourcePlan(), undefined)).toThrow(cause);
+  expect(() => topology.query(topology.sourcePlan(), undefined).active).toThrow(cause);
   expect(() => topology.apply(projection.apply([]))).toThrow(cause);
   expect(before.candidateCount).toBe(1);
   topology.rebuild(projection.slotsSnapshot());
-  expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(3);
+  expect(topology.query(topology.sourcePlan(), undefined).active.candidateCount).toBe(3);
   expect(before.batches).toHaveLength(1);
 });
 it('keeps authored order independent of stable draw IDs through swaps, replacement and retirement', () => {
@@ -884,7 +885,7 @@ it('keeps authored order independent of stable draw IDs through swaps, replaceme
   projection.reset([snapshot(1, prepared())]);
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  topology.query(topology.sourcePlan(), undefined);
+  topology.query(topology.sourcePlan(), undefined).active;
   const source = required(
     (
       topology as unknown as {
@@ -921,11 +922,11 @@ it('keeps authored order independent of stable draw IDs through swaps, replaceme
     };
   };
   const windows = new MeshBatchProjection();
-  const first = windows.query(planFor([20, 10]), undefined);
+  const first = windows.query(planFor([20, 10]), undefined).active;
   expect(first.batches.map((batch) => batch.binding?.drawItemIndex)).toEqual([20, 10]);
   const old20 = required(first.batches.at(0)),
     old10 = required(first.batches.at(1));
-  const swapped = windows.query(planFor([10, 20]), undefined);
+  const swapped = windows.query(planFor([10, 20]), undefined).active;
   expect(swapped.batches.map((batch) => batch.binding?.drawItemIndex)).toEqual([10, 20]);
   expect(swapped.batches.at(0)).toMatchObject({
     batchId: old10.batchId,
@@ -939,9 +940,9 @@ it('keeps authored order independent of stable draw IDs through swaps, replaceme
     visibleBase: old20.visibleBase,
     indirectOffset: old20.indirectOffset,
   });
-  const replaced = windows.query(planFor([30, 20]), undefined);
+  const replaced = windows.query(planFor([30, 20]), undefined).active;
   expect(replaced.batches.map((batch) => batch.binding?.drawItemIndex)).toEqual([30, 20]);
-  const last = windows.query(planFor([20]), undefined);
+  const last = windows.query(planFor([20]), undefined).active;
   expect(last.batches.map((batch) => batch.binding?.drawItemIndex)).toEqual([20]);
   expect(last.batches.at(0)).toMatchObject({
     batchId: old20.batchId,
@@ -1041,7 +1042,7 @@ describe('bounded tree publication reads', () => {
     const observed = observeTree(initial.batches.root);
     observed.reset();
     const physical = new MeshBatchProjection();
-    const before = physical.query(initial, undefined);
+    const before = physical.query(initial, undefined).active;
     expect(observed.nodes).toBe(count); // Cold full traversal authenticates the counter.
     const survivor = required(before.batches.at(-1));
     observed.reset();
@@ -1052,7 +1053,7 @@ describe('bounded tree publication reads', () => {
     expect(observed.reads).toBeLessThan(4096);
     const afterSource = source();
     observed.reset();
-    const after = physical.query(afterSource, undefined);
+    const after = physical.query(afterSource, undefined).active;
     // The retained task projection re-joins only the edited sources: the
     // removal is observed through the bounded source diff, not a roster walk.
     expect(observed.nodes).toBeGreaterThan(0);
@@ -1068,7 +1069,7 @@ describe('bounded tree publication reads', () => {
     scene.reset(Array.from({ length: count }, (_, i) => snapshot(i + 1, prepared())));
     const topology = new BatchTopology();
     topology.rebuild(scene.slotsSnapshot());
-    const before = topology.query(topology.sourcePlan(), undefined);
+    const before = topology.query(topology.sourcePlan(), undefined).active;
     // All existing aliases, including the old published candidates, retain the
     // same instrumented nodes. New copied path nodes are not part of this count.
     const groups = (
@@ -1092,7 +1093,7 @@ describe('bounded tree publication reads', () => {
     expect(observed.nodes).toBeLessThanOrEqual(Math.ceil(count / 32));
     observed.reset();
     topology.apply(scene.apply([{ kind: 'remove', entityKey: Math.floor(count / 2) + 1 }]));
-    const after = topology.query(topology.sourcePlan(), undefined);
+    const after = topology.query(topology.sourcePlan(), undefined).active;
     const visited = observed.nodes,
       reads = observed.reads;
     expect(visited).toBeGreaterThan(0);
@@ -1111,7 +1112,7 @@ it.each([
   scene.reset([snapshot(1, prepared())]);
   const topology = new BatchTopology();
   topology.rebuild(scene.slotsSnapshot());
-  const old = topology.query(topology.sourcePlan(), undefined);
+  const old = topology.query(topology.sourcePlan(), undefined).active;
   const projection = (
     topology as unknown as {
       meshBatches: MeshBatchProjection;
@@ -1155,14 +1156,14 @@ it.each([
     restore = () => spy.mockRestore();
   }
   try {
-    expect(() => topology.query(topology.sourcePlan(), undefined)).toThrow(cause);
+    expect(() => topology.query(topology.sourcePlan(), undefined).active).toThrow(cause);
   } finally {
     restore();
   }
-  expect(() => topology.query(topology.sourcePlan(), undefined)).toThrow(cause);
+  expect(() => topology.query(topology.sourcePlan(), undefined).active).toThrow(cause);
   expect(() => topology.apply(scene.apply([]))).toThrow(cause);
   topology.rebuild(scene.slotsSnapshot());
-  const recovered = topology.query(topology.sourcePlan(), undefined);
+  const recovered = topology.query(topology.sourcePlan(), undefined).active;
   expect(recovered.candidateCount).toBe(3);
   expect(recovered.batches.length).toBe(3);
   const live = [...recovered.batches];
@@ -1180,12 +1181,12 @@ it('keeps fixed member and candidate facts across small and paged extent transit
   scene.reset([initial]);
   const topology = new BatchTopology();
   topology.rebuild(scene.slotsSnapshot());
-  const first = topology.query(topology.sourcePlan(), undefined);
+  const first = topology.query(topology.sourcePlan(), undefined).active;
   const candidate = required(first.batches.at(0)?.candidates.at(0));
   const held = [{ count: 1, plan: first }];
   for (const count of [64, 65, 1, 129, 64]) {
     topology.apply(scene.apply([updateInstances(withInstances(initial, count))]));
-    const plan = topology.query(topology.sourcePlan(), undefined);
+    const plan = topology.query(topology.sourcePlan(), undefined).active;
     const batch = required(plan.batches.at(0));
     expect(plan.candidateCount).toBe(count);
     expect(batch.candidates.at(0)).toEqual(candidate);
@@ -1208,7 +1209,7 @@ it('retains the nonzero boundary page across shrink and regrowth', () => {
   scene.reset([initial]);
   const topology = new BatchTopology();
   topology.rebuild(scene.slotsSnapshot());
-  const first = topology.query(topology.sourcePlan(), undefined);
+  const first = topology.query(topology.sourcePlan(), undefined).active;
   const original = required(first.batches.at(0));
   const survivor = required(original.candidates.at(64));
   const removed65 = required(original.candidates.at(65));
@@ -1216,7 +1217,7 @@ it('retains the nonzero boundary page across shrink and regrowth', () => {
   const held = [{ count: 129, plan: first }];
   for (const count of [65, 128, 129]) {
     topology.apply(scene.apply([updateInstances(withInstances(initial, count))]));
-    const plan = topology.query(topology.sourcePlan(), undefined);
+    const plan = topology.query(topology.sourcePlan(), undefined).active;
     const candidates = required(plan.batches.at(0)).candidates;
     expect(candidates.length).toBe(count);
     expect(candidates.at(64)).toEqual(survivor);
@@ -1239,14 +1240,14 @@ it('keeps an unrelated member fixed while another extent crosses zero and single
   scene.reset([initial, snapshot(2, inputs)]);
   const topology = new BatchTopology();
   topology.rebuild(scene.slotsSnapshot());
-  const first = topology.query(topology.sourcePlan(), undefined);
+  const first = topology.query(topology.sourcePlan(), undefined).active;
   const original = required(first.batches.at(0)?.candidates.at(0));
   const anchor = required(first.batches.at(0)?.candidates.at(1));
   const held = [{ count: 1, plan: first }];
   const current = original;
   for (const count of [2, 1, 0, 1, 65, 1]) {
     topology.apply(scene.apply([updateInstances(withInstances(initial, count))]));
-    const plan = topology.query(topology.sourcePlan(), undefined);
+    const plan = topology.query(topology.sourcePlan(), undefined).active;
     const candidates = required(plan.batches.at(0)).candidates;
     expect(plan.candidateCount).toBe(count + 1);
     expect(candidates.length).toBe(count + 1);
@@ -1331,4 +1332,41 @@ it('retires zero-instance raster demand without discarding the retained source i
     expect(topology.unbatchedSlots.size).toBe(0);
     expect(execution(topology).candidateCount).toBe(count);
   }
+});
+
+it('shares cold published batches across the active roster and dormant receipts', () => {
+  const topology = new BatchTopology();
+  const group = topology.createResidencyGroup();
+  const scene = new RenderScene();
+  topology.apply(
+    scene.apply([
+      { kind: 'update', entityKey: 1, snapshot: snapshot(1, prepared()) },
+      {
+        kind: 'update',
+        entityKey: 2,
+        snapshot: { ...snapshot(2, prepared()), residencyGroup: group },
+      },
+      { kind: 'update', entityKey: 3, snapshot: snapshot(3, prepared({ first: 36 })) },
+    ]),
+  );
+  const resident = topology.residentSourcePlan();
+  const inactive = required(
+    resident.batches.find((batch) => batch.key.residencyGroup === group.id),
+  );
+  const active = topology.sourcePlan();
+  expect(resident.candidateCount).toBe(3);
+  expect(active.candidateCount).toBe(2);
+  expect([...active.batches]).toEqual([...resident.batches].filter((batch) => batch !== inactive));
+  for (const batch of active.batches)
+    expect(resident.batches.find((value) => value.batchId === batch.batchId)).toBe(batch);
+
+  topology.setResidencyGroupActive(group, true);
+  expect(topology.sourcePlan()).toBe(resident);
+  topology.setResidencyGroupActive(group, false);
+  expect(topology.sourcePlan().candidateCount).toBe(2);
+  topology.apply(scene.apply([{ kind: 'remove', entityKey: 2 }]));
+  topology.retireResidencyGroup(group);
+  expect(topology.sourcePlan()).toBe(topology.residentSourcePlan());
+  expect(topology.residentSourcePlan().candidateCount).toBe(2);
+  expect(resident.batches.find((batch) => batch.batchId === inactive.batchId)).toBe(inactive);
 });

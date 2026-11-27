@@ -37,7 +37,11 @@ it('keeps the published command source World distinct from its transport namespa
   );
   expect((await renderer.initialization).ok).toBe(true);
   expect(
-    renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'deferred', ssao: false }).ok,
+    renderer.setProfile({
+      ...renderer.inspect().profile,
+      renderPath: 'deferred',
+      ambientOcclusion: { enabled: false },
+    }).ok,
   ).toBe(true);
   const assets = renderer.assetRegistry;
   const world = new World({ assets });

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { forgeaxShader } from '../index.js';
 
-it('admits UUIDv7 material identities through the same Pack GUID contract', async () => {
+it('derives material identities from UUIDv7 Pack identities through the same Pack GUID contract', async () => {
   const root = await mkdtemp(join(tmpdir(), 'material-guid-'));
   try {
     const source =
@@ -14,13 +14,11 @@ it('admits UUIDv7 material identities through the same Pack GUID contract', asyn
     await writeFile(
       path,
       JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'internal-text-package',
-        assets: [
-          {
-            guid: '019e7600-0000-7000-8000-000000000001',
+        schemaVersion: '3.0.0',
+        packageId: '019e7600-0000-7000-8000-000000000001',
+        assets: {
+          'material.wgsl': {
             kind: 'material',
-            sourceKey: 'material.wgsl',
             refs: [],
             payload: {
               kind: 'material',
@@ -37,7 +35,7 @@ it('admits UUIDv7 material identities through the same Pack GUID contract', asyn
               ],
             },
           },
-        ],
+        },
       }),
     );
     const plugin = forgeaxShader({ engineEntries: false, materialPackages: [path] });

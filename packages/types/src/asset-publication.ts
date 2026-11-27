@@ -18,34 +18,32 @@ export interface AssetPublicationInput {
   readonly externalEvidence: readonly AssetPublicationExternalEvidence[];
 }
 
-function stable(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
-  if (value !== null && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stable(record[key])}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
-}
-
-function digest(value: unknown): string {
-  return `sha256:${bytesToHex(sha256(new TextEncoder().encode(stable(value))))}`;
+/** Compare the receipt fields common to every publication reader. */
+export function assetPublicationReceiptMatches(publication: AssetPublicationEnvelope): boolean {
+  const receipt = publication.receipt;
+  return (
+    receipt?.schemaVersion === 'asset-publication-receipt/1' &&
+    receipt.sourcePath === publication.sourcePath &&
+    receipt.sourceRevision === publication.sourceRevision &&
+    receipt.outputDigest === publication.digest &&
+    receipt.outputSetDigest === publication.outputSetDigest
+  );
 }
 
 export function assetPublicationOutputSetDigest(
   outputs: readonly AssetPublicationOutput[],
 ): string {
-  return digest(
-    outputs.map((output) => ({
+  // The property order is the existing canonical digest order.
+  const rows = outputs.map((output) =>
+    JSON.stringify({
+      digest: output.digest ?? null,
       guid: output.guid.toLowerCase(),
-      sourceKey: output.sourceKey,
-      kind: output.kind,
-      digest: output.digest,
+      kind: output.kind ?? null,
       refs: [...output.refs].map((guid) => guid.toLowerCase()),
-    })),
+      sourceKey: output.sourceKey ?? null,
+    }),
   );
+  return `sha256:${bytesToHex(sha256(new TextEncoder().encode(`[${rows.join(',')}]`)))}`;
 }
 
 /** Derive a stable positive generation from the accepted publication tuple. */

@@ -53,3 +53,8 @@ export function catalogImporterPolicy(
     hint: 'wire the provider through the host importer registry before building the Catalog',
   };
 }
+
+export const catalogImporterPolicyFor =
+  (keys: ReadonlySet<string> = new Set()) =>
+  (importer: string): CatalogImporterPolicy =>
+    catalogImporterPolicy(importer, keys);

@@ -30,7 +30,7 @@ try {
   await writeFile(join(brokenRoot, 'assets/broken.pack.ts'), 'export default ;');
   await writeFile(join(brokenRoot, 'assets/broken.pack.json'), '{ broken json');
   await writeFile(join(brokenRoot, 'assets/healthy.pack.json'), JSON.stringify({
-    schemaVersion: '2.0.0', kind: 'internal-text-package', assets: [],
+    schemaVersion: '3.0.0', packageId: '01900000-0000-7000-8000-000000001110', assets: {},
   }));
   await mkdir(join(brokenRoot, 'node_modules/@forgeax'), { recursive: true });
   await symlink(engine, join(brokenRoot, 'node_modules/@forgeax/engine'));
@@ -121,11 +121,14 @@ try {
       return getContext.call(this, kind, ...args);
     };
   });
+  const registeredProject = await client.registerProject(root);
   await page.goto(state.url);
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted, undefined, { timeout: 30_000 });
   await page.locator('[role="tab"][data-page-id="page-scene"]').click();
   await page.getByRole('button', { name: 'Next', exact: true }).waitFor();
   assert.equal(await page.locator('canvas').count(), 0);
+  assert.equal(await page.locator('.fx-viewport-navigation-hint').isVisible(), false,
+    'an empty workspace must not advertise Scene navigation');
   const openDialog = page.getByRole('dialog', { name: 'Open project', exact: true });
   await openDialog.waitFor();
   assert.equal(await openDialog.evaluate(dialog => dialog.matches(':modal')), false,
@@ -135,9 +138,12 @@ try {
   assert.equal(await openDialog.isVisible(), true, 'View requires a project before using its pages');
   await page.screenshot({ path: '/tmp/view-startup-empty.png' });
   assert.deepEqual(errors, [], 'empty Shell must not produce page errors');
-  await page.getByLabel('Project path', { exact: true }).fill(root);
+  const projectChoice = openDialog.locator('.fx-view-project-chooser__list button').filter({ hasText: registeredProject.root });
+  await projectChoice.click();
+  assert.equal(await page.getByLabel('Project path', { exact: true }).inputValue(), registeredProject.root);
+  assert.equal((await client.getState()).project ?? null, null, 'single click only selects a project');
   stage = 'renderer-failure';
-  await page.getByRole('button', { name: 'Next', exact: true }).click();
+  await projectChoice.dblclick();
   assert.equal(page.url(), new URL(state.url).href, 'Project admission retains the Shell URL');
   await page.waitForFunction(() => !!globalThis.__forgeaxViewReady?.mounted, undefined, { timeout: 60_000 });
   // The retained Shell stays live while its Engine document reports the fault.
@@ -168,6 +174,8 @@ try {
   const snapshot = await client.getState();
   assert.equal(snapshot.project.root, await realpath(root));
   assert.equal(snapshot.projectPhase, 'failed');
+  assert.equal(await page.locator('.fx-viewport-navigation-hint').isVisible(), false,
+    'a failed renderer cannot advertise Scene navigation');
   assert.equal(snapshot.projectTarget, null, 'a failed renderer cannot advertise a live target');
   const failedTargetId = snapshot.projectStatus.document.targetId;
   assert.equal(new URL(project.url()).searchParams.get('forgeaxWorkspaceTarget'), failedTargetId);

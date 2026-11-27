@@ -78,7 +78,7 @@ async function captureSkyWork(
       .map((shader) => shader.entryPoint),
   );
   expect(entries.filter((entry) => entry === 'atmosphere_cubemap_fs')).toHaveLength(ibl ? 6 : 0);
-  expect(entries.filter((entry) => entry === 'atmosphere_irradiance_fs')).toHaveLength(ibl ? 6 : 0);
+  expect(entries).not.toContain('atmosphere_irradiance_fs');
   if (ibl) {
     const cube = model.works.filter((work) =>
       work.pipeline.shaders.some((shader) => shader.entryPoint === 'atmosphere_cubemap_fs'),
@@ -98,10 +98,13 @@ async function captureSkyWork(
     const cubeSources = cube.map((work) => sourceTexture(work.attachments.colorViewHandleIds[0]));
     expect(cubeSources.every((id) => id !== undefined)).toBe(true);
     expect(new Set(cubeSources).size).toBe(1);
-    const irradiance = model.works.filter((work) =>
-      work.pipeline.shaders.some((shader) => shader.entryPoint === 'atmosphere_irradiance_fs'),
+    const projection = model.works.filter((work) =>
+      work.pipeline.shaders.some((shader) =>
+        ['sky_sh_project', 'sky_sh_compute_project'].includes(shader.entryPoint),
+      ),
     );
-    for (const work of irradiance)
+    expect(projection).toHaveLength(1);
+    for (const work of projection)
       expect(
         sourceTexture(
           work.bindings.find((binding) => binding.groupIndex === 0 && binding.binding === 0)

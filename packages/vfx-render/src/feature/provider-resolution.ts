@@ -2,6 +2,8 @@ import type { RenderFeaturePlanContext } from '@forgeax/engine-render';
 import type { Result, TextureAsset } from '@forgeax/engine-types';
 import {
   requiresExactVfxRecovery,
+  type VfxDataInterfaceError,
+  type VfxDataInterfaceKind,
   type VfxDataInterfaceResource,
   type VfxDataInterfaceToken,
   type VfxForceFieldError,
@@ -60,7 +62,10 @@ export function resolveDataInterfaces(
         if (!context || !captured?.resource) return undefined;
         if (captured.kind !== requirement.kind || captured.bindingType !== requirement.bindingType)
           return undefined;
-        if (captured.resource.kind === 'uniform-data') {
+        if (
+          captured.resource.kind === 'uniform-data' ||
+          captured.resource.kind === 'storage-data'
+        ) {
           return captured;
         }
         const snapshot = captured.recovery;
@@ -96,16 +101,23 @@ export function resolveDataInterfaces(
       const error = resolved.error;
       // Missing providers or resident payloads use Renderer-owned producers.
       // Explicit unavailability and invalid provider contracts remain barriers.
-      if (
-        error?.code === 'vfx-data-interface-missing' &&
-        requirement.kind !== 'water-surface' &&
-        (error.detail.providerId === undefined || error.detail.expectedResourceKind !== undefined)
-      )
-        continue;
+      if (rendererCanProduce(error, requirement.kind)) continue;
       return undefined;
     }
     const resource = resolved.value.resources.find((entry) => entry.token === requirement.token);
     if (resource?.resource !== undefined) resources.set(requirement.token, resource);
   }
   return resources;
+}
+
+/** Only interfaces with native default producers may defer to Render. */
+function rendererCanProduce(
+  error: VfxDataInterfaceError | undefined,
+  kind: VfxDataInterfaceKind,
+): boolean {
+  if (kind === 'water-surface' || kind === 'structured-input') return false;
+  return (
+    error?.code === 'vfx-data-interface-missing' &&
+    (error.detail.providerId === undefined || error.detail.expectedResourceKind !== undefined)
+  );
 }

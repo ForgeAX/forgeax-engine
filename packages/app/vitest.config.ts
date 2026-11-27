@@ -24,6 +24,7 @@ export default defineProject({
       '**/dist/**',
       '**/*.browser.test.ts',
       '**/*.browser-no-webgpu.test.ts',
+      '**/*.dawn.test.ts',
     ],
     typecheck: {
       enabled: true,

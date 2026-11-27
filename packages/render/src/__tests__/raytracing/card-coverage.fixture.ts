@@ -4,6 +4,7 @@ import { ok } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
 import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { CARD_PLANES, createSurfaceCapture } from '../../raytracing/surface-cards';
+import { cardCaptureReplayStages } from './card-capture-replay.fixture';
 import type { SdfCardsFixture } from './sdf-cards.commands';
 import { decodeNormal, half, readCardPlanes, sdfCubeInstance } from './sdf-cards.fixture';
 
@@ -203,7 +204,8 @@ export async function verifyCardCoverage(fixture: SdfCardsFixture) {
     (await recorder.dispose()).unwrap();
     const tape = decodeTape(tapeBytes).unwrap(),
       model = buildFrameModel(tape);
-    expect(model.works.length).toBe(11);
+    const { lastMaterial, rasterWorks } = cardCaptureReplayStages(tape, model, 11);
+    expect(model.works).toHaveLength(rasterWorks);
     const fresh = (await (await webgpu.rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
     const freshRaw = webgpu._internal_getRawDevice(fresh);
     assert(freshRaw, 'replay must own a new native device');
@@ -213,9 +215,10 @@ export async function verifyCardCoverage(fixture: SdfCardsFixture) {
     ).unwrap();
     try {
       for (const i of CARD_PLANES.keys()) {
-        const resource = model.works[10]?.attachments?.colorViewHandleIds[i];
+        const resource = lastMaterial.attachments?.colorViewHandleIds[i];
         assert(resource);
-        const bytes = (await replay.readResourceAtWork(resource, 10)).unwrap().bytes;
+        const bytes = (await replay.readResourceAtWork(resource, lastMaterial.workIndex)).unwrap()
+          .bytes;
         expect(equalBytes(bytes, planes[i])).toBe(true);
       }
     } finally {
@@ -225,7 +228,8 @@ export async function verifyCardCoverage(fixture: SdfCardsFixture) {
     for (const exact of exactViews) {
       const viewTape = decodeTape(exact.tape).unwrap();
       const viewModel = buildFrameModel(viewTape);
-      expect(viewModel.works).toHaveLength(1);
+      const viewCapture = cardCaptureReplayStages(viewTape, viewModel, 1);
+      expect(viewModel.works).toHaveLength(viewCapture.rasterWorks);
       const replayDevice = (
         await (await webgpu.rhi.requestAdapter()).unwrap().requestDevice()
       ).unwrap();
@@ -240,11 +244,13 @@ export async function verifyCardCoverage(fixture: SdfCardsFixture) {
       ).unwrap();
       try {
         for (const i of CARD_PLANES.keys()) {
-          const resource = viewModel.works[0]?.attachments?.colorViewHandleIds[i];
+          const resource = viewCapture.lastMaterial.attachments?.colorViewHandleIds[i];
           assert(resource);
           expect(
             equalBytes(
-              (await viewReplay.readResourceAtWork(resource, 0)).unwrap().bytes,
+              (
+                await viewReplay.readResourceAtWork(resource, viewCapture.lastMaterial.workIndex)
+              ).unwrap().bytes,
               exact.planes[i],
             ),
           ).toBe(true);

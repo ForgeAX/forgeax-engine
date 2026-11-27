@@ -121,7 +121,13 @@ it.each([
   { simple: true, lean: true, fragment: 'fs_opaque', expectedSimple: true, expectedLean: true },
   { simple: true, lean: false, fragment: 'fs_opaque', expectedSimple: true, expectedLean: false },
   { simple: false, lean: true, fragment: 'fs_opaque', expectedSimple: false, expectedLean: true },
-  { simple: true, lean: true, fragment: 'fs_ao_input', expectedSimple: false, expectedLean: false },
+  {
+    simple: true,
+    lean: true,
+    fragment: 'fs_depth_masked',
+    expectedSimple: false,
+    expectedLean: false,
+  },
 ])('matches visible GPU receiver selection ($simple/$lean/$fragment)', async ({
   simple,
   lean,
@@ -136,6 +142,20 @@ it.each([
   if (base === undefined) throw new Error('Missing fixture artifact');
   const artifact = {
     ...base,
+    program: {
+      ...base.program,
+      entryPoints: ['fs_main', 'fs_depth_masked'].map((name) => ({
+        name,
+        stage: 'fragment' as const,
+        bindings: [],
+        effects: {
+          mayDiscard: false,
+          writesDepth: false,
+          writesSampleMask: false,
+          writesStorage: false,
+        },
+      })),
+    },
     variantSet:
       'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=true+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=true+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=false+STANDARD_LEAN_INPUTS=true+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=false+VISIBLE_SURFACE_AVAILABLE=false+WATER_INFO_RGBA16=false+WATER_WAVES_AVAILABLE=false',
   };
@@ -150,9 +170,10 @@ it.each([
       prepareHiddenGpuDrivenPipelines({
         entries: [entry],
         resolve: () => artifact,
+        shaders: undefined,
         artifacts: new Map([[artifact.material, artifact]]),
         factory,
-        formats: ['rgba16float'],
+        formats: fragment === 'fs_depth_masked' ? [] : ['rgba16float'],
         sampleCount: 4,
         shaderUvSetCount: 1,
         filter: 'opaque',

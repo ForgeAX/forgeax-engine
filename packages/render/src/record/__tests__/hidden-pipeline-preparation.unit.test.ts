@@ -7,20 +7,27 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import {
   createMaterialShaderProgram,
   type MaterialShaderArtifact,
+  STANDARD_ORM_REUSE_BIT,
   STANDARD_SURFACE_DISCARDS_OVERRIDE,
   STANDARD_TEXTURE_MASK_OVERRIDE,
 } from '@forgeax/engine-shader';
 import { expect, it, vi } from 'vitest';
 import { DeviceScope } from '../../device/device-scope';
 import { MorphGeometry } from '../../device/morph-geometry';
+import { captureMaterialSnapshot } from '../../material-resource';
 import { createPointsLinesSnapshot, type PointsLinesStyle } from '../../points-lines/snapshot';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { DispatchEntry } from '../../render-system-extract';
 import { morphSnapshotFor } from '../../render-system-extract-tail';
 import { prepareMainPassPipelines } from '../main-pass';
 import { recordGeometryDraws } from '../main-pass-geometry';
+import { shadowViewPlanesByView } from '../shadow-culling';
 import { prepareShadowMaterialPipelines } from '../shadow-pass';
-import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
+import {
+  CPU_SETUP_SHADER,
+  cpuSetupFixture,
+  fixtureMaterialBinding,
+} from './main-pass-cpu-setup-fixture';
 
 const artifactFor = (
   program: MaterialShaderArtifact['program'],
@@ -113,7 +120,7 @@ async function setup() {
       1,
       f.meshGroup,
       f.meshGroup,
-      () => f.materialGroup,
+      fixtureMaterialBinding(f.materialGroup),
       'forward',
       undefined,
       ['rgba8unorm'],
@@ -176,7 +183,7 @@ it('uses the identical selection for preparation and visible direct drawing', as
       1,
       f.meshGroup,
       f.meshGroup,
-      () => f.materialGroup,
+      fixtureMaterialBinding(f.materialGroup),
       'forward',
       [{ ...f.authoredPass, entityIndex: 1, renderableIndex: 0 }],
       ['rgba8unorm'],
@@ -339,6 +346,178 @@ it('prepares visible residual authored casters before recording their shadow vie
     expect(f.c.frameState.pipelinePreparationPending).toBe(false);
     expect(f.entry.source.authorVisible).toBe(true);
     expect(f.receipts).toEqual([]);
+    const views = [
+      { kind: 'directional', index: 0 },
+      { kind: 'spot', index: 1 },
+    ] as const;
+    Object.assign(f.c, {
+      shadowViewPlanesByView: shadowViewPlanesByView(
+        views.map((identity) => ({
+          identity,
+          planes: new Float32Array(24),
+          matrix: new Float32Array(16),
+        })),
+      ),
+    });
+    lookup.mockClear();
+    prepareShadowMaterialPipelines(f.c, true, () => false);
+    expect(lookup).not.toHaveBeenCalled();
+    prepareShadowMaterialPipelines(
+      f.c,
+      true,
+      (_frame, view, includeStatic) => includeStatic === true && view.kind === 'spot',
+    );
+    expect(lookup).toHaveBeenCalledOnce();
+    lookup.mockClear();
+    prepareShadowMaterialPipelines(f.c, false, () => false);
+    expect(lookup).toHaveBeenCalledOnce();
+  } finally {
+    f.dispose();
+  }
+});
+
+it('prepares occupied caster classes from material publications without reading raster binding addresses', async () => {
+  const f = await setup();
+  try {
+    const second = f.add({ entity: 2, submeshes: 1 });
+    const mirrored = f.add({ entity: 3, submeshes: 1 });
+    mirrored.source.transform.world[0] = -1;
+    const rows = [f.entry, second, mirrored];
+    for (const row of rows) {
+      Object.assign(row.source, { authorVisible: true });
+      const resource = row.source.material;
+      resource.adopt(
+        captureMaterialSnapshot({
+          ...resource.snapshot,
+          immutableValues: true,
+          metallic: row.source.entityKey / 10,
+          passes: [
+            {
+              name: 'ShadowCaster',
+              program: { module: 'forgeax::default-shadow-caster' },
+              renderState: { tags: { LightMode: 'ShadowCaster' } },
+            },
+          ],
+        }),
+      );
+    }
+    f.acceptMaterials();
+    const request = vi.fn(() => ({ pipeline: f.pipeline, group2Contract: 'mesh' }));
+    Object.assign(f.c.runtime, { prepareMaterialShaderPipelineEntry: request });
+    Object.assign(f.c, {
+      shadowValidatedOrdered: rows,
+      pipelinePreparationEntries: [],
+      shadowViewPlanesByView: new Map([['directional:0', new Float32Array(24)]]),
+    });
+    const addresses = vi.spyOn(f.c.materialSlotIndices, 'at');
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(addresses).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(2);
+
+    // Three geometries can share native program families while keeping independent material values.
+    const material = second.source.material;
+    const prior = f.c.materialFrame;
+    if (prior === undefined) throw Error('missing accepted material frame');
+    material.adopt(
+      captureMaterialSnapshot({
+        ...material.snapshot,
+        paramSnapshot: { alphaCutoff: 0.5 },
+        standardTextureMask: STANDARD_ORM_REUSE_BIT + 3,
+      }),
+    );
+    const changed = prior.with(material);
+    expect(changed.get(material)?.programs?.stockShadow).toMatchObject({
+      alphaMask: true,
+      textureMask: 3,
+    });
+    Object.assign(f.c, { materialFrame: changed });
+    request.mockClear();
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(request.mock.calls).toContainEqual(
+      expect.arrayContaining([{ [STANDARD_TEXTURE_MASK_OVERRIDE]: 3 }]),
+    );
+    Object.assign(f.c, { materialFrame: prior });
+    request.mockClear();
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls).not.toContainEqual(
+      expect.arrayContaining([{ [STANDARD_TEXTURE_MASK_OVERRIDE]: 3 }]),
+    );
+    expect(addresses).not.toHaveBeenCalled();
+    Object.assign(f.c, { materialFrame: changed });
+    const retry = vi
+      .fn()
+      .mockReturnValueOnce(null)
+      .mockReturnValue({ pipeline: f.pipeline, group2Contract: 'mesh' });
+    Object.assign(f.c.runtime, { prepareMaterialShaderPipelineEntry: retry });
+    Object.assign(f.c, { shadowValidatedOrdered: [second, second, second] });
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(retry).toHaveBeenCalledTimes(2);
+    expect(f.c.frameState.pipelinePreparationPending).toBe(true);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('uses accepted material demand before walking native residual shadow rows', async () => {
+  const f = await setup();
+  const material = f.entry.source.material;
+  const shadow = {
+    name: 'ShadowCaster',
+    program: { module: 'forgeax::default-shadow-caster' },
+    renderState: { tags: { LightMode: 'ShadowCaster' } },
+  };
+  const stock = {
+    ...material.snapshot,
+    immutableValues: true as const,
+    passes: [shadow],
+  };
+  material.adopt({ ...stock, passes: [] });
+  f.acceptMaterials();
+  Object.assign(f.entry.source, { authorVisible: true, pipelinePreparation: undefined });
+  const rows = [f.entry];
+  const visit = vi.spyOn(rows, Symbol.iterator);
+  Object.assign(f.c, {
+    shadowValidatedOrdered: rows,
+    pipelinePreparationEntries: [],
+    shadowViewPlanesByView: new Map([['directional:0', new Float32Array(24)]]),
+  });
+  const lookup = vi.fn().mockReturnValue(null);
+  Object.assign(f.c.runtime, { prepareMaterialShaderPipelineEntry: lookup });
+  try {
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(visit).not.toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalled();
+
+    material.adopt(stock);
+    f.acceptMaterials();
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(visit).toHaveBeenCalledOnce();
+    expect(lookup).toHaveBeenCalledOnce();
+    expect(lookup.mock.calls[0]?.[0]).toBe('forgeax::default-shadow-caster');
+    expect(f.c.frameState.pipelinePreparationPending).toBe(true);
+
+    visit.mockClear();
+    lookup.mockClear();
+    f.c.frameState.pipelinePreparationPending = false;
+    material.adopt({
+      ...stock,
+      passes: [{ ...shadow, program: { module: 'test::prepared' } }],
+      materialProgramKeys: { ShadowCaster: 'test::prepared' },
+    });
+    f.acceptMaterials();
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(visit).toHaveBeenCalledOnce();
+    expect(lookup).toHaveBeenCalledOnce();
+    expect(f.c.frameState.pipelinePreparationPending).toBe(true);
+
+    const { immutableValues: _owned, ...borrowed } = stock;
+    material.adopt(borrowed);
+    f.acceptMaterials();
+    visit.mockClear();
+    prepareShadowMaterialPipelines(f.c, true);
+    expect(visit).toHaveBeenCalledOnce();
   } finally {
     f.dispose();
   }

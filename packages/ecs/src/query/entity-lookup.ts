@@ -46,10 +46,10 @@ export interface EntityLookup {
   /** Copy the located row's array field into `target`; undefined when absent. */
   copyArray(field: number, target: Parameters<WorldRead['copyArray']>[3]): number | undefined;
   /**
-   * Flag a requested component on the located row as changed at an epoch the
-   * caller reserved. Returns false, writing nothing, when the row lacks it.
+   * Flag a requested component on the located row as changed. Supply a reserved batch
+   * epoch or issue one for this row. An absent component consumes no epoch.
    */
-  markChanged(component: number, epoch: number): boolean;
+  markChanged(component: number, epoch?: number): boolean;
   /**
    * Reserve one mutation epoch for a batch of `markChanged` calls; an
    * exhausted epoch counter is returned, leaving the World unchanged.
@@ -129,9 +129,10 @@ export function createEntityLookup(
       const column = located.fields[field];
       return column === undefined ? undefined : copyColumnArray(arrays, column, lookup.row, target);
     },
-    markChanged(component: number, epoch: number): boolean {
+    markChanged(component: number, epoch?: number): boolean {
       const changed = lookup.columns.changed[component];
       if (changed === undefined) return false;
+      epoch ??= internal.nextMutationEpoch();
       stampChange(changed, lookup.row, epoch);
       internal.publishLocatedChange(lookup.slot, ids[component] as number, epoch);
       return true;

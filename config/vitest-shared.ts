@@ -1,16 +1,35 @@
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 import { DawnSequencer } from './vitest-dawn-sequencer';
 
 export const REPOSITORY_ROOT = fileURLToPath(new URL('../', import.meta.url));
 
+const moduleCache = join(
+  REPOSITORY_ROOT,
+  'node_modules/.vite/vitest-module-processes',
+  String(process.pid),
+);
+process.once('exit', () => {
+  try {
+    rmSync(moduleCache, { recursive: true, force: true });
+  } catch {
+    // A dirty cache can be left by a terminated or locked process.
+  }
+});
+
 /** Shared runner policy; project declarations own only their own workload. */
 export const sharedVitestConfig = defineConfig({
   root: REPOSITORY_ROOT,
   test: {
     globals: false,
-    // Reuse keyed transforms across children; every file still evaluates in its own realm.
-    experimental: { fsModuleCache: true },
+    // Workers reuse their coordinator's transforms. Concurrent coordinators must
+    // have separate metadata and cleanup since Vitest may invalidate a whole cache.
+    experimental: {
+      fsModuleCache: true,
+      fsModuleCachePath: moduleCache,
+    },
     sequence: { sequencer: DawnSequencer },
     passWithNoTests: true,
     teardownTimeout: 500,

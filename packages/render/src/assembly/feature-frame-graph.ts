@@ -28,11 +28,16 @@ import {
   WATER_ADVANCED_FEATURE_IDENTITY,
   waterAdvancedShallowFoamTargets,
 } from '../water/advanced-feature';
-import { waterFluidRenderFrame } from '../water/fluid-feature';
+import {
+  type WaterFluidRenderFrame,
+  waterFluidRenderFrame,
+  waterFluidSimulationKey,
+} from '../water/fluid-feature';
 import {
   addWaterFluidSharedGraph,
   type WaterFluidGraphFrame,
   type WaterFluidMaterialPublication,
+  type WaterFluidNoiseBinding,
 } from '../water/fluid-graph';
 import {
   WATER_INFO_FEATURE_IDENTITY,
@@ -195,6 +200,32 @@ function compileSharedFeatureGraphOwned(
   };
   captureSharedTextureExports();
   if (fluidActive) {
+    const generated = new Map<
+      WaterFluidRenderFrame['simulations'][number],
+      WaterFluidNoiseBinding
+    >();
+    const heldSimulations = new Set<string>();
+    const simulations = fluid.simulations.flatMap((entry) => {
+      const source = entry.impulseNoise;
+      if (source?.asset.kind !== 'gpu-texture' || entry.frame.impulses.length === 0) return [entry];
+      const scope = resources[entry.worldIndex];
+      if (scope !== undefined && scope.assetRevision(source.handle) === source.revision) {
+        const resident = internals.gpuStore.ensureAcceptedGeneratedTexture(
+          source.handle as AssetHandle<'gpu-texture'>,
+          source.asset,
+          scope,
+        );
+        if (!resident.ok) throw resident.error;
+        if (resident.value !== undefined) {
+          generated.set(entry, { texture: resident.value.texture.handle, asset: source.asset });
+          return [entry];
+        }
+      }
+      if (entry.previousFrame === undefined) return [];
+      heldSimulations.add(waterFluidSimulationKey(entry));
+      return [{ ...entry, frame: entry.previousFrame }];
+    });
+    const readyFluid = { ...fluid, simulations };
     const waterInfo = internals.featureHost?.features.find(
       (feature) => feature.identity === WATER_INFO_FEATURE_IDENTITY,
     );
@@ -210,7 +241,7 @@ function compileSharedFeatureGraphOwned(
               fluid.frameNumber,
               fluid.deviceGeneration,
             );
-      waterFluid.set(viewIdentity, { render: fluid, waterInfo: publication });
+      waterFluid.set(viewIdentity, { render: readyFluid, waterInfo: publication });
     }
     const publication =
       fluid.waterInfoViewIdentity === undefined
@@ -218,13 +249,15 @@ function compileSharedFeatureGraphOwned(
         : waterFluid.get(fluid.waterInfoViewIdentity)?.waterInfo;
     const added = addWaterFluidSharedGraph({
       graph: builder,
-      waterFluid: fluid,
+      waterFluid: readyFluid,
+      heldSimulations,
       waterInfoPublication: publication,
       viewIdentity: fluid.waterInfoViewIdentity,
       resolveImpulseNoise(entry) {
         const source = entry.impulseNoise;
         const scope = resources[entry.worldIndex];
         if (source === undefined || scope === undefined) return;
+        if (source.asset.kind === 'gpu-texture') return generated.get(entry);
         // Feature planning already captured and validated these exact bytes.
         // A live scope need not retain the extraction snapshot's version token.
         const asset = source.asset;

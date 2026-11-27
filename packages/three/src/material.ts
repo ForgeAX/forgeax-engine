@@ -4,6 +4,7 @@ import {
   type MaterialAsset,
   type MaterialRenderState,
   type MaterialTextureValue,
+  type MaterialValue,
   ok,
   type Result,
 } from '@forgeax/engine-types';
@@ -60,7 +61,9 @@ import { admitNodeMaterial } from './node-materials';
 import {
   boundSurfaceRoot,
   hasSurfaceBinding,
+  observeThreeSurfaceInputs,
   projectThreeSurface,
+  type SurfaceInputObservation,
   threeSurfaceRevisions,
   threeSurfaceTextures,
 } from './node-surface';
@@ -101,9 +104,12 @@ export const TEXTURE_SLOTS = {
   matcap: 'baseColorTexture',
 } as const;
 
+// Fixed producer schema. Every material reads these same slots, including under continuous edits.
+const textureFields = Object.entries(TEXTURE_SLOTS);
+
 export function materialTextures(material: SupportedMaterial): (readonly [string, Texture])[] {
   const result: (readonly [string, Texture])[] = [];
-  for (const [field, parameter] of Object.entries(TEXTURE_SLOTS)) {
+  for (const [field, parameter] of textureFields) {
     if (replacesTexture(material, field)) continue;
     const texture = (material as unknown as Record<string, Texture | null>)[field];
     // WebGPU normal maps take priority over bump maps.
@@ -172,13 +178,24 @@ function admitMaterialKind(material: Material): Result<SupportedMaterial, Error>
 }
 
 function validCoverage(material: SupportedMaterial): boolean {
-  return [
-    boundSurfaceRoot(material, 'opacityNode') ? 1 : material.opacity,
-    boundSurfaceRoot(material, 'alphaTestNode') ? 1 : material.alphaTest,
-  ].every((value) => Number.isFinite(value) && value >= 0 && value <= 1);
+  const opacity = boundSurfaceRoot(material, 'opacityNode') ? 1 : material.opacity;
+  const alphaTest = boundSurfaceRoot(material, 'alphaTestNode') ? 1 : material.alphaTest;
+  return (
+    Number.isFinite(opacity) &&
+    opacity >= 0 &&
+    opacity <= 1 &&
+    Number.isFinite(alphaTest) &&
+    alphaTest >= 0 &&
+    alphaTest <= 1
+  );
 }
 
-export function validateMaterial(material: Material): Result<SupportedMaterial, Error> {
+export type MaterialSurfaceValues = ReturnType<typeof surfaceValues>;
+
+export function validateMaterial(
+  material: Material,
+  observeSurface?: (surface: MaterialSurfaceValues) => void,
+): Result<SupportedMaterial, Error> {
   const admitted = admitMaterialKind(material);
   if (!admitted.ok) return admitted;
   const source = admitted.value;
@@ -216,17 +233,14 @@ export function validateMaterial(material: Material): Result<SupportedMaterial, 
   )
     return unsupported('Material.depthFunc', source.uuid);
   if (!validCoverage(source)) return invalid('Material.opacity/alphaTest', source.uuid);
-  if (
-    Object.values(surfaceValues(source))
-      .flat()
-      .some((value) => typeof value === 'number' && !Number.isFinite(value))
-  )
-    return invalid('Material numeric parameters', source.uuid);
+  const surface = surfaceValues(source);
+  if (!finiteSurfaceValues(surface)) return invalid('Material numeric parameters', source.uuid);
   try {
     projectBlending(source);
   } catch (error) {
     return err(error as Error);
   }
+  observeSurface?.(surface);
   return admitted;
 }
 
@@ -314,6 +328,19 @@ function surfaceValues(material: SupportedMaterial) {
   };
 }
 
+/** Inspect the published scalar and vector lanes without allocating a flattened copy. */
+function finiteSurfaceValues(values: ReturnType<typeof surfaceValues>): boolean {
+  for (const key in values) {
+    if (!Object.hasOwn(values, key)) continue;
+    const value = values[key as keyof typeof values];
+    if (typeof value === 'number' && !Number.isFinite(value)) return false;
+    if (Array.isArray(value))
+      for (const component of value)
+        if (typeof component === 'number' && !Number.isFinite(component)) return false;
+  }
+  return true;
+}
+
 /** r187 WebGPU infers flat shading when the geometry has no normal attribute. */
 export function usesFlatShading(material: Material, hasNormal = true): boolean {
   return (
@@ -327,8 +354,20 @@ export function usesFlatShading(material: Material, hasNormal = true): boolean {
   );
 }
 
-export function materialValues(material: SupportedMaterial): unknown[] {
-  return [
+export function materialValues(
+  material: SupportedMaterial,
+  surface = surfaceValues(material),
+  expression = observeThreeSurfaceInputs(material) ?? null,
+): unknown[] {
+  const { baseColor, roughness, emissive, emissiveIntensity, metallic } = surface;
+  const signature: unknown[] = [
+    ...baseColor,
+    roughness,
+    emissive?.[0],
+    emissive?.[1],
+    emissive?.[2],
+    emissiveIntensity,
+    metallic,
     material.version,
     material.type,
     material.transparent,
@@ -336,6 +375,7 @@ export function materialValues(material: SupportedMaterial): unknown[] {
     material.side,
     material.shadowSide,
     material.forceSinglePass,
+    material.premultipliedAlpha,
     material.blending,
     material.blendSrc,
     material.blendDst,
@@ -362,9 +402,99 @@ export function materialValues(material: SupportedMaterial): unknown[] {
     material.stencilFail,
     material.stencilZFail,
     material.stencilZPass,
-    ...Object.values(surfaceValues(material)).flat(),
-    ...threeSurfaceRevisions(material),
   ];
+  for (const key in surface) {
+    if (!Object.hasOwn(surface, key) || stockParameterNames.has(key)) continue;
+    const value = surface[key as keyof typeof surface];
+    if (Array.isArray(value)) {
+      for (const component of value) signature.push(component);
+    } else {
+      signature.push(value);
+    }
+  }
+  if (expression !== null) signature.push(...threeSurfaceRevisions(material, expression));
+  return signature;
+}
+
+/** Contiguous value-only prefix of materialValues, before program and binding inputs. */
+const stockParameterLayout = [
+  ['baseColor', 4],
+  ['roughness', 1],
+  ['emissive', 3],
+  ['emissiveIntensity', 1],
+  ['metallic', 1],
+] as const;
+const stockParameterLanes = stockParameterLayout.reduce((sum, [, lanes]) => sum + lanes, 0);
+const stockParameterNames: ReadonlySet<string> = new Set(
+  stockParameterLayout.map(([name]) => name),
+);
+
+export type StockMaterialEdit = (typeof stockParameterLayout)[number][0];
+
+const stockParameterOffsets = {} as Record<StockMaterialEdit, number>;
+let stockParameterOffset = 0;
+for (const [name, count] of stockParameterLayout) {
+  stockParameterOffsets[name] = stockParameterOffset;
+  stockParameterOffset += count;
+}
+
+export function readStockMaterialEdit(
+  material: MeshBasicMaterial | MeshStandardMaterial | SpriteMaterial,
+  parameter: StockMaterialEdit,
+): { offset: number; value: number | readonly number[] } {
+  const offset = stockParameterOffsets[parameter];
+  if (parameter === 'baseColor') {
+    if (!validCoverage(material)) invalid('Material.opacity/alphaTest', material.uuid).unwrap();
+    const value = surfaceColor(material);
+    if (value.some((lane) => !Number.isFinite(lane)))
+      invalid('Material numeric parameters', material.uuid).unwrap();
+    return { offset, value };
+  }
+  if (!('roughness' in material))
+    throw new Error('tracked material does not have its published parameter');
+  const value =
+    parameter === 'emissive'
+      ? [material.emissive.r, material.emissive.g, material.emissive.b]
+      : parameter === 'metallic'
+        ? material.metalness
+        : material[parameter];
+  if (
+    typeof value === 'number'
+      ? !Number.isFinite(value)
+      : value.some((lane) => !Number.isFinite(lane))
+  )
+    invalid('Material numeric parameters', material.uuid).unwrap();
+  return { offset, value };
+}
+
+export function stockMaterialParameterPatch(
+  previous: readonly unknown[],
+  next: readonly unknown[],
+  invariantEnd = next.length,
+  initialize = false,
+): Readonly<Record<string, MaterialValue>> | undefined {
+  if (previous.length !== next.length) return undefined;
+  for (let index = stockParameterLanes; index < invariantEnd; index++)
+    if (!Object.is(previous[index], next[index])) return undefined;
+  const patch: Record<string, MaterialValue> = {};
+  let start = 0;
+  for (const [parameter, lanes] of stockParameterLayout) {
+    const end = start + lanes;
+    // A fresh instance receives every authored value. Its source lease may
+    // have a value patch staged alongside this publication.
+    let changed = initialize && typeof next[start] === 'number';
+    for (let index = start; !changed && index < end; index++)
+      changed = !Object.is(previous[index], next[index]);
+    if (changed) {
+      const values = next.slice(start, end);
+      if (!values.every((value): value is number => typeof value === 'number')) return undefined;
+      const patchValue = lanes === 1 ? values[0] : values;
+      if (patchValue === undefined) return undefined;
+      patch[parameter] = patchValue;
+    }
+    start = end;
+  }
+  return patch;
 }
 
 function projectFog(material: Material): { readonly fog?: false } {
@@ -415,11 +545,11 @@ function projectSurface(
   textures: Readonly<Record<string, MaterialTextureValue>>,
   flatShading: boolean,
   planarReflection: boolean,
+  values = surfaceValues(material),
 ): Result<MaterialAsset, Error> {
   const state = projectSurfaceState(material);
   if (!state.ok) return state;
   const renderState = state.value;
-  const values = surfaceValues(material);
   const opts = {
     renderState,
     queue: material.transparent || usesTransmission(material) ? 3000 : 2000,
@@ -482,12 +612,9 @@ function projectMatcap(
 }
 
 /** Three owns its shadow-side defaults independently of native caster policy. */
-function shadowCullMode(
-  material: SupportedMaterial,
-  varianceShadow: boolean,
-): NonNullable<MaterialRenderState['cullMode']> {
+function shadowCullMode(material: SupportedMaterial): NonNullable<MaterialRenderState['cullMode']> {
   let side = material.shadowSide ?? material.side;
-  if (material.shadowSide === null && !varianceShadow) {
+  if (material.shadowSide === null) {
     if (side === FrontSide) side = BackSide;
     else if (side === BackSide) side = FrontSide;
   }
@@ -499,17 +626,24 @@ export function projectMaterial(
   material: SupportedMaterial,
   textures: Readonly<Record<string, MaterialTextureValue>>,
   flatShading = usesFlatShading(material),
-  varianceShadow = false,
   planarReflection = false,
+  expression?: SurfaceInputObservation,
+  observedValues?: MaterialSurfaceValues,
 ): Result<MaterialAsset, Error> {
-  const projected = projectSurface(material, textures, flatShading, planarReflection);
+  const projected = projectSurface(
+    material,
+    textures,
+    flatShading,
+    planarReflection,
+    observedValues,
+  );
   if (!projected.ok || projected.value.passes === undefined) return projected;
   const passes = projected.value.passes.flatMap((pass) => {
     const shadow = pass.name === 'shadow-caster';
     const state = {
       ...pass.renderState,
       ...(material.stencilWrite ? { stencilReference: material.stencilRef } : {}),
-      ...(shadow ? { cullMode: shadowCullMode(material, varianceShadow) } : {}),
+      ...(shadow ? { cullMode: shadowCullMode(material) } : {}),
     };
     if (
       isPhysicalMaterial(material) &&
@@ -548,7 +682,12 @@ export function projectMaterial(
   if (first === undefined) return unsupported('Material has no render passes', material.uuid);
   try {
     return ok(
-      projectThreeSurface(material, { ...projected.value, passes: [first, ...rest] }, textures),
+      projectThreeSurface(
+        material,
+        { ...projected.value, passes: [first, ...rest] },
+        textures,
+        expression,
+      ),
     );
   } catch (cause) {
     return err(cause instanceof Error ? cause : new Error(String(cause)));

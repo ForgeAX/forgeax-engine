@@ -74,6 +74,7 @@ export function addAtmospherePackedLuts(
   captureParameters: GraphBuffer,
   captureDirty: (frame: RenderPipelineFrame) => boolean,
   visibility: AtmosphereVisibility,
+  fastAerialPerspective = false,
 ): Result<GraphAtmosphere, RenderGraphError> {
   const region = clusters.textureLayout.atmosphere;
   if (region === undefined)
@@ -142,7 +143,9 @@ export function addAtmospherePackedLuts(
     const localVisibility = stage.aerial ? visibility : {};
     const content = (frame: RenderPipelineFrame) =>
       clusters.resolve(frame).atmosphereContent[stage.aerial ? 'aerial' : 'medium'];
-    const key = stage.aerial ? aerialKey : mediumKey;
+    const key = stage.aerial
+      ? (frame: RenderPipelineFrame) => `${Number(fastAerialPerspective)}:${aerialKey(frame)}`
+      : mediumKey;
     const added = graph.addRasterPass(`atmosphere-${stage.name.replaceAll('_', '-')}-fragment`, {
       accesses: [
         ...atmosphereVisibilityAccesses(localVisibility),
@@ -260,8 +263,9 @@ export function addAtmospherePackedLuts(
             ),
           );
         if (stage.packed) {
-          const y = region.originY + (stage.aerial ? 18 : 0);
-          const height = stage.aerial ? 32 : 18;
+          const sliceCount = fastAerialPerspective ? 16 : 32;
+          const y = region.originY + (stage.aerial ? region.writeHeight - sliceCount : 0);
+          const height = stage.aerial ? sliceCount : 18;
           pass.setViewport(0, y, 1024, height, 0, 1);
           pass.setScissorRect(0, y, 1024, height);
         }
@@ -274,6 +278,7 @@ export function addAtmospherePackedLuts(
   return ok({
     ...tables.value,
     execution: 'fragment-cluster',
+    fastAerialPerspective,
     visibility,
     distantSkyLight: distantView.value,
     packed: clusters.texture,

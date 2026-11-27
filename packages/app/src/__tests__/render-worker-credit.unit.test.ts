@@ -15,6 +15,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { DEFAULT_UNLIT_PARAM_SCHEMA, ShaderRegistry } from '@forgeax/engine-shader';
 import { ok, ShaderSource } from '@forgeax/engine-types';
 import { afterEach, expect, it, vi } from 'vitest';
+import { resolveEngineStartup } from '../configuration';
 import type {
   EngineToHostMessage,
   ExecutionFrameMessage,
@@ -64,10 +65,10 @@ class CreditWorker {
     else if (message.kind === 'dispose') queueMicrotask(() => this.emit({ kind: 'disposed' }));
     else {
       this.controls.push(structuredClone(message));
-      if (message.kind === 'mesh-release')
+      if (message.kind === 'mesh-reserve' || message.kind === 'mesh-release')
         queueMicrotask(() =>
           this.emit({
-            kind: 'mesh-released',
+            kind: message.kind === 'mesh-reserve' ? 'mesh-reserved' : 'mesh-released',
             requestId: message.requestId,
             identity: message.identity,
             result: { ok: true, deviceGeneration: 7 },
@@ -546,6 +547,10 @@ it.each([
     expect(f.source.dynamicGeometry.isDynamicGeometryCurrent(candidate)).toBe(false);
     expect(terminate).not.toHaveBeenCalled();
     expect(messages).toEqual([]);
+    const admitted = vi.fn();
+    const waiting = f.source.waitForPublicationCapacity().then(admitted);
+    await vi.advanceTimersByTimeAsync(0);
+    const settledBeforeRetirement = admitted.mock.calls.length;
     const disposing = retirement === 'dispose' ? f.source.dispose() : undefined;
     expect(retirements).toHaveLength(1);
 
@@ -579,6 +584,9 @@ it.each([
       );
       expect(messages.some((message) => message.kind === 'render-lost')).toBe(false);
     }
+    await waiting;
+    expect(settledBeforeRetirement).toBe(0);
+    expect(admitted).toHaveBeenCalledExactlyOnceWith(retirement === 'confirmed');
   } finally {
     vi.useRealTimers();
     await f.source.dispose();
@@ -877,16 +885,7 @@ it('publishes geometry without a global temporal reset and faults paired recover
   }
 });
 
-it.each([
-  { duplicateReady: false, capacity: 2 },
-  { duplicateReady: true, capacity: 2 },
-  { duplicateReady: true, capacity: 3 },
-  { duplicateReady: false, capacity: 4 },
-  { duplicateReady: true, capacity: 4 },
-] as const)('seals $capacity frames until the oldest completes (duplicate ready: $duplicateReady)', async ({
-  duplicateReady,
-  capacity,
-}) => {
+async function startCreditFixture(capacity: 2 | 3 | 4, budget?: number) {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();
   const assets = new AssetRegistry({
@@ -901,6 +900,14 @@ it.each([
     bootstrapUrl: '',
     workers: workerSelection({ engine: true, render: true, kernels: false }),
     diagnostics: { renderPipelineCapacity: capacity },
+    ...(budget === undefined
+      ? {}
+      : {
+          startup: resolveEngineStartup(
+            { settings: { execution: { renderPublicationTransferBudgetBytes: budget } } },
+            { platform: 'macos' },
+          ).unwrap(),
+        }),
   };
   const source = new SourceRenderWorker(world, assets, init, (message) =>
     hostMessages.push(message),
@@ -965,6 +972,47 @@ it.each([
       },
     });
   };
+  return { source, worker, complete, hostMessages, frame };
+}
+
+it('resumes the sealed successor only after its unique backing fits the transfer credit', async () => {
+  const { source, worker, complete, frame } = await startCreditFixture(3, 384);
+  try {
+    source.publish(frame, 0);
+    expect(packetAt(worker, 0).publication.record.byteLength).toBe(256);
+    const next = source.publish({ ...frame, frameId: 2 }, 1);
+    expect(next).toBeInstanceOf(Promise);
+    expect(worker.packets).toHaveLength(1);
+    complete();
+    await next;
+    expect(worker.packets.map((packet) => packet.frameId)).toEqual([2]);
+    complete();
+  } finally {
+    await source.dispose();
+  }
+});
+
+it('discards an oversized publication before transfer', async () => {
+  const { source, worker, frame } = await startCreditFixture(3, 64);
+  try {
+    expect(() => source.publish(frame, 0)).toThrow('renderPublicationTransferBudgetBytes=64');
+    expect(worker.packets).toHaveLength(0);
+  } finally {
+    await source.dispose();
+  }
+});
+
+it.each([
+  { duplicateReady: false, capacity: 2 },
+  { duplicateReady: true, capacity: 2 },
+  { duplicateReady: true, capacity: 3 },
+  { duplicateReady: false, capacity: 4 },
+  { duplicateReady: true, capacity: 4 },
+] as const)('seals $capacity frames until the oldest completes (duplicate ready: $duplicateReady)', async ({
+  duplicateReady,
+  capacity,
+}) => {
+  const { source, worker, complete, hostMessages, frame } = await startCreditFixture(capacity);
   try {
     source.publish(frame, 0);
     source.publish({ ...frame, frameId: 2, temporalReset: true }, 1);

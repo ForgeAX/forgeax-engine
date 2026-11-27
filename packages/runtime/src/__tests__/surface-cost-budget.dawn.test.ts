@@ -9,7 +9,7 @@ import type {
 import { ReadonlyDynamicInputPage, type Renderer } from '@forgeax/engine-render';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterEach, describe, expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { loadBackendPack } from '../backend-selection';
@@ -408,7 +408,7 @@ describe('Surface water bounded cost budget', () => {
 
   it('warms the configured frame window and records bounded coverage/K/resolution cost without fabricating GPU time', async () => {
     publicationServer = await startSurfaceMaterialPublicationServer();
-    const manifest = await buildEngineShaderManifest();
+    const manifest = await buildEngineShaderTemplateManifest();
     const backend = await loadBackendPack({});
     if (!backend.ok) throw backend.error;
     canvas = createBudgetCanvas(RESOLUTIONS[0] as Resolution);

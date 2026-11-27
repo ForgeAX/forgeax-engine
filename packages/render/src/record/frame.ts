@@ -1,4 +1,12 @@
+import { createViewportHitCapture } from '../assembly/viewport-hit-proxy';
+import {
+  currentForwardShadowReceiver,
+  inspectForwardShadow,
+} from '../pipeline/forward-shadow-admission';
+import { standardViewRecording } from '../pipeline/standard-forward-output';
 import { cameraAdmitsLayers } from '../render-layers';
+import type { DrawRows } from './frame-snapshot';
+import { capturePresentation } from './target-capture-graph';
 // @forgeax/engine-runtime - RendererState record stage: frame.
 // Extracted from render-system-record.ts (feat-20260704 M3/w17, pure move).
 
@@ -23,7 +31,7 @@ import { PlanarCaptureState } from '../capture/planar-state';
 import { planarReflectionLevels } from '../capture/planar-target';
 import { encodePlanarReflectionUniform } from '../capture/planar-uniform';
 import type { ExtractedCloudLayer } from '../cloud/extract';
-import { isMultisampleAntialias } from '../components/camera';
+import { isMultisampleAntialias, isTemporalAntialias } from '../components/camera';
 import { PlanarReflectionInvalidError } from '../components/planar-reflection';
 import type { ProjectedDecalInvalidError } from '../decals/component';
 import type { MeshGpuHandles } from '../device/gpu-residency';
@@ -35,14 +43,14 @@ import {
   RendererOperationError,
 } from '../errors/render';
 import type { FogFrame } from '../extract/environment';
-import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
+import { EMPTY_GPU_DRAW_SELECTION, type GpuDrawSelection } from '../gpu-driven/draw-selection';
 import { EMPTY_MATERIAL_BINDINGS } from '../gpu-driven/material-bindings';
 import type { GpuDrivenProduction, PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import { type GpuDrivenLodSubmitIdentity, selectGpuLodLane } from '../gpu-driven/view-gpu';
 import { GPU_TEXTURE_USAGE_COPY_SRC } from '../gpu-texture-usage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage';
 import type { TransparencyInspection } from '../oit/view';
-import { inspectStandardLighting } from '../pipeline/standard-lighting/inspection';
+import { captureStandardLighting } from '../pipeline/standard-lighting/inspection';
 import { standardLightingTopologySignature } from '../pipeline/standard-lighting/topology';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import { inspectPointShadow } from '../point-shadow-inspection';
@@ -61,7 +69,6 @@ import { markPipelinePreparationPending } from '../render-system-presentation';
 import type { FrameList } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import type { MaterialFrame } from '../scene/material-dispatch';
-import { ShadowMaterialContent } from '../scene/material-shadow-content';
 import type {
   GpuRasterOwnership,
   PersistentGpuDrivenState,
@@ -78,7 +85,6 @@ import {
 import {
   admitVolumeHistory,
   consumeViewHistoryAdmission,
-  consumeViewSsrHistoryStage,
   type VolumeHistoryAdmission,
 } from '../world/history-admission-systems';
 import type { ViewLights } from '../world/render-lights';
@@ -127,9 +133,14 @@ import {
   type RenderableDrawReceipt,
   summarizeGpuDrivenDraws,
 } from './gpu-draw-receipts';
-import { canRetainMaterialBindings } from './material-binding-index';
+import { canRetainMaterialBindings, type MaterialRelationFrame } from './material-binding-index';
 import { materialGeometry } from './material-geometry';
 import { foldRenderableSnapshot } from './mesh-ssbo';
+import {
+  type CaptureRecording,
+  captureRecordingRequests,
+  NativeCaptureRecording,
+} from './native-target-capture';
 import {
   type _InternalRenderPipelineContext,
   type PipelineState,
@@ -137,11 +148,10 @@ import {
   type RenderSystemInternals,
   runRecordProfilePhase,
 } from './render-context';
-import { prepareScenePasses, scenePassRequests } from './scene-pass-work';
+import { prepareScenePasses, scenePassWaterDraws } from './scene-pass-work';
 import { shadowViewPlanesByView } from './shadow-culling';
 import { createShadowPipelineSelectionOwner, prepareShadowMaterialPipelines } from './shadow-pass';
 import { createShadowUpdatePolicy } from './shadow-update-policy';
-import { beginSsrHistoryFrame } from './ssr-history-frame';
 import { disposeTargetCaptureLighting } from './target-capture-lighting';
 import { type FrameVolumetricFog, planViewTopology } from './view-topology';
 import { PLANAR_REFLECTION_UNIFORM_OFFSET } from './view-ubo';
@@ -309,8 +319,8 @@ import {
 import { consumeViewDiffuseGi, reprojectDiffuseGiHistory } from './frame-diffuse-gi';
 import {
   captureViewsCastShadows,
-  collectDirectShadowMaterials,
   type DirectShadowInputs,
+  directionalAtlasMaterialReads,
   gpuLaneDirectShadowRows,
   updateGpuDrivenShadowViews,
   validateDirectShadowRows,
@@ -354,7 +364,7 @@ import {
   recordCompiledFrameGraph,
   settleEncodedFrameGraph,
 } from './typed-frame-graph';
-import { writePointsLinesViewUbo, writeViewUbo } from './view-ubo';
+import { indirectSpecularMode, writeViewUbo } from './view-ubo';
 import { updateVolumetricFogInspection } from './volumetric-fog-commit';
 
 export type { RecordProfileRunner };
@@ -424,7 +434,13 @@ function prepareCubeCapture(
   else input.state.reflectionProbes = input.reflectionProbes.graph;
   const physicalWork = input.faces.map((face) => face.work);
   input.state.work = physicalWork;
-  if (physicalWork.length === 0) disposeTargetCaptureLighting(input.state);
+  if (
+    physicalWork.length === 0 &&
+    !input.state.reflectionProbes?.work.some(
+      (work) => work.rawCaptureFace !== undefined && work.faceCamera !== undefined,
+    )
+  )
+    disposeTargetCaptureLighting(input.state);
   return physicalWork;
 }
 
@@ -443,11 +459,13 @@ export function directionalShadowPreparationLimit(
     cascadeCount > 4
   )
     return undefined;
-  const count = installed?.directionalShadowViewCount;
-  if (count === undefined || !Number.isInteger(count) || count < 1 || count > 4) return undefined;
+  const demand = installed?.directionalShadowViewCount;
+  const count = demand === 'current' ? cascadeCount : demand;
+  if (count === undefined || !Number.isInteger(count) || count < 0 || count > 4) return undefined;
   if (previous !== undefined) {
-    const old = previous?.directionalShadowViewCount;
-    if (old === undefined || !Number.isInteger(old) || old < 1 || old > 4) return undefined;
+    const oldDemand = previous?.directionalShadowViewCount;
+    const old = oldDemand === 'current' ? cascadeCount : oldDemand;
+    if (old === undefined || !Number.isInteger(old) || old < 0 || old > 4) return undefined;
     return Math.max(cascadeCount, count, old);
   }
   return Math.max(cascadeCount, count);
@@ -528,6 +546,7 @@ async function mapReflectionFallbackReadback(
     const bytes = new Uint8Array(range.value.slice(0));
     mapped.value.unmap();
     const validation = validateGraphTargetCaptureReadback({
+      format: 'rgba16float',
       bytes,
       expectedByteLength: request.bytesPerRow * request.height,
       allowZero,
@@ -596,9 +615,7 @@ function prepareVolumetricFogHistory(
   frameState: RenderFrameState,
   volume: FrameVolumetricFog,
   admission: VolumeHistoryAdmission | undefined,
-  graph: import('@forgeax/engine-render-graph').CompiledRenderGraph<
-    import('../render-pipeline').RenderPipelineFrame
-  >,
+  graph: CaptureRecording,
   camera: CameraSnapshot,
   lights: ViewLights,
   width: number,
@@ -685,6 +702,8 @@ export interface FrameRecordingAttempt {
   /** Whether the shared frame encoder reached queue submission. */
   submitted: boolean;
   readonly lightTextureResamples: import('../prepare/extended-lighting/light-texture-resample').ScheduledLightTextureResample[];
+  /** Fixed face eligibility from this attempt, independent of queue and view retirement. */
+  captureAdmits?: (row: RenderableSnapshot, material: RenderableSnapshot['material']) => boolean;
   captureSettled: boolean;
   ownsCaptureGraphs: boolean;
   preparedGpuDriven: PreparedGpuDrivenFrame | undefined;
@@ -791,14 +810,29 @@ function attemptCaptureFrames(
   });
 }
 
+/** Consume the installed display roster directly and append actual capture contributions in order. */
+function frameScenePassRequests(graph: CaptureRecording, attempt: FrameRecordingAttempt) {
+  const display = captureRecordingRequests(graph);
+  let combined: Set<(typeof display)[number]> | undefined;
+  for (const capture of attemptCaptureFrames(attempt)) {
+    if (capture.recording === graph) continue;
+    const requests = captureRecordingRequests(capture.recording);
+    if (requests.length === 0) continue;
+    combined ??= new Set(display);
+    for (const request of requests) combined.add(request);
+  }
+  return combined ?? display.values();
+}
+
 function retireCaptureGraphs(attempt: FrameRecordingAttempt): void {
   const completion = attempt.captureCompletion;
-  for (const capture of attemptCaptureFrames(attempt)) {
-    if (completion === undefined) void capture.graph.retire();
+  for (const { recording } of attemptCaptureFrames(attempt)) {
+    if (recording instanceof NativeCaptureRecording) continue;
+    if (completion === undefined) void recording.retire();
     else
       void completion.then(
-        () => capture.graph.retire(),
-        () => capture.graph.retire(),
+        () => recording.retire(),
+        () => recording.retire(),
       );
   }
 }
@@ -885,10 +919,6 @@ export function releaseFrameRecordingAttempt(
   frameState.standardOncePerFrameFired.clear();
 }
 
-type CompiledFrameGraph = import('@forgeax/engine-render-graph').CompiledRenderGraph<
-  import('../render-pipeline').RenderPipelineFrame
->;
-
 /** Direct recorders prepare in place; view recordings consume the Queue system's product. */
 function prepareGpuDrivenRecordingShadows(
   internals: RenderSystemInternals,
@@ -897,13 +927,10 @@ function prepareGpuDrivenRecordingShadows(
   attempt: FrameRecordingAttempt,
   profile: RecordProfileRunner | undefined,
   lights: ViewLights,
-  reads: ShadowMeshInput | undefined,
-  planes: () => ReadonlyMap<string, Float32Array>,
   targetSize: number | undefined,
   graphGeneration: number,
   directionalLimit: number | undefined,
 ): boolean {
-  if (hasShadowViewDemand(lights)) retainGpuShadowMeshReads(input, reads);
   const request = input.request;
   if (internals.viewEntity === undefined && request !== undefined) {
     const prepared = runRecordProfilePhase(profile, 'record/gpu-driven-prepare', () =>
@@ -921,20 +948,10 @@ function prepareGpuDrivenRecordingShadows(
     profile,
     input.shadowViews,
     lights,
-    planes,
     targetSize,
     graphGeneration,
     directionalLimit,
   );
-}
-
-/** Shadow leases retain exactly the resident bindings admitted during Queue. */
-function retainGpuShadowMeshReads(
-  input: import('./frame-gpu-driven-input').FrameGpuDrivenInput,
-  reads: ShadowMeshInput | undefined,
-): void {
-  for (const [binding, execution] of input.artifacts?.batchExecutions ?? [])
-    if (execution.shadow.route !== 'none') reads?.reads.add(input.meshes.get(binding)?.changeToken);
 }
 
 function observePreparedResourceGeneration(
@@ -955,29 +972,21 @@ function emitSubmittedDrawReceipts(
 ): void {
   if (onRenderableDraw === undefined || frameGpuDriven === undefined) return;
   const owned = frameGpuDriven.gpuOwned;
-  emitGpuDrivenDrawReceipts(
-    owned?.frame.residual(selection) ?? renderables,
-    selection,
-    onRenderableDraw,
-  );
+  if (selection !== EMPTY_GPU_DRAW_SELECTION)
+    emitGpuDrivenDrawReceipts(
+      owned?.frame.residual(selection) ?? renderables,
+      selection,
+      onRenderableDraw,
+    );
   owned?.submitted(selection);
-  frameGpuDriven.owner.recordDrawSummary(() => summarizeGpuDrivenDraws(renderables, selection));
-}
-
-function fixedShadowMeshLease(
-  internals: RenderSystemInternals,
-  frameState: RenderFrameState,
-  sourceScope: RenderResourceScope,
-  projection: PersistentShadowCasterProjection | undefined,
-  fixedShadowDomain: boolean,
-): ShadowMeshInput | undefined {
-  if (!fixedShadowDomain || projection === undefined) return undefined;
-  return shadowMeshReadsForQuery(
-    frameState.directionalShadowCache,
-    sourceScope,
-    projection,
-    internals.gpuStore.meshChanges,
-  );
+  frameGpuDriven.owner.recordDrawSummary(() => {
+    if (owned === undefined) return summarizeGpuDrivenDraws(renderables, selection);
+    const residual = owned.frame.residualSet(selection);
+    return summarizeGpuDrivenDraws(renderables, selection, (row) => {
+      const slot = owned.frame.slots.identitySlot(row.entityKey);
+      return slot !== undefined && residual.has(slot);
+    });
+  });
 }
 
 /** The lease still has to collect mesh reads unless the accepted cache already holds them. */
@@ -1079,7 +1088,11 @@ function uploadAcceptedStandardLighting(
   attempt: FrameRecordingAttempt,
 ): boolean {
   if (captureOnly) return true;
-  if (frameState.standardLightingGraphSignature !== standardLightingTopologySignature(standard)) {
+  const currentSignature = standardLightingTopologySignature(
+    standard,
+    frameState.standardClusterMembership?.graphLayout,
+  );
+  if (frameState.standardLightingGraphSignature !== currentSignature) {
     internals.errorRegistry.fire(
       new RendererOperationError('device-operation-failed', {
         operation: 'draw',
@@ -1088,7 +1101,7 @@ function uploadAcceptedStandardLighting(
           expected: 'compiled graph and prepared Standard lighting share one topology signature',
           hint: 'retry the frame after the Standard graph candidate is accepted',
           detail: {
-            expected: standardLightingTopologySignature(standard),
+            expected: currentSignature,
             actual: frameState.standardLightingGraphSignature,
           },
         },
@@ -1175,13 +1188,15 @@ function gpuOwnsShadowGeometryFor(
   attempt: FrameRecordingAttempt,
   cubeCapture: CubeCaptureFrameInput | undefined,
   frameState: RenderFrameState,
-  preflightGraph: CompiledFrameGraph,
+  preflightGraph: CaptureRecording,
   raster: PreparedGpuDrivenFrame | undefined,
 ): boolean {
   return (
     rendererRecording &&
     !captureOnly &&
-    attemptCaptureFrames(attempt).length === 0 &&
+    attempt.captureFrames.length === 0 &&
+    attempt.probeCaptureFrames.length === 0 &&
+    attempt.planarCaptureFrame === undefined &&
     !hasCubeCaptureViews(cubeCapture) &&
     frameState.compiledFrameGraph?.graph === preflightGraph &&
     frameState.compiledFrameGraph.directionalShadowViewCount !== undefined &&
@@ -1191,7 +1206,7 @@ function gpuOwnsShadowGeometryFor(
 }
 
 /** Cleanup consumes rows only when a per-entity resource owner needs them. */
-function* cacheRows(groups: readonly (readonly ValidatedRenderable[])[]) {
+function* cacheRows(groups: readonly DrawRows[]) {
   for (const rows of groups) yield* rows;
 }
 
@@ -1219,17 +1234,13 @@ function forwardViewShadowReception(
   internals: RenderSystemInternals,
   lights: ViewLights,
   renderPath: 'forward' | 'deferred',
+  contactShadow: boolean,
   cloudShadow: boolean,
   capsuleShadow: boolean,
 ): boolean | undefined {
   if (internals.device.caps.backendKind !== 'wgpu-webgl2' || renderPath !== 'forward')
     return undefined;
-  return (
-    lights.shadowViews.length > 0 ||
-    (lights.directional?.contactShadowLength ?? 0) > 0 ||
-    cloudShadow ||
-    capsuleShadow
-  );
+  return lights.shadowViews.length > 0 || contactShadow || cloudShadow || capsuleShadow;
 }
 
 function capsuleShadowLightFor(
@@ -1303,7 +1314,7 @@ function prepareCascadeStagger(
   sourceScope: RenderResourceScope,
   projection: PersistentShadowCasterProjection | undefined,
   raster: PreparedGpuDrivenFrame | undefined,
-  cacheMiss: Parameters<typeof prepareDirectionalCascadeCadence>[2],
+  cache: ReturnType<typeof prepareDirectionalShadowCache>,
 ) {
   if (
     lights.directionalCsmConfig?.staggerCascades !== true ||
@@ -1320,7 +1331,9 @@ function prepareCascadeStagger(
     cascadeCadence: prepareDirectionalCascadeCadence(
       lights,
       frameState.directionalShadowCache === null ? undefined : frameState.directionalCascadeCadence,
-      cacheMiss,
+      cache.miss,
+      cache.next?.lightViewProj ??
+        (cache.miss === undefined ? frameState.directionalShadowCache?.lightViewProj : undefined),
     ),
   };
 }
@@ -1349,9 +1362,22 @@ function writePlanarReflectionUniform(
 }
 
 /** Prepare the compiled graph's scene and shadow pipelines; pending work defers the picture. */
+function prepareFramePipelineSources(
+  frameState: RenderFrameState,
+  graph: CaptureRecording,
+  runtime: RenderSystemInternals,
+  validatedOrdered: DrawRows,
+): void {
+  const installed = frameState.compiledFrameGraph;
+  if (installed?.graph !== graph) return;
+  for (const prepare of installed.scenePipelinePreparations ?? []) {
+    prepare.prepareSource?.({ frameState, runtime, validatedOrdered });
+  }
+}
+
 function prepareFramePipelines(
   frameState: RenderFrameState,
-  preflightGraph: CompiledFrameGraph,
+  preflightGraph: CaptureRecording,
   passCtx: _InternalRenderPipelineContext,
   hasShadowViews: boolean,
   rendererRecording: boolean,
@@ -1396,6 +1422,8 @@ function prepareFramePipelines(
         ? frameState.compiledFrameGraph.requiresShadowPipelinePreparation
         : undefined,
     );
+  if (passCtx.assets.shaderRegistry.hasPendingMaterialPreparations())
+    markPipelinePreparationPending(frameState, { code: 'scene-pipeline-preparation' });
 }
 
 function stageReflectionFallbackReadback(
@@ -1415,10 +1443,10 @@ function stageReflectionFallbackReadback(
 function submittedShadowGraphGenerationFor(
   rendererRecording: boolean,
   frameState: RenderFrameState,
-  preflightGraph: CompiledFrameGraph,
+  preflightGraph: CaptureRecording,
 ): number | undefined {
   return rendererRecording &&
-    frameState.activePipeline === standardPipeline &&
+    standardViewRecording(frameState.activePipeline) &&
     frameState.compiledFrameGraph?.graph === preflightGraph
     ? frameState.graphGeneration
     : undefined;
@@ -1437,7 +1465,7 @@ function allocateResolutionTiming(
     !sampleResolution ||
     timingCapture !== undefined ||
     (internals.gpuPassTimingSession !== undefined &&
-      internals.gpuPassTimingFrameIdentity !== undefined)
+      internals.gpuPassTimingDeviceGeneration !== undefined)
   ) {
     return undefined;
   }
@@ -1472,7 +1500,19 @@ function submittedFrameInspection(
   capsuleShadowDirectional: boolean,
 ): NonNullable<RenderFrameState['submittedInspection']> {
   const profile = frameState.cameraStandardProfile ?? internals.standardProfile;
+  const submittedGraph = frameState.compiledFrameGraph?.graph;
+  const receiver = currentForwardShadowReceiver(frameState);
+  const readStandardLighting = captureStandardLighting(standard, {
+    config: frameState.installedPipelineConfig?.ambientOcclusion,
+    get graph() {
+      return submittedGraph?.inspect();
+    },
+    installedGraphGeneration: frameState.compiledFrameGraph?.targets.graphGeneration,
+    deviceGeneration: recordContext(internals).deviceScope.generation,
+    gtaoHistoryFrames: frameState.gtaoHistory?.frameIndex,
+  });
   return {
+    ...(receiver === undefined ? {} : { forwardShadow: inspectForwardShadow(receiver, standard) }),
     ...(profile === undefined
       ? {}
       : {
@@ -1492,13 +1532,9 @@ function submittedFrameInspection(
             },
           },
         }),
-    standardLighting: inspectStandardLighting(standard, {
-      config: frameState.installedPipelineConfig?.ssao,
-      graph: frameState.compiledFrameGraph?.graph.inspect(),
-      installedGraphGeneration: frameState.compiledFrameGraph?.targets.graphGeneration,
-      deviceGeneration: recordContext(internals).deviceScope.generation,
-      clusterAoExtent: frameState.standardClusterTextureExtent,
-    }),
+    get standardLighting() {
+      return readStandardLighting();
+    },
     pointShadow: inspectPointShadow(lights.pointShadow, SHADOW_ATLAS_DEFAULT_LAYERS),
     transparency,
     capsuleShadow: inspectCapsuleShadow(
@@ -1597,6 +1633,7 @@ function prepareFrameMaterialReads(input: {
   readonly shadowCasterProjection: PersistentShadowCasterProjection | undefined;
   readonly profilePhase: RecordProfileRunner | undefined;
   readonly camera: CameraSnapshot;
+  readonly captureOnly: boolean | undefined;
 }) {
   const {
     internals,
@@ -1616,6 +1653,8 @@ function prepareFrameMaterialReads(input: {
     shadowCasterProjection,
     sourceRenderables,
   );
+  if (!input.captureOnly && shadowCasterProjection !== undefined)
+    frameState.materialBgAssemblyCache.adoptMaterials(fixedMaterials);
   const prepareSources = (sources: FrameList<RenderableSnapshot>, dispatch: DispatchList = []) =>
     runRecordProfilePhase(profilePhase, 'record/validation', () =>
       validateRenderables(
@@ -1631,6 +1670,7 @@ function prepareFrameMaterialReads(input: {
         undefined,
         fixedMaterials,
         shadowCasterProjection?.content.meshes,
+        shadowCasterProjection?.content.rows,
       ),
     );
   const prepareGeometry = (
@@ -1675,14 +1715,12 @@ function capsuleShadowPolicy(
   const capsuleShadowDirectional =
     standard.prepared.renderPath === 'deferred' ||
     (internals.standardSceneShaders?.forwardContact !== undefined &&
-      internals.standardSceneShaders.forwardScreenCompose !== undefined &&
-      internals.standardSceneShaders.forwardScreenPack !== undefined);
-  const forwardCapsuleShadows =
+      internals.standardSceneShaders.forwardScreenCompose !== undefined);
+  const capsuleShadows =
     capsuleShadowDirectional &&
-    standard.prepared.renderPath === 'forward' &&
     lights.cascades?.directionalShadowQuality !== undefined &&
     hasCapsuleShadowDemand(renderables);
-  return { capsuleShadowDirectional, forwardCapsuleShadows };
+  return { capsuleShadowDirectional, capsuleShadows };
 }
 
 /** CPU preparation before graph compilation; its product lives on the recording view. */
@@ -1823,7 +1861,7 @@ export function prepareFrameGraphInputs(
     return { kind: 'pending' as const, featurePlan };
   }
 
-  const { capsuleShadowDirectional, forwardCapsuleShadows } = capsuleShadowPolicy(
+  const { capsuleShadowDirectional, capsuleShadows } = capsuleShadowPolicy(
     internals,
     standard,
     lights,
@@ -1868,17 +1906,13 @@ export function prepareFrameGraphInputs(
     frameState.compiledFrameGraph,
     frameState.compiledFrameGraphCandidate?.previous.installed,
   );
-  let frameShadowPlanes: ReadonlyMap<string, Float32Array> | undefined;
-  const shadowPlanesByView = (): ReadonlyMap<string, Float32Array> => {
-    frameShadowPlanes ??= shadowViewPlanesByView(lights.shadowViews, directionalPreparationLimit);
-    return frameShadowPlanes;
-  };
   const hasShadowViews = hasShadowViewDemand(lights);
 
   let acceptedMaterialArtifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined;
   let acceptedShadowMaterialArtifacts: ReadonlyMap<string, MaterialShaderArtifact> | undefined;
   let materialBindingClasses: ReadonlyMap<string, string> | undefined;
-  let directShadowValidated: readonly ValidatedRenderable[] | undefined;
+  let directShadowValidated: DrawRows | undefined;
+  let directShadowMaterials: MaterialRelationFrame | undefined;
   const cubeCaptureWork = prepareCubeCapture(cubeCapture);
   const captureViewWork = prepareCaptureView(internals, camera);
   if (captureViewWork === undefined) return { kind: 'rejected' as const };
@@ -1904,7 +1938,7 @@ export function prepareFrameGraphInputs(
     standard,
     pipelineState,
   );
-  if (consumedGpuDriven === undefined) return { kind: 'rejected' as const };
+  if (consumedGpuDriven.kind !== 'ready') return { ...consumedGpuDriven, featurePlan };
   gpuDriven = consumedGpuDriven.input;
   const frameGpuDriven = consumedGpuDriven.frame;
   const gpuInput = consumedGpuDriven.gpuInput;
@@ -1930,6 +1964,7 @@ export function prepareFrameGraphInputs(
     shadowCasterProjection,
     profilePhase,
     camera,
+    captureOnly,
   });
   const fixedShadowDomain = isFixedShadowDomain(
     rendererRecording,
@@ -1939,14 +1974,12 @@ export function prepareFrameGraphInputs(
     lights,
     effectiveShadowMapSize,
   );
-  attempt.shadowMeshLease = fixedShadowMeshLease(
-    internals,
-    frameState,
-    sourceScope,
-    shadowCasterProjection,
-    fixedShadowDomain,
-  );
-  const shadowMeshReads = collectsShadowMeshReads(frameState, attempt.shadowMeshLease);
+  // Keep the original physical read boundary across preparation, even though the
+  // complete set of direct casters is known only after draw phase emission.
+  const meshChanges = fixedShadowDomain ? internals.gpuStore.meshChanges : undefined;
+  const meshEpoch = meshChanges?.epoch;
+  const meshGeneration = meshChanges?.generation;
+  let directMeshDomain: object | null = null;
   // CPU material-derived selection has no fixed source witness yet.
   let shadowGeometryFixed = fixedShadowDomain;
   const directGeometry = directGeometryTokens(internals, sourceScope);
@@ -1957,6 +1990,7 @@ export function prepareFrameGraphInputs(
   const directShadowInputs = (scene: PersistentGpuDrivenState): DirectShadowInputs => ({
     scene,
     phases: drawPhases,
+    retainMaterialBindings: canRetainMaterialBindings(materialBindingClasses),
     meshes: gpuDrivenMeshes,
     sourceScope,
     materials: fixedMaterials,
@@ -1965,9 +1999,8 @@ export function prepareFrameGraphInputs(
     prepareGeometry,
     geometry: directGeometry,
     lodRows: shadowLodRows,
+    retainMeshDomain: fixedShadowDomain && !gpuInput.shadowViews,
   });
-  const gpuShadowMaterials = gpuInput.shadowMaterials;
-  const directShadowMaterials = new ShadowMaterialContent();
   // `render-subsurface-admission` admitted this view's diffusion lane in RenderQueue.
   const subsurface = consumeViewSubsurface(internals, cubeCapture, captureOnly, () =>
     subsurfaceAdmissionInput(
@@ -1985,6 +2018,8 @@ export function prepareFrameGraphInputs(
     return { kind: 'rejected' as const };
   }
   const ssrAdmission = ssr.admission;
+  frameState.ssrSpatialAdmission = ssrAdmission;
+  frameState.compactSubsurfaceProfiles = subsurface.value?.compactProfiles;
   const { visibleSurface } = gpuInput;
   if (frameGpuDriven !== undefined) {
     const gpuShadowViews = gpuInput.shadowViews;
@@ -2002,8 +2037,6 @@ export function prepareFrameGraphInputs(
         attempt,
         profilePhase,
         lights,
-        shadowMeshReads,
-        shadowPlanesByView,
         graphShadowMapSize,
         frameState.graphGeneration,
         directionalPreparationLimit,
@@ -2021,6 +2054,7 @@ export function prepareFrameGraphInputs(
       );
       if (shadows?.derived === true) shadowGeometryFixed = false;
       directShadowValidated = shadows?.rows;
+      directShadowMaterials = shadows?.materialRows;
     }
   }
 
@@ -2044,17 +2078,48 @@ export function prepareFrameGraphInputs(
     else {
       const shadows = validateDirectShadowRows(directShadowInputs(nativeScene));
       if (shadows.derived) shadowGeometryFixed = false;
+      directMeshDomain = shadows.meshDomain;
       directShadowValidated = shadows.rows;
+      directShadowMaterials = shadows.materialRows;
     }
   }
-  collectDirectShadowMaterials(
-    internals,
-    sourceScope,
-    directShadowValidated,
-    fixedMaterials,
-    directShadowMaterials,
-    shadowMeshReads,
-  );
+  // Only a fixed mesh lease can carry a directional atlas into another frame.
+  // Dynamic caster rows still render; they have no atlas material reads to retain.
+  let shadowAtlasMaterials: ReturnType<typeof directionalAtlasMaterialReads> | undefined;
+  if (
+    shadowGeometryFixed &&
+    shadowCasterProjection !== undefined &&
+    meshChanges !== undefined &&
+    meshChanges.epoch === meshEpoch &&
+    meshChanges.generation === meshGeneration
+  ) {
+    attempt.shadowMeshLease = shadowMeshReadsForQuery(
+      frameState.directionalShadowCache,
+      sourceScope,
+      shadowCasterProjection,
+      meshChanges,
+      gpuInput.shadowViews ? undefined : directMeshDomain,
+    );
+    const shadowMeshReads = collectsShadowMeshReads(frameState, attempt.shadowMeshLease);
+    // GPU shadow views consume queued physical bindings. Direct passes contribute
+    // their resolved mesh rows below, including offscreen and capture casters.
+    if (shadowMeshReads !== undefined && gpuInput.shadowViews) {
+      gpuInput.artifacts?.batchExecutions.forEach((execution, binding) => {
+        if (execution.shadow.route !== 'none')
+          shadowMeshReads.reads.add(gpuInput.meshes.get(binding)?.changeToken);
+      });
+    }
+    shadowAtlasMaterials = directionalAtlasMaterialReads(
+      internals,
+      sourceScope,
+      directShadowValidated,
+      fixedMaterials,
+      gpuInput,
+      shadowCasterProjection,
+      shadowMeshReads,
+      directShadowMaterials !== undefined,
+    );
+  }
 
   // Compile the single frame graph only after GPU preparation has projected
   // the current frame. This keeps the graph topology and its execution
@@ -2122,19 +2187,19 @@ export function prepareFrameGraphInputs(
     manualDraws,
     foldBuckets,
     directShadowValidated,
+    directShadowMaterials,
     materialBindingClasses,
     fixedMaterials,
     sourceRenderables,
     capsuleShadowDirectional,
-    forwardCapsuleShadows,
+    capsuleShadows,
     light,
     analyticFog,
     shadowGeometryFixed,
     shadowLodSelection,
     renderReadLease,
     effectiveShadowMapSize,
-    gpuShadowMaterials,
-    directShadowMaterials,
+    shadowAtlasMaterials,
     bindGroupCounts,
     postProcessParams,
     dispatchCounts,
@@ -2143,7 +2208,7 @@ export function prepareFrameGraphInputs(
     ssr,
     frameGpuDriven,
     acceptedShadowMaterialArtifacts,
-    shadowPlanesByView,
+    directionalPreparationLimit,
     pointsLines,
     onRenderableDraw,
     effectiveSpotShadowMapSize,
@@ -2179,7 +2244,6 @@ export function resolveQueuedFrameTemporal(prepared: PreparedFrameGraph) {
     environmentReady,
     temporalReset,
     gi,
-    ssrAdmission,
   } = prepared;
   const { targetW, targetH } = frameTargetExtent(
     internals,
@@ -2218,18 +2282,6 @@ export function resolveQueuedFrameTemporal(prepared: PreparedFrameGraph) {
     temporal.previous,
     temporal.continuousGeometry,
   );
-  if (
-    !beginSsrHistoryFrame(
-      internals,
-      frameState,
-      ssrAdmission,
-      consumeViewSsrHistoryStage(internals, ssrAdmission),
-      temporalView,
-      prepared.passPlan.transmission.water === true,
-    )
-  ) {
-    return { kind: 'rejected' as const };
-  }
   return { kind: 'resolved' as const, clock, temporal, temporalView, targetW, targetH };
 }
 export type QueuedFrameTemporalOutcome =
@@ -2239,7 +2291,7 @@ type ResolvedFrameTemporal = Extract<QueuedFrameTemporalOutcome, { kind: 'resolv
 
 function sealFrameHistory(
   prepared: PreparedFrameGraph,
-  preflightGraph: CompiledFrameGraph,
+  preflightGraph: CaptureRecording,
   queued: ResolvedFrameTemporal,
 ) {
   const { internals, frameState, volume, history, camera, lights } = prepared;
@@ -2270,11 +2322,16 @@ function sealFrameHistory(
   };
 }
 
+function forwardProjectsSun(frameState: RenderFrameState): boolean {
+  const receiver = currentForwardShadowReceiver(frameState);
+  return receiver?.mode === 'screen' && receiver.directional !== false;
+}
+
 /** Seal selected graph resources, upload its view, resolve bindings and prepare native pipelines. */
 function standardClusterTextureExtentForGraph(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
-  preflightGraph: CompiledFrameGraph,
+  preflightGraph: CaptureRecording,
   captureOnly: boolean,
 ): RenderFrameState['standardClusterTextureExtent'] {
   const installedGraph = frameState.compiledFrameGraph;
@@ -2284,21 +2341,20 @@ function standardClusterTextureExtentForGraph(
     environment?.kind === 'atmosphere' &&
     !environment.atmosphere.backgroundOnly;
   if (captureOnly || installedGraph?.graph !== preflightGraph)
-    return atmosphere ? { width: 0, height: 0, atmosphere: true } : undefined;
+    return atmosphere ? { atmosphere: true } : undefined;
+  const receiver = currentForwardShadowReceiver(frameState);
+  if (receiver?.mode === 'screen' && receiver.ambientOcclusion)
+    return { screen: { width: receiver.width, height: receiver.height } };
+  // The uploader and the pass sample the same physical Cluster generation.
+  if (installedGraph.displayPorts !== undefined)
+    return installedGraph.displayPorts.clusterTextureExtent;
   const atlas = installedGraph.targets.getColorTargetDescriptor('forward-screen-data');
   const screen =
     atlas === undefined
       ? undefined
       : { width: atlas.size.width / 2, height: atlas.size.height / 2 };
-  const ao =
-    !internals.device.caps.storageBuffer &&
-    frameState.installedPipelineConfig?.ssao?.enabled === true
-      ? installedGraph.targets.getColorTargetDescriptor('ssao-raw')
-      : undefined;
-  if (ao === undefined && screen === undefined && !atmosphere) return undefined;
+  if (screen === undefined && !atmosphere) return undefined;
   return {
-    width: ao?.size.width ?? 0,
-    height: ao?.size.height ?? 0,
     ...(screen === undefined ? {} : { screen }),
     ...(atmosphere ? { atmosphere: true } : {}),
   };
@@ -2318,9 +2374,31 @@ function frameUsesVertexHeightFog(prepared: PreparedFrameGraph): boolean {
   );
 }
 
+function viewportHitCaptureFields(
+  hits: RenderSystemInternals['viewportHits'],
+  camera: CameraSnapshot,
+  recordCamera: CameraSnapshot,
+  captureOnly: boolean,
+  hasDisplayMapping: boolean,
+  renderableCount: number,
+): Pick<_InternalRenderPipelineContext, 'viewportHit'> {
+  if (!hits?.collecting || captureOnly || camera.target !== undefined || !hasDisplayMapping)
+    return {};
+  const collectingDraws = hits.collectingDraws;
+  return collectingDraws || renderableCount > 0
+    ? { viewportHit: createViewportHitCapture(recordCamera, !collectingDraws) }
+    : {};
+}
+
+function forwardShadowProjectionInputs(frameState: RenderFrameState, lights: ViewLights) {
+  return currentForwardShadowReceiver(frameState)?.mode === 'screen'
+    ? { forwardShadowCascades: lights.cascades }
+    : undefined;
+}
+
 export function sealFrameGraph(
   prepared: PreparedFrameGraph,
-  preflightGraph: CompiledFrameGraph,
+  preflightGraph: CaptureRecording,
   queued: ResolvedFrameTemporal,
 ) {
   const {
@@ -2356,6 +2434,7 @@ export function sealFrameGraph(
     manualDraws,
     foldBuckets,
     directShadowValidated,
+    directShadowMaterials,
     materialBindingClasses,
     fixedMaterials,
     sourceRenderables,
@@ -2367,8 +2446,7 @@ export function sealFrameGraph(
     shadowLodSelection,
     renderReadLease,
     effectiveShadowMapSize,
-    gpuShadowMaterials,
-    directShadowMaterials,
+    shadowAtlasMaterials,
     bindGroupCounts,
     postProcessParams,
     dispatchCounts,
@@ -2377,7 +2455,7 @@ export function sealFrameGraph(
     ssr,
     frameGpuDriven,
     acceptedShadowMaterialArtifacts,
-    shadowPlanesByView,
+    directionalPreparationLimit,
     pointsLines,
     onRenderableDraw,
     effectiveSpotShadowMapSize,
@@ -2413,9 +2491,10 @@ export function sealFrameGraph(
     current: undefined,
   };
   const { targetW, targetH } = queued;
-  const submittedBarrelMapping = captureOnly
-    ? undefined
-    : resolveSubmittedBarrelMapping(frameState, preflightGraph, camera, targetW, targetH);
+  const submittedBarrelMapping =
+    captureOnly || preflightGraph instanceof NativeCaptureRecording
+      ? undefined
+      : resolveSubmittedBarrelMapping(frameState, preflightGraph, camera, targetW, targetH);
 
   const sealedHistory = sealFrameHistory(prepared, preflightGraph, queued);
   if (sealedHistory.kind === 'rejected') return { kind: 'rejected' as const };
@@ -2458,36 +2537,37 @@ export function sealFrameGraph(
     rasterGpuDriven,
   );
 
+  const capture = capturePresentation(
+    captureOnly ? prepared.cubeCaptureWork : prepared.captureViewWork,
+  );
+  if (capture) attempt.captureAdmits = capture.admits;
   const prepareOwnedSceneWork = () => {
     const sceneWork =
       nativeScene === undefined || shadowCasterProjection === undefined
         ? undefined
-        : prepareScenePasses(
-            [preflightGraph, ...attemptCaptureFrames(attempt).map(({ graph }) => graph)].flatMap(
-              scenePassRequests,
-            ),
-            {
-              scene: nativeScene,
-              retainMaterialBindings: canRetainMaterialBindings(materialBindingClasses),
-              materials: shadowCasterProjection.content.materials,
-              gpu: gpuSelection,
-              meshes: gpuDrivenMeshes,
-              sourceScope,
-              prepareUnbatched: prepareSources,
-              viewDraws: shadowCasterProjection.content.viewDraws ?? [],
-              prepareGeometry,
-              fold: (dispatch, sources) => computeFoldBuckets(world, frameState, dispatch, sources),
-              lod: (rows, request) =>
-                cpuLaneLodRows(internals.device.caps, request.camera?.() ?? camera)(rows),
-              world,
-              camera,
-              boundsOf: shadowCasterProjection.worldBoundsOf,
-              cameraVisible: gpuDriven?.cameraVisible,
-              cameraAdmission: gpuDriven?.cameraAdmission,
-              geometry: directGeometry,
-              phases: drawPhases,
-            },
-          );
+        : prepareScenePasses(frameScenePassRequests(preflightGraph, attempt), {
+            scene: nativeScene,
+            currentTransparency: prepared.passPlan.transparent.topology,
+            currentTransmissionDemand: prepared.passPlan.transmission.demand,
+            retainMaterialBindings: canRetainMaterialBindings(materialBindingClasses),
+            materials: shadowCasterProjection.content.materials,
+            gpu: gpuSelection,
+            meshes: gpuDrivenMeshes,
+            sourceScope,
+            prepareUnbatched: prepareSources,
+            viewDraws: shadowCasterProjection.content.viewDraws ?? [],
+            prepareGeometry,
+            fold: (dispatch, sources) => computeFoldBuckets(world, frameState, dispatch, sources),
+            lod: selectGpuLodLane(internals.device.caps),
+            world,
+            camera,
+            boundsOf: shadowCasterProjection.worldBoundsOf,
+            captureVisibility: capture?.observe,
+            cameraVisible: gpuDriven?.cameraVisible,
+            cameraAdmission: gpuDriven?.cameraAdmission,
+            geometry: directGeometry,
+            phases: drawPhases,
+          });
     return sceneWork;
   };
   const sceneWork = prepareOwnedSceneWork();
@@ -2507,19 +2587,26 @@ export function sealFrameGraph(
       gpuOwnsShadowGeometry,
       { bindings: rasterGpuDriven?.materialBindings ?? [], sourceScope, frame: fixedMaterials },
       shadowCasterProjection?.meshDraws,
-      // Scene-pass rows are this frame's fresh projections.
-      sceneWork !== undefined,
+      // The phase proves immutable source rows only for native-owned relations.
+      sceneWork?.materialRows !== undefined,
       sceneWork === undefined
         ? undefined
         : {
             owner: drawPhases.materialBindings,
             renderables: sceneWork.rows,
             rows: sceneWork.materialRows,
+            shadow: directShadowMaterials,
           },
+      sceneWork,
     ),
   );
   const validatedOrdered = dispatchPlan.validatedOrdered;
-  const waterMaterialDrawClosure = finalizeWaterMaterialAdmissionDraws(validatedOrdered);
+  prepareFramePipelineSources(frameState, preflightGraph, internals, validatedOrdered);
+  const waterMaterialDrawClosure = finalizeWaterMaterialAdmissionDraws(
+    validatedOrdered,
+    sceneWork === undefined ? undefined : nativeScene?.drawSnapshotAt,
+    shadowCasterProjection?.content.viewDraws?.length ?? 0,
+  );
   const shadowValidatedOrdered = dispatchPlan.shadowValidatedOrdered;
   const scenePassWork = sceneWork?.finish(dispatchPlan);
   const pipelinePreparationEntries = prepareSources(
@@ -2586,18 +2673,28 @@ export function sealFrameGraph(
           : undefined,
         recordContext(internals).captureView !== undefined,
         clock.elapsedSeconds,
-        { width: targetW, height: targetH },
+        {
+          width: captureOnly ? targetW : (renderExtent?.internalWidth ?? targetW),
+          height: captureOnly ? targetH : (renderExtent?.internalHeight ?? targetH),
+          outputWidth: targetW,
+          outputHeight: targetH,
+        },
         internals.standardProfile?.quality?.ssr,
+        captureOnly ? 0 : standard.prepared.deferredChannelProjection,
+        frameState.compactSubsurfaceProfiles,
+        indirectSpecularMode(
+          frameState.cameraStandardProfile ?? internals.standardProfile,
+          camera.screenSpaceReflection !== undefined,
+        ),
+        (frameState.cameraStandardProfile ?? internals.standardProfile)?.atmosphere,
+        forwardProjectsSun(frameState),
+        prepared.ssrAdmission.status === 'admitted' && prepared.ssrAdmission.lane === 'forward',
+        !captureOnly &&
+          temporalView.resetReason === undefined &&
+          frameState.activeTemporalGpuState?.valid === true &&
+          frameState.activeTemporalGpuState.width === targetW &&
+          frameState.activeTemporalGpuState.height === targetH,
       );
-      if (pipelineState.pointsLinesViewBuffer !== undefined) {
-        writePointsLinesViewUbo(
-          internals.device.queue,
-          pipelineState.pointsLinesViewBuffer,
-          camera,
-          targetW,
-          targetH,
-        );
-      }
       writeShadowCasterUniforms(
         internals.device.queue,
         pipelineState.shadowCasterCascadeBuffer,
@@ -2622,7 +2719,7 @@ export function sealFrameGraph(
         effectiveShadowMapSize,
         shadowMeshInput,
         shadowCasterProjection,
-        [gpuShadowMaterials, directShadowMaterials],
+        shadowAtlasMaterials,
         shadowLodToken,
       ),
   );
@@ -2633,7 +2730,7 @@ export function sealFrameGraph(
     sourceScope,
     shadowCasterProjection,
     rasterGpuDriven,
-    directionalShadowCache.miss,
+    directionalShadowCache,
   );
 
   // RenderRecord opened the submission's one encoder before any view records.
@@ -2641,7 +2738,7 @@ export function sealFrameGraph(
 
   // Per-frame bind group cache resolution (view / mesh / HDRP-cluster);
   // returns null groups on the clear-pass-only path.
-  const { viewBindGroup, meshBindGroup, hdrpClusterBindGroup, hdrpClusterMembershipBindGroup } =
+  const { viewBindGroup, meshBindGroup, clusterViewReady, hdrpClusterMembershipBindGroup } =
     runRecordProfilePhase(profilePhase, 'record/bind-groups', () =>
       buildPerFrameBindGroups(
         internals,
@@ -2671,6 +2768,9 @@ export function sealFrameGraph(
     temporalView,
     targetH,
     submittedBarrelMapping,
+    getRenderFeatureGraphState(internals).fullscreenEffects,
+    frameState.compiledFrameGraph?.graph === preflightGraph &&
+      frameState.compiledFrameGraph.displayPorts?.standardPost?.nativeGrade === true,
   );
 
   observePreparedResourceGeneration(frameState, attempt.preparedGpuDriven);
@@ -2680,9 +2780,22 @@ export function sealFrameGraph(
     directShadowValidated !== undefined;
   const shadowDispatch = shadowCasterProjection?.dispatch;
   const passCtx: _InternalRenderPipelineContext = {
+    currentTransparency: prepared.passPlan.transparent.topology,
+    currentTransmissionDemand: prepared.passPlan.transmission.demand,
+    currentMaterialDepthDemand: prepared.passPlan.materialSceneDepth === true,
+    forwardColorWritesDepth: prepared.passPlan.forwardColorWritesDepth === true,
+    ...viewportHitCaptureFields(
+      internals.viewportHits,
+      camera,
+      temporal.recordCamera,
+      captureOnly,
+      submittedBarrelMapping !== undefined,
+      validatedOrdered.length,
+    ),
     // A fixed first field avoids growing this frame's object storage.
     pipelinePreparationEntries,
     ...scenePassInputs(scenePassWork, visibleSurface, gi.probePlacement),
+    bakedField: gi.bakedField,
     mainPassMaterialSelection: createMainPassMaterialSelectionOwner({
       dispatch: sceneDispatch,
       validatedOrdered,
@@ -2705,6 +2818,7 @@ export function sealFrameGraph(
     targetH,
     ...(renderExtent === undefined ? {} : { extent: renderExtent }),
     camera: temporal.recordCamera,
+    ...forwardShadowProjectionInputs(frameState, lights),
     tonemapActive,
     geometryDepthKey,
     validatedOrdered,
@@ -2724,6 +2838,7 @@ export function sealFrameGraph(
       internals,
       lights,
       standard.prepared.renderPath,
+      light.contactShadowLength > 0,
       cloudShadowProjection !== undefined,
       capsuleShadowLight !== undefined,
     ),
@@ -2740,7 +2855,7 @@ export function sealFrameGraph(
       ? {}
       : { spotLightProjector: volume.spotLightProjector }),
     dispatch: sceneDispatch,
-    hdrpClusterBindGroup,
+    clusterViewReady,
     hdrpClusterMembershipBindGroup,
     standardLighting: standard,
     directionalShadowSimple: directionalShadowSimple(lights),
@@ -2764,12 +2879,14 @@ export function sealFrameGraph(
       gpuSelection,
       acceptedShadowMaterialArtifacts,
     ),
-    shadowViewPlanesByView: shadowPlanesByView(),
+    shadowViewPlanesByView: shadowViewPlanesByView(lights.shadowViews, directionalPreparationLimit),
     materialFrame: fixedMaterials,
     waterMaterialRecordCache: {
       validatedOrdered,
       frameGeneration: internals.rendererFrameNumber ?? 0,
       drawClosure: waterMaterialDrawClosure,
+      passes: scenePassWork,
+      waterByPass: scenePassWaterDraws(scenePassWork, waterMaterialDrawClosure),
       candidate: undefined,
     },
     ...(rendererRecording && hasShadowViews && publishShadowRows
@@ -2784,6 +2901,8 @@ export function sealFrameGraph(
         }
       : {}),
     ...capturePassContext(cubeCapture, planarCapture),
+    probeFilterWork: (recordContext(internals).captureView?.state ?? cubeCapture?.state)
+      ?.reflectionProbes,
     pointsLines,
     materialBgAssemblyCache: frameState.materialBgAssemblyCache,
     ...(onRenderableDraw === undefined ? {} : { onRenderableDraw }),
@@ -2795,6 +2914,8 @@ export function sealFrameGraph(
       () => frameState.pointShadowAtlas?.getTexture() ?? undefined,
     ),
     directionalShadowCacheMiss: directionalShadowCache.miss,
+    directionalDepthSize: effectiveShadowMapSize ?? 0,
+    directionalDepthViews: lights.cascades?.cascadeCount ?? 0,
     capsuleShadowDirectional,
     ...shadowPassContext(
       shadowCasterProjection,
@@ -2870,12 +2991,14 @@ export function compileDirectPreparedGraph(prepared: PreparedFrameGraph): ViewGr
     surface: recordContext(internals).canvas,
     shadowMapSize: graphShadowMapSize,
     gpuDriven: rasterGpuDriven,
+    currentGpuCamera:
+      prepared.gpuDriven !== undefined && prepared.gpuDriven.geometryLane !== 'direct',
     featurePlan,
     cubeCaptureState: recordContext(internals).captureView?.state ?? cubeCapture?.state,
     clearOnly: cameras.length === 0,
     passPlan,
     unfoggedOpaque: fixedMaterials.hasUnfoggedOpaque,
-    forwardCapsuleShadows: prepared.forwardCapsuleShadows,
+    capsuleShadows: prepared.capsuleShadows,
     volumetricFog: volume.graphFog,
     volumeTopologyCandidate: volume.topologyCandidate,
     standardLighting: standard,
@@ -2893,7 +3016,8 @@ export function compileDirectPreparedGraph(prepared: PreparedFrameGraph): ViewGr
 export type ViewGraphSealOutcome =
   | {
       readonly kind: 'sealed';
-      readonly graph: CompiledFrameGraph;
+      readonly configurationRevision?: number | undefined;
+      readonly graph: CaptureRecording;
       readonly value: SealedFrameGraph;
     }
   | {
@@ -2929,7 +3053,7 @@ export function sealCompiledViewGraph(
   if (!captureOnly && compiled === undefined) return { kind: 'rejected', code: 'view-compile' };
   const graph =
     compiled === undefined
-      ? (attempt.captureFrames[0]?.graph ?? null)
+      ? (attempt.captureFrames[0]?.recording ?? null)
       : runRecordProfilePhase(profilePhase, 'record/render-graph', () =>
           adoptViewGraph(internals, frameState, compiled),
         );
@@ -2952,9 +3076,18 @@ export function sealCompiledViewGraph(
     };
   if (temporal.kind === 'rejected') return { kind: 'rejected', code: 'resource-seal' };
   const sealed = sealFrameGraph(prepared, graph, temporal);
-  return sealed.kind === 'rejected'
-    ? { kind: 'rejected', code: 'resource-seal' }
-    : { kind: 'sealed', graph, value: sealed };
+  if (sealed.kind === 'rejected') return { kind: 'rejected', code: 'resource-seal' };
+  // A retained graph draws the last admitted request. Accepted plans capture the
+  // request at compile, even if it uses the same physical graph as the preceding scene.
+  const configurationRevision =
+    compiled?.kind === 'retained'
+      ? frameState.compiledFrameGraph?.configurationRevision
+      : compiled?.kind === 'compiled' ||
+          compiled?.kind === 'promoted' ||
+          compiled?.kind === 'reused'
+        ? compiled.effects.configurationRevision
+        : undefined;
+  return { kind: 'sealed', graph, value: sealed, configurationRevision };
 }
 
 export type FrameCaptureEncodeOutcome =
@@ -2977,7 +3110,7 @@ export function encodePreparedFrameCaptures(
       internals,
       frameState,
       passCtx,
-      [...attempt.captureFrames, ...attempt.probeCaptureFrames],
+      captureGraphFrames({ cube: attempt.captureFrames, probes: attempt.probeCaptureFrames }),
       light,
       volume.spotLightProjector?.spotIndex,
       cloudShadowProjection,
@@ -3093,14 +3226,11 @@ export function encodePreparedViewGraph(
     submittedShadowGraphGenerationFor(rendererRecording, frameState, preflightGraph),
   );
   for (const pending of attempt.lightTextureResamples) {
-    const encoded = pending.work.execute(encoder);
+    const encoded = pending.work.execute(encoder, recordContext(internals).framePassNames);
     if (!encoded.ok) {
       internals.errorRegistry.fire(encoded.error);
       return { kind: 'rejected' };
     }
-    recordContext(internals).framePassNames?.push(
-      ...pending.work.graph.inspect().passes.map((pass) => pass.name),
-    );
   }
   const frameHooks = frameSubmissionHooks(
     internals,
@@ -3168,6 +3298,8 @@ export function settlePreparedViewGraph(
     return settleCaptureOnlyFrame(internals, prepared.frameState, attempt, result);
   const { fallbackReadbackRequest, sampleResolution, frameTiming } = encoding;
   const preflightGraph = seal.graph;
+  if (preflightGraph instanceof NativeCaptureRecording)
+    throw new Error('Display submission requires its display recording');
   const sealed = seal.value;
   const {
     frameState,
@@ -3215,6 +3347,26 @@ export function settlePreparedViewGraph(
     barrelMapping: submittedBarrelMapping,
   };
   stageDisplaySubmission(internals, frameState, display);
+  const viewportHits = internals.viewportHits;
+  if (
+    viewportHits?.collecting &&
+    submittedBarrelMapping !== undefined &&
+    prepared.camera.target === undefined
+  ) {
+    viewportHits.capture({
+      state: frameState,
+      capture: sealed.passCtx.viewportHit,
+      mapping: submittedBarrelMapping,
+      width: renderExtent?.internalWidth ?? submittedBarrelMapping.width,
+      height: renderExtent?.internalHeight ?? submittedBarrelMapping.height,
+      gpuDriven: !gpuSelection.empty,
+      unsupportedView:
+        prepared.camera.view !== undefined ||
+        prepared.camera.eye !== undefined ||
+        (prepared.camera.clipping?.planes.length ?? 0) > 0 ||
+        isTemporalAntialias(prepared.camera.antialias),
+    });
+  }
   emitSubmittedDrawReceipts(renderables, gpuSelection, onRenderableDraw, frameGpuDriven);
   stageSubmittedShadows(frameState, cascadeCadence, directionalShadowCache);
   frameState.volumetricFogCandidate = {

@@ -106,3 +106,36 @@ it('rejects edits to the handed-off snapshot before cooking or emitting', async 
     await rm(f.root, { recursive: true, force: true });
   }
 }, 30_000);
+
+it('uses the selected Engine package to scan and cook production Pack sources', async () => {
+  const f = await fixture();
+  const engineRoot = join(f.root, 'selected-engine');
+  const plugin = createPluginPackInternal({ roots: [f.source], enginePackageRoot: engineRoot });
+  plugin.configResolved({ command: 'build', base: '/' });
+  try {
+    await mkdir(engineRoot);
+    await writeFile(
+      join(engineRoot, 'package.json'),
+      JSON.stringify({
+        name: '@forgeax/engine',
+        type: 'module',
+        exports: { './types': './types.mjs' },
+      }),
+    );
+    await writeFile(join(engineRoot, 'types.mjs'), "export const filter = 'nearest';");
+    const source = await readFile(f.source, 'utf8');
+    await writeFile(
+      f.source,
+      `import { filter } from '@forgeax/engine/types';\n${source.replace("'linear'", 'filter')}`,
+    );
+    await plugin.buildStart.call(f.context);
+    await plugin.generateBundle.call(f.context);
+    const pack = f.emitted.find((asset) => asset.fileName?.endsWith('.runtime-pack.json'))?.source;
+    expect(pack).toBeDefined();
+    const body = typeof pack === 'string' ? pack : new TextDecoder().decode(pack);
+    expect(JSON.parse(body)).toMatchObject({ assets: [{ payload: { magFilter: 'nearest' } }] });
+  } finally {
+    await plugin.closeBundle();
+    await rm(f.root, { recursive: true, force: true });
+  }
+}, 30_000);

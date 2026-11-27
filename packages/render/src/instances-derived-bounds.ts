@@ -1,11 +1,5 @@
-import type { Mat4Like } from '@forgeax/engine-math';
+import { type Mat4Like, mat4 } from '@forgeax/engine-math';
 import { isFiniteBounds3 } from '@forgeax/engine-types';
-
-// `fingerprintNumericArray` runs on every bounds-cache lookup. Keep the bit
-// reinterpretation scratch outside the hot path so a cache hit does not
-// allocate a pair of typed arrays for each retained render slot.
-const fingerprintScalar = new Float32Array(1);
-const fingerprintBits = new Uint32Array(fingerprintScalar.buffer);
 
 /**
  * Inputs owned by the render extract/persistent-scene boundary. Bounds are
@@ -15,85 +9,14 @@ const fingerprintBits = new Uint32Array(fingerprintScalar.buffer);
 export interface DerivedInstancesUnionBoundsInput {
   readonly meshAabb: ArrayLike<number> | undefined;
   readonly entityWorld: ArrayLike<number>;
+  readonly entityWorldOffset?: number;
   readonly transforms: ArrayLike<number> | undefined;
 }
 
-/**
- * Renderer-owned cache key. Each generation is supplied by the owner that can
- * observe that mutation: mesh/AABB publication, entity world transform, and
- * the packed instance matrix array respectively.
- */
-export interface InstanceBoundsCacheKey {
-  readonly entityKey: number;
-  readonly meshGeneration: number;
-  readonly transformGeneration: number;
-  readonly matrixGeneration: number;
-}
-
-export type InstanceBoundsCacheInput = InstanceBoundsCacheKey & DerivedInstancesUnionBoundsInput;
-
-/**
- * Stable bitwise fingerprint for detached numeric facts used by the cache.
- * Float32 bits are hashed rather than decimal text so a real matrix/AABB
- * change invalidates the projection without keeping another mutable ledger.
- */
-export function fingerprintNumericArray(values: ArrayLike<number>): number {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < values.length; index += 1) {
-    fingerprintScalar[0] = Number(values[index]);
-    hash = Math.imul(hash ^ (fingerprintBits[0] ?? 0), 0x01000193) >>> 0;
-  }
-  return hash >>> 0;
-}
-
-function finiteMatrix(matrix: ArrayLike<number>): matrix is Mat4Like {
-  if (matrix.length < 16) return false;
+function finiteMatrix(matrix: ArrayLike<number>, offset = 0): matrix is Mat4Like {
+  if (matrix.length - offset < 16) return false;
   for (let index = 0; index < 16; index += 1) {
-    if (!Number.isFinite(matrix[index] as number)) return false;
-  }
-  return true;
-}
-
-function multiplyMat4(
-  out: Float32Array,
-  left: ArrayLike<number>,
-  right: ArrayLike<number>,
-  rightOffset = 0,
-): void {
-  for (let column = 0; column < 4; column += 1) {
-    const rightColumn = rightOffset + column * 4;
-    const right0 = Number(right[rightColumn] ?? 0);
-    const right1 = Number(right[rightColumn + 1] ?? 0);
-    const right2 = Number(right[rightColumn + 2] ?? 0);
-    const right3 = Number(right[rightColumn + 3] ?? 0);
-    const outOffset = column * 4;
-    out[outOffset] =
-      Number(left[0] ?? 0) * right0 +
-      Number(left[4] ?? 0) * right1 +
-      Number(left[8] ?? 0) * right2 +
-      Number(left[12] ?? 0) * right3;
-    out[outOffset + 1] =
-      Number(left[1] ?? 0) * right0 +
-      Number(left[5] ?? 0) * right1 +
-      Number(left[9] ?? 0) * right2 +
-      Number(left[13] ?? 0) * right3;
-    out[outOffset + 2] =
-      Number(left[2] ?? 0) * right0 +
-      Number(left[6] ?? 0) * right1 +
-      Number(left[10] ?? 0) * right2 +
-      Number(left[14] ?? 0) * right3;
-    out[outOffset + 3] =
-      Number(left[3] ?? 0) * right0 +
-      Number(left[7] ?? 0) * right1 +
-      Number(left[11] ?? 0) * right2 +
-      Number(left[15] ?? 0) * right3;
-  }
-}
-
-function finiteMatrixAt(values: ArrayLike<number>, offset: number): boolean {
-  if (values.length - offset < 16) return false;
-  for (let index = 0; index < 16; index += 1) {
-    if (!Number.isFinite(values[offset + index] as number)) return false;
+    if (!Number.isFinite(matrix[offset + index] as number)) return false;
   }
   return true;
 }
@@ -268,7 +191,7 @@ function transformAabb(
   return isFiniteBounds3(out);
 }
 
-const composedScratch = new Float32Array(16);
+const composedScratch = mat4.create();
 const transformedScratch = new Float32Array(6);
 
 /**
@@ -281,27 +204,43 @@ const transformedScratch = new Float32Array(6);
 export function deriveInstancesUnionBounds(
   input: DerivedInstancesUnionBoundsInput,
 ): Float32Array | undefined {
-  const { meshAabb, entityWorld, transforms } = input;
-  if (!isFiniteBounds3(meshAabb) || !finiteMatrix(entityWorld) || transforms === undefined) {
+  return writeInstancesUnionBounds(
+    undefined,
+    input.meshAabb,
+    input.entityWorld,
+    input.transforms,
+    input.entityWorldOffset,
+  );
+}
+
+/** Scene culling lends its own six words; detached extraction takes ownership of a new result. */
+export function writeInstancesUnionBounds(
+  output: Float32Array | undefined,
+  meshAabb: ArrayLike<number> | undefined,
+  entityWorld: ArrayLike<number>,
+  transforms: ArrayLike<number> | undefined,
+  entityWorldOffset = 0,
+): Float32Array | undefined {
+  if (
+    !isFiniteBounds3(meshAabb) ||
+    !finiteMatrix(entityWorld, entityWorldOffset) ||
+    transforms === undefined
+  ) {
     return undefined;
   }
   if (transforms.length === 0 || transforms.length % 16 !== 0) return undefined;
   const local = meshAabb;
-  const union = new Float32Array(6);
+  const union = output ?? new Float32Array(6);
   const composed = composedScratch;
   const transformed = transformedScratch;
   let initialized = false;
   for (let offset = 0; offset < transforms.length; offset += 16) {
-    if (!finiteMatrixAt(transforms, offset)) return undefined;
-    multiplyMat4(composed, entityWorld, transforms, offset);
+    if (!finiteMatrix(transforms, offset)) return undefined;
+    mat4.multiply(composed, entityWorld, transforms, offset, entityWorldOffset);
     if (!finiteMatrix(composed) || !transformAabb(transformed, local, composed)) return undefined;
     initialized = includeBox(union, transformed, initialized);
   }
   return initialized && isFiniteBounds3(union) ? union : undefined;
-}
-
-interface InstanceBoundsCacheEntry extends InstanceBoundsCacheKey {
-  readonly bounds: Float32Array | undefined;
 }
 
 export interface InstanceBoundsCacheInspection {
@@ -309,66 +248,4 @@ export interface InstanceBoundsCacheInspection {
   readonly misses: number;
   readonly derives: number;
   readonly invalidations: number;
-}
-
-/**
- * Small renderer-owned per-entity cache. A changed generation replaces the
- * entry atomically; packed-id reuse is safe when its owner supplies a new
- * generation (the normal RenderScene slot generation contract).
- */
-export class InstanceBoundsCache {
-  private readonly entries = new Map<number, InstanceBoundsCacheEntry>();
-  private hits = 0;
-  private misses = 0;
-  private derives = 0;
-  private invalidations = 0;
-
-  private key(input: Pick<InstanceBoundsCacheKey, 'entityKey'>): number {
-    return input.entityKey;
-  }
-
-  get(input: InstanceBoundsCacheInput): Float32Array | undefined {
-    const key = this.key(input);
-    const previous = this.entries.get(key);
-    if (
-      previous !== undefined &&
-      previous.meshGeneration === input.meshGeneration &&
-      previous.transformGeneration === input.transformGeneration &&
-      previous.matrixGeneration === input.matrixGeneration
-    ) {
-      this.hits += 1;
-      return previous.bounds;
-    }
-    this.misses += 1;
-    this.derives += 1;
-    const bounds = deriveInstancesUnionBounds(input);
-    this.entries.set(key, {
-      entityKey: input.entityKey,
-      meshGeneration: input.meshGeneration,
-      transformGeneration: input.transformGeneration,
-      matrixGeneration: input.matrixGeneration,
-      bounds,
-    });
-    return bounds;
-  }
-
-  invalidate(entityKey?: number): void {
-    if (entityKey === undefined) {
-      if (this.entries.size > 0) this.invalidations += this.entries.size;
-      this.entries.clear();
-    } else {
-      if (this.entries.delete(this.key({ entityKey }))) {
-        this.invalidations += 1;
-      }
-    }
-  }
-
-  inspect(): InstanceBoundsCacheInspection {
-    return {
-      hits: this.hits,
-      misses: this.misses,
-      derives: this.derives,
-      invalidations: this.invalidations,
-    };
-  }
 }

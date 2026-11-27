@@ -2,7 +2,7 @@ import type { HostCallerIdentity, HostTransportServer, HostTransportClient } fro
 import type { FrontendConfig } from './frontend-contract.ts';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-export type ViewHostServerOptions = { backendHost?: { transport: HostTransportServer }; transport?: HostTransportServer; accessToken?: string; host?: string; port?: number; path?: string; staticRoot?: string | URL; /** Serves Engine-owned viewer binaries; see viewer-static. */ engineRoot?: string; frontendConfig?: Pick<FrontendConfig, 'layout'>; frontendSourceId?: string; onClientConnect?: (caller: HostCallerIdentity) => unknown; onClientDisconnect?: (caller: HostCallerIdentity) => unknown };
+export type ViewHostServerOptions = { backendHost?: { transport: HostTransportServer }; transport?: HostTransportServer; accessToken?: string; host?: string; port?: number; path?: string; staticRoot?: string | URL; /** Serves Engine-owned viewer binaries; see viewer-static. */ engineRoot?: string; frontendConfig?: Pick<FrontendConfig, 'layout' | 'engineVersion'>; frontendSourceId?: string; onClientConnect?: (caller: HostCallerIdentity) => unknown; onClientDisconnect?: (caller: HostCallerIdentity) => unknown };
 
 import { createReadStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -115,7 +115,7 @@ export async function startViewHostServer({
           frontendEndpoint,
           frontendTicket,
           workspacePath: path,
-          ...(frontendConfig?.layout === undefined ? {} : { frontendConfig: { layout: frontendConfig.layout } }),
+          ...(frontendConfig === undefined ? {} : { frontendConfig: { layout: frontendConfig.layout, engineVersion: frontendConfig.engineVersion } }),
         }),
       );
       return;

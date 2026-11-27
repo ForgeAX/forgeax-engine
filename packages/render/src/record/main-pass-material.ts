@@ -3,23 +3,26 @@ import {
   transmissionBackdropAvailable,
 } from '../assembly/device-feature-admission';
 import { meshSsboBuffer } from '../assembly/mesh-ssbo-grow';
-import { planarReflectionMaterialEntries } from '../capture/planar-material';
 import { getOrCreateDirectDfgLut } from '../device/direct-dfg-lut';
+import { GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import type { IblPrecomputeOutput } from '../ibl/IblPipelineCache';
+import { SKY_SH_BYTES } from '../ibl/sky-sh';
 import { derivedRenderState } from '../material-render-state';
+import { materialResource } from '../material-resource';
 import { materialSourceScope } from '../material-source';
 import { type RenderResourceScope, renderAssetRevision } from '../publication/resource-scope';
 import { resolveTargetEnvironment } from '../targets/environment';
 import { renderTextureSourceKey } from '../textures/source-token';
 import { recordContext } from '../world/view-record-context';
-import type { MaterialBgAssemblyCache } from './material-bg-assembly-cache';
 import {
-  materialUniformResources,
-  materialUniformSlot,
-  prepareMaterialUniform,
-} from './material-uniforms';
-import type { _InternalRenderPipelineContext } from './render-context';
-import { MATERIAL_PER_ENTITY_STRIDE } from './render-context';
+  type GraphBindingViews,
+  graphBindingViewsCurrent,
+  materialBindingViewsCurrent,
+  sameGraphBindingViews,
+} from './graph-binding-views';
+import type { MaterialBgAssemblyCache } from './material-bg-assembly-cache';
+import { materialBindingUniformResources, prepareMaterialUniform } from './material-uniforms';
+import type { _InternalRenderPipelineContext, RasterMaterialLayout } from './render-context';
 import {
   PLANAR_REFLECTION_DISABLED_UNIFORM_OFFSET,
   PLANAR_REFLECTION_UNIFORM_OFFSET,
@@ -62,10 +65,15 @@ import { derive, getAdmittedParamSchemaInterface } from '@forgeax/engine-types';
 
 import type { GpuResidencyCache } from '../device/gpu-residency';
 import { VideoUploadUnsupportedError } from '../errors/render';
-import { isRenderFeatureTextureSource } from '../features/feature-texture-source';
 import {
+  isRenderFeatureTextureSource,
+  type RenderFeatureTextureSource,
+} from '../features/feature-texture-source';
+import {
+  assembleLitMaterialEntries,
   assembleMaterialWithSkylightEntries,
   type SkylightBindGroupResources,
+  type SkylightFallback,
   type SurfaceMediumBindGroupResources,
   skylightBindGroupResources,
   skylightGroundLane,
@@ -74,15 +82,16 @@ import {
   type WaterFluidBindGroupResources,
 } from '../ibl/skylight-bind-group';
 import { writeMaterialTextureCoordinateRecord } from '../material-texture-coordinates';
-import type { IblBindingEntryInspection, IblBindingInspection } from '../mesh-material-bindings';
 import {
   isCanonicalStandardPbrMaterialShader,
   isStandardPbrMaterialShader,
+  materialUsesLitSceneInputs,
   materialUsesSurfaceSceneInputs,
   omittedStandardMaterialBindings,
   physicalTextureFields,
   programDeclaresTransmissionBackdrop,
-  projectSurfaceMaterialBindings,
+  projectedStandardMaterialLayout,
+  projectMaterialLayoutEntries,
   sharedMaterialBindingDeclarations,
   standardInputField,
 } from '../pbr-pipeline';
@@ -93,19 +102,20 @@ import {
   resolveRenderTargetMaterialSource,
 } from '../targets/material-source';
 import {
-  canvasTextureState,
+  type CanvasSourceSlot,
+  type CanvasTextureSource,
+  canvasSourceSlot,
   isCanvasTextureSource,
   type MaterialTextureSource,
 } from '../textures/canvas-texture';
 import { isExternalTextureSource } from '../textures/external-texture';
 import type {
   BindGroupCounts,
+  CanvasFieldBinding,
   MaterialBgAssemblyCacheEntry,
+  MaterialBindingSources,
   RenderFrameState,
 } from './frame-snapshot';
-import { getOpaqueResourceIdentity } from './frame-snapshot';
-
-import { extractEntryResourceHandle, getOrCreatePerEntity } from './mesh-ssbo';
 
 import {
   type PipelineState,
@@ -134,6 +144,8 @@ export function selectMaterialGroup2(
 interface MaterialTextureProjection {
   readonly parametersByName: ReadonlyMap<string, ParamSchemaEntry>;
   readonly textureFields: readonly string[];
+  readonly storageCount: number;
+  readonly samplerBindings: ReadonlyMap<string, number> | undefined;
   readonly physicalFields: readonly string[];
   readonly standardUserFields: readonly string[];
   readonly parameterTypes: ReadonlyMap<string, ParamSchemaEntry['type']>;
@@ -152,7 +164,21 @@ function materialTextureProjection(schema: readonly ParamSchemaEntry[]) {
   const textureFields = Object.freeze([...derived.textureFieldNames]);
   const physicalFields = Object.freeze([...physicalTextureFields(schema)]);
   const physicalNames = new Set(physicalFields);
+  const storageCount = storageBindingCount(derived);
+  let samplerBindings: Map<string, number> | undefined;
+  if (storageCount > 0) {
+    samplerBindings = new Map();
+    for (const resource of derived.resourceBindings)
+      if (
+        resource.kind === 'sampler' &&
+        resource.parameter !== undefined &&
+        !samplerBindings.has(resource.parameter)
+      )
+        samplerBindings.set(resource.parameter, resource.binding);
+  }
   const projection: MaterialTextureProjection = {
+    storageCount,
+    samplerBindings,
     parametersByName: new Map(schema.map((entry) => [entry.name, entry])),
     parameterTypes: derived.parameterTypes,
     textureFields,
@@ -226,7 +252,10 @@ const lineRenderState = (renderState: MaterialRenderState | undefined): Material
 // uniform recovery shape across URP / HDRP / skin.
 
 export function selectGeometryPipeline(
-  pipelineState: PipelineState,
+  pipelineState: Pick<
+    PipelineState,
+    'unlitPipeline' | 'unlitPipelineHdr' | 'unlitPipelineMsaa' | 'unlitPipelineHdrMsaa'
+  >,
   tonemapActive: boolean,
   msaaActive: boolean,
 ): RenderPipeline | null {
@@ -484,30 +513,71 @@ export function materialRenderTargetSourceForField(
       : resolveSource(source);
 }
 
-/** Upload the current Canvas version through the same store as video frames. */
-export function materialCanvasTextureView(
-  material: MaterialSnapshot,
-  field: string,
+function resolveCanvasView(
+  source: CanvasTextureSource,
+  localSlot: CanvasSourceSlot | undefined,
   world: RenderResourceScope,
   runtime: RenderSystemRuntime,
+  binding?: CanvasFieldBinding,
 ): TextureView | undefined {
-  const source = material.textureSources?.get(field);
   const store = runtime.dynamicTextureStore;
-  if (!isCanvasTextureSource(source) || store === undefined) return undefined;
-  const local = canvasTextureState(source);
-  const published = world.canvasFrame?.(renderTextureSourceKey(source));
-  const image = local?.canvas ?? published?.frame;
-  const key = local ?? published?.key;
-  if (key === undefined) return undefined;
-  if (image === undefined) return store.getView(key);
-  const width = 'displayWidth' in image ? image.displayWidth : image.width;
-  const height = 'displayHeight' in image ? image.displayHeight : image.height;
-  const uploaded = store.uploadFrame(key, image, width, height, {
-    version: local?.version ?? published?.version,
-    generateMipmaps: true,
-    flipY: local?.flipY ?? published?.flipY ?? false,
-    signal: local?.lifetime.signal ?? published?.signal,
-  });
+  if (store === undefined) return undefined;
+  const local = localSlot?.state;
+  if (local !== undefined) {
+    const snapshot = local.snapshot;
+    return uploadCanvasView(
+      store,
+      runtime,
+      local,
+      snapshot?.frame ?? local.canvas,
+      snapshot?.width ?? local.canvas.width,
+      snapshot?.height ?? local.canvas.height,
+      local.version,
+      local.flipY,
+      local.lifetime.signal,
+      binding,
+    );
+  }
+  const published = world.canvasFrame?.(binding?.publicationKey ?? renderTextureSourceKey(source));
+  if (published === undefined) return undefined;
+  if (published.frame === undefined) return store.getView(published.key);
+  return uploadCanvasView(
+    store,
+    runtime,
+    published.key,
+    published.frame,
+    published.frame.displayWidth,
+    published.frame.displayHeight,
+    published.version,
+    published.flipY,
+    published.signal,
+    binding,
+  );
+}
+
+function uploadCanvasView(
+  store: DynamicTextureStore,
+  runtime: RenderSystemRuntime,
+  key: object,
+  image: HTMLCanvasElement | OffscreenCanvas | VideoFrame,
+  width: number,
+  height: number,
+  version: number,
+  flipY: boolean,
+  signal: AbortSignal,
+  binding?: CanvasFieldBinding,
+): TextureView | undefined {
+  const uploaded = store.uploadCanvasFrame(
+    key,
+    image,
+    width,
+    height,
+    version,
+    flipY,
+    signal,
+    binding?.view,
+  );
+  if (uploaded === undefined && binding !== undefined) return undefined;
   if (uploaded !== undefined && !uploaded.ok) runtime.errorRegistry.fire(uploaded.error);
   return uploaded?.ok ? uploaded.value : store.getView(key);
 }
@@ -713,7 +783,14 @@ export function defaultViewForUserRegionField(
   pipelineState: PipelineState,
   schema?: readonly ParamSchemaEntry[],
 ): TextureView {
-  const parameter = parameterByName(schema, field);
+  return defaultViewForParameter(field, pipelineState, parameterByName(schema, field));
+}
+
+function defaultViewForParameter(
+  field: string,
+  pipelineState: PipelineState,
+  parameter: ParamSchemaEntry | undefined,
+): TextureView {
   if (parameter?.type === 'texture_cube') {
     // The renderer already owns a valid white cube for the Skylight fallback.
     // Use it until a receipt-promoted RenderTarget source becomes available;
@@ -724,35 +801,6 @@ export function defaultViewForUserRegionField(
     return pipelineState.defaultWhite3dTextureView ?? pipelineState.defaultWhiteTextureView;
   }
   if (parameter?.type === 'texture2d_array') {
-    return pipelineState.defaultWhite2dArrayTextureView ?? pipelineState.defaultWhiteTextureView;
-  }
-  if (field === 'normalTexture') return pipelineState.defaultNormalTextureView;
-  if (field === 'baseColorTexture') return pipelineState.fallbackTextureView;
-  if (field === 'anisotropyTexture') {
-    // The flat-normal fallback encodes a zero tangent direction and unit B
-    // strength; the shader's zero-vector guard selects its neutral (1, 0)
-    // axis. This keeps an absent anisotropy map neutral even on hosts that do
-    // not allocate the optional dedicated identity texture.
-    return pipelineState.defaultAnisotropyTextureView ?? pipelineState.defaultNormalTextureView;
-  }
-  return pipelineState.defaultWhiteTextureView;
-}
-
-function defaultViewForParameterType(
-  field: string,
-  pipelineState: PipelineState,
-  type: ParamSchemaEntry['type'] | undefined,
-): TextureView {
-  if (type === 'texture_cube') {
-    // The renderer already owns a valid white cube for the Skylight fallback.
-    // Use it until a receipt-promoted RenderTarget source becomes available;
-    // binding a 2D view here would invalidate the custom cube material BGL.
-    return pipelineState.skylightFallback?.irradianceView ?? pipelineState.defaultWhiteTextureView;
-  }
-  if (type === 'texture3d') {
-    return pipelineState.defaultWhite3dTextureView ?? pipelineState.defaultWhiteTextureView;
-  }
-  if (type === 'texture2d_array') {
     return pipelineState.defaultWhite2dArrayTextureView ?? pipelineState.defaultWhiteTextureView;
   }
   if (field === 'normalTexture') return pipelineState.defaultNormalTextureView;
@@ -983,7 +1031,15 @@ export function applyParamSnapshotToUbo(
   if (paramSchema === undefined) return;
   if (paramSnapshot === undefined) return;
   const dataView = view ?? materialNumericView(payload);
-  const { uboLayout } = derive(paramSchema);
+  writeMaterialUniformValues(dataView, derive(paramSchema).uboLayout, paramSnapshot);
+}
+
+/** Write precisely the layout whose identity was reserved for these parameters. */
+export function writeMaterialUniformValues(
+  dataView: DataView,
+  uboLayout: ReturnType<typeof derive>['uboLayout'],
+  paramSnapshot: Readonly<Record<string, number | readonly number[] | string | undefined>>,
+): void {
   for (const entry of uboLayout.entries) {
     const value = paramSnapshot[entry.name];
     if (value === undefined) continue;
@@ -1107,6 +1163,7 @@ export function writePreparedMaterialUbo(
  * @internal
  */
 export interface PerSubmeshMaterialBgDeps {
+  readonly graphViews?: GraphBindingViews;
   readonly planarReflectionView?: TextureView;
   readonly runtime: RenderSystemRuntime;
   readonly pipelineState: PipelineState;
@@ -1115,6 +1172,12 @@ export interface PerSubmeshMaterialBgDeps {
   readonly materialSlice: number;
   readonly videoHighPerfAvailable: boolean;
   readonly skylightResources: SkylightBindGroupResources;
+  /** Pure reads of the actual scene/environment owners, detached from the recording frame. */
+  readonly bindingSceneCurrent?: (
+    skylight: SkylightBindGroupResources,
+    probeIndex: number | undefined,
+    planar: boolean,
+  ) => boolean;
   readonly resolveRenderTargetTextureSource?: RenderSystemRuntime['resolveRenderTargetTextureSource'];
   readonly resolveFeatureTextureSource?: (name: string) => TextureView | undefined;
   readonly resolveReflectionProbeResources?: (
@@ -1122,7 +1185,6 @@ export interface PerSubmeshMaterialBgDeps {
     entityKey: number | undefined,
     resourceClass?: string,
   ) => { readonly resources: SkylightBindGroupResources; readonly probeIndex: number } | undefined;
-  readonly materialBgShared: Map<string, WeakMap<object, unknown>>;
   /** Cross-frame final BG reuse keyed by the stable source material handle. */
   readonly materialBgAssemblyCache: MaterialBgAssemblyCache;
   /** Producer-owned numeric scene rows consumed by scene-index PBR draws. */
@@ -1140,60 +1202,6 @@ export interface PerSubmeshMaterialBgDeps {
   readonly surfaceFluidSimulation?: { readonly fields: TextureView; readonly descriptors: Buffer };
   readonly bindGroupCounts: BindGroupCounts;
   readonly frameState: RenderFrameState;
-}
-
-/** Project actual binding provenance; only facts retained across hits need freezing. */
-function projectIblMaterialBinding(
-  materialBgl: BindGroupLayout,
-  bindGroup: BindGroup,
-  entries: readonly BindGroupEntry[],
-  iblStart: number,
-  retain: boolean,
-): IblBindingInspection['material'] {
-  const start = entries.findIndex((entry) => entry.binding === iblStart);
-  if (start < 0) return undefined;
-  const projected: IblBindingEntryInspection[] = [];
-  for (let i = start; i < Math.min(entries.length, start + 6); i++) {
-    const entry = entries[i];
-    if (entry === undefined) continue;
-    const { kind } = entry.resource;
-    if (kind === 'externalTexture' || kind === 'accelerationStructure') continue;
-    const value = kind === 'buffer' ? entry.resource.value.buffer : entry.resource.value;
-    if (typeof value === 'object' && value !== null) {
-      const fact = {
-        binding: entry.binding,
-        kind,
-        resourceIdentity: getOpaqueResourceIdentity(value),
-      };
-      projected.push(retain ? Object.freeze(fact) : fact);
-    }
-  }
-  const bindings = projected.map((entry) => entry.binding);
-  const fact: NonNullable<IblBindingInspection['material']> = {
-    bindGroupIdentity: getOpaqueResourceIdentity(bindGroup),
-    materialBglIdentity: getOpaqueResourceIdentity(materialBgl),
-    cache: retain ? 'hit' : 'miss',
-    skylightBindingStart: entries[start]?.binding ?? 0,
-    entries: retain ? Object.freeze(projected) : projected,
-    reflectionBindings: retain ? Object.freeze(bindings) : bindings,
-  };
-  return retain ? Object.freeze(fact) : fact;
-}
-
-const NO_IBL_BINDING_ERRORS: readonly string[] = Object.freeze([]);
-function publishIblBindingReceipt(
-  frameState: RenderFrameState,
-  receipt: NonNullable<RenderFrameState['iblBindingInspection']>,
-  material: NonNullable<IblBindingInspection['material']>,
-): void {
-  if (
-    material.cache === 'hit' &&
-    receipt.material === material &&
-    receipt.status === 'binding-chain-consistent' &&
-    receipt.errors.length === 0
-  )
-    return;
-  frameState.iblBindingInspection = { ...receipt, material, errors: NO_IBL_BINDING_ERRORS };
 }
 
 const nativeMaterialMapIterator = Map.prototype[Symbol.iterator];
@@ -1239,8 +1247,11 @@ function sameMaterialHandleMap(
   return true;
 }
 
-/** Uniform row values are not bind-group resources; Worker cloning preserves these handles. */
-function sameMaterialBindingSources(left: MaterialSnapshot, right: MaterialSnapshot): boolean {
+/** Compare the resource inputs shared by synchronous draws and retained submissions. */
+function sameMaterialBindingSources(
+  left: MaterialBindingSources,
+  right: MaterialBindingSources,
+): boolean {
   return (
     left === right ||
     (left.standardTextureMask === right.standardTextureMask &&
@@ -1256,6 +1267,101 @@ function sameMaterialBindingSources(left: MaterialSnapshot, right: MaterialSnaps
   );
 }
 
+function captureBindingInputs(
+  material: MaterialSnapshot,
+  retained: boolean,
+): MaterialBindingSources {
+  if (!retained || materialResource(material)?.ownsValues(material) === true) return material;
+  const { paramSnapshot, textureHandles, samplerHandles } = material;
+  return {
+    standardTextureMask: material.standardTextureMask,
+    emissiveTexture: material.emissiveTexture,
+    occlusionTexture: material.occlusionTexture,
+    paramSnapshot:
+      paramSnapshot === undefined
+        ? undefined
+        : {
+            transmission: paramSnapshot.transmission === undefined ? undefined : true,
+            displacementMode: paramSnapshot.displacementMode,
+          },
+    textureHandles: textureHandles === undefined ? undefined : new Map(textureHandles),
+    samplerHandles: samplerHandles === undefined ? undefined : new Map(samplerHandles),
+  };
+}
+
+/** Accepted binding structure is distinct from numeric values and pending asset versions. */
+function materialBindingCurrency(
+  material: MaterialSnapshot,
+  sources: MaterialBindingSources,
+  shaderId: string | undefined,
+  bgl: BindGroupLayout,
+  perShader: BindGroupLayout | undefined,
+  runtime: RenderSystemRuntime,
+  pipeline: PipelineState,
+  standardMaterialLayoutIndex: number,
+  retained: boolean,
+): (() => boolean) | undefined {
+  if (!retained || (material.textureSources?.size ?? 0) > 0) return undefined;
+  const owner = materialResource(material);
+  // Only these values shape the binding ABI. Numeric uniforms and program payloads
+  // have separate owners. Capture borrowed maps before a resolver may mutate them.
+  const { materialShaderId, materialParamSchema } = material;
+  const registry = runtime.shaderRegistry;
+  const fallback = pipeline.skylightFallback === null ? null : { ...pipeline.skylightFallback };
+  const declaration =
+    shaderId === undefined ? undefined : registry?.materialArtifactDeclaration(shaderId);
+  return () => {
+    const value = owner?.snapshot ?? material;
+    const current =
+      shaderId === undefined ? undefined : registry?.materialArtifactDeclaration(shaderId);
+    return (
+      (value.textureSources?.size ?? 0) === 0 &&
+      (value.videoTextureFields?.size ?? 0) === 0 &&
+      value.materialShaderId === materialShaderId &&
+      sameMaterialBindingSources(sources, value) &&
+      runtime.shaderRegistry === registry &&
+      sameMaterialProgramDeclaration(declaration, current) &&
+      sameMaterialFallback(fallback, pipeline.skylightFallback) &&
+      (perShader === undefined ||
+        (shaderId !== undefined &&
+          runtime.lookupMaterialBindGroupLayout?.(shaderId, materialParamSchema) === perShader)) &&
+      resolveSubmeshMaterialLayout(
+        pipeline.materialBindGroupLayout,
+        perShader,
+        standardMaterialLayoutIndex,
+      ) === bgl
+    );
+  };
+}
+
+function sameMaterialFallback(a: SkylightFallback | null, b: SkylightFallback | null): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.skySh === b.skySh &&
+    a.prefilterView === b.prefilterView &&
+    a.brdfLutView === b.brdfLutView &&
+    a.sampler === b.sampler &&
+    a.intensityBuffer === b.intensityBuffer
+  );
+}
+
+type MaterialProgramDeclaration = ReturnType<
+  NonNullable<RenderSystemRuntime['shaderRegistry']>['materialArtifactDeclaration']
+>;
+function sameMaterialProgramDeclaration(
+  a: MaterialProgramDeclaration,
+  b: MaterialProgramDeclaration,
+): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.kind === 'ready' && b.kind === 'ready') return a.entry === b.entry;
+  return (
+    a.kind === 'bytes' &&
+    b.kind === 'bytes' &&
+    a.paramSchema === b.paramSchema &&
+    a.receipt === b.receipt
+  );
+}
+
 function captureMaterialResources(
   material: MaterialSnapshot,
   world: RenderResourceScope,
@@ -1264,51 +1370,73 @@ function captureMaterialResources(
     | ReadonlyMap<string, ReturnType<NonNullable<RenderSystemRuntime['preparedMaterialTexture']>>>
     | undefined,
 ): MaterialBgAssemblyCacheEntry['materialResources'] {
-  const textures = new Set(
-    [...(material.textureHandles ?? [])]
-      .filter(([field]) => prepared?.get(field) === undefined)
-      .map(([, handle]) => handle),
-  );
+  const textureHandles = material.textureHandles;
+  const samplerHandles = material.samplerHandles;
+  if (
+    !textureHandles?.size &&
+    !samplerHandles?.size &&
+    material.emissiveTexture === undefined &&
+    material.occlusionTexture === undefined
+  )
+    return NO_MATERIAL_RESOURCES;
+  const resources: MaterialBgAssemblyCacheEntry['materialResources'][number][] = [];
+  const textures = new Set<AssetHandle<'texture' | 'gpu-texture'>>();
+  if (textureHandles !== undefined) {
+    for (const [field, handle] of textureHandles) {
+      if (prepared?.get(field) === undefined) textures.add(handle);
+    }
+  }
   if (material.emissiveTexture !== undefined && prepared?.get('emissiveTexture') === undefined)
     textures.add(material.emissiveTexture);
   if (material.occlusionTexture !== undefined && prepared?.get('occlusionTexture') === undefined)
     textures.add(material.occlusionTexture);
-  return [
-    ...[...textures].map((handle) => ({
+  for (const handle of textures) {
+    resources.push({
       handle,
-      kind: 'texture' as const,
+      kind: 'texture',
       revision: renderAssetRevision(world, handle),
       view: store.getTextureGpuView(handle, world),
-    })),
-    ...[
-      ...new Set(
-        [...(material.samplerHandles ?? [])]
-          .filter(([field]) => prepared?.get(field) === undefined)
-          .map(([, handle]) => handle),
-      ),
-    ].map((handle) => ({
-      handle,
-      kind: 'sampler' as const,
-      revision: renderAssetRevision(world, handle),
-      view: undefined,
-    })),
-  ];
+    });
+  }
+  if (samplerHandles?.size) {
+    const samplers = new Set<number>();
+    for (const [field, handle] of samplerHandles) {
+      if (prepared?.get(field) === undefined) samplers.add(handle);
+    }
+    for (const handle of samplers)
+      resources.push({
+        handle,
+        kind: 'sampler',
+        revision: renderAssetRevision(world, handle),
+        view: undefined,
+      });
+  }
+  return resources;
 }
 
 /** Revalidate only resources actually retained by this material binding. */
 export function materialBindingResourcesCurrent(
-  entry: MaterialBgAssemblyCacheEntry,
+  entry: Pick<
+    MaterialBgAssemblyCacheEntry,
+    'preparedTextureDomain' | 'preparedTextures' | 'materialResources' | 'material'
+  >,
   world: RenderResourceScope,
   store: GpuResidencyCache,
   runtime?: Pick<RenderSystemRuntime, 'preparedMaterialTexture'>,
   material = entry.material,
 ): boolean {
-  for (const resource of entry.preparedTextures) {
+  const provider = runtime?.preparedMaterialTexture;
+  if (entry.preparedTextureDomain !== (provider?.parameters ?? provider)) return false;
+  const prepared = entry.preparedTextures;
+  for (let index = 0; index < prepared.length; index++) {
+    const resource = prepared[index] as (typeof prepared)[number];
     const current = runtime?.preparedMaterialTexture?.(material, resource.parameter);
     if (current?.textureView !== resource.textureView || current?.sampler !== resource.sampler)
       return false;
   }
-  for (const resource of entry.materialResources)
+  const resident = entry.materialResources;
+  for (let index = 0; index < resident.length; index++) {
+    const resource = resident[index] as (typeof resident)[number];
     if (
       resource.revision !== renderAssetRevision(world, resource.handle) ||
       (resource.kind !== 'sampler' &&
@@ -1316,6 +1444,7 @@ export function materialBindingResourcesCurrent(
           store.getTextureGpuView(resource.handle as AssetHandle<'texture' | 'gpu-texture'>, world))
     )
       return false;
+  }
   return true;
 }
 
@@ -1327,12 +1456,26 @@ function samePlanarReflection(
   return retained === undefined || (retained.view === view && retained.uniform === uniform);
 }
 
+function sameSkylightBindings(
+  a: SkylightBindGroupResources,
+  b: SkylightBindGroupResources,
+): boolean {
+  return (
+    a.skySh === b.skySh &&
+    a.irradianceSampler === b.irradianceSampler &&
+    a.prefilterView === b.prefilterView &&
+    a.prefilterSampler === b.prefilterSampler &&
+    a.brdfLutView === b.brdfLutView &&
+    a.intensityBuffer === b.intensityBuffer
+  );
+}
+
 /** @internal Exported only so buffer-generation invalidation stays regression-tested. */
 export function isMaterialBgAssemblyCacheHit(
   cached: MaterialBgAssemblyCacheEntry | undefined,
   material: MaterialSnapshot,
   materialBgl: BindGroupLayout,
-  materialBuffer: Buffer,
+  materialBuffer: Buffer | undefined,
   skylightResources: SkylightBindGroupResources,
   resourcesCurrent: boolean,
   transmissionBackdropView?: TextureView | null,
@@ -1340,32 +1483,38 @@ export function isMaterialBgAssemblyCacheHit(
   surfaceRawDepthView?: TextureView | null,
   planarReflectionView?: TextureView,
   planarReflectionUniform?: Buffer,
+  graphViews?: GraphBindingViews,
+  surfaceNearestLayerView?: TextureView | null,
+  surfaceNearestDepthView?: TextureView | null,
+  deps?: PerSubmeshMaterialBgDeps,
+  world?: RenderResourceScope,
+  schema?: readonly ParamSchemaEntry[],
 ): cached is MaterialBgAssemblyCacheEntry {
-  // Logical target sources keep their identity when a resize promotes a new
-  // physical view. Resolve those views each frame; the lower binding cache is
-  // keyed by the actual GPU resources and still reuses unchanged bindings.
+  // A live source must have resolved its physical views during this draw.
   if (
-    transmissionBackdropView != null ||
-    surfaceRawDepthView != null ||
-    (material.textureSources?.size ?? 0) > 0 ||
+    !materialBindingViewsCurrent(
+      graphViews,
+      transmissionBackdropView,
+      surfaceRawDepthView,
+      surfaceNearestLayerView,
+      surfaceNearestDepthView,
+    ) ||
     (material.videoTextureFields?.size ?? 0) > 0
   )
     return false;
   return (
     cached !== undefined &&
-    sameMaterialBindingSources(cached.material, material) &&
+    sameGraphBindingViews(cached.graphViews, graphViews) &&
+    sameMaterialBindingSources(cached.inputs ?? cached.material, material) &&
     resourcesCurrent &&
     cached.materialBgl === materialBgl &&
-    cached.materialBuffer === materialBuffer &&
+    (cached.dynamicOffsetCount === 0 ||
+      materialBuffer === undefined ||
+      cached.materialBuffer === materialBuffer) &&
     cached.sceneMaterialBuffer === sceneMaterialBuffer &&
-    cached.skylightResources.irradianceView === skylightResources.irradianceView &&
-    cached.skylightResources.irradianceSampler === skylightResources.irradianceSampler &&
-    cached.skylightResources.prefilterView === skylightResources.prefilterView &&
-    cached.skylightResources.skylightPrefilterView === skylightResources.skylightPrefilterView &&
-    cached.skylightResources.prefilterSampler === skylightResources.prefilterSampler &&
-    cached.skylightResources.brdfLutView === skylightResources.brdfLutView &&
-    cached.skylightResources.intensityBuffer === skylightResources.intensityBuffer &&
-    samePlanarReflection(cached.planarReflection, planarReflectionView, planarReflectionUniform)
+    sameSkylightBindings(cached.skylightResources, skylightResources) &&
+    samePlanarReflection(cached.planarReflection, planarReflectionView, planarReflectionUniform) &&
+    canvasMaterialBindingsCurrent(cached, material, deps, world, schema)
   );
 }
 
@@ -1375,6 +1524,12 @@ export function isMaterialBgAssemblyCacheHit(
  * was resident. Prepared textures are resolved once per field.
  */
 interface MaterialBgAssembly {
+  /** Only an admitted shader with frame-independent non-Canvas bindings can own these slots. */
+  canvas?: CanvasFieldBinding[];
+  readonly acceptsCanvases: boolean;
+  readonly selectedLayout: RasterMaterialLayout | undefined;
+  readonly inputs: MaterialBindingSources;
+  readonly bindingSourcesCurrent: (() => boolean) | undefined;
   readonly material: MaterialSnapshot;
   readonly entityKey: number | undefined;
   readonly world: RenderResourceScope;
@@ -1388,6 +1543,8 @@ interface MaterialBgAssembly {
   readonly shaderId: string | undefined;
   readonly schema: readonly ParamSchemaEntry[] | undefined;
   readonly projection: MaterialTextureProjection | undefined;
+  readonly surfaceMediumResources: SurfaceMediumBindGroupResources | undefined;
+  readonly graphViews: GraphBindingViews | undefined;
   readonly perShaderBgl: BindGroupLayout | undefined;
   readonly bgl: BindGroupLayout;
   readonly store: GpuResidencyCache;
@@ -1398,6 +1555,7 @@ interface MaterialBgAssembly {
     | undefined;
   resident: boolean;
   missingBaseColor: boolean;
+  readonly standardMaterialLayoutIndex?: number;
 }
 
 function materialBindingSampler(assembly: MaterialBgAssembly, field: string | undefined): Sampler {
@@ -1407,37 +1565,69 @@ function materialBindingSampler(assembly: MaterialBgAssembly, field: string | un
   if (sampler === undefined) assembly.resident = false;
   return sampler ?? assembly.pipelineState.defaultSampler;
 }
-// Cache hits must not allocate the miss factory's captured resource context.
-function materialBindingGroup(
-  runtime: RenderSystemRuntime,
-  layout: BindGroupLayout,
-  entries: BindGroupEntry[],
-  shared: Map<string, WeakMap<object, unknown>>,
-  shaderId: string | undefined,
-  handles: readonly object[],
-  backdrop: boolean,
-  counts: BindGroupCounts,
-): BindGroup {
-  const create = () => {
-    const result = runtime.device.createBindGroup({
-      label: 'pbr-material-skylight-bg',
-      layout,
-      entries,
+function requireCurrentGraphViews(facts: GraphBindingViews | undefined): void {
+  if (facts !== undefined && !graphBindingViewsCurrent(facts))
+    throw new RhiError({
+      code: 'rhi-descriptor-invalid',
+      expected: 'the original graph-owned material views after native callbacks',
+      hint: 'discard this recording and prepare bindings against the current graph',
     });
-    if (!result.ok) throw result.error;
-    return result.value;
-  };
-  return backdrop
-    ? create()
-    : getOrCreatePerEntity(
-        shared,
-        shaderId ?? '',
-        [layout, ...handles],
-        'material-shared',
-        create,
-        counts,
-      );
 }
+
+function materialAssemblyGraphViews(
+  facts: GraphBindingViews | undefined,
+  hasSurfaceMedium: boolean,
+): GraphBindingViews | undefined {
+  if (facts === undefined || hasSurfaceMedium) return facts;
+  const backdrop = facts.views.find(([role]) => role === 'backdrop');
+  if (backdrop === undefined) return undefined;
+  return facts.views.length === 1 ? facts : { graph: facts.graph, views: [backdrop] };
+}
+
+/** Physical group and address prepared together from the accepted material resources. */
+export function resolveMaterialReflection(
+  deps: PerSubmeshMaterialBgDeps,
+  material: MaterialSnapshot,
+  world: RenderResourceScope,
+  entityKey: number | undefined,
+  resourceClass: string | undefined,
+) {
+  return deps.resolveReflectionProbeResources?.(
+    materialSourceScope(world, material.sourceAssets),
+    entityKey,
+    resourceClass,
+  );
+}
+
+/** Synchronously filled from the exact uniform page used to issue the group. */
+export interface MaterialBindingAddress {
+  capture?: { current: (() => boolean) | undefined };
+  byteOffset: number;
+  dynamicOffsetCount: 0 | 1;
+}
+
+export interface MainPassMaterialBinding {
+  readonly group: BindGroup;
+  readonly byteOffset: number;
+  readonly dynamicOffsetCount: 0 | 1;
+  readonly reflection?: import('../reflection/primitive-bindings').PrimitiveReflection;
+}
+
+export interface RasterMaterialAddress extends MaterialBindingAddress {
+  reflection?: MainPassMaterialBinding['reflection'];
+}
+
+/** The recorder owns the output address until it submits this draw. */
+export type MainPassMaterialBindingResolver = (
+  slot: number,
+  material: MaterialSnapshot,
+  entityKey: number | undefined,
+  world: RenderResourceScope,
+  address: RasterMaterialAddress,
+  shader?: string,
+  standardMaterialLayoutIndex?: number,
+  selectedLayout?: RasterMaterialLayout,
+) => BindGroup;
 
 export function buildPerSubmeshMaterialBg(
   deps: PerSubmeshMaterialBgDeps,
@@ -1447,99 +1637,129 @@ export function buildPerSubmeshMaterialBg(
   materialShaderId: string | undefined = submeshMaterial.materialShaderId,
   _materialSlot = 0,
   resourceClass?: string,
+  standardMaterialLayoutIndex = 0,
+  reflection?: ReturnType<typeof resolveMaterialReflection> | null,
+  address?: MaterialBindingAddress,
+  selectedLayout?: RasterMaterialLayout,
 ): BindGroup {
+  const raster = selectedLayout?.shader === materialShaderId ? selectedLayout : undefined;
   materialWorld = materialSourceScope(materialWorld, submeshMaterial.sourceAssets);
-  const { runtime, pipelineState, store, transmissionBackdropView } = deps;
-  const materialBuffer = meshSsboBuffer(
-    pipelineState.materialUniformBuffer,
-    materialUniformSlot(runtime, submeshMaterial) * MATERIAL_PER_ENTITY_STRIDE,
-  );
-  const selectedProbe = deps.resolveReflectionProbeResources?.(
-    materialWorld,
-    entityKey,
-    resourceClass,
-  );
+  const { runtime, pipelineState, store } = deps;
+  const primitiveReflection = isCanonicalStandardPbrMaterialShader(materialShaderId);
+  const transmissionBackdropView = primitiveReflection ? undefined : deps.transmissionBackdropView;
+  const selectedProbe = primitiveReflection
+    ? undefined
+    : selectedMaterialProbe(deps, materialWorld, entityKey, resourceClass, reflection);
   const effectiveSkylightResources = selectedProbe?.resources ?? deps.skylightResources;
   const smMaterialHandle = submeshMaterial.materialHandle;
   const probeIndex = selectedProbe?.probeIndex;
-  const materialScopeIdentity = smMaterialHandle === undefined ? undefined : materialWorld.identity;
+  const materialScopeIdentity = materialWorld.identity;
   const smHasVideoFields = (submeshMaterial.videoTextureFields?.size ?? 0) > 0;
-  const surfaceMediumResources = resolveSurfaceMediumResources(
-    deps,
-    materialShaderId,
-    effectiveSkylightResources,
-  );
-  const fluidSimulation = resolveWaterFluidResources(deps, materialShaderId);
-  // The cooked shader schema owns the resource ABI. A material snapshot may
-  // carry only the authored values (for example a clearcoat-only root omits
-  // the standard emissive/occlusion maps), while the Standard template still
-  // declares those slots and expects neutral fallbacks to be bound.
-  const smSchema =
-    (materialShaderId !== undefined ? runtime.getParamSchema?.(materialShaderId) : undefined) ??
-    submeshMaterial.materialParamSchema;
-  const smPerShaderBgl =
-    materialShaderId !== undefined
-      ? runtime.getMaterialBindGroupLayout?.(materialShaderId, smSchema)
-      : undefined;
-  const smMaterialBgl = smPerShaderBgl ?? pipelineState.materialBindGroupLayout;
+  let surfaceMediumResources: SurfaceMediumBindGroupResources | undefined;
+  let fluidSimulation: WaterFluidBindGroupResources | undefined;
+  let smSchema: readonly ParamSchemaEntry[] | undefined;
+  let smPerShaderBgl: BindGroupLayout | undefined;
+  let smMaterialBgl: BindGroupLayout;
+  if (raster !== undefined) {
+    smSchema = raster.schema;
+    smPerShaderBgl = raster.perShaderLayout;
+    smMaterialBgl = raster.layout;
+  } else {
+    surfaceMediumResources = resolveSurfaceMediumResources(
+      deps,
+      materialShaderId,
+      effectiveSkylightResources,
+    );
+    fluidSimulation = resolveWaterFluidResources(deps, materialShaderId);
+    smSchema = bindingParameterSchema(runtime, materialShaderId, submeshMaterial);
+    if (materialShaderId !== undefined)
+      smPerShaderBgl = runtime.getMaterialBindGroupLayout?.(materialShaderId, smSchema);
+    smMaterialBgl = resolveSubmeshMaterialLayout(
+      pipelineState.materialBindGroupLayout,
+      smPerShaderBgl,
+      standardMaterialLayoutIndex,
+    );
+  }
+  const graphViews = primitiveReflection
+    ? undefined
+    : materialAssemblyGraphViews(deps.graphViews, surfaceMediumResources !== undefined);
+  const surfaceGraphInputs = surfaceMediumResources === undefined ? undefined : deps;
   const sceneMaterialBuffer = directSceneMaterialBuffer(deps);
-  if (
+  const reusable =
     smMaterialHandle !== undefined &&
     !smHasVideoFields &&
-    transmissionBackdropView == null &&
-    fluidSimulation === undefined
-  ) {
+    fluidSimulation === undefined &&
+    materialScopeIdentity !== undefined;
+  if (reusable) {
     const cached = deps.materialBgAssemblyCache.get(
       materialScopeIdentity,
       smMaterialHandle,
       materialShaderId,
       probeIndex,
+      graphViews,
+      standardMaterialLayoutIndex,
     );
     if (
       isMaterialBgAssemblyCacheHit(
         cached,
         submeshMaterial,
         smMaterialBgl,
-        materialBuffer,
+        undefined,
         effectiveSkylightResources,
         cached !== undefined &&
           materialBindingResourcesCurrent(cached, materialWorld, store, runtime, submeshMaterial),
         transmissionBackdropView,
         sceneMaterialBuffer,
-        surfaceMediumResources === undefined ? undefined : deps.surfaceRawDepthView,
+        surfaceGraphInputs?.surfaceRawDepthView,
         deps.planarReflectionView,
         pipelineState.viewUniformBuffer,
+        graphViews,
+        surfaceGraphInputs?.surfaceNearestLayerView,
+        surfaceGraphInputs?.surfaceNearestDepthView,
+        deps,
+        materialWorld,
+        smSchema,
       )
     ) {
-      if (deps.frameState.iblBindingInspection !== undefined) {
-        let material = cached.iblMaterial;
-        if (material === undefined) {
-          material = projectIblMaterialBinding(
-            cached.materialBgl,
-            cached.bindGroup,
-            cached.bindingEntries,
-            cached.skylightBindingStart,
-            true,
-          );
-          cached.iblMaterial = material;
-        }
-        if (material !== undefined)
-          publishIblBindingReceipt(deps.frameState, deps.frameState.iblBindingInspection, material);
-      }
-      const slot = prepareMaterialUniform(
+      const installed = bindInstalledMaterial(
         deps,
+        cached,
         submeshMaterial,
         materialWorld,
-        cached.uniformResources,
+        address,
       );
-      const reusedBuffer = meshSsboBuffer(
-        pipelineState.materialUniformBuffer,
-        slot * MATERIAL_PER_ENTITY_STRIDE,
-      );
-      if (reusedBuffer === cached.materialBuffer) return cached.bindGroup;
+      if (installed !== undefined) {
+        if (address?.capture !== undefined)
+          address.capture.current = deps.materialBgAssemblyCache.captureBindingCurrent(
+            materialScopeIdentity,
+            smMaterialHandle,
+            materialShaderId,
+            probeIndex,
+            standardMaterialLayoutIndex,
+            cached,
+          );
+        return installed;
+      }
     }
+    if (cached?.canvas !== undefined)
+      deps.materialBgAssemblyCache.releaseBinding(smMaterialHandle, cached);
   }
+  const inputs = captureBindingInputs(submeshMaterial, reusable);
   const assembly: MaterialBgAssembly = {
+    selectedLayout: raster,
+    inputs,
+    bindingSourcesCurrent: materialBindingCurrency(
+      submeshMaterial,
+      inputs,
+      materialShaderId,
+      smMaterialBgl,
+      smPerShaderBgl,
+      runtime,
+      pipelineState,
+      standardMaterialLayoutIndex,
+      reusable,
+    ),
+    acceptsCanvases: reusable,
     material: submeshMaterial,
     entityKey,
     world: materialWorld,
@@ -1551,8 +1771,11 @@ export function buildPerSubmeshMaterialBg(
     shaderId: materialShaderId,
     schema: smSchema,
     projection: smSchema === undefined ? undefined : materialTextureProjection(smSchema),
+    surfaceMediumResources,
+    graphViews,
     perShaderBgl: smPerShaderBgl,
     bgl: smMaterialBgl,
+    standardMaterialLayoutIndex,
     store,
     runtime,
     pipelineState,
@@ -1560,13 +1783,70 @@ export function buildPerSubmeshMaterialBg(
     resident: true,
     missingBaseColor: false,
   };
-  return assembleMaterialBg(
-    deps,
-    assembly,
-    surfaceMediumResources,
-    materialBuffer,
-    fluidSimulation,
+  return assembleMaterialBg(deps, assembly, fluidSimulation, address);
+}
+
+/** The cooked shader owns the resource ABI even when the material only authored a subset. */
+function bindingParameterSchema(
+  runtime: RenderSystemRuntime,
+  shader: string | undefined,
+  material: MaterialSnapshot,
+): readonly ParamSchemaEntry[] | undefined {
+  return (
+    (shader === undefined ? undefined : runtime.getParamSchema?.(shader)) ??
+    material.materialParamSchema
   );
+}
+
+function selectedMaterialProbe(
+  deps: PerSubmeshMaterialBgDeps,
+  world: RenderResourceScope,
+  entityKey: number | undefined,
+  resourceClass: string | undefined,
+  reflection: ReturnType<typeof resolveMaterialReflection> | null | undefined,
+) {
+  return reflection === undefined
+    ? deps.resolveReflectionProbeResources?.(world, entityKey, resourceClass)
+    : (reflection ?? undefined);
+}
+
+function bindInstalledMaterial(
+  deps: PerSubmeshMaterialBgDeps,
+  cached: MaterialBgAssemblyCacheEntry,
+  material: MaterialSnapshot,
+  world: RenderResourceScope,
+  address?: MaterialBindingAddress,
+): BindGroup | undefined {
+  deps.frameState.iblBindings?.bindRetained(cached);
+  let byteOffset = 0;
+  if (cached.uniformResources !== undefined) {
+    const offsets = deps.materialBgAssemblyCache.uniformOffsets;
+    const buffer = prepareMaterialUniform(
+      deps,
+      material,
+      world,
+      cached.uniformResources,
+      false,
+      offsets,
+    );
+    if (buffer !== cached.materialBuffer) return undefined;
+    byteOffset = offsets.local;
+  }
+  requireCurrentGraphViews(deps.graphViews);
+  deps.materialBgAssemblyCache.use(cached.bindGroup);
+  if (address !== undefined) {
+    address.byteOffset = byteOffset;
+    address.dynamicOffsetCount = cached.dynamicOffsetCount ?? 1;
+  }
+  return cached.bindGroup;
+}
+
+function resolveSubmeshMaterialLayout(
+  full: BindGroupLayout,
+  perShader: BindGroupLayout | undefined,
+  layoutIndex: number,
+): BindGroupLayout {
+  return projectedStandardMaterialLayout(full, layoutIndex) ?? perShader ?? full;
 }
 
 /** Storage-capable devices bind the shared scene Material table (or its neutral placeholder). */
@@ -1687,6 +1967,20 @@ function resolveWaterFluidResources(
   return deps.surfaceFluidSimulation;
 }
 
+function compactMaterialEntries(
+  entries: BindGroupEntry[],
+  omitted: ReadonlySet<number>,
+  first: number,
+): void {
+  if (omitted.size === 0) return;
+  let retained = first;
+  for (let i = first; i < entries.length; i++) {
+    const entry = entries[i] as BindGroupEntry;
+    if (!omitted.has(entry.binding)) entries[retained++] = entry;
+  }
+  entries.length = retained;
+}
+
 /**
  * Assemble a material bind group from its user region, physical Standard
  * maps, the shared IBL/transmission/medium tail and the shared scene tables,
@@ -1695,42 +1989,68 @@ function resolveWaterFluidResources(
 function assembleMaterialBg(
   deps: PerSubmeshMaterialBgDeps,
   assembly: MaterialBgAssembly,
-  surfaceMediumResources: SurfaceMediumBindGroupResources | undefined,
-  materialBuffer: Buffer,
   fluidSimulation: WaterFluidBindGroupResources | undefined,
+  address?: MaterialBindingAddress,
 ): BindGroup {
-  const { runtime, pipelineState, materialSlice, transmissionBackdropView } = deps;
-  const effectiveSkylightResources = assembly.skylight;
+  const { runtime } = deps;
+  const { skylight: effectiveSkylightResources, surfaceMediumResources } = assembly;
   const derivedSchema = assembly.schema === undefined ? undefined : derive(assembly.schema);
   // The admitted schema owns the same fixed physical slots as the BGL builder.
   // Cooked program keys are content digests, not Standard shader aliases.
-  const physicalFields = physicalTextureFieldsOf(assembly, derivedSchema);
-  const smUserRegionFields = userRegionTextureFields(assembly, derivedSchema, physicalFields);
-  const smBaseEntries: BindGroupEntry[] = [
-    {
-      binding: 0,
-      resource: {
-        kind: 'buffer' as const,
-        value: { buffer: materialBuffer, offset: 0, size: materialSlice },
-      },
-    },
-  ];
+  const litMaterial =
+    assembly.selectedLayout?.lit ??
+    materialUsesLitSceneInputs(runtime.shaderRegistry, assembly.shaderId);
+  const emptyLit = litMaterial && assembly.schema?.length === 0;
+  const physicalFields = litMaterial
+    ? NO_MATERIAL_FIELDS
+    : physicalTextureFieldsOf(assembly, derivedSchema);
+  const smUserRegionFields = materialUserFields(
+    assembly,
+    derivedSchema,
+    litMaterial,
+    physicalFields,
+  );
+  // Binding zero is filled once the resolved textures select the physical uniform version.
+  const uniformEntryCount = emptyLit ? 0 : 1;
+  const smBaseEntries = new Array<BindGroupEntry>(uniformEntryCount);
   // The medium shader keeps the transmission backdrop pair in its fixed
   // group(1) ABI even on a device that cannot admit the ordinary Standard
   // transmission topology. Its Surface resources start at binding 10, so
   // retain a real backdrop pair here whenever the medium resources exist;
   // otherwise the raw-depth view would slide into binding 9 and Dawn would
   // reject the unfilterable r32float view as a filtering float texture.
-  const transmissionAvailable =
-    transmissionBackdropAvailable(runtime.device.limits.maxSampledTexturesPerShaderStage) ||
-    surfaceMediumResources !== undefined ||
-    declaresMaterialBackdrop(assembly);
-  const omittedTransmissionBindings = omittedMaterialBindings(
+  const sampledLimit = runtime.device.limits.maxSampledTexturesPerShaderStage;
+  const dedicated = transmissionBackdropAvailable(sampledLimit);
+  const standardLayout = assembly.perShaderBgl === undefined;
+  const storageCount = assembly.projection?.storageCount ?? storageBindingCount(derivedSchema);
+  const declarations =
+    standardLayout || (litMaterial && dedicated)
+      ? undefined
+      : sharedMaterialBindingDeclarations(runtime.shaderRegistry, assembly.shaderId);
+  const userRegionEnd = 1 + smUserRegionFields.length * 2 + storageCount;
+  // A lit shader has its own region ABI. Its transmission declaration uses the
+  // Standard projection even when its physical fields follow a different order.
+  const declaresBackdrop = materialDeclaresBackdrop(
     assembly,
-    smUserRegionFields,
-    transmissionAvailable,
     derivedSchema,
+    declarations,
+    dedicated,
+    litMaterial,
+    userRegionEnd,
+    storageCount,
   );
+  const transmissionAvailable =
+    dedicated || surfaceMediumResources !== undefined || declaresBackdrop;
+  const omittedTransmissionBindings = litMaterial
+    ? NO_OMITTED_BINDINGS
+    : omittedStandardMaterialBindings(
+        smUserRegionFields,
+        transmissionAvailable,
+        isStandardPbrMaterialShader(assembly.shaderId) || standardLayout,
+        isCanonicalStandardPbrMaterialShader(assembly.shaderId) || standardLayout,
+        declarations,
+        userRegionEnd,
+      );
   appendUserRegionEntries(
     smBaseEntries,
     deps,
@@ -1738,95 +2058,162 @@ function assembleMaterialBg(
     smUserRegionFields,
     derivedSchema,
     omittedTransmissionBindings,
+    storageCount !== 0,
+    !dedicated && !declaresBackdrop && usesSharedTransmissionSlots(assembly),
   );
   const physicalTextureInjections = physicalFields.map((field) =>
     physicalTextureInjection(deps, assembly, field),
   );
-  let smMergedEntries = assembleMaterialWithSkylightEntries(
-    smBaseEntries,
-    effectiveSkylightResources,
-    transmissionAvailable ? transmissionResources(deps, effectiveSkylightResources) : null,
-    physicalTextureInjections,
-    surfaceMediumResources,
-    fluidSimulation,
-  );
-  let retainedEntries = 0;
-  for (const entry of smMergedEntries) {
-    if (!omittedTransmissionBindings.has(entry.binding)) smMergedEntries[retainedEntries++] = entry;
-  }
-  smMergedEntries.length = retainedEntries;
-  if (derivedSchema?.parameterTypes.get('planarReflection') === 'u32')
-    smMergedEntries.push(
-      ...planarReflectionMaterialEntries(
-        pipelineState.viewUniformBuffer,
-        deps.planarReflectionView,
-        effectiveSkylightResources.brdfLutView,
-      ),
-    );
-  appendSharedMaterialTables(smMergedEntries, deps, derivedSchema);
-  const uniformResources = materialUniformResources([
-    ...smBaseEntries.slice(1).map(extractEntryResourceHandle),
-    ...physicalTextureInjections.flatMap((entry) => [entry.sampler, entry.view]),
-  ]);
-  const uniformSlot = prepareMaterialUniform(
+  const smMergedEntries = litMaterial
+    ? assembleLitMaterialEntries(
+        smBaseEntries,
+        effectiveSkylightResources,
+        derivedSchema?.userRegionBindingEnd ?? 1,
+      )
+    : assembleMaterialWithSkylightEntries(
+        smBaseEntries,
+        effectiveSkylightResources,
+        transmissionAvailable ? transmissionResources(deps, effectiveSkylightResources) : null,
+        physicalTextureInjections,
+        surfaceMediumResources,
+        fluidSimulation,
+      );
+  compactMaterialEntries(smMergedEntries, omittedTransmissionBindings, uniformEntryCount);
+  if (!litMaterial)
+    appendSharedMaterialTables(smMergedEntries, deps, derivedSchema, assembly.shaderId);
+  return recordMaterialBinding(
     deps,
-    assembly.material,
-    assembly.world,
-    uniformResources,
-    assembly.missingBaseColor,
-  );
-  const uniformBuffer = meshSsboBuffer(
-    pipelineState.materialUniformBuffer,
-    uniformSlot * MATERIAL_PER_ENTITY_STRIDE,
-  );
-  smMergedEntries[0] = {
-    binding: 0,
-    resource: { kind: 'buffer', value: { buffer: uniformBuffer, offset: 0, size: materialSlice } },
-  };
-  smMergedEntries = projectSurfaceMaterialBindings(
+    assembly,
+    smBaseEntries,
     smMergedEntries,
-    runtime.shaderRegistry,
-    assembly.shaderId,
+    physicalTextureInjections,
+    emptyLit,
+    address,
   );
-  const materialCacheHandles = smMergedEntries.map((entry) => extractEntryResourceHandle(entry));
-  const smBindGroup = materialBindingGroup(
+}
+
+function recordMaterialBinding(
+  deps: PerSubmeshMaterialBgDeps,
+  assembly: MaterialBgAssembly,
+  smBaseEntries: BindGroupEntry[],
+  smMergedEntries: BindGroupEntry[],
+  physicalTextureInjections: readonly TextureInjectionResource[],
+  emptyLit: boolean,
+  address?: MaterialBindingAddress,
+): BindGroup {
+  const { runtime, materialSlice, transmissionBackdropView } = deps;
+  // Allocate a numeric material address only when this physical layout binds it.
+  let uniformResources: object | undefined;
+  let uniformBuffer: Buffer | undefined;
+  let absoluteOffset = 0;
+  let byteOffset = 0;
+  if (!emptyLit) {
+    uniformResources = materialBindingUniformResources(smBaseEntries, physicalTextureInjections);
+    const offsets = deps.materialBgAssemblyCache.uniformOffsets;
+    uniformBuffer = prepareMaterialUniform(
+      deps,
+      assembly.material,
+      assembly.world,
+      uniformResources,
+      assembly.missingBaseColor,
+      offsets,
+    );
+    absoluteOffset = offsets.absolute;
+    byteOffset = offsets.local;
+    smMergedEntries[0] = {
+      binding: 0,
+      resource: {
+        kind: 'buffer',
+        value: { buffer: uniformBuffer, offset: 0, size: materialSlice },
+      },
+    };
+  }
+  smMergedEntries = projectMaterialLayoutEntries(assembly.bgl, smMergedEntries);
+  requireCurrentGraphViews(deps.graphViews);
+  const smBindGroup = deps.materialBgAssemblyCache.issue(
     runtime,
     assembly.bgl,
     smMergedEntries,
-    deps.materialBgShared,
-    assembly.shaderId,
-    materialCacheHandles,
-    transmissionBackdropView != null,
+    !isCanonicalStandardPbrMaterialShader(assembly.shaderId) && transmissionBackdropView != null,
     deps.bindGroupCounts,
   );
-  retainMaterialBgAssembly(
+  requireCurrentGraphViews(deps.graphViews);
+  const installed = retainMaterialBgAssembly(
     deps,
     assembly,
     uniformResources,
     uniformBuffer,
     smBindGroup,
     smMergedEntries,
+    absoluteOffset,
+    smBaseEntries.length,
+    emptyLit ? 0 : 1,
+  );
+  deps.frameState.iblBindings?.bindIssued(
+    assembly.bgl,
+    smBindGroup,
+    smMergedEntries,
     smBaseEntries.length,
   );
-  const receipt = deps.frameState.iblBindingInspection;
-  if (receipt !== undefined) {
-    const material = projectIblMaterialBinding(
-      assembly.bgl,
-      smBindGroup,
-      smMergedEntries,
-      smBaseEntries.length,
-      false,
-    );
-    if (material !== undefined) publishIblBindingReceipt(deps.frameState, receipt, material);
+  requireCurrentGraphViews(deps.graphViews);
+  if (address !== undefined) {
+    address.byteOffset = byteOffset;
+    address.dynamicOffsetCount = emptyLit ? 0 : 1;
+    if (address.capture !== undefined)
+      address.capture.current = deps.materialBgAssemblyCache.captureBindingCurrent(
+        assembly.scopeIdentity,
+        assembly.materialHandle,
+        assembly.shaderId,
+        assembly.probeIndex,
+        assembly.standardMaterialLayoutIndex,
+        installed,
+      );
   }
   return smBindGroup;
 }
+
+function materialUserFields(
+  assembly: MaterialBgAssembly,
+  derivedSchema: ReturnType<typeof derive> | undefined,
+  litMaterial: boolean,
+  physicalFields: readonly string[],
+): readonly string[] {
+  if (!litMaterial) return userRegionTextureFields(assembly, derivedSchema, physicalFields);
+  return (
+    assembly.projection?.textureFields ??
+    (derivedSchema === undefined ? NO_MATERIAL_FIELDS : [...derivedSchema.textureFieldNames])
+  );
+}
+
+function materialDeclaresBackdrop(
+  assembly: MaterialBgAssembly,
+  derivedSchema: ReturnType<typeof derive> | undefined,
+  declarations: ReturnType<typeof sharedMaterialBindingDeclarations>,
+  dedicated: boolean,
+  litMaterial: boolean,
+  userRegionEnd: number,
+  storageCount: number,
+): boolean {
+  if (dedicated || declarations === undefined) return false;
+  if (litMaterial) {
+    const fields = userRegionTextureFields(
+      assembly,
+      derivedSchema,
+      physicalTextureFieldsOf(assembly, derivedSchema),
+    );
+    userRegionEnd = 1 + fields.length * 2 + storageCount;
+  }
+  return programDeclaresTransmissionBackdrop(declarations, userRegionEnd);
+}
+
+const NO_MATERIAL_FIELDS: readonly string[] = [];
+const NO_OMITTED_BINDINGS: ReadonlySet<number> = new Set();
 
 function physicalTextureFieldsOf(
   assembly: MaterialBgAssembly,
   derivedSchema: ReturnType<typeof derive> | undefined,
 ): readonly string[] {
-  if (derivedSchema === undefined) return [];
+  if (derivedSchema === undefined) return NO_MATERIAL_FIELDS;
   return (
     assembly.projection?.physicalFields ??
     STANDARD_PHYSICAL_TEXTURE_FIELDS.filter((field) => derivedSchema.parameterTypes.has(field))
@@ -1854,61 +2241,26 @@ function userRegionTextureFields(
 }
 
 function storageBindingCount(derivedSchema: ReturnType<typeof derive> | undefined): number {
-  return (
-    derivedSchema?.resourceBindings.filter((resource) => resource.kind === 'storage-buffer')
-      .length ?? 0
-  );
-}
-
-/** Bindings the cooked layout omits on this device (transmission and shared declarations). */
-function omittedMaterialBindings(
-  assembly: MaterialBgAssembly,
-  userRegionFields: readonly string[],
-  transmissionAvailable: boolean,
-  derivedSchema: ReturnType<typeof derive> | undefined,
-): ReadonlySet<number> {
-  const { shaderId, perShaderBgl } = assembly;
-  const standardLayout = perShaderBgl === undefined;
-  return omittedStandardMaterialBindings(
-    userRegionFields,
-    transmissionAvailable,
-    isStandardPbrMaterialShader(shaderId) || standardLayout,
-    isCanonicalStandardPbrMaterialShader(shaderId) || standardLayout,
-    standardLayout
-      ? undefined
-      : sharedMaterialBindingDeclarations(assembly.runtime.shaderRegistry, shaderId),
-    1 + userRegionFields.length * 2 + storageBindingCount(derivedSchema),
-  );
-}
-
-/**
- * Below the dedicated budget, the shared transmission variant reads its
- * transmission resources through the split scalar-map pairs it leaves unused.
- */
-function declaresMaterialBackdrop(assembly: MaterialBgAssembly): boolean {
-  if (assembly.perShaderBgl === undefined) return false;
-  const declarations = sharedMaterialBindingDeclarations(
-    assembly.runtime.shaderRegistry,
-    assembly.shaderId,
-  );
-  if (declarations === undefined) return false;
-  const schema = assembly.schema === undefined ? undefined : derive(assembly.schema);
-  const physical = physicalTextureFieldsOf(assembly, schema);
-  const fields = userRegionTextureFields(assembly, schema, physical);
-  return programDeclaresTransmissionBackdrop(
-    declarations,
-    1 + fields.length * 2 + storageBindingCount(schema),
-  );
+  let count = 0;
+  if (derivedSchema !== undefined)
+    for (const resource of derivedSchema.resourceBindings)
+      if (resource.kind === 'storage-buffer') count++;
+  return count;
 }
 
 function usesSharedTransmissionSlots(assembly: MaterialBgAssembly): boolean {
   const { shaderId, material } = assembly;
-  if (shaderId === undefined || declaresMaterialBackdrop(assembly)) return false;
+  if (shaderId === undefined) return false;
   return (
     standardTransmissionAdmission(
       shaderId === material.materialShaderId
         ? material
-        : { ...material, materialShaderId: shaderId },
+        : {
+            materialShaderId: shaderId,
+            surfaceModel: material.surfaceModel,
+            paramSnapshot: material.paramSnapshot,
+            standardTextureMask: material.standardTextureMask,
+          },
       assembly.runtime.device.limits.maxSampledTexturesPerShaderStage,
     )?.kind === 'shared'
   );
@@ -1927,13 +2279,16 @@ function userRegionSamplerBinding(
   storageBound: boolean,
   canonicalSlot: string | undefined,
   pairIndex: number,
+  projection: MaterialTextureProjection | undefined,
 ): number {
-  const declared = storageBound
-    ? derivedSchema?.resourceBindings.find(
-        (resource) => resource.kind === 'sampler' && resource.parameter === canonicalSlot,
-      )?.binding
-    : undefined;
-  return declared ?? 1 + pairIndex * 2;
+  const dense = 1 + pairIndex * 2;
+  if (!storageBound || canonicalSlot === undefined) return dense;
+  if (projection !== undefined) return projection.samplerBindings?.get(canonicalSlot) ?? dense;
+  return (
+    derivedSchema?.resourceBindings.find(
+      (resource) => resource.kind === 'sampler' && resource.parameter === canonicalSlot,
+    )?.binding ?? dense
+  );
 }
 
 /** Sampler/texture pairs of the shader's user region, in binding order. */
@@ -1944,30 +2299,20 @@ function appendUserRegionEntries(
   fields: readonly string[],
   derivedSchema: ReturnType<typeof derive> | undefined,
   omitted: ReadonlySet<number>,
+  storageBound: boolean,
+  sharedSlots: boolean,
 ): void {
   const { pipelineState, material } = assembly;
-  const sharedSlots = usesSharedTransmissionSlots(assembly);
-  const storageBound = storageBindingCount(derivedSchema) > 0;
   for (let fi = 0; fi < fields.length; fi++) {
     const canonicalSlot = fields[fi];
     const sharedResource = sharedSlots ? sharedTransmissionResource(canonicalSlot) : undefined;
-    const samplerBinding = userRegionSamplerBinding(derivedSchema, storageBound, canonicalSlot, fi);
-    if (sharedResource === 'transmissionBackdropTexture') {
-      entries.push(
-        {
-          binding: samplerBinding,
-          resource: { kind: 'sampler', value: pipelineState.defaultSampler },
-        },
-        {
-          binding: samplerBinding + 1,
-          resource: {
-            kind: 'textureView',
-            value: deps.transmissionBackdropView ?? pipelineState.defaultWhiteTextureView,
-          },
-        },
-      );
-      continue;
-    }
+    const samplerBinding = userRegionSamplerBinding(
+      derivedSchema,
+      storageBound,
+      canonicalSlot,
+      fi,
+      assembly.projection,
+    );
     const slot = sharedResource ?? canonicalSlot;
     const field =
       slot !== undefined && isStandardPbrMaterialShader(assembly.shaderId)
@@ -2011,12 +2356,17 @@ function appendUserRegionPair(
   samplerBinding: number,
 ): void {
   const { material } = assembly;
+  const parameter = field === undefined ? undefined : materialFieldParameter(assembly, field);
   const fallback =
     field !== undefined
-      ? defaultMaterialFieldView(assembly, field)
+      ? defaultViewForParameter(field, assembly.pipelineState, parameter)
       : assembly.pipelineState.defaultWhiteTextureView;
   const videoClip = field !== undefined ? material.videoTextureFields?.get(field) : undefined;
-  const slotExternal = field !== undefined && slotFieldType(assembly, field) === 'texture_external';
+  // A caller-owned video map may edit a borrowed schema while serving get().
+  const slotExternal =
+    (assembly.projection === undefined && field !== undefined
+      ? materialFieldParameter(assembly, field)?.type
+      : parameter?.type) === 'texture_external';
   const runtimeSource = field === undefined ? undefined : material.textureSources?.get(field);
   const targetSource =
     field === undefined
@@ -2026,12 +2376,7 @@ function appendUserRegionPair(
   let resource: RhiBindingResource | undefined;
   let view = fallback;
   if (isRenderFeatureTextureSource(runtimeSource)) {
-    const current = recordContext(assembly.runtime).sharedFeatureGpuWork?.resolveTexture(
-      runtimeSource.owner,
-      runtimeSource.name,
-    );
-    if (current === undefined) assembly.resident = false;
-    else view = current;
+    view = featureTextureView(assembly, runtimeSource, fallback);
   } else if (runtimeSource?.source === 'feature') {
     const current = deps.resolveFeatureTextureSource?.(runtimeSource.owner);
     if (current === undefined)
@@ -2046,7 +2391,7 @@ function appendUserRegionPair(
     resource = assembly.runtime.externalTextures?.resolve(runtimeSource, slotExternal);
     if (resource === undefined) assembly.resident = false;
   } else if (field !== undefined && isCanvasTextureSource(runtimeSource))
-    view = canvasFieldView(assembly, field, fallback);
+    view = canvasFieldView(assembly, field, runtimeSource, fallback);
   else if (targetSource !== undefined)
     view = renderTargetFieldView(assembly, field, targetSource, fallback);
   else if (videoClip !== undefined)
@@ -2069,7 +2414,12 @@ function appendUserRegionPair(
 
 function preparedMaterialTexture(assembly: MaterialBgAssembly, field: string | undefined) {
   const { runtime } = assembly;
-  if (field === undefined || runtime.preparedMaterialTexture === undefined) return undefined;
+  if (
+    field === undefined ||
+    runtime.preparedMaterialTexture === undefined ||
+    runtime.preparedMaterialTexture.parameters?.has(field) === false
+  )
+    return undefined;
   assembly.preparedTextures ??= new Map();
   const preparedTextures = assembly.preparedTextures;
   if (!preparedTextures.has(field))
@@ -2078,36 +2428,95 @@ function preparedMaterialTexture(assembly: MaterialBgAssembly, field: string | u
 }
 
 /** The declared type of a user-region slot, by the same lookup external routing uses. */
-function slotFieldType(
+function materialFieldParameter(
   assembly: MaterialBgAssembly,
   field: string,
-): ParamSchemaEntry['type'] | undefined {
-  const parameterTypes = assembly.projection?.parameterTypes;
-  return parameterTypes === undefined
-    ? assembly.schema?.find((entry) => entry.name === field)?.type
-    : parameterTypes.get(field);
+): ParamSchemaEntry | undefined {
+  return assembly.projection === undefined
+    ? assembly.schema?.find((entry) => entry.name === field)
+    : assembly.projection.parametersByName.get(field);
 }
 
 function defaultMaterialFieldView(assembly: MaterialBgAssembly, field: string): TextureView {
-  const parameterTypes = assembly.projection?.parameterTypes;
-  return parameterTypes === undefined
-    ? defaultViewForUserRegionField(field, assembly.pipelineState, assembly.schema)
-    : defaultViewForParameterType(field, assembly.pipelineState, parameterTypes.get(field));
+  return defaultViewForParameter(
+    field,
+    assembly.pipelineState,
+    materialFieldParameter(assembly, field),
+  );
 }
 
 function canvasFieldView(
   assembly: MaterialBgAssembly,
   field: string,
+  source: CanvasTextureSource,
   fallback: TextureView,
 ): TextureView {
-  const view = materialCanvasTextureView(
-    assembly.material,
+  const local = canvasSourceSlot(source);
+  const view = resolveCanvasView(source, local, assembly.world, assembly.runtime);
+  if (view === undefined) {
+    assembly.resident = false;
+    return fallback;
+  }
+  if (!assembly.acceptsCanvases || assembly.projection === undefined) return view;
+  assembly.canvas ??= [];
+  const fields = assembly.canvas;
+  for (const binding of fields) if (binding.field === field) return view;
+  fields.push({
     field,
-    assembly.world,
-    assembly.runtime,
+    owner: source.owner,
+    id: source.id,
+    publicationKey: renderTextureSourceKey(source),
+    local,
+    view,
+  });
+  return view;
+}
+
+function canvasMaterialBindingsCurrent(
+  cached: MaterialBgAssemblyCacheEntry,
+  material: MaterialSnapshot,
+  deps?: PerSubmeshMaterialBgDeps,
+  world?: RenderResourceScope,
+  schema?: readonly ParamSchemaEntry[],
+): boolean {
+  const canvas = cached.canvas;
+  if (canvas === undefined) return (material.textureSources?.size ?? 0) === 0;
+  return (
+    deps !== undefined &&
+    world !== undefined &&
+    canvas.schema === schema &&
+    canvas.defaultSampler === deps.pipelineState.defaultSampler &&
+    synchronizeBoundCanvases(canvas.fields, material, world, deps.runtime)
   );
-  if (view === undefined) assembly.resident = false;
-  return view ?? fallback;
+}
+
+/** Refresh pixels at their owner on every draw. Only a physical change needs a new descriptor. */
+function synchronizeBoundCanvases(
+  fields: readonly CanvasFieldBinding[],
+  material: MaterialSnapshot,
+  world: RenderResourceScope,
+  runtime: RenderSystemRuntime,
+): boolean {
+  const sources = material.textureSources;
+  if (sources === undefined || fields.length !== sources.size) return false;
+  for (let index = 0; index < fields.length; index++) {
+    const binding = fields[index] as CanvasFieldBinding;
+    const source = sources.get(binding.field);
+    if (
+      !isCanvasTextureSource(source) ||
+      source.owner !== binding.owner ||
+      source.id !== binding.id ||
+      resolveCanvasView(
+        source,
+        binding.local ?? canvasSourceSlot(source),
+        world,
+        runtime,
+        binding,
+      ) !== binding.view
+    )
+      return false;
+  }
+  return true;
 }
 
 /**
@@ -2222,6 +2631,20 @@ function physicalTextureInjection(
   };
 }
 
+function featureTextureView(
+  assembly: MaterialBgAssembly,
+  source: RenderFeatureTextureSource,
+  fallback: TextureView,
+): TextureView {
+  const view = assembly.runtime.viewOwner?.preparedResolver.gpuWork.resolveTexture(
+    source.owner,
+    source.name,
+  );
+  if (view !== undefined) return view;
+  assembly.resident = false;
+  return fallback;
+}
+
 function physicalFieldView(
   assembly: MaterialBgAssembly,
   field: string,
@@ -2229,22 +2652,16 @@ function physicalFieldView(
   runtimeSource: MaterialTextureSource | undefined,
   fallback: TextureView,
 ): TextureView {
-  if (isRenderFeatureTextureSource(runtimeSource)) {
-    const resolved = recordContext(assembly.runtime).sharedFeatureGpuWork?.resolveTexture(
-      runtimeSource.owner,
-      runtimeSource.name,
-    );
-    if (resolved !== undefined) return resolved;
-    assembly.resident = false;
-    return fallback;
-  }
+  if (isRenderFeatureTextureSource(runtimeSource))
+    return featureTextureView(assembly, runtimeSource, fallback);
   if (isExternalTextureSource(runtimeSource)) {
     const resolved = assembly.runtime.externalTextures?.resolve(runtimeSource, false);
     if (resolved?.kind === 'textureView') return resolved.value;
     assembly.resident = false;
     return fallback;
   }
-  if (isCanvasTextureSource(runtimeSource)) return canvasFieldView(assembly, field, fallback);
+  if (isCanvasTextureSource(runtimeSource))
+    return canvasFieldView(assembly, field, runtimeSource, fallback);
   if (targetSource !== undefined) {
     if (targetSource.textureView !== undefined) return targetSource.textureView;
     assembly.resident = false;
@@ -2287,8 +2704,15 @@ function appendSharedMaterialTables(
   entries: BindGroupEntry[],
   deps: PerSubmeshMaterialBgDeps,
   derivedSchema: ReturnType<typeof derive> | undefined,
+  shaderId: string | undefined,
 ): void {
-  if (derivedSchema?.parameterTypes.get('directMultiscatteringLut') === 'u32') {
+  if (
+    derivedSchema?.parameterTypes.get('directMultiscatteringLut') === 'u32' &&
+    !isCanonicalStandardPbrMaterialShader(shaderId) &&
+    sharedMaterialBindingDeclarations(deps.runtime.shaderRegistry, shaderId)?.includes(
+      STANDARD_DIRECT_DFG_LUT_BINDING,
+    ) !== false
+  ) {
     const lut = getOrCreateDirectDfgLut(
       deps.runtime.device,
       recordContext(deps.runtime).deviceScope,
@@ -2307,38 +2731,63 @@ function appendSharedMaterialTables(
   }
 }
 
+const NO_MATERIAL_RESOURCES: MaterialBgAssemblyCacheEntry['materialResources'] = Object.freeze([]);
 const NO_PREPARED_TEXTURES: MaterialBgAssemblyCacheEntry['preparedTextures'] = Object.freeze([]);
 
 /** Retain a fully resident, frame-independent assembly for cross-frame reuse. */
 function retainMaterialBgAssembly(
   deps: PerSubmeshMaterialBgDeps,
   assembly: MaterialBgAssembly,
-  uniformResources: object,
-  materialBuffer: Buffer,
+  uniformResources: object | undefined,
+  materialBuffer: Buffer | undefined,
   bindGroup: BindGroup,
   entries: readonly BindGroupEntry[],
+  uniformOffset: number,
   iblStart: number,
-): void {
-  const { material, world, materialHandle, scopeIdentity } = assembly;
+  dynamicOffsetCount: 0 | 1,
+): MaterialBgAssemblyCacheEntry | undefined {
+  const {
+    material,
+    world,
+    materialHandle,
+    scopeIdentity,
+    store,
+    runtime,
+    pipelineState,
+    bindingSourcesCurrent,
+    surfaceMediumResources,
+    graphViews,
+  } = assembly;
+  const sceneCurrent = deps.bindingSceneCurrent;
+  const skylight = assembly.skylight;
+  const probeIndex = assembly.probeIndex;
+  const surfaceGraphInputs = surfaceMediumResources === undefined ? undefined : deps;
+  const canvas = assembly.canvas;
   if (
+    (bindingSourcesCurrent === undefined && canvas === undefined) ||
     materialHandle === undefined ||
     assembly.hasVideoFields ||
-    (material.textureSources?.size ?? 0) > 0 ||
+    (material.textureSources?.size ?? 0) !== (canvas?.length ?? 0) ||
     !assembly.resident ||
-    deps.transmissionBackdropView != null ||
+    !materialBindingViewsCurrent(
+      graphViews,
+      isCanonicalStandardPbrMaterialShader(assembly.shaderId)
+        ? undefined
+        : deps.transmissionBackdropView,
+      surfaceGraphInputs?.surfaceRawDepthView,
+      surfaceGraphInputs?.surfaceNearestLayerView,
+      surfaceGraphInputs?.surfaceNearestDepthView,
+    ) ||
     scopeIdentity === undefined
   )
     return;
+  const planar = surfaceMediumResources !== undefined;
   const sceneMaterialBuffer = directSceneMaterialBuffer(deps);
-  const retained: MaterialBgAssemblyCacheEntry = {
+  const resourceFacts = {
     material,
-    uniformResources,
-    materialResources: captureMaterialResources(
-      material,
-      world,
-      assembly.store,
-      assembly.preparedTextures,
-    ),
+    preparedTextureDomain:
+      runtime.preparedMaterialTexture?.parameters ?? runtime.preparedMaterialTexture,
+    materialResources: captureMaterialResources(material, world, store, assembly.preparedTextures),
     preparedTextures:
       assembly.preparedTextures === undefined
         ? NO_PREPARED_TEXTURES
@@ -2347,29 +2796,61 @@ function retainMaterialBgAssembly(
             textureView: source?.textureView,
             sampler: source?.sampler,
           })),
-    materialBgl: assembly.bgl,
-    materialBuffer,
-    ...(sceneMaterialBuffer === undefined ? {} : { sceneMaterialBuffer }),
-    skylightResources: assembly.skylight,
-    ...(assembly.schema !== undefined &&
-    derive(assembly.schema).parameterTypes.get('planarReflection') === 'u32'
-      ? {
-          planarReflection: {
-            view: deps.planarReflectionView,
-            uniform: deps.pipelineState.viewUniformBuffer,
-          },
-        }
-      : {}),
-    bindGroup,
-    bindingEntries: entries,
-    skylightBindingStart: iblStart,
   };
-  deps.materialBgAssemblyCache.set(
+  return deps.materialBgAssemblyCache.set(
     scopeIdentity,
     materialHandle,
     assembly.shaderId,
     assembly.probeIndex,
-    retained,
+    {
+      ...resourceFacts,
+      inputs: assembly.inputs,
+      dynamicOffsetCount,
+      ...(canvas === undefined
+        ? {}
+        : {
+            canvas: {
+              fields: canvas,
+              schema: assembly.schema,
+              defaultSampler: pipelineState.defaultSampler,
+            },
+          }),
+      ...(graphViews === undefined ? {} : { graphViews }),
+      descriptor: {
+        label: 'pbr-material-skylight-bg',
+        layout: assembly.bgl,
+        entries,
+      },
+      bindingsCurrent: () =>
+        bindingSourcesCurrent?.() === true &&
+        (graphViews === undefined || graphBindingViewsCurrent(graphViews)) &&
+        (sceneCurrent?.(skylight, probeIndex, planar) ?? true) &&
+        (materialBuffer === undefined ||
+          meshSsboBuffer(pipelineState.materialUniformBuffer, uniformOffset) === materialBuffer) &&
+        materialBindingResourcesCurrent(
+          resourceFacts,
+          world,
+          store,
+          runtime,
+          materialResource(material)?.snapshot ?? material,
+        ),
+      skylightBindingStart: iblStart,
+      uniformResources,
+      materialBgl: assembly.bgl,
+      materialBuffer,
+      ...(sceneMaterialBuffer === undefined ? {} : { sceneMaterialBuffer }),
+      skylightResources: assembly.skylight,
+      ...(planar
+        ? {
+            planarReflection: {
+              view: deps.planarReflectionView,
+              uniform: deps.pipelineState.viewUniformBuffer,
+            },
+          }
+        : {}),
+      bindGroup,
+    },
+    assembly.standardMaterialLayoutIndex,
   );
 }
 
@@ -2385,9 +2866,22 @@ function materialEnvironmentIbl(
   if (skylight?.featureEnvironment) {
     const source = skylight.featureEnvironment,
       owner = recordContext(runtime as RenderSystemRuntime).sharedFeatureGpuWork;
-    const irradiance = owner?.resolveTextureCube(source.feature, source.irradiance),
-      prefilter = owner?.resolveTexture(source.feature, source.prefilter);
-    environmentIbl = irradiance && prefilter ? { irradiance, prefilter } : undefined;
+    const skySh = owner?.resolveNamedBuffer(source.feature, source.skySh);
+    const prefilter = owner?.resolveTexture(source.feature, source.prefilter);
+    if (
+      skySh !== undefined &&
+      (skySh.size !== SKY_SH_BYTES || (skySh.physicalUsage & GPU_BUFFER_USAGE_UNIFORM) === 0)
+    ) {
+      throw new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'feature Skylight Sky SH is a 112-byte uniform buffer',
+        hint: 'Publish seven packed vec4 coefficients with uniform usage before lighting.',
+      });
+    }
+    environmentIbl =
+      skySh !== undefined && prefilter !== undefined
+        ? { skySh: skySh.buffer, prefilter }
+        : undefined;
   }
   if (skylight?.targetEnvironment !== undefined) {
     environmentIbl = resolveTargetEnvironment(skylight.targetEnvironment, runtime.device);
@@ -2428,7 +2922,7 @@ export function resolveMaterialSkylight(
   }
   // Select only the completed output of this scene's authored image. Pipeline
   // caching is device-wide; image radiance is scoped to its source resource.
-  let activeViews: { irr: TextureView; pref: TextureView; brdf: TextureView } | undefined;
+  let activeViews: { skySh: Buffer; pref: TextureView; brdf: TextureView } | undefined;
   const uniformPayload = ZERO_SKYLIGHT_PAYLOAD.slice();
   if (
     skylight !== undefined &&
@@ -2437,7 +2931,7 @@ export function resolveMaterialSkylight(
     imageIbl !== undefined
   ) {
     activeViews = {
-      irr: imageIbl.irradianceView,
+      skySh: imageIbl.skySh,
       pref: imageIbl.prefilterView,
       brdf: imageIbl.brdfLutView,
     };
@@ -2445,7 +2939,7 @@ export function resolveMaterialSkylight(
   environmentIbl = materialEnvironmentIbl(runtime, skylight, environmentIbl);
   if (environmentIbl !== undefined && skylight !== undefined && skylight.equirectHandle === 0) {
     activeViews = {
-      irr: environmentIbl.irradiance,
+      skySh: environmentIbl.skySh,
       pref: environmentIbl.prefilter,
       brdf: activeViews?.brdf ?? skylightFallback.brdfLutView,
     };
@@ -2470,7 +2964,18 @@ export function resolveMaterialSkylight(
 }
 
 /** The same scene resources back material bindings in depth and color passes. */
-export function prepareMaterialSkylight(c: _InternalRenderPipelineContext) {
+export function prepareMaterialSkylight(
+  c: Pick<
+    _InternalRenderPipelineContext,
+    | 'runtime'
+    | 'pipelineState'
+    | 'skylight'
+    | 'skylightCount'
+    | 'store'
+    | 'world'
+    | 'environmentIbl'
+  >,
+) {
   return resolveMaterialSkylight(
     c.runtime,
     c.pipelineState,

@@ -14,10 +14,8 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import { verifyProvenance } from '../../packages/wgpu-wasm/scripts/provenance.mjs';
-import { runnerResources, shaderCompileWorkers } from '../lib/runner-resources.mjs';
 import { admitShaderSourceBudget } from '../lib/shader-source-budget.mjs';
 import {
-  projectSharedShader,
   reusableSharedShader,
   sharedShaderInputFingerprint,
   sharedShaderReceipt,
@@ -44,7 +42,6 @@ Options:
   --asset-root <dir>   LearnOpenGL source root
   --shader-root <dir>  Engine shader source root
   --shader-input-manifest <p> Reuse an explicitly verified shader producer output
-  --base-shader-input-manifest <p> Also transfer the verified BASE profile
   --catalog-only       Emit catalog metadata without serialized asset payload bytes
   --projection-out <d> Also emit a catalog-only projection from the full build
   --github-output <p>  Write the trusted producer fingerprint to this output file
@@ -112,47 +109,33 @@ if (realpathSync(shaderRoot) !== realpathSync(engineShaderRoot)) {
   );
 }
 
-// This producer owns the shared projection. Consumers can inherit its output
-// path, including during artifact-miss recovery, but the producer must never
-// read that path after clearing it or substitute an unchecked packaged profile.
+// Pack cooking needs the existing child heap budget even when the caller
+// runs its lighter orchestration process with a smaller ambient limit.
+admitShaderSourceBudget({ workerBudget: null });
 delete process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
-process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD = '1';
+
+// Asset cooking and source publication share a transport receipt. Engine
+// variants are specialized by the renderer after this input is delivered.
+const engineEntries = { pointShadows: false, hdrpSsao: true };
+const shaderInputFingerprint = sharedShaderInputFingerprint(root, {
+  ...engineEntries,
+  publication: 'source',
+});
+const shaderInputManifest = shaderInputOption === null ? null : resolve(root, shaderInputOption);
 rmSync(output, { recursive: true, force: true });
 mkdirSync(output, { recursive: true });
-
-const engineEntries = { pointShadows: true, hdrpSsao: true };
-const shaderInputFingerprint = sharedShaderInputFingerprint(root, engineEntries);
-// Admission happens after clearing our output. An inherited/self-referencing
-// consumer path cannot survive as a hidden dependency of source recovery.
-const shaderInputManifest = shaderInputOption === null ? null : resolve(root, shaderInputOption);
 const preparedShader =
-  process.env.FORGEAX_BUILD_NO_TASK_CACHE !== '1' &&
-  shaderInputManifest !== null &&
-  reusableSharedShader(root, shaderInputManifest, shaderInputFingerprint, (reason) =>
-    console.log(`[shared-build] explicit shader reuse miss: ${reason}`),
-  );
-if (preparedShader) {
-  process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST = shaderInputManifest;
-  process.env.FORGEAX_ENGINE_SHADER_SOURCE_BUILD = '0';
-  console.log('[shared-build] verified explicit shader input; compiling only the asset catalog');
-}
+  process.env.FORGEAX_BUILD_NO_TASK_CACHE !== '1' && shaderInputManifest !== null
+    ? reusableSharedShader(root, shaderInputManifest, shaderInputFingerprint, (reason) =>
+        console.log(`[shared-build] explicit shader reuse miss: ${reason}`),
+      )
+    : null;
 
-// A cold fallback owns the same complete source publication as Core. Admit
-// its heap and bounded workers before loading compiler plugins or native state.
-if (!preparedShader) admitShaderSourceBudget();
-else {
-  process.env.FORGEAX_SHADER_COMPILE_WORKERS = String(
-    shaderCompileWorkers(runnerResources(), process.env.FORGEAX_SHADER_COMPILE_WORKERS),
-  );
-}
-console.log(
-  `[shared-build] shader workers=${process.env.FORGEAX_SHADER_COMPILE_WORKERS} cpus=${runnerResources().cpus}`,
-);
 const { audioImporter } = await import('@forgeax/engine-audio-webaudio/audio-importer');
 const { gltfImporter } = await import('@forgeax/engine-gltf');
 const { imageImporter } = await import('@forgeax/engine-image/image-importer');
 const { pluginPack } = await import('@forgeax/engine-vite-plugin-pack');
-const { forgeaxShader } = await import('@forgeax/engine-vite-plugin-shader');
+const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
 const { build } = await import('vite');
 
 await build({
@@ -169,11 +152,6 @@ await build({
         return id === VIRTUAL_ENTRY ? 'export {};' : null;
       },
     },
-    // The shared manifest is consumed by every browser shard. Keep the
-    // optional engine entries required by the real point-shadow and SSAO
-    // browser paths in that one producer-owned projection, so a shard never
-    // silently installs the graph without its post-process pipelines.
-    forgeaxShader({ engineEntries }),
     pluginPack({ roots: [assetRoot], importers: [audioImporter, gltfImporter, imageImporter] }),
   ],
   build: {
@@ -185,9 +163,8 @@ await build({
 });
 
 const catalogPath = join(staging, 'pack-index.json');
-const shaderManifestPath = join(staging, 'shaders', 'manifest.json');
-if (!statSync(catalogPath).isFile() || !statSync(shaderManifestPath).isFile()) {
-  throw new Error('shared input build did not emit a pack catalog and engine shader manifest');
+if (!statSync(catalogPath).isFile()) {
+  throw new Error('shared input build did not emit a pack catalog');
 }
 
 mkdirSync(join(output, 'assets'), { recursive: true });
@@ -199,7 +176,15 @@ if (!catalogOnly) {
   cpSync(join(staging, 'assets'), join(payloadRoot, 'assets'), { recursive: true });
 }
 // The self-contained manifest is the entire shared shader consumer closure.
-cpSync(shaderManifestPath, join(output, 'shaders/manifest.json'));
+const shaderManifestPath = join(output, 'shaders/manifest.json');
+if (preparedShader === null) {
+  writeFileSync(
+    shaderManifestPath,
+    JSON.stringify(await buildEngineShaderTemplateManifest(engineEntries)),
+  );
+} else {
+  cpSync(preparedShader, shaderManifestPath);
+}
 rmSync(staging, { recursive: true, force: true });
 
 // Transfer the exact verified compiler substrate alongside its shader output.
@@ -208,22 +193,13 @@ rmSync(staging, { recursive: true, force: true });
 await verifyProvenance();
 cpSync(join(root, 'packages/wgpu-wasm/pkg'), join(output, 'compiler'), { recursive: true });
 
-const baseShaderInput = option('--base-shader-input-manifest', null);
-if (baseShaderInput !== null) {
-  projectSharedShader(
-    root,
-    resolve(root, baseShaderInput),
-    join(output, 'profiles/base-ssao'),
-    sharedShaderInputFingerprint(root, { pointShadows: false, hdrpSsao: true }),
-  );
-}
-
 const inventory = files(output)
   .map((path) => relative(root, path).replaceAll('\\', '/'))
   .sort();
 const manifest = {
   schemaVersion: 1,
   producer: 'shared-app-inputs',
+  shaderPublication: 'source',
   shaderBuild: sharedShaderReceipt(
     root,
     join(output, 'shaders/manifest.json'),
@@ -251,20 +227,13 @@ if (projectionOutput !== null) {
   cpSync(join(output, 'assets', 'catalog.json'), join(projectionOutput, 'assets', 'catalog.json'));
   cpSync(join(output, 'shaders'), join(projectionOutput, 'shaders'), { recursive: true });
   cpSync(join(output, 'compiler'), join(projectionOutput, 'compiler'), { recursive: true });
-  if (baseShaderInput !== null) {
-    projectSharedShader(
-      root,
-      resolve(root, baseShaderInput),
-      join(projectionOutput, 'profiles/base-ssao'),
-      sharedShaderInputFingerprint(root, { pointShadows: false, hdrpSsao: true }),
-    );
-  }
   writeFileSync(
     join(projectionOutput, 'manifest.json'),
     `${JSON.stringify(
       {
         schemaVersion: manifest.schemaVersion,
         producer: manifest.producer,
+        shaderPublication: manifest.shaderPublication,
         shaderBuild: manifest.shaderBuild,
         inputFingerprint: manifest.inputFingerprint,
         inventory: manifest.inventory,
@@ -290,7 +259,7 @@ const productionFacts = {
   sourceScanCount: 1,
   sourceFileCount: files(assetRoot).length,
   payloadEmitCount: catalogOnly ? 0 : 2,
-  engineCompileCount: preparedShader ? 0 : 1,
+  engineCompileCount: 0,
   buildDurationSeconds: Number(((performance.now() - productionStartedAt) / 1000).toFixed(3)),
 };
 writeFileSync(

@@ -58,7 +58,7 @@ it('refreshes active Skin shadow tasks each frame and recovers GPU output after 
   );
   gpu.sync(delta).unwrap();
   topology.apply(delta);
-  const raw = topology.query(topology.sourcePlan(), undefined);
+  const raw = topology.query(topology.sourcePlan(), undefined).active;
   const prepared = required(f.scene.slotsSnapshot().at(0)?.snapshot.gpuDrivenDraws?.[0]?.prepared);
   // The low-level selector fixture supplies the accepted Skin execution directly.
   const sourcePlan = {
@@ -239,7 +239,7 @@ it.each([
   gpu.sync(delta).unwrap();
   const topology = new BatchTopology();
   topology.apply(delta);
-  const plan = topology.query(topology.sourcePlan(), undefined);
+  const plan = topology.query(topology.sourcePlan(), undefined).active;
   expect(plan.candidateCount).toBe(2);
   const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
   const results: { visible: number; overflow: number; samples: number[][]; output: object }[] = [];
@@ -417,6 +417,7 @@ it('preserves actual rigid view compaction beside Skin demand', async () => {
 it('resolves the true Skin slot when two preceding rigid draws share another instance', async () => {
   const result = await runGpuDrivenSkinVisibleAddressEvidence();
   expect(result).toEqual({
+    visibleCount: 1,
     visibleInstance: 0,
     candidateIndex: 2,
     sourceSlot: 1,

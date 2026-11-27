@@ -12,5 +12,6 @@ export {
   RapierPhysicsWorld3D,
 } from './rapier-physics-world-3d.js';
 export { runRapierSolverWorker } from './solver-worker.js';
+export type { StaticPhysicsGroup, StaticResidencyStatus } from './static-residency.js';
 export type { Rapier3DModule } from './wasm-loader.js';
 export { loadRapier3D } from './wasm-loader.js';

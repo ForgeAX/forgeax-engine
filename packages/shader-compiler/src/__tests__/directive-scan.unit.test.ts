@@ -1,3 +1,4 @@
+import * as types from '@forgeax/engine-types';
 import { afterEach, expect, it, vi } from 'vitest';
 import { compileShaderProgram, compileShaderWithComposition } from '../compile.js';
 import * as conditionals from '../conditionals.js';
@@ -51,6 +52,20 @@ fn helper() {}`;
   expect(rejected.ok).toBe(false);
   if (!rejected.ok) expect(rejected.error.code).toBe('shader-import-not-found');
   expect(compose).not.toHaveBeenCalled();
+});
+
+it('shares one projected import scan across reachability and diagnostic checks', async () => {
+  const helper = '#define_import_path test::helper\nfn helper() {}';
+  const unused = '#define_import_path test::unused\nfn unused() {}';
+  const scan = vi.spyOn(types, 'stripWgslComments');
+  const result = await compileShaderWithComposition(
+    '#import test::helper::{helper}\n@compute @workgroup_size(1) fn main() {}',
+    { imports: { 'test::helper': helper, 'test::unused': unused } },
+    async () => '@compute @workgroup_size(1) fn main() {}',
+  );
+  expect(result.ok).toBe(true);
+  expect(scan.mock.calls.filter(([source]) => source === helper)).toHaveLength(1);
+  expect(scan.mock.calls.filter(([source]) => source === unused)).toHaveLength(1);
 });
 
 it('does not scan conditional branches in already projected ordinary modules', async () => {

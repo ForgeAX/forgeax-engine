@@ -6,6 +6,7 @@ import type {
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
 import type {
+  BindGroup,
   BindGroupLayout,
   Buffer,
   RenderPipeline,
@@ -24,6 +25,8 @@ import {
   type AtmosphereViews,
   atmosphereBindings,
   atmosphereMaterialVisibilityBindings,
+  pipelineViewLayout,
+  viewForPipeline,
 } from '../environment/bindings';
 import { atmosphereVolumeViews, type GraphAtmosphere } from '../environment/luts';
 import { CloudLayerResourceFailureError } from '../errors/cloud';
@@ -39,8 +42,10 @@ import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
 import {
   buildFullscreenPostProcessPass,
   createFullscreenBindGroup,
+  entryUsesPrimaryDepth,
   isTemporalFullscreenBinding,
 } from '../fullscreen-post-process-pass';
+import { getOrCreateHdrpBuffers } from '../hdrp-buffers';
 import { waterProgramEntryPoints } from '../material-program-inputs';
 import type { WaterInfoGraphTargets } from '../pipeline/standard-build-context';
 import type { PreparedGraphicsResolvedResource } from '../prepare/prepared-graphics-resolver';
@@ -49,7 +54,6 @@ import type {
   RenderPipelineFrame,
   RenderPipelineTarget,
 } from '../render-pipeline';
-import { getTemporalGpuState, stageTemporalGpuWrite } from '../temporal/gpu';
 import {
   isSceneDataTarget,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
@@ -59,10 +63,11 @@ import {
 import {
   requireWaterMaterialBakedSources,
   waterMaterialBodyIndex,
-  waterMaterialFrameBindGroupEntries,
   waterMaterialFrameDynamicOffsets,
+  waterMaterialSystemBindGroup,
 } from '../water/wave-material';
 import { recordContext } from '../world/view-record-context';
+import { stageCloudHistoryWrite } from './frame-graph-history';
 import { buildPerFrameBindGroups, buildViewBindGroup } from './frame-lighting';
 import { extractEntryResourceHandle, getOrCreateFromChainResult } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
@@ -232,7 +237,7 @@ export function resolveTargetBindings(
   featurePostProcessEntries?: ReadonlyMap<string, PostProcessShaderEntry>,
   atmosphere?: GraphAtmosphere,
   waterInfoTargets?: WaterInfoGraphTargets,
-  postProcessView?: 'unjittered',
+  unjitteredDepth?: GraphTextureView,
 ): RenderFeatureGraphBindingsResolution | undefined {
   const frame = input.frame as _InternalRenderPipelineContext;
   const atmosphereViews = atmosphereVolumeViews(input.resources, atmosphere);
@@ -353,12 +358,7 @@ export function resolveTargetBindings(
         );
       requireWaterMaterialBakedSources(resources, [index.value], selected.programInputs);
       return {
-        handle: frame.runtime.device
-          .createBindGroup({
-            layout,
-            entries: waterMaterialFrameBindGroupEntries(resources, 16, entryPoints),
-          })
-          .unwrap(),
+        handle: waterMaterialSystemBindGroup(frame.runtime.device, layout, resources, entryPoints),
         dynamicOffsets: waterMaterialFrameDynamicOffsets(
           {
             ...(infoOffset === undefined ? {} : { waterInfo: infoOffset }),
@@ -400,7 +400,7 @@ export function resolveTargetBindings(
                 kind: 'buffer',
                 value: {
                   buffer: frame.pipelineState.viewUniformBuffer,
-                  offset: postProcessView === 'unjittered' ? POST_PROCESS_VIEW_UNIFORM_OFFSET : 0,
+                  offset: depth.view === unjitteredDepth ? POST_PROCESS_VIEW_UNIFORM_OFFSET : 0,
                   size: VIEW_UNIFORM_BYTES,
                 },
               },
@@ -448,6 +448,7 @@ export function resolveTargetBindings(
     if (descriptor?.values.view === true) {
       return perFrameViewBindings(
         frame,
+        pipeline,
         atmosphereViews,
         directionalShadow,
         cloudShadow,
@@ -491,7 +492,10 @@ export function resolveTargetBindings(
         cloudShadow,
       );
     }
-    if (input.binding.bindingContract === 'render-standard-material-and-scene-depth') {
+    if (
+      input.binding.bindingContract === 'render-lit-material-and-scene-depth' ||
+      input.binding.bindingContract === 'render-standard-material-and-scene-depth'
+    ) {
       return resolveStandardViewDepthBindings(
         input,
         frame,
@@ -508,6 +512,7 @@ export function resolveTargetBindings(
       // containing only particles still needs the pipeline's View/light ABI.
       return perFrameViewBindings(
         frame,
+        pipeline,
         atmosphereViews,
         directionalShadow,
         cloudShadow,
@@ -541,6 +546,7 @@ function directionalShadowViewOf(
 /** The renderer-owned View/light group shared with the scene passes. */
 function perFrameViewBindings(
   frame: _InternalRenderPipelineContext,
+  pipeline: LayoutPipeline,
   atmosphereViews: AtmosphereViews | undefined,
   directionalShadow: TextureView | undefined,
   cloudShadow: TextureView | undefined,
@@ -563,7 +569,10 @@ function perFrameViewBindings(
   ).viewBindGroup;
   return viewBindGroup === null
     ? undefined
-    : { handle: viewBindGroup, dynamicOffsets: [viewOffset, 0] };
+    : {
+        handle: viewForPipeline(frame.runtime.device, pipeline, viewBindGroup),
+        dynamicOffsets: [viewOffset],
+      };
 }
 
 function postProcessEntryOf(
@@ -646,7 +655,7 @@ function fullscreenAdditionalViews(
   if (!Array.isArray(additionalNames)) return additionalViews;
   for (const [index, value] of additionalNames.entries()) {
     const assetCount = Array.isArray(values.assetTextures) ? values.assetTextures.length : 0;
-    const binding = fullscreen.extraColorBindings[assetCount + index];
+    const binding = fullscreen.extraColorBindings[assetCount + index]?.binding;
     if (binding === undefined) return undefined;
     if (value === false) {
       additionalViews.push({ binding, view: frame.pipelineState.defaultWhiteTextureView });
@@ -695,7 +704,7 @@ function fullscreenAssetViews(
       (fact.dimension !== '2d' && fact.dimension !== '3d')
     )
       return fail('Invalid published cloud texture fact.');
-    const binding = fullscreen.extraColorBindings[index];
+    const binding = fullscreen.extraColorBindings[index]?.binding;
     const handle = fact.handle as AssetHandle<'texture'>;
     const scope = frame.world;
     if (
@@ -737,24 +746,31 @@ function fullscreenStorageBindings(
   });
 }
 
-// Cloud history is a producer of the shared temporal ping-pong state even
-// when TAA is disabled. Stage the write at encode time; execute's finish
-// guard and submit transaction then give it the same abort/commit/fence
-// semantics as the TAA resolve.
-function stageCloudHistoryWrite(frame: _InternalRenderPipelineContext): void {
-  const state = getTemporalGpuState(
-    frame.frameState,
-    frame.runtime.device,
-    recordContext(frame.runtime).deviceScope,
-    frame.targetW,
-    frame.targetH,
-    true,
-    frame.camera,
-  );
-  stageTemporalGpuWrite(frame.frameState, state);
+/** One-input fullscreen producer with optional depth and named extra inputs. */
+function fullscreenSourceViews(
+  frame: _InternalRenderPipelineContext,
+  input: TargetBindingsInput,
+  values: BindingValues,
+  fullscreen: FullscreenPass,
+) {
+  const logicalViews = fullscreenAdditionalViews(frame, input, values, fullscreen);
+  if (logicalViews === undefined || values.assetTextures === undefined) return logicalViews;
+  return [
+    ...fullscreenAssetViews(frame, values.assetTextures, fullscreen, logicalViews.length),
+    ...logicalViews,
+  ];
 }
 
-/** One-input fullscreen producer with optional depth and named extra inputs. */
+function acceptFullscreenBindings(
+  frame: _InternalRenderPipelineContext,
+  shader: string,
+  group: BindGroup | null,
+): BindGroup | undefined {
+  if (group === null) return undefined;
+  if (shader === 'cloud-layer-resolve') stageCloudHistoryWrite(frame);
+  return group;
+}
+
 function resolveFullscreenBindings(
   input: TargetBindingsInput,
   frame: _InternalRenderPipelineContext,
@@ -766,31 +782,33 @@ function resolveFullscreenBindings(
   if (typeof shader !== 'string') return undefined;
   const entry = postProcessEntryOf(frame, shader, featurePostProcessEntries);
   if (entry === undefined) return undefined;
-  const depthTarget = fullscreenDepthTarget(input, values);
+  const primaryDepth = entryUsesPrimaryDepth(entry);
+  const primaryDepthTarget = primaryDepth ? input.resolveTarget(values.input as never) : undefined;
+  const depthTarget = primaryDepth ? undefined : fullscreenDepthTarget(input, values);
   const fullscreen = buildFullscreenPostProcessPass(
     { device: frame.runtime.device, errorRegistry: frame.runtime.errorRegistry },
     entry,
-    depthTarget?.resolveTarget !== undefined,
+    primaryDepth ? entry.depthSampleCount === 4 : depthTarget?.resolveTarget !== undefined,
   );
   if (fullscreen === null || fullscreen.sampler === null) return undefined;
-  const inputView = fullscreenInputView(input, frame, values);
+  const inputView = primaryDepth
+    ? primaryDepthTarget && depthOnlyViewOf(frame, input.resources, primaryDepthTarget)
+    : fullscreenInputView(input, frame, values);
   if (inputView === undefined) return undefined;
-  const depthView = fullscreenDepthView(input, frame, values, depthTarget);
+  const depthView = primaryDepth
+    ? undefined
+    : fullscreenDepthView(input, frame, values, depthTarget);
   if (depthTarget !== undefined && (depthView === undefined || fullscreen.depthSampler === null)) {
     return undefined;
   }
-  const logicalViews = fullscreenAdditionalViews(frame, input, values, fullscreen);
-  if (logicalViews === undefined) return undefined;
-  const additionalViews =
-    values.assetTextures === undefined
-      ? logicalViews
-      : [
-          ...fullscreenAssetViews(frame, values.assetTextures, fullscreen, logicalViews.length),
-          ...logicalViews,
-        ];
-  const layout = pipeline.getBindGroupLayout?.(1);
-  if (layout === undefined) return undefined;
-  const paramsBuffer = frame.runtime.getPostProcessParamsBuffer?.(shader);
+  const additionalViews = fullscreenSourceViews(frame, input, values, fullscreen);
+  if (additionalViews === undefined) return undefined;
+  // The explicit fullscreen layout also owns bindings on handles that cannot reflect it.
+  const layout = pipeline.getBindGroupLayout?.(1) ?? fullscreen.bindGroupLayout;
+  const paramsBuffer = frame.runtime.getPostProcessParamsBuffer?.(
+    shader,
+    entry.params === undefined ? undefined : 'write',
+  );
   if (!writePostProcessParams(frame, shader, entry, paramsBuffer)) return undefined;
   const createdBindGroup = createFullscreenBindGroup(
     frame.runtime.device,
@@ -803,9 +821,7 @@ function resolveFullscreenBindings(
     additionalViews,
     fullscreenStorageBindings(input, values, fullscreen),
   );
-  if (createdBindGroup === null) return undefined;
-  if (shader === 'cloud-layer-resolve') stageCloudHistoryWrite(frame);
-  return createdBindGroup;
+  return acceptFullscreenBindings(frame, shader, createdBindGroup);
 }
 
 /** Temporal fullscreen producer: current input, depth and the temporal history input. */
@@ -838,7 +854,10 @@ function resolveTemporalFullscreenBindings(
   if (depth !== undefined && (depthView === undefined || fullscreen.depthSampler === null)) {
     return undefined;
   }
-  const paramsBuffer = frame.runtime.getPostProcessParamsBuffer?.(shader);
+  const paramsBuffer = frame.runtime.getPostProcessParamsBuffer?.(
+    shader,
+    entry.params === undefined ? undefined : 'write',
+  );
   if (!writePostProcessParams(frame, shader, entry, paramsBuffer)) return undefined;
   const temporalTarget = input.resolveTarget(values.temporal as never);
   if (temporalTarget === undefined) return undefined;
@@ -853,7 +872,7 @@ function resolveTemporalFullscreenBindings(
       paramsBuffer,
       depthView ?? null,
       fullscreen.depthSampler,
-      [{ binding: fullscreen.extraColorBindings[0] ?? 5, view: temporalView.value }],
+      [{ binding: fullscreen.extraColorBindings[0]?.binding ?? 5, view: temporalView.value }],
     ) ?? undefined
   );
 }
@@ -964,8 +983,9 @@ function resolveStandardViewDepthBindings(
   const texture = target === undefined ? undefined : input.resources.texture(target.texture);
   if (texture !== undefined && !texture.ok) throw texture.error;
   const getLayout = pipeline.getBindGroupLayout;
-  const layout = getLayout?.call(pipeline, 0);
-  if (getLayout === undefined || layout === undefined) {
+  const retainedLayout = pipelineViewLayout(pipeline);
+  const layout = retainedLayout ?? getLayout?.call(pipeline, 0);
+  if (layout === undefined) {
     // Preserve depth-view failure reporting even for a pipeline that cannot
     // supply this layout; this branch never publishes a cached binding.
     if (texture !== undefined) {
@@ -988,7 +1008,16 @@ function resolveStandardViewDepthBindings(
       cloudShadow,
       spotShadow: frame.frameState.frameOutputs.spotShadowView ?? undefined,
       viewBindGroupLayout: layout,
-      viewLayoutIdentity: [pipeline, getLayout],
+      cluster:
+        frame.standardLighting?.kind === 'clustered'
+          ? (getOrCreateHdrpBuffers(
+              frame.runtime,
+              frame.standardLighting.prepared.layout.grid,
+              frame.frameState.standardClusterTextureExtent,
+            ) ?? undefined)
+          : undefined,
+      viewLayoutIdentity:
+        retainedLayout !== undefined || getLayout === undefined ? undefined : [pipeline, getLayout],
       ...(texture === undefined
         ? { sceneDepth: frame.pipelineState.shadowFallbackTextureView }
         : { sceneDepthTexture: texture.value as Texture }),
@@ -996,7 +1025,7 @@ function resolveStandardViewDepthBindings(
   );
   return viewBindGroup === null
     ? undefined
-    : { handle: viewBindGroup, dynamicOffsets: [viewOffset, 0] };
+    : { handle: viewBindGroup, dynamicOffsets: [viewOffset] };
 }
 
 /** A standalone scene-depth group at the declared group index. */

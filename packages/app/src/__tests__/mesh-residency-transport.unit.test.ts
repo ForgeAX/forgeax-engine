@@ -119,13 +119,35 @@ it('clones only mesh POD and retains source buffers through remote preparation',
   await released;
 });
 
+it('fences Mesh retirement by device generation and ignores duplicate ready after retirement', async () => {
+  const f = sourceFixture();
+  const pending = f.source.prepare(f.input);
+  f.respond('mesh-ready');
+  const lease = (await pending).unwrap();
+  f.respond('mesh-retired', 8);
+  expect(f.source.holdsPrepared(f.meshHandle, 1)).toBe(true);
+  const ready = f.source.currentnessToken();
+  f.respond('mesh-retired');
+  expect(f.source.currentnessToken()).not.toBe(ready);
+  expect(lease.isCurrent()).toBe(false);
+  f.respond('mesh-ready');
+  expect(f.source.holdsPrepared(f.meshHandle, 1)).toBe(false);
+  const released = lease.release(true);
+  f.respond('mesh-released');
+  await released;
+  f.assets.dispose();
+});
+
 it('moves an explicitly private snapshot while retaining borrowed World arrays and isolation', async () => {
   const f = sourceFixture();
   const snapshot = structuredClone(f.mesh);
   const expected = structuredClone(snapshot);
   const transfers = [snapshot.vertices.buffer as ArrayBuffer];
   const pending = f.source.prepare({ ...f.input, mesh: snapshot }, { transfers });
-  const message = f.messages[0];
+  expect(f.messages).toEqual([expect.objectContaining({ kind: 'mesh-reserve', requestId: 1 })]);
+  expect(snapshot.vertices.byteLength).toBeGreaterThan(0);
+  f.respond('mesh-reserved');
+  const message = f.messages[1];
   if (message?.kind !== 'mesh-prepare') throw new Error('missing preparation');
   expect(snapshot.vertices.byteLength).toBe(0);
   expect(f.mesh.vertices.byteLength).toBeGreaterThan(0);
@@ -162,6 +184,11 @@ it.each([
   abort.abort();
   expect(f.mesh.vertices.byteLength).toBeGreaterThan(0);
   expect(f.messages[1]).toMatchObject({ kind: 'mesh-release', requestId: 1, evict: true });
+  if (owned) {
+    f.respond('mesh-reserved');
+    expect(f.messages).toHaveLength(2);
+    expect(snapshot.vertices.byteLength).toBeGreaterThan(0);
+  }
   f.respond('mesh-ready');
   await Promise.resolve();
   expect(settled).not.toHaveBeenCalled();
@@ -343,7 +370,10 @@ it('preserves receiver refusal details and escalates unknown throws without a re
   );
   const input = { ...identity, meshHandle: f.meshHandle, mesh: f.mesh, revision: 1 };
   await receiver.receive({ kind: 'mesh-prepare', requestId: 1, input });
-  expect(prepare).toHaveBeenCalledWith(input, 'received', { signal: expect.any(AbortSignal) });
+  expect(prepare).toHaveBeenCalledWith(input, 'received', {
+    signal: expect.any(AbortSignal),
+    onRetired: expect.any(Function),
+  });
   expect(post).toHaveBeenCalledWith(
     expect.objectContaining({
       kind: 'mesh-ready',

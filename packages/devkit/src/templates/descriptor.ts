@@ -1,3 +1,4 @@
+import { completeCommand, failCommand } from '../types.js';
 export interface TemplateDescriptor {
   readonly id: string;
   readonly purpose: string;
@@ -21,15 +22,12 @@ export type TemplateValidation =
 
 export function validateTemplateDescriptor(value: unknown): TemplateValidation {
   if (typeof value !== 'object' || value === null) {
-    return {
-      ok: false,
-      error: {
-        code: 'template-invalid',
-        expected: 'a template descriptor object',
-        hint: 'declare the template identity and purpose in template.json',
-        detail: {},
-      },
-    };
+    return failCommand(
+      'template-invalid',
+      'a template descriptor object',
+      'declare the template identity and purpose in template.json',
+      {},
+    );
   }
   const candidate = value as Record<string, unknown>;
   const identity = candidate.defaultIdentity;
@@ -42,15 +40,12 @@ export function validateTemplateDescriptor(value: unknown): TemplateValidation {
     typeof (identity as Record<string, unknown>).packageName !== 'string' ||
     !Array.isArray(candidate.journeys)
   ) {
-    return {
-      ok: false,
-      error: {
-        code: 'template-invalid',
-        expected: 'id, purpose, defaultIdentity, and journeys',
-        hint: 'complete template.json before discovering the template',
-        detail: { ...(typeof candidate.id === 'string' ? { id: candidate.id } : {}) },
-      },
-    };
+    return failCommand(
+      'template-invalid',
+      'id, purpose, defaultIdentity, and journeys',
+      'complete template.json before discovering the template',
+      { ...(typeof candidate.id === 'string' ? { id: candidate.id } : {}) },
+    );
   }
   const defaultIdentity = identity as { readonly name: string; readonly packageName: string };
   const invalidJourneys =
@@ -66,27 +61,21 @@ export function validateTemplateDescriptor(value: unknown): TemplateValidation {
     defaultIdentity.name.trim().length === 0 ||
     defaultIdentity.packageName.trim().length === 0;
   if (invalidIdentity || invalidJourneys) {
-    return {
-      ok: false,
-      error: {
-        code: invalidJourneys ? 'template-journey-missing' : 'template-invalid',
-        expected: invalidJourneys
-          ? 'at least one named verification journey'
-          : 'non-empty path-safe template identity and purpose',
-        hint: invalidJourneys
-          ? 'add the exact validation journey to template.json'
-          : 'repair the template identity and purpose in template.json',
-        detail: { id: candidate.id },
-      },
-    };
+    return failCommand(
+      invalidJourneys ? 'template-journey-missing' : 'template-invalid',
+      invalidJourneys
+        ? 'at least one named verification journey'
+        : 'non-empty path-safe template identity and purpose',
+      invalidJourneys
+        ? 'add the exact validation journey to template.json'
+        : 'repair the template identity and purpose in template.json',
+      { id: candidate.id },
+    );
   }
-  return {
-    ok: true,
-    value: {
-      id: candidate.id,
-      purpose: candidate.purpose,
-      defaultIdentity,
-      journeys: candidate.journeys,
-    },
-  };
+  return completeCommand({
+    id: candidate.id,
+    purpose: candidate.purpose,
+    defaultIdentity,
+    journeys: candidate.journeys,
+  });
 }

@@ -3,8 +3,10 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../../../scripts/test/ready-render-frame.mjs';
 import { shaderManifestUrl } from '../../../../../runtime/src/__tests__/shader-manifest-url.fixture';
 import { createRenderer } from '../../../assembly/factory';
 import { Camera, MeshFilter, MeshRenderer } from '../../../components';
@@ -20,7 +22,7 @@ function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }
 it.each([0, 2])('renders detached helpers, same-frame depth and independent outlines with AA=%s', {
   timeout: 120_000,
 }, async (antialias) => {
-  const manifest = await buildEngineShaderManifest();
+  const manifest = await buildEngineShaderTemplateManifest();
   const url = shaderManifestUrl(manifest);
   let target: GPUTexture | undefined;
   const canvas = {
@@ -39,7 +41,11 @@ it.each([0, 2])('renders detached helpers, same-frame depth and independent outl
       getCurrentTexture: () => target,
     }),
   };
-  const renderer = await createRenderer(canvas, { rhi: webgpu.rhi }, { shaderManifestUrl: url });
+  const renderer = await createRenderer(
+    canvas,
+    { rhi: webgpu.rhi },
+    { shaderManifestUrl: url, prepareShaderProgramCompiler },
+  );
   const errors: unknown[] = [];
   renderer.onError((error) => errors.push(error));
   try {
@@ -76,26 +82,10 @@ it.each([0, 2])('renders detached helpers, same-frame depth and independent outl
     const lease = value(renderer.attach(world));
     const owner = {},
       assistance = editorAssistance(world);
-    const draw = async (observe = false) => {
-      const deadline = Date.now() + 15_000;
-      do {
-        if (observe) {
-          const armed = renderer.requestObservation?.(['final-display']);
-          if (armed === undefined) throw new Error('No observation capability');
-          value(armed);
-        }
-        const draw = renderer.draw({ source: lease });
-        if (!draw.ok) throw new Error(JSON.stringify(errors), { cause: draw.error });
-        const receipt = draw.value;
-        if (receipt === undefined) throw new Error('Scene draw returned no receipt');
-        value(await receipt.completed);
-        if (receipt.presentation === 'ready') return receipt;
-        if (observe)
-          value(await renderer.observe(receipt, { include: receipt.observationDomains ?? [] }));
-        await new Promise((resolve) => setTimeout(resolve, 16));
-      } while (Date.now() < deadline);
-      throw new Error(`No ready editor frame: ${JSON.stringify(errors)}`);
-    };
+    const draw = (observe = false) =>
+      drawReadyFrame(renderer, { source: lease }, observe ? ['final-display'] : undefined, {
+        timeoutMs: 15_000,
+      });
     const redPixels = async () => {
       const receipt = await draw(true);
       const observation = value(

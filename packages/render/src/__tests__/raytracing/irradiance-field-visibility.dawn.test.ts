@@ -1,41 +1,27 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { buildMeshDistanceField, createBoxGeometry } from '@forgeax/engine-geometry';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import type { Buffer } from '@forgeax/engine-rhi';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
 import { compileShader } from '../../../../shader-compiler/src/index';
-import {
-  createGlobalSdfComposition,
-  type GlobalSdfCompositionInputs,
-  packGlobalSdfComposition,
-} from '../../raytracing/global-sdf';
-import {
-  createGlobalSdfTexture,
-  GLOBAL_SDF_TEXTURE_WGSL,
-} from '../../raytracing/global-sdf-texture';
+import { GLOBAL_SDF_COMPOSE_WGSL } from '../../raytracing/global-sdf';
+import { GLOBAL_SDF_TEXTURE_WGSL } from '../../raytracing/global-sdf-texture';
 import {
   createIrradianceFieldSampleLayout,
   packIrradianceFieldUniform,
 } from '../../raytracing/irradiance-field';
 import { IRRADIANCE_FIELD_PROBE_STRIDE } from '../../raytracing/irradiance-field-plan';
 import type { SdfMeshInstance } from '../../raytracing/sdf-query';
+import { SDF_SCENE_TEXTURE_PROJECT_WGSL } from '../../raytracing/sdf-scene-texture';
+import {
+  createVisibilityControl,
+  visibilityWallFields,
+} from './irradiance-field-visibility.fixture';
 import { readBuffer } from './path-tracer.fixture';
+import { FIELD_SEGMENT_TEST_WGSL, rayShaderTestImports } from './ray-shader-imports.fixture';
 
 it('hard-rejects receiver-to-probe walls and retains incomplete transport through the live sampler', async () => {
-  const source = `
-#import forgeax_ray::irradiance_field_sample::{sampleIrradianceField, sampleRadianceCacheAt}
-@group(0) @binding(0) var<storage,read_write> results: array<vec4f>;
-@compute @workgroup_size(1) fn verifySegment() {
- let p=vec3f(0,0,-3.3);let n=vec3f(0,0,1);
- results[0]=sampleIrradianceField(p,n,vec3f(0));
- results[1]=sampleRadianceCacheAt(p,n,vec3f(0),n,0.25);
-}`;
-  const imports = {
-    'forgeax_ray::irradiance_field_sample': readFileSync(
-      new URL('../../../../shader/src/ray-irradiance-field-sample.wgsl', import.meta.url),
-      'utf8',
-    ),
-  };
+  const source = FIELD_SEGMENT_TEST_WGSL;
+  const imports = await rayShaderTestImports();
   const compiled = await Promise.all(
     [true, false].map(
       async (visibility) =>
@@ -137,12 +123,7 @@ it('hard-rejects receiver-to-probe walls and retains incomplete transport throug
         entries: [{ binding: 0, resource: { kind: 'buffer', value: { buffer: output } } }],
       })
       .unwrap();
-    const mesh = createBoxGeometry(3, 3, 0.25).unwrap();
-    if (!(mesh.attributes.position instanceof Float32Array) || mesh.indices === undefined)
-      throw new Error('the canonical wall requires indexed float32 positions');
-    const distanceField = (
-      await buildMeshDistanceField(mesh.attributes.position, mesh.indices, { resolution: 32 })
-    ).unwrap();
+    const { field: distanceField, signedSolid } = await visibilityWallFields();
     const grid = {
       origin: [-2, -2, -5] as const,
       dimensions: [17, 17, 17] as const,
@@ -160,6 +141,7 @@ it('hard-rejects receiver-to-probe walls and retains incomplete transport throug
     const controls = [
       { name: 'mask-zero', source: [{ ...wall, mask: 0 }] },
       { name: 'wall', source: [wall] },
+      { name: 'signed-solid-unqualified', source: [{ ...wall, field: signedSolid }] },
       {
         name: 'moved-wall',
         source: [{ ...wall, transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 20, 0, -3, 1] }],
@@ -186,9 +168,15 @@ it('hard-rejects receiver-to-probe walls and retains incomplete transport throug
         ],
       },
     ];
-    const projectionModule = (
-      await webgpu.createShaderModule(device, { code: GLOBAL_SDF_TEXTURE_WGSL })
-    ).unwrap();
+    const modules = {
+      compose: (
+        await webgpu.createShaderModule(device, { code: GLOBAL_SDF_COMPOSE_WGSL })
+      ).unwrap(),
+      coarse: (await webgpu.createShaderModule(device, { code: GLOBAL_SDF_TEXTURE_WGSL })).unwrap(),
+      canonical: (
+        await webgpu.createShaderModule(device, { code: SDF_SCENE_TEXTURE_PROJECT_WGSL })
+      ).unwrap(),
+    };
     for (const control of controls) {
       const currentGrid = {
         ...grid,
@@ -203,36 +191,17 @@ it('hard-rejects receiver-to-probe walls and retains incomplete transport throug
       device.queue
         .writeBuffer(field, 60, new Uint32Array([Number(control.exterior === true)]))
         .unwrap();
-      const packed = packGlobalSdfComposition(control.source, currentGrid).unwrap();
-      const composition = (
-        await createGlobalSdfComposition(
-          device,
-          webgpu.createShaderModule,
-          control.source,
-          currentGrid,
-        )
-      ).unwrap();
-      const input = Object.fromEntries(
-        Object.entries(composition.buffers).map(([name, buffer]) => [
-          name,
-          { buffer, size: packed.data[name as keyof typeof packed.data].byteLength },
-        ]),
-      ) as GlobalSdfCompositionInputs;
-      const visibility = createGlobalSdfTexture(device, projectionModule, {
-        grid: currentGrid,
-        input,
-      });
+      const composition = await createVisibilityControl(
+        device,
+        modules,
+        control.source,
+        currentGrid,
+      );
       try {
         const encoder = device.createCommandEncoder().unwrap();
-        composition.record(encoder).unwrap();
+        composition.record(encoder);
         device.queue.submit([encoder.finish().unwrap()]).unwrap();
-        const projected = device.createCommandEncoder().unwrap();
-        const pass = projected.beginComputePass();
-        pass.setPipeline(visibility.pipeline);
-        pass.setBindGroup(0, visibility.group);
-        pass.dispatchWorkgroups(Math.ceil(composition.voxelCount / 64));
-        pass.end();
-        device.queue.submit([projected.finish().unwrap()]).unwrap();
+        composition.canonical.submitted(composition.canonical.expected[3]);
         const group1 = device
           .createBindGroup({
             layout: layout1,
@@ -241,8 +210,7 @@ it('hard-rejects receiver-to-probe walls and retains incomplete transport throug
                 binding,
                 resource: { kind: 'buffer' as const, value: { buffer } },
               })),
-              { binding: 4, resource: { kind: 'buffer', value: input.settings } },
-              { binding: 5, resource: { kind: 'textureView', value: visibility.view } },
+              ...composition.bindings,
             ],
           })
           .unwrap();
@@ -271,7 +239,8 @@ it('hard-rejects receiver-to-probe walls and retains incomplete transport throug
           const expected =
             control.name === 'wall' || control.name === 'proven-exterior-wall'
               ? [0, 0, 0, 0]
-              : control.name === 'missing-field' ||
+              : control.name === 'signed-solid-unqualified' ||
+                  control.name === 'missing-field' ||
                   control.name === 'partial-coverage' ||
                   control.name === 'outside-region'
                 ? [0, 0, 0, -1]
@@ -279,7 +248,6 @@ it('hard-rejects receiver-to-probe walls and retains incomplete transport throug
           expect(guarded.slice(offset, offset + 4), control.name).toEqual(expected);
         }
       } finally {
-        device.destroyTexture(visibility.texture);
         composition.dispose();
       }
     }

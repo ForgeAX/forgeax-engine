@@ -4,6 +4,7 @@ import { createShaderModuleImmediate } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
 import { transmissionBackdropAvailable } from '../assembly/device-feature-admission';
 import { GpuResidencyCache } from '../device/gpu-residency';
+import { SKY_SH_BYTES } from '../ibl/sky-sh';
 import { createSkylightFallback, skylightBindGroupResources } from '../ibl/skylight-bind-group';
 import { worldRenderResources } from '../publication/resource-scope';
 import {
@@ -36,13 +37,12 @@ it('keeps the selected native material layout through replacement and return to 
   const materialLayout = (minBindingSize: number) => {
     const entries: BindGroupLayoutEntry[] = [
       { binding: 0, visibility: 4, buffer: { type: 'uniform', minBindingSize } },
-      { binding: 1, visibility: 4, texture: { viewDimension: 'cube', sampleType: 'float' } },
+      { binding: 1, visibility: 4, buffer: { type: 'uniform', minBindingSize: SKY_SH_BYTES } },
       { binding: 2, visibility: 4, sampler: { type: 'filtering' } },
       { binding: 3, visibility: 4, texture: { viewDimension: '2d', sampleType: 'float' } },
       { binding: 4, visibility: 4, sampler: { type: 'filtering' } },
       { binding: 5, visibility: 4, texture: { viewDimension: '2d', sampleType: 'float' } },
       { binding: 6, visibility: 4, buffer: { type: 'uniform' } },
-      { binding: 47, visibility: 4, texture: { viewDimension: '2d', sampleType: 'float' } },
     ];
     if (transmissionBackdropAvailable(device.limits.maxSampledTexturesPerShaderStage))
       entries.push(
@@ -74,7 +74,6 @@ it('keeps the selected native material layout through replacement and return to 
     materialSlice: 256,
     videoHighPerfAvailable: false,
     skylightResources: skylightBindGroupResources(fallback),
-    materialBgShared: new Map(),
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     bindGroupCounts: { createBindGroup: 0, keys: [] },
     frameState: {},
@@ -145,7 +144,14 @@ struct Material { values: array<vec4<u32>, ${size}> }
     expect(validation).toBeNull();
   } finally {
     if (scopeOpen) await native.popErrorScope();
-    for (const buffer of [materialBuffer, sceneBuffer, output, readback, fallback.intensityBuffer])
+    for (const buffer of [
+      materialBuffer,
+      sceneBuffer,
+      output,
+      readback,
+      fallback.skySh,
+      fallback.intensityBuffer,
+    ])
       device.destroyBuffer(buffer).unwrap();
     for (const texture of [
       fallback.irradianceTexture,

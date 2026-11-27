@@ -1,13 +1,17 @@
+import { FORGEAX_FRAME_COMPLETED_EVENT } from '@forgeax/engine/app';
 import { createApp } from '@forgeax/engine/app/browser';
 import { prepareRuntimePackDelivery, serveRuntimePackDelivery } from './runtime-packs';
 
 let app;
 let port;
 let stopDelivery;
+let stopRenderFrames;
+let readyRenderFrames = 0;
+let readyFrame;
 let id = 0;
 const pending = new Map();
 export const errors = [];
-export async function open(bootstrap) {
+export async function open(bootstrap, splitRender = false, taskPressure = false, renderMeshBudget, replacementMemoryChannel, viewportHit = false) {
   const channel = new MessageChannel();
   port = channel.port1;
   port.onmessage = ({ data }) => {
@@ -20,17 +24,36 @@ export async function open(bootstrap) {
   const delivery = `runtime-pack-worker-${crypto.randomUUID()}`;
   stopDelivery = serveRuntimePackDelivery(delivery);
   const canvas = document.querySelector('canvas');
+  // Recovery replaces the transferred canvas. Capture receipts on its parent.
+  const canvasHost = canvas.parentElement;
+  readyRenderFrames = 0;
+  const countReadyFrame = ({ detail }) => {
+    if (detail.presentation === 'ready') {
+      readyRenderFrames++;
+      readyFrame = detail;
+    }
+  };
+  canvasHost.addEventListener(FORGEAX_FRAME_COMPLETED_EVENT, countReadyFrame, true);
+  stopRenderFrames = () => canvasHost.removeEventListener(FORGEAX_FRAME_COMPLETED_EVENT, countReadyFrame, true);
   const result = await createApp(
     canvas,
     {
+      ...(viewportHit ? { viewportHitWarmup: true } : {}),
+      ...(renderMeshBudget === undefined ? {} : { dynamicGeometryMeshBudgetBytes: renderMeshBudget }),
       execution: {
         assetCatalog: { url: new URL('pack-index.json', document.baseURI).href },
-        workers: { engine: true, render: false, kernels: false },
+        workers: { engine: true, render: splitRender, kernels: false },
         bootstrap: new URL(bootstrap, document.baseURI),
-        bootstrapData: { channel: delivery },
+        bootstrapData: {
+          channel: delivery,
+          splitRender,
+          replacementMemoryChannel,
+          ...(taskPressure ? { pressureUrl: new URL('pressure.ktx2', document.baseURI).href } : {}),
+        },
         bootstrapPort: channel.port2,
         startupTimeoutMs: 90000,
         frameTimeoutMs: 30000,
+        ...(viewportHit ? { diagnostics: { geometryLane: 'direct' } } : {}),
       },
     },
     { shaderManifestUrl: new URL('shaders/manifest.json', document.baseURI).href },
@@ -48,8 +71,34 @@ export function call(method, ...args) {
   });
 }
 export const report = () => app.execution.report();
+export const countReadyRenderFrames = () => readyRenderFrames;
+export async function pickViewport(u, v) {
+  if (!readyFrame?.barrelDistortion) throw new Error('Viewport picking requires a ready display mapping');
+  const { width, height } = readyFrame.barrelDistortion;
+  const request = {
+    x: u * width, y: v * height, width, height, afterFrameId: readyFrame.frameId,
+    worldIdentity: report().world.identity, deviceGeneration: readyFrame.deviceGeneration,
+  };
+  const result = await app.remoteEval(
+    'return await execution.requestViewportHit(' + JSON.stringify(request) + ');',
+    request.worldIdentity,
+  );
+  return { result, afterFrameId: request.afterFrameId };
+}
+export async function meshResidency() {
+  const worldIdentity = report().world.identity;
+  if (worldIdentity === null || app.remoteEval === undefined)
+    throw new Error('Renderer inspection requires the ready source World');
+  const inspection = await app.remoteEval(
+    "return await execution.inspectRenderer({ fields: ['meshResidency'] });",
+    worldIdentity,
+  );
+  if (!inspection.ok) throw inspection.error;
+  return inspection.value.meshResidency;
+}
 export async function close() {
   (await app.dispose()).unwrap();
+  stopRenderFrames();
   stopDelivery();
   port.close();
   return { errors, report: report(), pending: pending.size };

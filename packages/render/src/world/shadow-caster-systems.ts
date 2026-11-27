@@ -1,8 +1,9 @@
 import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { box3, frustum } from '@forgeax/engine-math';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import { hasShadowViewDemand } from '../record/frame-targets';
 import type { RenderSystemInternals } from '../record/render-context';
-import { shadowViewContains } from '../record/shadow-culling';
+import { shadowCasterBounds } from '../record/shadow-culling';
 import type { ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
 import { type FrameList, sparseRowsOf } from '../scene/frame-list';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
@@ -16,7 +17,7 @@ import {
 } from './render-lights';
 import { ViewRecorder } from './render-views';
 import { RenderPrepare, renderSubmission } from './render-world';
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import { ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
@@ -69,6 +70,7 @@ interface ViewShadowCastersState {
   frame: number;
   /** Skin casters some shadow view of this frame may raster; reused across frames. */
   readonly skin: RenderableSnapshot[];
+  readonly volumes: SkinShadowVolumes;
   source: ShadowCasterSource;
   lights: ViewLights;
   projected: boolean;
@@ -91,15 +93,11 @@ export function viewShadowCastersOf(
   owner?: Pick<GpuDrawSelection, 'ownsAll'>,
   capture = false,
 ): readonly RenderableSnapshot[] | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewShadowCasters)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewShadowCastersState>(
-      requireViewField(world, entity, ViewShadowCasters, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<ViewShadowCastersState>(world, entity, ViewShadowCasters);
+  if (state === undefined) return undefined;
   if (state.frame !== renderSubmission(world).frame) return undefined;
   if (!state.projected || state.owner !== owner || state.capture !== capture) {
-    projectSkinShadowCasters(state.source, state.lights, state.skin, owner, capture);
+    projectSkinShadowCasters(state.source, state.lights, state.skin, owner, capture, state.volumes);
     state.projected = true;
     state.owner = owner;
     state.capture = capture;
@@ -107,20 +105,40 @@ export function viewShadowCastersOf(
   return state.skin;
 }
 
-/** Whether some shadow view of `lights` rasters `row`: its caster channels and frustum. */
-function shadowViewsAdmit(
-  row: RenderableSnapshot,
-  lights: ViewLights,
-  boundsOf: ShadowCasterSource['worldBoundsOf'],
-): boolean {
-  const channels = row.shadowChannels ?? 0xffffffff;
-  for (const view of lights.shadowViews)
-    if (
-      (channels & (shadowViewCasterChannels(lights, view.identity) ?? 0xffffffff)) !== 0 &&
-      shadowViewContains(row, view.planes, boundsOf)
-    )
-      return true;
-  return false;
+/** The view owns one channel mask per fitted frustum and one reusable caster bound. */
+class SkinShadowVolumes {
+  private readonly channels: number[] = [];
+  private readonly bounds = box3.create();
+
+  prepare(lights: ViewLights): void {
+    const views = lights.shadowViews;
+    this.channels.length = views.length;
+    for (let i = 0; i < views.length; i++) {
+      const view = views[i] as ViewLights['shadowViews'][number];
+      this.channels[i] = shadowViewCasterChannels(lights, view.identity) ?? 0xffffffff;
+    }
+  }
+
+  admits(
+    row: RenderableSnapshot,
+    lights: ViewLights,
+    boundsOf: ShadowCasterSource['worldBoundsOf'],
+  ): boolean {
+    const channels = row.shadowChannels ?? 0xffffffff;
+    let bounds: ReturnType<typeof shadowCasterBounds> | undefined;
+    for (let i = 0; i < lights.shadowViews.length; i++) {
+      if ((channels & (this.channels[i] as number)) === 0) continue;
+      const planes = (lights.shadowViews[i] as ViewLights['shadowViews'][number]).planes;
+      if (planes === undefined || planes.length === 0) return true;
+      bounds ??= shadowCasterBounds(row, this.bounds, boundsOf);
+      if (
+        bounds === 'unbounded' ||
+        (bounds !== 'empty' && frustum.intersectsBox(planes as frustum.Frustum, bounds))
+      )
+        return true;
+    }
+    return false;
+  }
 }
 
 /**
@@ -135,20 +153,27 @@ export function projectSkinShadowCasters(
   out: RenderableSnapshot[],
   owner?: Pick<GpuDrawSelection, 'ownsAll'>,
   capture = false,
+  volumes = new SkinShadowVolumes(),
 ): void {
   out.length = 0;
   const every = capture || source.capture || lights.shadowViews.length === 0;
   const selected = every ? undefined : owner;
   const candidates = source.skinRows?.(selected) ?? sparseRowsOf(source.renderables, 'skin');
-  for (const row of candidates)
+  let projectedChannels = false;
+  for (const row of candidates) {
     if (
       row.skinBinding !== undefined &&
       selected?.ownsAll(row) !== true &&
       row.shadowCaster !== false &&
-      row.authorVisible !== false &&
-      (every || shadowViewsAdmit(row, lights, source.worldBoundsOf))
-    )
-      out.push(row);
+      row.authorVisible !== false
+    ) {
+      if (!every && !projectedChannels) {
+        volumes.prepare(lights);
+        projectedChannels = true;
+      }
+      if (every || volumes.admits(row, lights, source.worldBoundsOf)) out.push(row);
+    }
+  }
 }
 
 /**
@@ -190,6 +215,7 @@ export function registerShadowCasterSystem(world: World): void {
             ? {
                 frame,
                 skin: [],
+                volumes: new SkinShadowVolumes(),
                 source,
                 lights,
                 projected: false,

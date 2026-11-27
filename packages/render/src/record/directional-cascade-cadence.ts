@@ -36,6 +36,28 @@ function sameMatrix(a: Float32Array | undefined, b: Float32Array | undefined): b
   return true;
 }
 
+/** Publish fitted values independently of mutable light scratch. Only changed splits need storage. */
+export function captureDirectionalMatrices(
+  current: readonly Float32Array[],
+  previous: readonly Float32Array[] | undefined,
+): readonly Float32Array[] {
+  let rows: Float32Array[] | undefined;
+  for (let index = 0; index < current.length; index++) {
+    const value = current[index] as Float32Array;
+    const prior = previous?.[index];
+    if (prior !== undefined && sameMatrix(prior, value)) {
+      rows?.push(prior);
+    } else {
+      rows ??= previous?.slice(0, index) ?? [];
+      rows.push(new Float32Array(value));
+    }
+  }
+  return (
+    rows ??
+    (previous?.length === current.length ? previous : (previous?.slice(0, current.length) ?? []))
+  );
+}
+
 /** Only a current receiver/scene witness can replace local ECS read leases. */
 export function currentDirectionalShadowPublication(
   sourceScope: RenderResourceScope,
@@ -112,6 +134,7 @@ export function prepareDirectionalCascadeCadence(
   lights: DirectionalCascadeCadenceLights,
   previous: DirectionalCascadeCadenceState | undefined,
   mapMiss: ShadowViewInvalidationReason | undefined,
+  captured?: readonly Float32Array[],
 ): {
   readonly cascadeMiss: readonly (ShadowViewInvalidationReason | undefined)[] | undefined;
   readonly next: DirectionalCascadeCadenceState | null;
@@ -127,6 +150,7 @@ export function prepareDirectionalCascadeCadence(
   ) {
     return { cascadeMiss: undefined, next: null };
   }
+  const matrices = captured ?? captureDirectionalMatrices(current, previous?.lightViewProj);
   const frame = previous === undefined ? 0 : previous.frame + 1;
   const retained =
     previous !== undefined &&
@@ -140,7 +164,10 @@ export function prepareDirectionalCascadeCadence(
     if (!retained || hardMiss) {
       cascadeMiss.push(mapMiss ?? 'first-publication');
       stale.push(false);
-    } else if (!sameMatrix(previous.lightViewProj[cascade], current[cascade])) {
+    } else if (
+      previous.lightViewProj[cascade] !== matrices[cascade] &&
+      !sameMatrix(previous.lightViewProj[cascade], matrices[cascade])
+    ) {
       cascadeMiss.push(mapMiss ?? 'view-changed');
       stale.push(false);
     } else if (mapMiss === undefined) {
@@ -155,7 +182,7 @@ export function prepareDirectionalCascadeCadence(
   return {
     cascadeMiss,
     next: {
-      lightViewProj: current.map((matrix) => new Float32Array(matrix)),
+      lightViewProj: matrices,
       stale,
       frame,
     },

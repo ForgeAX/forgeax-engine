@@ -9,17 +9,22 @@ import type { SsaoParameterConfig } from './ssao-config';
 export const RENDERING_REQUIREMENT_KEYS = [
   'renderPath',
   'pbr',
+  'contactShadows',
   'ibl',
+  'ambientOcclusion',
   'lightCount',
   'visibleSurface',
   'diffuseGi',
   'probePlacement',
   'gpuOcclusion',
   'featureReadOnlyDepthBatching',
+  'roughRefraction',
 ] as const;
 export type RenderingRequirements = Partial<
-  Pick<RenderProfile, (typeof RENDERING_REQUIREMENT_KEYS)[number]>
->;
+  Pick<RenderProfile, Exclude<(typeof RENDERING_REQUIREMENT_KEYS)[number], 'ambientOcclusion'>>
+> & {
+  readonly ambientOcclusion?: (SsaoParameterConfig & { readonly enabled?: boolean }) | undefined;
+};
 
 export function renderingRequirementsOf(value: RenderingRequirements): RenderingRequirements {
   return Object.fromEntries(
@@ -31,7 +36,20 @@ export function renderingRequirementsOf(value: RenderingRequirements): Rendering
 }
 
 export function renderProfileForRequirements(requirements: RenderingRequirements): RenderProfile {
-  return { ...DEFAULT_STANDARD_PROFILE, ...renderingRequirementsOf(requirements) };
+  const { ambientOcclusion, ...selected } = renderingRequirementsOf(requirements);
+  return {
+    ...DEFAULT_STANDARD_PROFILE,
+    ...selected,
+    ambientOcclusion:
+      ambientOcclusion === undefined
+        ? selected.diffuseGi === undefined
+          ? DEFAULT_STANDARD_PROFILE.ambientOcclusion
+          : { enabled: false }
+        : {
+            ...ambientOcclusion,
+            enabled: ambientOcclusion.enabled === undefined ? true : ambientOcclusion.enabled,
+          },
+  };
 }
 
 export type RenderQualityLevel = 'low' | 'medium' | 'high';
@@ -56,6 +74,7 @@ export interface RenderQualityBudgets {
     readonly resolutionScale: number;
   };
   readonly ssr: {
+    readonly quality?: RenderQualityLevel;
     readonly resolutionScale: 0.5 | 1;
     readonly hizIterations: number;
     readonly linearIterations: number;
@@ -94,6 +113,7 @@ export function resolveRenderQualityBudgets(
       resolutionScale: groups.ambientOcclusion === 'high' ? 1 : 0.5,
     }),
     ssr: Object.freeze({
+      quality: groups.reflections,
       resolutionScale: reflection === 2 ? (1 as const) : (0.5 as const),
       hizIterations: [16, 32, 64][reflection] ?? 64,
       linearIterations: [256, 512, 1024][reflection] ?? 1024,
@@ -125,6 +145,10 @@ export function resolveRenderQualityBudgets(
       ),
     }),
     ssr: Object.freeze({
+      quality:
+        limits.ssr?.quality !== undefined && levelIndex(limits.ssr.quality) < reflection
+          ? limits.ssr.quality
+          : groups.reflections,
       resolutionScale: bound(budget.ssr.resolutionScale, limits.ssr?.resolutionScale) as 0.5 | 1,
       hizIterations: bound(budget.ssr.hizIterations, limits.ssr?.hizIterations),
       linearIterations: bound(budget.ssr.linearIterations, limits.ssr?.linearIterations),
@@ -141,14 +165,13 @@ export function applyAmbientOcclusionQuality(
   budget: RenderQualityBudgets['ambientOcclusion'] | undefined,
 ): SsaoParameterConfig {
   if (budget === undefined) return authored;
-  const quality =
-    levelIndex(authored.quality ?? 'high') < levelIndex(budget.quality)
-      ? (authored.quality ?? 'high')
-      : budget.quality;
+  const ceiling = { low: 25, medium: 55, high: 100 }[budget.quality];
   return {
     ...authored,
-    quality,
-    resolutionScale: Math.min(authored.resolutionScale ?? 1, budget.resolutionScale),
+    maxQuality: Math.min(authored.maxQuality ?? 100, ceiling),
+    ...(authored.method === 'gtao' && budget.resolutionScale <= 0.5
+      ? { gtao: { ...authored.gtao, downsample: true } }
+      : {}),
   };
 }
 
@@ -165,13 +188,12 @@ export function renderProfileForQuality(
   return {
     ...source,
     quality,
-    ssao:
-      source.ssao === false
-        ? false
-        : applyAmbientOcclusionQuality(
-            typeof source.ssao === 'object' ? source.ssao : {},
-            quality.ambientOcclusion,
-          ),
+    ambientOcclusion: source.ambientOcclusion.enabled
+      ? {
+          ...applyAmbientOcclusionQuality(source.ambientOcclusion, quality.ambientOcclusion),
+          enabled: true,
+        }
+      : source.ambientOcclusion,
     subsurfaceQuality:
       source.subsurfaceQuality === 'low' || groups.shading === 'low' ? 'low' : 'high',
     volumetricFog: {
@@ -324,6 +346,7 @@ function validateSamplingBudgets(value: RenderQualityBudgets): string | undefine
   )
     return 'Render quality has invalid AO budgets';
   if (
+    (value.ssr.quality !== undefined && !['low', 'medium', 'high'].includes(value.ssr.quality)) ||
     ![0.5, 1].includes(value.ssr.resolutionScale) ||
     !integer(value.ssr.hizIterations, 1, 64) ||
     !integer(value.ssr.linearIterations, 1, 1024) ||
@@ -375,7 +398,13 @@ export function validateRenderQualityLimits(limits: RenderQualityLimits): string
       limits.ssr === null ||
       Object.keys(limits.ssr).some(
         (key) =>
-          !['resolutionScale', 'hizIterations', 'linearIterations', 'refineSteps'].includes(key),
+          ![
+            'quality',
+            'resolutionScale',
+            'hizIterations',
+            'linearIterations',
+            'refineSteps',
+          ].includes(key),
       ))
   )
     return 'Render quality SSR limits contain unsupported fields';

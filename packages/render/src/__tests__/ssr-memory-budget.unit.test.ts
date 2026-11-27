@@ -11,11 +11,9 @@ describe('SSR descriptor-derived memory budget', () => {
       depthPyramidBytes: 2_764_220,
       traceBytes: 16_588_800,
       hitReactivityBytes: 8_294_400,
-      resolvedBytes: 22_117_240,
-      historyBytes: 124_416_000,
-      temporalParamsBytes: 32,
       fallbackInputBytes: 16_588_800,
-      ssrOwnedBytes: 190_769_492,
+      sceneColorBytes: 4_147_200,
+      ssrOwnedBytes: 48_383_420,
       budgetBytes: SSR_SPATIAL_MEMORY_BUDGET_BYTES,
       withinBudget: true,
     });
@@ -26,12 +24,16 @@ describe('SSR descriptor-derived memory budget', () => {
       { width: 1920, height: 1080 },
       { execution: 'fragment', forward: true },
     );
-    expect(portable.fragmentScratchBytes).toBe(
-      portable.depthPyramidBytes + portable.resolvedBytes + 16,
-    );
-    expect(portable.forwardInputsBytes).toBe(1920 * 1080 * 28);
-    expect(portable.ssrOwnedBytes).toBe(273_711_768);
+    expect(portable.fragmentScratchBytes).toBe(portable.depthPyramidBytes + 16);
+    expect(portable.forwardInputsBytes).toBe(1920 * 1080 * 36);
+    expect(portable.ssrOwnedBytes).toBe(125_797_256);
     expect(portable.withinBudget).toBe(true);
+    const msaa = estimateSsrSpatialMemory(
+      { width: 1920, height: 1080 },
+      { execution: 'fragment', forward: true, forwardSampleCount: 4 },
+    );
+    expect(msaa.ssrOwnedBytes - portable.ssrOwnedBytes).toBe(1920 * 1080 * 96);
+    expect(msaa.withinBudget).toBe(true);
     expect(
       estimateSsrSpatialMemory(
         { width: 3840, height: 2160 },
@@ -40,33 +42,21 @@ describe('SSR descriptor-derived memory budget', () => {
     ).toBe(false);
   });
 
-  it('counts exactly one resolved mip for a one-pixel view', () => {
-    expect(estimateSsrSpatialMemory({ width: 1, height: 1 })).toMatchObject({
-      resolvedBytes: 8,
-      traceBytes: 8,
-      historyBytes: 60,
-    });
-  });
-
-  it('derives odd extents and the exact zero-temporal reduction', () => {
+  it('derives odd extents without reflection history resources', () => {
     const odd = estimateSsrSpatialMemory({ width: 5, height: 3 });
     expect(odd).toMatchObject({
       depthPyramidBytes: 12,
       traceBytes: 120,
       hitReactivityBytes: 60,
-      resolvedBytes: 144,
-      historyBytes: 900,
-      temporalParamsBytes: 32,
-      ssrOwnedBytes: 1388,
+      sceneColorBytes: 16,
+      ssrOwnedBytes: 328,
     });
+  });
 
-    const noTemporal = estimateSsrSpatialMemory({ width: 5, height: 3 }, { temporal: false });
-    expect(noTemporal).toMatchObject({
-      resolvedBytes: 0,
-      historyBytes: 0,
-      temporalParamsBytes: 0,
-      ssrOwnedBytes: 312,
-      withinBudget: true,
-    });
+  it('charges one half-resolution hit-color level on the portable route', () => {
+    const size = { width: 17, height: 9 };
+    const memory = estimateSsrSpatialMemory(size, { execution: 'fragment' });
+    expect(memory.sceneColorBytes).toBe(8 * 4 * 8);
+    expect(memory.fragmentScratchBytes).toBe(memory.depthPyramidBytes + 16);
   });
 });

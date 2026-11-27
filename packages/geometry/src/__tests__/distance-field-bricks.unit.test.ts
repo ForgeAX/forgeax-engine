@@ -93,7 +93,9 @@ it('refuses corrupt brick addresses, padding and unreferenced payloads before ar
   const headerLength = new DataView(bytes.buffer).getUint32(0, true);
   const text = new TextDecoder().decode(bytes.subarray(4, 4 + headerLength));
   const older = bytes.slice();
-  older.set(new TextEncoder().encode(text.replace('"version":4', '"version":3')), 4);
+  const changed = text.replace('"version":5', '"version":3');
+  expect(changed).not.toBe(text);
+  older.set(new TextEncoder().encode(changed), 4);
   const digest = Array.from(
     new Uint8Array(await crypto.subtle.digest('SHA-256', older.subarray(0, -64))),
     (b) => b.toString(16).padStart(2, '0'),

@@ -78,12 +78,12 @@ it.each([
     } else {
       const result = await produceBuildAssets({
         inventory: {
-          schemaVersion: 'catalog-legacy-v1',
           entries: [],
           authority: 'authoritative',
           diagnostics: [],
           declarations: new Map(),
           sourceDeclarations: inventory.value.declarations,
+          packInstances: inventory.value.instances,
         },
         cwd: root,
         sourceSnapshot,
@@ -100,7 +100,6 @@ it.each([
             }),
         },
         cookedCurrentProjection: {},
-        directCurrentProjection: {},
         authoredCookedCurrentProjection: {},
         sink: {
           emitFile: () => 'fixture',

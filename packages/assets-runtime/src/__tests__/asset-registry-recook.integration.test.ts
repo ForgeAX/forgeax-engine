@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { AssetError, err, ok } from '@forgeax/engine-types';
 import { assert, expect, it } from 'vitest';
 import { defineAssetKind } from '../asset-kind';
 import { AssetRegistry } from '../asset-registry';
 import { createCatalogSource } from '../catalog-source';
+import { catalogPack } from './fixtures/catalog-pack';
 
 it('reloads recooked sidecars explicitly, retaining runtime identity and unrelated gameplay edits', async () => {
   const guids = [
@@ -19,35 +19,34 @@ it('reloads recooked sidecars explicitly, retaining runtime identity and unrelat
     const value = versions.get(guid);
     assert(value !== undefined);
     const path = `${guid}-${value}.bin`;
-    return createRuntimePackPublication({
-      scopeId: 'asset-runtime',
-      sourcePath: `${guid}.source`,
-      sourceRevision: String(value),
-      generation: value,
-      packageUrl: `${origin}/${guid}-${value}.pack.json`,
-      pack: {
-        assets: [
-          {
-            guid,
-            kind: kind.kind,
-            payload: { value },
-            refs: [],
-            artifacts: {
-              body: {
-                path,
-                mediaType: 'application/octet-stream',
-                contentEncoding: 'identity',
-                byteLength: 1,
-                integrity: {
-                  algorithm: 'sha256',
-                  digest: `sha256:${createHash('sha256').update(Uint8Array.of(value)).digest('hex')}`,
-                },
+    return catalogPack(
+      [
+        {
+          guid,
+          kind: kind.kind,
+          payload: { value },
+          refs: [],
+          artifacts: {
+            body: {
+              path,
+              mediaType: 'application/octet-stream',
+              contentEncoding: 'identity',
+              byteLength: 1,
+              integrity: {
+                algorithm: 'sha256',
+                digest: `sha256:${createHash('sha256').update(Uint8Array.of(value)).digest('hex')}`,
               },
             },
           },
-        ],
+        },
+      ],
+      {
+        sourcePath: `${guid}.source`,
+        sourceRevision: String(value),
+        generation: value,
+        packageUrl: `${origin}/${guid}-${value}.pack.json`,
       },
-    });
+    );
   };
   const server = createServer((request, response) => {
     const url = request.url ?? '';

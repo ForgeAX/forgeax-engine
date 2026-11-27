@@ -16,54 +16,11 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runCliAsset } from '../cli-asset.js';
-
-interface CapturedIO {
-  stdout: string[];
-  stderr: string[];
-}
-
-function makeIO(): CapturedIO {
-  return { stdout: [], stderr: [] };
-}
-
-function ctxFor(io: CapturedIO) {
-  return {
-    stdoutWrite: (line: string): void => {
-      io.stdout.push(line);
-    },
-    stderrWrite: (line: string): void => {
-      io.stderr.push(line);
-    },
-  };
-}
-
-interface UpngEncode {
-  encode: (imgs: ArrayBuffer[], w: number, h: number, cnum: number) => ArrayBuffer;
-}
-
-async function loadUpng(): Promise<UpngEncode> {
-  const mod = (await import('upng-js')) as { default?: UpngEncode } & UpngEncode;
-  return (mod.default ?? mod) as UpngEncode;
-}
-
-async function writeSolidPng(
-  path: string,
-  width: number,
-  height: number,
-  rgba: [number, number, number, number],
-): Promise<void> {
-  const upng = await loadUpng();
-  const pixels = new Uint8Array(width * height * 4);
-  for (let i = 0; i < width * height; i++) {
-    pixels[i * 4 + 0] = rgba[0];
-    pixels[i * 4 + 1] = rgba[1];
-    pixels[i * 4 + 2] = rgba[2];
-    pixels[i * 4 + 3] = rgba[3];
-  }
-  const buf = upng.encode([pixels.buffer as ArrayBuffer], width, height, 0);
-  await writeFile(path, Buffer.from(buf));
-}
+import { runAtlas } from '../cli-asset.js';
+import { createFileSystemPackAuthoringGateway } from '../pack-authoring-node.js';
+import { scanInventory } from '../scanner.js';
+import { ctxFor, makeIO, writeSolidPng } from './support/atlas-cli-fixture.js';
+import { metaFixture } from './support/direct-pack-fixture.js';
 
 {
   // ─── from atlas-cli-empty-input.test.ts ───
@@ -82,9 +39,8 @@ async function writeSolidPng(
     describe('atlas CLI empty-input fail-fast (T-27 / AC-10 a)', () => {
       it('exits 1 with atlas-empty-input + receivedCount=0', async () => {
         const io = makeIO();
-        const code = await runCliAsset(
+        const code = await runAtlas(
           [
-            'atlas',
             '--input',
             `${tmp}/nonexistent-*.png`,
             '--name',
@@ -143,9 +99,8 @@ async function writeSolidPng(
         await mkdir(join(tmp, 'walk-directory.png'));
 
         const io = makeIO();
-        const code = await runCliAsset(
+        const code = await runAtlas(
           [
-            'atlas',
             '--input',
             `${tmp}/${pattern}`,
             '--name',
@@ -219,18 +174,8 @@ async function writeSolidPng(
         await writeSolidPng(join(tmp, 'giant.png'), 256, 256, [255, 200, 100, 255]);
 
         const io = makeIO();
-        const code = await runCliAsset(
-          [
-            'atlas',
-            '--input',
-            `${tmp}/*.png`,
-            '--name',
-            'walk',
-            '--output',
-            tmp,
-            '--max-atlas-size',
-            '64',
-          ],
+        const code = await runAtlas(
+          ['--input', `${tmp}/*.png`, '--name', 'walk', '--output', tmp, '--max-atlas-size', '64'],
           ctxFor(io),
         );
 
@@ -271,90 +216,25 @@ async function writeSolidPng(
     });
 
     describe('cli-asset (forgeax asset plugin bin)', () => {
-      describe('subcommand routing (a)', () => {
-        it('routes scan as a known subcommand and returns 0 on empty roots', async () => {
-          const io = makeIO();
-          const code = await runCliAsset(['scan', '--roots', tempDir], ctxFor(io));
-          expect(code).toBe(0);
-          expect(io.stdout.length).toBeGreaterThanOrEqual(1);
-          expect(io.stdout[0]).toBe('[]');
-        });
-
-        it('routes verify as a known subcommand on a clean dir (exit 0)', async () => {
-          const io = makeIO();
-          const code = await runCliAsset(['verify'], { ...ctxFor(io), cwd: tempDir });
-          expect(code).toBe(0);
-        });
-
-        it('routes lookup and rejects malformed GUID with exit 1', async () => {
-          const io = makeIO();
-          const code = await runCliAsset(['lookup', 'not-a-uuid'], { ...ctxFor(io), cwd: tempDir });
-          expect(code).toBe(1);
-          expect(io.stderr.length).toBeGreaterThanOrEqual(1);
-          const parsed = JSON.parse(io.stderr[0] as string);
-          expect(parsed.code).toBe('pack-guid-malformed');
-        });
-
-        it('emits a JSON Lines envelope with code on unknown subcommand and exits 1', async () => {
-          const io = makeIO();
-          const code = await runCliAsset(['totally-not-a-subcommand'], ctxFor(io));
-          expect(code).toBe(1);
-          expect(io.stderr.length).toBe(1);
-          const parsed = JSON.parse(io.stderr[0] as string);
-          expect(typeof parsed.code).toBe('string');
-          expect(typeof parsed.expected).toBe('string');
-          expect(typeof parsed.hint).toBe('string');
-        });
-
-        it('prints help on --help and exits 0', async () => {
-          const io = makeIO();
-          const code = await runCliAsset(['--help'], ctxFor(io));
-          expect(code).toBe(0);
-          const help = io.stdout.join('\n');
-          expect(help).toContain('scan');
-          expect(help).toContain('lookup');
-          expect(help).toContain('verify');
-        });
-      });
-
       describe('PackError stderr JSON Lines (b)', () => {
         it('emits code / expected / hint as a single JSON line on pack-orphan-meta', async () => {
           const orphanDir = join(tempDir, 'orphan');
           await mkdir(orphanDir, { recursive: true });
           await writeFile(
             join(orphanDir, 'foo.png.meta.json'),
-            JSON.stringify({
-              schemaVersion: '1.0.0',
-              kind: 'external-asset-package',
-              importer: 'image',
-              source: 'foo.png',
-              importSettings: {},
-              subAssets: [
-                { guid: '01234567-89ab-7def-8123-456789abcdef', sourceIndex: 0, kind: 'texture' },
-              ],
-            }),
+            metaFixture('foo.png', 'image', [
+              { guid: '01234567-89ab-7def-8123-456789abcdef', sourceIndex: 0, kind: 'texture' },
+            ]),
             'utf-8',
           );
-          const io = makeIO();
-          const code = await runCliAsset(['scan', '--roots', orphanDir], ctxFor(io));
-          expect(code).toBe(1);
-          expect(io.stderr.length).toBe(1);
-          const line = io.stderr[0] as string;
-          expect(line.includes('\n')).toBe(false);
-          const parsed = JSON.parse(line);
-          expect(typeof parsed.code).toBe('string');
-          expect(parsed.code).toMatch(/^pack-/);
-          expect(typeof parsed.hint).toBe('string');
-        });
-
-        it('emits pack-guid-malformed via lookup with code/expected/hint', async () => {
-          const io = makeIO();
-          const code = await runCliAsset(['lookup', 'oops'], { ...ctxFor(io), cwd: tempDir });
-          expect(code).toBe(1);
-          const parsed = JSON.parse(io.stderr[0] as string);
-          expect(parsed.code).toBe('pack-guid-malformed');
-          expect(typeof parsed.expected).toBe('string');
-          expect(typeof parsed.hint).toBe('string');
+          expect(await scanInventory([orphanDir])).toMatchObject({
+            ok: false,
+            error: {
+              code: 'pack-orphan-meta',
+              expected: expect.any(String),
+              hint: expect.any(String),
+            },
+          });
         });
       });
 
@@ -367,72 +247,35 @@ async function writeSolidPng(
           await writeFile(join(sidecarDir, 'wood-container.jpg'), 'placeholder', 'utf-8');
           await writeFile(
             join(sidecarDir, 'wood-container.jpg.meta.json'),
-            JSON.stringify({
-              schemaVersion: '1.0.0',
-              kind: 'external-asset-package',
-              importer: 'image',
-              source: 'wood-container.jpg',
-              importSettings: {
+            metaFixture(
+              'wood-container.jpg',
+              'image',
+              [{ guid: IMAGE_GUID, sourceIndex: 0, kind: 'texture' }],
+              {
                 colorSpace: 'srgb',
                 mipmap: 'auto',
                 addressMode: 'repeat',
                 filterMode: 'linear',
               },
-              subAssets: [{ guid: IMAGE_GUID, sourceIndex: 0, kind: 'texture' }],
-            }),
+            ),
             'utf-8',
           );
-          const io = makeIO();
-          const code = await runCliAsset(['scan', '--roots', sidecarDir], ctxFor(io));
-          expect(code).toBe(0);
-          const parsed = JSON.parse(io.stdout[0] as string);
+          const scanned = await scanInventory([sidecarDir]);
+          if (!scanned.ok) throw scanned.error;
+          const parsed = scanned.value.inventory;
           expect(parsed).toHaveLength(1);
           expect(parsed[0].guid).toBe(IMAGE_GUID);
           expect(parsed[0].kind).toBe('texture');
           expect(parsed[0].sourcePath).toContain('wood-container.jpg.meta.json');
         });
-
-        it('lookup hits image GUID surfaced by *.meta.json', async () => {
-          const sidecarDir = join(tempDir, 'wood');
-          await mkdir(sidecarDir, { recursive: true });
-          await writeFile(join(sidecarDir, 'wood-container.jpg'), 'placeholder', 'utf-8');
-          await writeFile(
-            join(sidecarDir, 'wood-container.jpg.meta.json'),
-            JSON.stringify({
-              schemaVersion: '1.0.0',
-              kind: 'external-asset-package',
-              importer: 'image',
-              source: 'wood-container.jpg',
-              importSettings: {
-                colorSpace: 'srgb',
-                mipmap: 'auto',
-                addressMode: 'repeat',
-                filterMode: 'linear',
-              },
-              subAssets: [{ guid: IMAGE_GUID, sourceIndex: 0, kind: 'texture' }],
-            }),
-            'utf-8',
-          );
-          const io = makeIO();
-          const code = await runCliAsset(['lookup', IMAGE_GUID], {
-            ...ctxFor(io),
-            cwd: sidecarDir,
-          });
-          expect(code).toBe(0);
-          const parsed = JSON.parse(io.stdout[0] as string);
-          expect(parsed.guid).toBe(IMAGE_GUID);
-          expect(parsed.kind).toBe('texture');
-        });
       });
 
-      describe('exit codes (c)', () => {
-        it('verify ok -> 0', async () => {
-          const io = makeIO();
-          const code = await runCliAsset(['verify'], { ...ctxFor(io), cwd: tempDir });
-          expect(code).toBe(0);
+      describe('verification inventory', () => {
+        it('accepts empty roots', async () => {
+          expect((await scanInventory([tempDir])).ok).toBe(true);
         });
 
-        it('verify err -> 1', async () => {
+        it('rejects invalid sources', async () => {
           const subDir = join(tempDir, 'bad');
           await mkdir(subDir, { recursive: true });
           await writeFile(
@@ -440,9 +283,7 @@ async function writeSolidPng(
             '{"this is not": "schema-valid"}',
             'utf-8',
           );
-          const io = makeIO();
-          const code = await runCliAsset(['verify'], { ...ctxFor(io), cwd: subDir });
-          expect(code).toBe(1);
+          expect((await scanInventory([subDir])).ok).toBe(false);
         });
 
         it('verify emits one structured source/output report', async () => {
@@ -450,23 +291,15 @@ async function writeSolidPng(
           await writeFile(join(tempDir, 'hero.png'), 'source', 'utf-8');
           await writeFile(
             join(tempDir, 'hero.png.meta.json'),
-            JSON.stringify({
-              schemaVersion: '1.0.0',
-              kind: 'external-asset-package',
-              importer: 'image',
-              source: 'hero.png',
-              importSettings: {},
-              subAssets: [{ guid, sourceIndex: 0, kind: 'texture' }],
-            }),
+            metaFixture('hero.png', 'image', [{ guid, sourceIndex: 0, kind: 'texture' }]),
             'utf-8',
           );
-          const io = makeIO();
-          const code = await runCliAsset(['verify'], { ...ctxFor(io), cwd: tempDir });
-          expect(code).toBe(0);
-          expect(io.stdout).toHaveLength(1);
-          const report = JSON.parse(io.stdout[0] as string);
+          const gateway = createFileSystemPackAuthoringGateway({ gameRoot: tempDir });
+          const report = (
+            await gateway.execute({ operation: 'asset.verify', requestId: 'verify' })
+          ).unwrap();
           expect(report.schemaVersion).toBe('asset-verification-v1');
-          expect(report.assets[0]).toMatchObject({
+          expect(report.assets?.[0]).toMatchObject({
             guid,
             type: 'texture',
             source: { role: 'author' },
@@ -489,45 +322,50 @@ async function writeSolidPng(
           });
         });
 
-        it('reports published package rows with their declared dependencies', async () => {
-          const guid = '019e2cc6-0c86-79da-aa76-b0984c86d45e';
+        it('reports author declarations and dependencies before publication', async () => {
+          const guid = '105d046f-ff1b-5fe7-82b4-2baef3461cd9';
           const dependency = '019e2cc6-0c86-79da-aa76-b0984c86d45f';
           await writeFile(
             join(tempDir, 'published.pack.json'),
             JSON.stringify({
-              schemaVersion: '1.0.0',
-              kind: 'internal-text-package',
+              schemaVersion: '3.0.0',
               packageId: '019e2cc6-0c86-79da-aa76-b0984c86d450',
-              assets: [
-                {
-                  guid,
+              assets: {
+                output: {
                   kind: 'scene',
-                  execution: 'cooked',
                   payload: {},
                   refs: [dependency],
                   artifacts: {
                     scene: { path: 'artifacts/scene.bin', mediaType: 'application/octet-stream' },
                   },
                 },
-              ],
+              },
             }),
             'utf-8',
           );
-          const io = makeIO();
-          const code = await runCliAsset(['verify'], { ...ctxFor(io), cwd: tempDir });
-          expect(code).toBe(0);
-          const report = JSON.parse(io.stdout[0] as string);
-          expect(report.assets[0]).toMatchObject({
+          const gateway = createFileSystemPackAuthoringGateway({
+            gameRoot: tempDir,
+            catalog: () => [
+              {
+                guid: dependency,
+                kind: 'texture',
+                lifecycle: 'current',
+                publication: { current: { packageUrl: '/assets/texture.runtime-pack.json' } },
+              },
+            ],
+          });
+          const report = (
+            await gateway.execute({ operation: 'asset.verify', requestId: 'verify' })
+          ).unwrap();
+          expect(report.assets?.[0]).toMatchObject({
             guid,
             dependencies: [dependency],
             output: {
-              status: 'produced',
+              status: 'unproduced',
               availability: 'unknown',
               freshness: 'unknown',
-              packagePath: join(tempDir, 'published.pack.json'),
-              artifactPaths: ['artifacts/scene.bin'],
             },
-            producer: { state: 'published' },
+            producer: { state: 'not-run' },
           });
           expect(report.summary).toMatchObject({ assetCount: 1, emittedAssetCount: 1 });
         });

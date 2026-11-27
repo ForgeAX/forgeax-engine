@@ -16,6 +16,7 @@ export interface AnimatedBoundsMesh {
   readonly positions: ArrayLike<number>;
   readonly joints: ArrayLike<number>;
   readonly weights: ArrayLike<number>;
+  readonly weightDenominator?: 1 | 255 | 65535;
   /** Absolute position-delta envelope across the imported morph weight closure. */
   readonly morphExtent?: ArrayLike<number>;
 }
@@ -138,6 +139,11 @@ function transform(bound: BoundedBox, node: NodeEnvelope, inverse: boolean): Bou
   return { box: out, radius: Math.min(radius, boxRadius(out)) };
 }
 
+function readInfluenceWeight(raw: number | undefined, denominator: number): number {
+  const weight = raw ?? NaN;
+  return denominator === 1 ? weight : Math.fround(weight / denominator);
+}
+
 /**
  * Encloses every imported clip and their convex TRS blends in each mesh's local
  * coordinates. Common ancestors cancel before interval propagation. Invalid,
@@ -230,6 +236,7 @@ export function deriveConservativeAnimatedBounds(input: {
     const meshChain = ancestry(mesh.node);
     if (meshChain === undefined) return undefined;
     const jointBoxes = jointNodes.map(empty);
+    const { weightDenominator: denominator = 1 } = mesh;
     let minWeightSum = Infinity,
       maxWeightSum = 0;
     for (let vertex = 0; vertex < count; vertex++) {
@@ -241,7 +248,7 @@ export function deriveConservativeAnimatedBounds(input: {
       if (!p.every(Number.isFinite)) return undefined;
       let sum = 0;
       for (let lane = 0; lane < 4; lane++) {
-        const weight = mesh.weights[vertex * 4 + lane] ?? NaN;
+        const weight = readInfluenceWeight(mesh.weights[vertex * 4 + lane], denominator);
         if (!Number.isFinite(weight) || weight < 0) return undefined;
         sum += weight;
         if (weight === 0) continue;

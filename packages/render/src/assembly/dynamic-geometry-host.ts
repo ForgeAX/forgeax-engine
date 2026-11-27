@@ -10,6 +10,7 @@ import { readComponentMutationEpoch } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { PhysicsWorldResource } from '@forgeax/engine-physics';
+import { nowMs } from '@forgeax/engine-platform';
 import { Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import type { AssetHandle } from '@forgeax/engine-types';
@@ -49,7 +50,7 @@ import type { RecordProfileRunner } from '../record/render-context';
 import type { Renderer, RenderRecordPhase } from '../render-contract';
 
 /** Only detached snapshot storage is transferred; retained version data stays with assets. */
-function meshTransfers(mesh: MeshAsset): ArrayBuffer[] {
+export function meshTransfers(mesh: MeshAsset): ArrayBuffer[] {
   const buffers = new Set<ArrayBuffer>();
   for (const value of [mesh.vertices, mesh.indices, mesh.aabb, ...Object.values(mesh.attributes)]) {
     const buffer = value instanceof ArrayBuffer ? value : value?.buffer;
@@ -2414,11 +2415,11 @@ export function createDynamicGeometryHost(
         observePhase === undefined
           ? undefined
           : <T>(phase: RenderRecordPhase, action: () => T): T => {
-              const startMs = performance.now();
+              const startMs = nowMs();
               try {
                 return action();
               } finally {
-                observePhase(phase, startMs, performance.now());
+                observePhase(phase, startMs, nowMs());
               }
             };
       const resident = store.prepareMeshResidency(

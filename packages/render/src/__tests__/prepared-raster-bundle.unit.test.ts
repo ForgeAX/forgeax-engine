@@ -1,5 +1,5 @@
-import type { RenderBundleEncoderDescriptor, RhiDevice } from '@forgeax/engine-rhi';
-import { ok } from '@forgeax/engine-rhi';
+import type { BindGroup, RenderBundleEncoderDescriptor, RhiDevice } from '@forgeax/engine-rhi';
+import { err, ok, RhiError } from '@forgeax/engine-rhi';
 import { describe, expect, it, vi } from 'vitest';
 import {
   type PreparedRasterBindings,
@@ -7,6 +7,7 @@ import {
   type PreparedRasterCounters,
   type PreparedRasterPass,
   PreparedRasterPassCache,
+  type PreparedRasterWindowPreparation,
   prepareRasterWindows,
 } from '../gpu-driven/prepared-raster-bundle';
 
@@ -23,7 +24,23 @@ function fixture() {
   const create = vi.fn(() =>
     ok({
       ...Object.fromEntries(
-        methods.map((method) => [method, (...args: unknown[]) => trace.push([method, ...args])]),
+        methods.map((method) => [
+          method,
+          (...args: unknown[]) => {
+            const [index, group, offsets, start, count] = args;
+            if (method === 'setBindGroup' && offsets instanceof Uint32Array) {
+              const begin = Number(start);
+              trace.push([
+                method,
+                index,
+                group,
+                Array.from(offsets.subarray(begin, begin + Number(count))),
+              ]);
+            } else if (method === 'setBindGroup' && Array.isArray(offsets)) {
+              trace.push([method, index, group, [...offsets]]);
+            } else trace.push([method, ...args]);
+          },
+        ]),
       ),
       finish: () => ok({}),
     }),
@@ -78,6 +95,24 @@ function fixture() {
   };
 }
 describe('private streaming prepared raster recording', () => {
+  it('keeps a prepared shadow bundle current when a live frame replaces its variant', () => {
+    const f = fixture();
+    const pass = f.pass('shadow');
+    const live = f.resolve(f.bindings, 'shadow');
+    const staged = f.cache.fork();
+    expect(staged.resolveOne(pass, f.device, f.bindings, f.counters)).toBe(live);
+
+    const bindings = { ...f.bindings, indirectOffset: f.bindings.indirectOffset + 20 };
+    const prepared = staged.resolveOne(pass, f.device, bindings, f.counters);
+    const isCurrent = staged.captureCurrent(pass);
+    expect(prepared).not.toBe(live);
+    expect(f.resolve(f.bindings, 'shadow')).toBe(live);
+    f.resolve({ ...f.bindings, viewOffset: 512 }, 'shadow');
+
+    expect(isCurrent?.()).toBe(true);
+    expect(staged.resolveOne(pass, f.device, bindings, f.counters)).toBe(prepared);
+  });
+
   it.each([
     'pipeline',
     'view',
@@ -116,7 +151,7 @@ describe('private streaming prepared raster recording', () => {
     const f = fixture();
     const unjittered = { ...f.bindings, viewOffset: 1280 };
     const first = f.resolve(unjittered);
-    expect(f.trace).toContainEqual(['setBindGroup', 0, f.bindings.view, [1280, 0]]);
+    expect(f.trace).toContainEqual(['setBindGroup', 0, f.bindings.view, [1280]]);
     expect(f.resolve({ ...unjittered })).toBe(first);
     expect(f.resolve({ ...unjittered, viewOffset: 0 })).not.toBe(first);
   });
@@ -274,7 +309,7 @@ describe('prepared raster batch physical closure', () => {
       ['drawIndexedIndirect', f.bindings.indirect, 80],
     ]);
     expect(f.trace.filter(([method]) => method === 'setBindGroup')).toEqual([
-      ['setBindGroup', 0, f.bindings.view, [0, 0]],
+      ['setBindGroup', 0, f.bindings.view, [0]],
       ['setBindGroup', 1, f.bindings.material, [256]],
       ['setBindGroup', 2, f.bindings.mesh, [0]],
       ['setBindGroup', 3, f.bindings.windows[0]],
@@ -445,6 +480,286 @@ describe('prepared raster cache attachment and publication ownership', () => {
   });
 });
 
+describe('private native window replacement', () => {
+  it('keeps every accepted pass usable until a zero-recording publication', () => {
+    const f = fixture();
+    const main = f.resolve();
+    const shadow = f.resolve(f.bindings, 'shadow');
+    const replacement = f.bindings.mesh;
+    const next = { ...f.bindings, windows: f.bindings.windows.map(() => replacement) };
+    const task = prepareWindows(
+      f.cache,
+      () => replacement,
+      () => true,
+    ).unwrap();
+    const nextMain = task.replacement(main);
+    const nextShadow = task.replacement(shadow);
+    expect(nextMain).toBeDefined();
+    expect(nextMain).not.toBe(main);
+    expect(nextShadow).not.toBe(shadow);
+    expect(f.resolve()).toBe(main);
+    expect(f.resolve(f.bindings, 'shadow')).toBe(shadow);
+    expect(task.isCurrent()).toBe(true);
+    const counts = { ...f.counters };
+    f.create.mockClear();
+    f.trace.length = 0;
+    task.publish().unwrap();
+    expect(f.trace).toEqual([]);
+    expect(f.create).not.toHaveBeenCalled();
+    expect(f.counters).toEqual(counts);
+    expect(f.resolve(next)).toBe(nextMain);
+    expect(f.resolve(next, 'shadow')).toBe(nextShadow);
+    expect(f.create).not.toHaveBeenCalled();
+    expect(task.isCurrent()).toBe(false);
+    expect(task.replacement(main)).toBeUndefined();
+    expect(task.publish().ok).toBe(false);
+    task.release();
+    expect(f.resolve(next)).toBe(nextMain);
+  });
+
+  it('keeps unchanged windows and native bundles without recording again', () => {
+    const f = fixture();
+    const previous = f.resolve();
+    f.create.mockClear();
+    const task = prepareWindows(
+      f.cache,
+      () => undefined,
+      () => true,
+    ).unwrap();
+    expect(task.replacement(previous)).toBe(previous);
+    task.publish().unwrap();
+    expect(f.resolve()).toBe(previous);
+    expect(f.create).not.toHaveBeenCalled();
+  });
+
+  it('observes currency only in the cache that owns the requested native bundle', () => {
+    const f = fixture();
+    const previous = f.resolve();
+    const ownerCurrent = vi.fn(() => true);
+    const task = prepareWindows(f.cache, () => f.bindings.mesh, ownerCurrent).unwrap();
+    try {
+      ownerCurrent.mockClear();
+      expect(task.replacement(fixture().resolve())).toBeUndefined();
+      expect(ownerCurrent).not.toHaveBeenCalled();
+
+      const next = task.replacement(previous);
+      expect(next).toBeDefined();
+      expect(next).not.toBe(previous);
+      expect(ownerCurrent).toHaveBeenCalledTimes(1);
+
+      f.cache.retire(f.pass(), f.counters);
+      expect(task.replacement(previous)).toBeUndefined();
+    } finally {
+      task.release();
+    }
+  });
+
+  it.each(['replace', 'retire', 'append'] as const)('refuses an intervening %s', (change) => {
+    const f = fixture();
+    const previous = f.resolve();
+    const task = prepareWindows(
+      f.cache,
+      () => f.bindings.mesh,
+      () => true,
+    ).unwrap();
+    if (change === 'retire') f.cache.retire(f.pass(), f.counters);
+    else if (change === 'append') f.resolve(f.bindings, 'new-pass');
+    else f.resolve({ ...f.bindings, materialOffset: 512 });
+    expect(task.isCurrent()).toBe(false);
+    expect(task.replacement(previous)).toBeUndefined();
+    f.create.mockClear();
+    expect(task.publish().ok).toBe(false);
+    expect(f.create).not.toHaveBeenCalled();
+    task.release();
+    const retry = prepareWindows(
+      f.cache,
+      () => undefined,
+      () => true,
+    ).unwrap();
+    retry.release();
+  });
+
+  it('releases a partial multi-pass failure and retries without replacing old bundles', () => {
+    const f = fixture();
+    const main = f.resolve();
+    const shadow = f.resolve(f.bindings, 'shadow');
+    const original = f.create.getMockImplementation();
+    if (original === undefined) throw new Error('fixture encoder factory missing');
+    const failure = new RhiError({
+      code: 'internal-error',
+      expected: 'native encoder',
+      hint: 'retry',
+    });
+    vi.spyOn(f.device, 'createRenderBundleEncoder')
+      .mockImplementationOnce(original as unknown as RhiDevice['createRenderBundleEncoder'])
+      .mockReturnValueOnce(err(failure));
+    const failed = prepareWindows(
+      f.cache,
+      () => f.bindings.mesh,
+      () => true,
+    );
+    expect(failed).toMatchObject({ ok: false, error: failure });
+    expect(f.resolve()).toBe(main);
+    expect(f.resolve(f.bindings, 'shadow')).toBe(shadow);
+    const retry = prepareWindows(
+      f.cache,
+      () => f.bindings.mesh,
+      () => true,
+    ).unwrap();
+    retry.release();
+    expect(f.resolve()).toBe(main);
+  });
+
+  it('closes a thrown factory attempt and refuses nested preparation', () => {
+    const f = fixture();
+    const previous = f.resolve();
+    f.create.mockImplementationOnce(() => {
+      expect(
+        prepareWindows(
+          f.cache,
+          () => undefined,
+          () => true,
+        ).ok,
+      ).toBe(false);
+      throw new Error('native factory threw');
+    });
+    expect(() =>
+      prepareWindows(
+        f.cache,
+        () => f.bindings.mesh,
+        () => true,
+      ),
+    ).toThrow('native factory threw');
+    expect(f.resolve()).toBe(previous);
+    prepareWindows(
+      f.cache,
+      () => undefined,
+      () => true,
+    )
+      .unwrap()
+      .release();
+  });
+
+  it('checks after command callbacks before encoding another native command', () => {
+    const f = fixture();
+    const previous = f.resolve();
+    const encoder = f.create().unwrap();
+    let live = true;
+    const finish = vi.fn(() => ok({}));
+    f.create.mockReturnValueOnce(
+      ok({
+        ...encoder,
+        setPipeline: () => {
+          live = false;
+        },
+        finish,
+      }),
+    );
+    f.trace.length = 0;
+    const result = prepareWindows(
+      f.cache,
+      () => f.bindings.mesh,
+      () => live,
+    );
+    expect(result.ok).toBe(false);
+    expect(f.trace).toEqual([]);
+    expect(finish).not.toHaveBeenCalled();
+    expect(f.resolve()).toBe(previous);
+  });
+
+  it('rechecks cache facts after a supplied observation reenters the owner', () => {
+    const f = fixture();
+    f.resolve();
+    f.create.mockClear();
+    const result = prepareWindows(
+      f.cache,
+      () => f.bindings.mesh,
+      () => {
+        f.cache.retire(f.pass(), f.counters);
+        return true;
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(f.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects nested publication from an observation without partially consuming the outer attempt', () => {
+    const f = fixture();
+    const previous = f.resolve();
+    let reenter = false;
+    let nested: boolean | undefined;
+    let task: PreparedRasterWindowPreparation | undefined;
+    task = prepareWindows(
+      f.cache,
+      () => f.bindings.mesh,
+      () => {
+        if (reenter) {
+          reenter = false;
+          nested = task?.publish().ok;
+        }
+        return true;
+      },
+    ).unwrap();
+    const replacement = task.replacement(previous);
+    reenter = true;
+    const result = task.publish();
+    expect(nested).toBe(false);
+    expect(result.ok).toBe(true);
+    expect(
+      f.resolve({ ...f.bindings, windows: f.bindings.windows.map(() => f.bindings.mesh) }),
+    ).toBe(replacement);
+  });
+
+  it('stops replacement callbacks immediately after the first invalidates its source', () => {
+    const f = fixture();
+    f.resolveRows(
+      f.pass(),
+      f.device,
+      [f.bindings, { ...f.bindings, indirectOffset: 80 }],
+      f.counters,
+    );
+    let calls = 0;
+    f.create.mockClear();
+    const result = f.cache.prepareBindings(
+      (binding) => {
+        calls++;
+        f.cache.retire(f.pass(), f.counters);
+        return { ...binding, mesh: f.bindings.view };
+      },
+      () => true,
+    );
+    expect(result.ok).toBe(false);
+    expect(calls).toBe(1);
+    expect(f.create).not.toHaveBeenCalled();
+  });
+
+  it('allows an observation to cancel, without publishing or retaining the occupied role', () => {
+    const f = fixture();
+    const previous = f.resolve();
+    let cancel = false;
+    let task: PreparedRasterWindowPreparation | undefined;
+    task = prepareWindows(
+      f.cache,
+      () => f.bindings.mesh,
+      () => {
+        if (cancel) task?.release();
+        return true;
+      },
+    ).unwrap();
+    cancel = true;
+    expect(task.publish().ok).toBe(false);
+    expect(task.isCurrent()).toBe(false);
+    expect(f.resolve()).toBe(previous);
+    prepareWindows(
+      f.cache,
+      () => undefined,
+      () => true,
+    )
+      .unwrap()
+      .release();
+  });
+});
+
 describe('pass preparation ownership', () => {
   it('shares compatible pass identities across batches and observes frozen accessors', () => {
     const passes = new PreparedRasterPassCache();
@@ -495,3 +810,17 @@ describe('pass preparation ownership', () => {
     expect(passes.prepare('early', descriptor)).not.toBe(first);
   });
 });
+
+function prepareWindows(
+  cache: PreparedRasterBundleCache,
+  replace: (window: BindGroup) => BindGroup | undefined,
+  current: () => boolean,
+) {
+  return cache.prepareBindings(
+    (binding) => ({
+      ...binding,
+      windows: binding.windows.map((window) => replace(window) ?? window),
+    }),
+    current,
+  );
+}

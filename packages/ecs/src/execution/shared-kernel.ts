@@ -57,13 +57,14 @@ export type SharedKernelEligibilityReason = (typeof SHARED_KERNEL_ELIGIBILITY_RE
 
 export type WorldExecutionHealth = 'healthy' | 'poisoned';
 
-export interface WorldExecutionFault {
-  readonly code: 'shared-kernel-failed';
-  readonly kernelName: string;
+export type WorldExecutionFault = {
   readonly cause: unknown;
   readonly partialWrite: boolean;
   readonly retryable: false;
-}
+} & (
+  | { readonly code: 'shared-kernel-failed'; readonly kernelName: string }
+  | { readonly code: 'system-failed'; readonly systemName: string; readonly schedule: string }
+);
 
 export interface WorldExecutionState {
   readonly identity: string;

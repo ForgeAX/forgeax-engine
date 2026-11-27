@@ -1,18 +1,22 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 
+import { AssetGuid, PackageId } from '../guid.js';
 import { scan } from '../scanner.js';
 
-const COLLIDING_GUID = '018e7a4d-1234-7abc-8def-000000000001';
-const roots: string[] = [];
+const PACK_ID = '018e7a4d-1234-7abc-8def-000000000001';
+const parsedPackId = PackageId.parse(PACK_ID);
+if (!parsedPackId.ok) throw parsedPackId.error;
+const COLLIDING_GUID = AssetGuid.format(AssetGuid.derive(parsedPackId.value, 'mesh'));
+const scratch = temporaryDirectories();
 
-const pack = (guid: string) => ({
-  schemaVersion: '1.0.0',
-  kind: 'internal-text-package',
-  assets: [{ guid, kind: 'mesh', payload: {}, refs: [] }],
-});
+const pack = {
+  schemaVersion: '3.0.0',
+  packageId: PACK_ID,
+  assets: { mesh: { kind: 'mesh', payload: {}, refs: [] } },
+};
 
 const meta = (guid: string, source: string) => ({
   schemaVersion: '1.0.0',
@@ -24,8 +28,7 @@ const meta = (guid: string, source: string) => ({
 });
 
 async function makeRoot(name: string): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), `forgeax-guid-${name}-`));
-  roots.push(root);
+  const root = await scratch.make(`forgeax-guid-${name}-`);
   return root;
 }
 
@@ -52,14 +55,12 @@ async function expectGuidCollision(
   }
 }
 
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+afterEach(scratch.clear);
 
 describe('normalized GUID collision collection', () => {
   it('reports a pack asset and meta subAsset collision in one root', async () => {
     const root = await makeRoot('pack-meta');
-    await writeFile(join(root, 'asset.pack.json'), JSON.stringify(pack(COLLIDING_GUID)));
+    await writeFile(join(root, 'asset.pack.json'), JSON.stringify(pack));
     await writeFile(join(root, 'image.png'), Buffer.from('fixture'));
     await writeFile(
       join(root, 'image.png.meta.json'),

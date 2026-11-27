@@ -4,7 +4,7 @@ const root = new URL('../', import.meta.url);
 const source = await readFile(new URL('src/texture-view.wgsl', root), 'utf8');
 const output = new URL('dist/texture-view/', root);
 await mkdir(output, { recursive: true });
-for (const [dimension, guid] of Object.entries({
+for (const [dimension, packageId] of Object.entries({
   '2d': '019e7600-0000-7000-8000-000000000001',
   '2d-array': '019e7600-0000-7000-8000-000000000002',
   '3d': '019e7600-0000-7000-8000-000000000003',
@@ -15,9 +15,12 @@ for (const [dimension, guid] of Object.entries({
     : 'textureLoad(sourceTexture, vec3<i32>(p, layer), mip)';
   const depth = dimension === '3d' ? 'f32(textureDimensions(sourceTexture, mip).z)' : dimension === '2d-array' ? 'f32(textureNumLayers(sourceTexture))' : '1.0';
   await writeFile(new URL(`${dimension}.wgsl`, output), source.replaceAll('__DIMENSION__', name).replace('__LOAD__', load).replace('__DEPTH__', depth));
-  const pack = { schemaVersion: '1.0.0', kind: 'internal-text-package', assets: [{
-    guid, kind: 'material', sourceKey: `${dimension}.wgsl`,
-    payload: createTextureViewMaterial(dimension), refs: [],
-  }] };
+  const pack = {
+    schemaVersion: '3.0.0',
+    packageId,
+    assets: {
+      [`${dimension}.wgsl`]: { kind: 'material', payload: createTextureViewMaterial(dimension), refs: [] },
+    },
+  };
   await writeFile(new URL(`${dimension}.pack.json`, output), JSON.stringify(pack, null, 2) + '\n');
 }

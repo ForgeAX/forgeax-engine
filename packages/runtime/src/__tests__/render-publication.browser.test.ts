@@ -4,6 +4,7 @@ import {
   Camera,
   createRenderPublisher,
   DirectionalLight,
+  type FrameReceipt,
   Materials,
   MeshFilter,
   MeshRenderer,
@@ -23,6 +24,17 @@ function value<T>(
 ): T {
   if (!result.ok) throw result.error;
   return result.value;
+}
+
+async function finishReceiverPreparation(receipt: FrameReceipt): Promise<void> {
+  if (receipt.preparationCompleted !== undefined) value(await receipt.preparationCompleted);
+}
+
+function retainsLinearLdr(receipt: FrameReceipt): boolean {
+  // A preparation frame can own a readback even while presentation is pending.
+  return (
+    receipt.presentation === 'ready' || receipt.observationDomains?.includes('linear-ldr') === true
+  );
 }
 
 async function pixels(canvas: HTMLCanvasElement): Promise<Uint8ClampedArray> {
@@ -164,12 +176,16 @@ it('renders the same Standard scene through local World and transferred publicat
             }),
           )
           .unwrap();
-        if (direct.presentation === 'ready')
+        if (retainsLinearLdr(direct))
           value(await local.renderer.observe(direct, { include: ['linear-ldr'] }));
-        if (draw.presentation === 'ready')
+        if (retainsLinearLdr(draw))
           value(await remote.renderer.observe(draw, { include: ['linear-ldr'] }));
         observationsReady = direct.presentation === 'ready' && draw.presentation === 'ready';
         if (frame >= 2 && observationsReady) break;
+        // Changing the material can select an unprepared receiver pipeline.
+        // Let both renderers complete that work before spending another frame.
+        await finishReceiverPreparation(direct);
+        await finishReceiverPreparation(draw);
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
       expect(observationsReady, `observation pipeline readiness for scene ${x}`).toBe(true);

@@ -1485,10 +1485,10 @@ const { Materials } = await import('@forgeax/engine-render');
 const { Transform } = await import('@forgeax/engine-scene');
 const { unwrapHandle } = await import('@forgeax/engine-types');
 
-const { buildEngineShaderManifest } = await import(
+const { buildEngineShaderTemplateManifest } = await import(
   '@forgeax/engine-vite-plugin-shader'
 );
-const ENGINE_MANIFEST = await buildEngineShaderManifest();
+const ENGINE_MANIFEST = await buildEngineShaderTemplateManifest();
 const MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 

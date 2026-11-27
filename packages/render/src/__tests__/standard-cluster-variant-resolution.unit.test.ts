@@ -188,10 +188,9 @@ describe('Standard clustered variant resolution', () => {
   });
 
   it('fails closed when a clustered frame is missing its unified group', () => {
-    expect(standardTopologyBindGroupReady({ kind: 'no-local-lights' }, null)).toBe(true);
-    expect(standardTopologyBindGroupReady({ kind: 'clustered' }, {})).toBe(true);
-    expect(standardTopologyBindGroupReady({ kind: 'clustered' }, null)).toBe(false);
-    expect(standardTopologyBindGroupReady({ kind: 'clustered' }, undefined)).toBe(false);
+    expect(standardTopologyBindGroupReady({ kind: 'no-local-lights' }, false)).toBe(true);
+    expect(standardTopologyBindGroupReady({ kind: 'clustered' }, true)).toBe(true);
+    expect(standardTopologyBindGroupReady({ kind: 'clustered' }, false)).toBe(false);
   });
 
   it('derives storage-only keys for unlit material consumers', () => {

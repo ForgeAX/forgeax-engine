@@ -5,6 +5,12 @@ import { type BlitzUi, createBlitzUi } from '../index.js';
 import { required } from './fixture.js';
 
 const bytes = await readFile(new URL('../../pkg/ui_blitz_bg.wasm', import.meta.url));
+const font = await readFile(
+  new URL(
+    '../../../../third_party/blitz/packages/blitz-dom/tests/fonts/dejavu-sans-ascii.ttf',
+    import.meta.url,
+  ),
+);
 const wasm = {
   readWasm: async () => bytes,
   instantiate: (imports: unknown) => WebAssembly.instantiate(bytes, imports as WebAssembly.Imports),
@@ -17,6 +23,7 @@ async function document() {
   const errors: unknown[] = [];
   const ui = await createBlitzUi({
     wasm,
+    font,
     width: 640,
     height: 640,
     html: '<style>body{margin:0}button,input,textarea,select{display:block;margin:8px;width:150px;height:30px}</style><button id="one">One</button><button id="two">Two</button><input id="edit"><input id="readonly" readonly><input id="number" type="number"><input id="check" type="checkbox"><textarea id="area"></textarea><select id="select"><option>A</option></select>',
@@ -35,6 +42,36 @@ function pointer(ui: BlitzUi, element: Element, pointerType: 'touch' | 'mouse' =
   for (const phase of ['down', 'up'] as const)
     ui.input.pointer({ phase, pointerId: 1, pointerType, ...point });
 }
+
+it('edits native text at the Blitz caret and commits IME preedit once', async () => {
+  const ui = await document();
+  const editor = required(ui.document.querySelector<HTMLInputElement>('#edit'));
+  const seen: string[] = [];
+  for (const type of ['compositionstart', 'compositionupdate', 'compositionend', 'input'])
+    editor.addEventListener(type, () => seen.push(type));
+  editor.focus();
+  ui.input.key({ type: 'keydown', key: 'a', nativeText: { text: 'ab' } });
+  ui.input.key({ type: 'keydown', key: 'ArrowLeft', nativeText: {} });
+  ui.input.composition({ kind: 'preedit', text: 'zhong' });
+  expect(editor.value).toBe('ab');
+  ui.input.composition({ kind: 'commit', text: '\u4e2d' });
+  expect(editor.value).toBe('a\u4e2db');
+  expect(seen).toEqual([
+    'input',
+    'compositionstart',
+    'compositionupdate',
+    'compositionend',
+    'input',
+  ]);
+  ui.input.key({ type: 'keydown', key: 'Backspace', nativeText: {} });
+  expect(editor.value).toBe('ab');
+  ui.input.key({ type: 'keydown', key: 'a', ctrlKey: true, nativeText: {} });
+  ui.input.key({ type: 'keydown', key: 'x', nativeText: { text: 'x' } });
+  expect(editor.value).toBe('x');
+  editor.addEventListener('beforeinput', (event) => event.preventDefault(), { once: true });
+  ui.input.composition({ kind: 'commit', text: '\u6587' });
+  expect(editor.value).toBe('x');
+});
 
 it('matches focus-visible for initial scripted focus through the actual native state', async () => {
   const ui = await document();

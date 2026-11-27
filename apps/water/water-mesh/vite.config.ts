@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { assetLibrarySourceIdentity, readProjectFacts } from '@forgeax/engine/devkit';
 import { imageImporter } from '@forgeax/engine/image/image-importer';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine/types';
-import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
+import { createMaterialPackCooker, createTextureGeneratorPackCooker } from '@forgeax/engine-shader-compiler';
 import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
 import { vitePluginRhiDebug } from '@forgeax/engine-vite-plugin-rhi-debug';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
@@ -29,7 +29,7 @@ export default defineConfig(async ({ command }) => {
         importers: [imageImporter],
         runtimeBinding: createStandaloneRuntimeAssetBinding('water-mesh-demo'),
         ddc: { projectDdcRoot: resolve(here, '.forgeax/ddc/v2') },
-        cookers: [createMaterialPackCooker()],
+        cookers: [createMaterialPackCooker(), createTextureGeneratorPackCooker()],
       }),
       ...(command === 'serve'
         ? [

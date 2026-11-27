@@ -1,12 +1,21 @@
 ﻿import type { AssetRegistry, MaterialRenderProjection } from '@forgeax/engine-assets-runtime';
-import type { AssetChange, AssetReader } from '@forgeax/engine-assets-runtime/internal';
+import {
+  type AssetChange,
+  type AssetReader,
+  assetDataBytes,
+} from '@forgeax/engine-assets-runtime/internal';
 import type { World } from '@forgeax/engine-ecs';
-import { deriveVertexCount, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
+import {
+  deriveVertexCount,
+  deriveVertexLayoutProjection,
+  prepareMeshData,
+} from '@forgeax/engine-geometry';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   type Asset,
   AssetError,
   err,
+  type MaterialAsset,
   type MeshAsset,
   ok,
   type Result,
@@ -16,6 +25,12 @@ import { isWaterMeshLayoutReceiptValid } from '@forgeax/engine-water/internal';
 import { LIGHTING_CHANNELS_DEFAULT, validateChannelMask } from '../components/lighting-channels';
 import { validatePointLightDecay } from '../components/point-light';
 import {
+  DEFAULT_DYNAMIC_GEOMETRY_MESH_BUDGET_BYTES,
+  MeshResidencyError,
+  validateDynamicGeometryMeshBudget,
+} from '../dynamic-geometry';
+import { isRenderFeatureTextureSource } from '../features/feature-texture-source';
+import {
   isOwnedRenderFeatureProgramData,
   ownRenderFeatureProgramData,
 } from '../features/prepared-gpu-work';
@@ -24,12 +39,13 @@ import type { RenderFeatureSubmission } from '../features/types';
 import { MaterialResource } from '../material-resource';
 import { isMaterialSourceSnapshot } from '../material-source';
 import type { DispatchEntry, ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
+import { sameValue } from '../same-value';
+import { ScenePoseWriter } from '../scene/captured-transform';
 import { dispatchEntry } from '../scene/dispatch-entry';
 import { FrameListBase } from '../scene/frame-list';
 import { captureMaterialOverrides } from '../scene/mesh-materials';
-import { ownPose } from '../scene/pose-slab';
 import type { RenderSceneApplyResult, RenderSceneOperation } from '../scene/render-scene-types';
-import { SceneRows, type WorldTransformSpan } from '../scene/scene-rows';
+import { SceneRows, type SceneRowWriteAccess, type WorldTransformSpan } from '../scene/scene-rows';
 import { validatePublishedSurfaceDynamicInput } from '../surface/frame-source';
 import { isCanvasTextureSource } from '../textures/canvas-texture';
 import { isExternalTextureSource } from '../textures/external-texture';
@@ -41,31 +57,43 @@ import {
   type PublishedAssetPatch,
   prepareAssetPatch,
 } from './asset-patch';
-import { CanvasFrameReceiver } from './canvas';
+import { CanvasFrameReceiver, type PublishedCanvasFrame } from './canvas';
 import {
+  type PublishedAssetVersion,
   type PublishedMeshPreparation,
+  type PublishedMeshTransferReservation,
   type RenderPublication,
   RenderPublicationError,
   type RenderPublicationIdentity,
   type RenderPublicationMetadata,
+  type RenderPublicationRows,
   type RenderPublicationTemplate,
 } from './contract';
 import {
-  materialSnapshotDependencies,
+  collectMaterialDependencies,
   publicationDependencies,
   publicationFrameDependencies,
 } from './dependencies';
-import { copyPublishedMesh, ownReceivedPublishedMesh, samePublishedMesh } from './mesh';
+import { stageDrawParameters } from './draw-parameters';
+import {
+  canOwnReceivedPublishedMesh,
+  copyPublishedMesh,
+  ownReceivedPublishedMesh,
+  samePublishedMesh,
+} from './mesh';
+import { ownPublishedMeshBuffers } from './mesh-buffer-ownership';
 import { isPackedRowsMesh, packedRowsMeshError } from './packed-rows-mesh';
 import {
   installPublicationPrograms,
   PublicationMaterialProjectionAdmission,
   rebindPublicationMaterialSchemas,
 } from './programs';
+import { adoptWorkerMaterialSnapshot } from './received-materials';
 import { decodeRenderPublication, type RenderPublicationMessage } from './record';
 import type { RenderResourceScope } from './resource-scope';
 import { SkinJointReferences } from './skin-joints';
 import { RenderPublicationTargetReceiver, type RenderTargetAuthoring } from './targets';
+import { PublicationTransformRows } from './transform-rows';
 
 export interface PreparedRenderPublication {
   /** Fixed row indices into this packet, not a callback into later receiver state. */
@@ -91,6 +119,8 @@ export interface PreparedRenderPublication {
 
 export interface PublicationScene {
   readonly rows: SceneRows;
+  /** Shared composition may make staged edits through the receiving row owner. */
+  readonly stageRows?: SceneRowWriteAccess;
   readonly before: number;
   readonly delta: RenderSceneApplyResult | undefined;
 }
@@ -108,6 +138,23 @@ function finiteFloats(values: Float32Array): boolean {
 }
 
 type AcceptedAssetRow = RenderPublication['assets'][number];
+
+export type ClosedLevelAssetPayload = PublishedAssetVersion & { readonly guid?: string };
+
+interface HeldLevelAsset extends ClosedLevelAssetPayload {
+  current: boolean;
+  holds: number;
+}
+
+export type ClosedLevelAssetPublication =
+  | ClosedLevelAssetPayload
+  | Pick<PublishedAssetVersion, 'handle' | 'revision'>;
+
+export interface ClosedLevelAssetHold {
+  readonly value: Asset;
+  isCurrent(): boolean;
+  release(): void;
+}
 type TemplateSnapshot = RenderPublicationTemplate['snapshot'];
 type WaterMeshSource = NonNullable<TemplateSnapshot['waterMeshSource']>;
 type WaterMeshLayoutReceipt = WaterMeshSource['views'][number]['draws'][number]['layout'];
@@ -195,6 +242,10 @@ function preparedMeshShapeError(input: PublishedMeshPreparation): string | undef
     input.revision < 1
   )
     return 'prepared mesh handle/payload';
+  if (input.mesh.attributeStorage === 'static-streams') {
+    const prepared = prepareMeshData(input.mesh, 'render mesh publication');
+    return prepared.ok ? undefined : 'invalid static vertex streams';
+  }
   return isPackedRowsMesh(input.mesh) ? packedRowsMeshError(input.mesh) : undefined;
 }
 
@@ -337,15 +388,31 @@ function unusableVideoFrame(frame: unknown): boolean {
 const NO_KEYS: ReadonlySet<string> = new Set();
 const NO_TOKENS: ReadonlySet<object> = new Set();
 
+function validCanvasPixels(row: PublishedCanvasFrame, canvases: CanvasFrameReceiver): boolean {
+  switch (row.snapshot) {
+    case undefined:
+      return row.frame === undefined || (!row.disposed && !unusableVideoFrame(row.frame));
+    case 'replace':
+      return !row.disposed && !unusableVideoFrame(row.frame);
+    case 'reuse':
+      return !row.disposed && row.frame === undefined && canvases.hasSnapshot(row);
+    default:
+      return false;
+  }
+}
+
 function admitCanvasFrameIds(
   rows: RenderPublication['canvasFrames'],
+  canvases: CanvasFrameReceiver,
 ): Result<ReadonlySet<string>, RenderPublicationError> {
   if (rows !== undefined && !Array.isArray(rows))
     return rejectPublication('shape', 'canvas frames');
   if (rows === undefined || rows.length === 0) return ok(NO_KEYS);
   const canvasIds = new Set<string>();
-  for (const row of rows ?? []) {
+  for (const row of rows) {
     if (
+      row === null ||
+      typeof row !== 'object' ||
       typeof row.id !== 'string' ||
       row.id.length === 0 ||
       typeof row.flipY !== 'boolean' ||
@@ -353,8 +420,7 @@ function admitCanvasFrameIds(
       !Number.isSafeInteger(row.version) ||
       row.version < 1 ||
       typeof row.disposed !== 'boolean' ||
-      (row.disposed && row.frame !== undefined) ||
-      (row.frame !== undefined && unusableVideoFrame(row.frame))
+      !validCanvasPixels(row, canvases)
     )
       return rejectPublication('shape', 'canvas frame');
     canvasIds.add(row.id);
@@ -413,12 +479,15 @@ function cameraTargetsError(
   metadata: RenderPublicationMetadata,
   targetTokens: ReadonlySet<object>,
 ): RenderPublicationError | undefined {
-  for (const camera of [...metadata.cameras, ...metadata.auxiliaryCameras])
+  for (const camera of [...metadata.cameras, ...metadata.auxiliaryCameras]) {
+    if (camera.orderOpaqueByLayer !== undefined && typeof camera.orderOpaqueByLayer !== 'boolean')
+      return shapeError('camera orderOpaqueByLayer');
     if (
       camera.cullMask !== undefined &&
       (!Number.isInteger(camera.cullMask) || camera.cullMask < 0 || camera.cullMask > 0xffffffff)
     )
       return shapeError('camera cullMask');
+  }
   const unpublished = (camera: { readonly target?: object }) =>
     camera.target !== undefined && !targetTokens.has(camera.target);
   if (
@@ -469,6 +538,7 @@ function admitTargetSourceKeys(
 /** Canvas ids and target-source keys a material texture may reference in this frame. */
 function admitFrameTextureSources(
   packet: RenderPublication,
+  canvases: CanvasFrameReceiver,
 ): Result<
   { readonly canvasIds: ReadonlySet<string>; readonly sourceTokens: ReadonlySet<string> },
   RenderPublicationError
@@ -479,7 +549,7 @@ function admitFrameTextureSources(
     shadowCasterChannelsError(lights) ??
     punctualLightDecayError(lights);
   if (lightError !== undefined) return err(lightError);
-  const canvasIds = admitCanvasFrameIds(packet.canvasFrames);
+  const canvasIds = admitCanvasFrameIds(packet.canvasFrames, canvases);
   if (!canvasIds.ok) return canvasIds;
   const videoError = videoFramesError(packet.videoFrames);
   if (videoError !== undefined) return err(videoError);
@@ -499,6 +569,7 @@ function versionKey(row: { handle: number; revision: number }): string {
 function validVersion(row: { handle: number; revision: number }): boolean {
   return (
     row !== null &&
+    typeof row === 'object' &&
     Number.isSafeInteger(row.handle) &&
     row.handle > 0 &&
     row.handle <= 0xffffffff &&
@@ -506,17 +577,33 @@ function validVersion(row: { handle: number; revision: number }): boolean {
     row.revision > 0
   );
 }
-
-function validFixedAssetVersion(
-  row: NonNullable<RenderPublication['assetVersions']>[number],
-): boolean {
-  return (
-    validVersion(row) &&
-    row.value !== null &&
-    typeof row.value === 'object' &&
-    typeof row.value.kind === 'string'
-  );
+function closedLevelAssetError(
+  identity: RenderPublicationIdentity,
+  row: ClosedLevelAssetPayload,
+): string | undefined {
+  if (
+    !validVersion(row) ||
+    row.value === null ||
+    typeof row.value !== 'object' ||
+    typeof row.value.kind !== 'string' ||
+    (row.guid !== undefined && (typeof row.guid !== 'string' || !AssetGuid.parse(row.guid).ok))
+  )
+    return 'closed Level asset';
+  if (row.value.kind !== 'mesh') return undefined;
+  return preparedMeshShapeError({
+    ...identity,
+    meshHandle: row.handle as PublishedMeshPreparation['meshHandle'],
+    revision: row.revision,
+    mesh: row.value,
+  });
 }
+
+function sameAssetPayload(left: Asset, right: Asset): boolean {
+  if (left === right) return true;
+  if (left.kind === 'mesh' && right.kind === 'mesh') return samePublishedMesh(left, right);
+  return sameValue(left, right);
+}
+
 /** Program declarations own immutable JSON; numeric assets keep their exact view types. */
 function ownAdmittedAssetValue(value: Asset): Asset {
   if (value.kind !== 'particle-effect' && value.kind !== 'material') return value;
@@ -559,26 +646,14 @@ function featureIdentitiesError(
   return undefined;
 }
 
-const NO_TRANSFORM_ROWS: ReadonlyMap<number, number> = new Map();
 const NO_MATERIALS: ReadonlySet<number> = new Set();
 const NO_ROWS: readonly never[] = Object.freeze([]);
 const NO_GUID_CHANGES: ReadonlyMap<string, number | undefined> = new Map();
 const NO_PROJECTIONS: ReadonlyMap<AcceptedAssetRow, MaterialRenderProjection> = new Map();
 const NO_VERSIONS = Object.freeze({
   retired: NO_KEYS,
-  admitted: new Map<string, Asset>() as ReadonlyMap<string, Asset>,
+  admitted: new Map<string, FixedAssetVersion>() as ReadonlyMap<string, FixedAssetVersion>,
 });
-
-function indexTransformRows(entities: Uint32Array): ReadonlyMap<number, number> | undefined {
-  if (entities.length === 0) return NO_TRANSFORM_ROWS;
-  const matrices = new Map<number, number>();
-  for (let i = 0; i < entities.length; i++) {
-    const entity = entities[i] as number;
-    if (matrices.has(entity)) return undefined;
-    matrices.set(entity, i);
-  }
-  return matrices;
-}
 
 function validMaterialContext(
   context: RenderPublication['materials'][number]['value']['materialContext'],
@@ -594,6 +669,8 @@ function validMaterialContext(
 
 function validSharedMaterialRow(row: RenderPublication['materials'][number]): boolean {
   return (
+    typeof row === 'object' &&
+    row !== null &&
     Number.isSafeInteger(row.id) &&
     row.id > 0 &&
     row.id <= 0xffffffff &&
@@ -609,17 +686,18 @@ function validSharedMaterialRow(row: RenderPublication['materials'][number]): bo
 }
 
 function stageSharedMaterials(
-  packet: RenderPublication,
+  materials: RenderPublication['materials'],
+  retiredMaterials: ReadonlySet<number>,
+  adoptValues?: typeof adoptWorkerMaterialSnapshot,
 ): Result<Map<number, MaterialResource>, RenderPublicationError> {
   const stagedMaterials = new Map<number, MaterialResource>();
-  for (const row of packet.materials) {
-    if (
-      !validSharedMaterialRow(row) ||
-      stagedMaterials.has(row.id) ||
-      packet.retiredMaterials.includes(row.id)
-    )
+  for (const row of materials) {
+    if (!validSharedMaterialRow(row) || stagedMaterials.has(row.id) || retiredMaterials.has(row.id))
       return rejectPublication('shape', 'shared material');
-    stagedMaterials.set(row.id, new MaterialResource(row.value));
+    stagedMaterials.set(
+      row.id,
+      new MaterialResource(adoptValues === undefined ? row.value : adoptValues(row.value)),
+    );
   }
   return ok(stagedMaterials);
 }
@@ -948,6 +1026,8 @@ function templateBindingError(snapshot: TemplateSnapshot): RenderPublicationErro
     return shapeError('material binding');
   if (snapshot.pipelinePreparation !== undefined && !Array.isArray(snapshot.pipelinePreparation))
     return shapeError('pipeline preparation passes');
+  if (snapshot.frustumCulled !== undefined && snapshot.frustumCulled !== false)
+    return shapeError('receiver frustumCulled');
   if (
     snapshot.renderLayers !== undefined &&
     (!Number.isInteger(snapshot.renderLayers) ||
@@ -1021,7 +1101,10 @@ function materialTextureSourcesError(
   originKey: (key: string) => string | undefined,
 ): RenderPublicationError | undefined {
   for (const resource of resources)
-    for (const source of resource?.snapshot.textureSources?.values() ?? [])
+    for (const source of resource?.snapshot.textureSources?.values() ?? []) {
+      // Feature textures are renderer-owned names, resolved by the feature
+      // host in its current generation. They have no transported target token.
+      if (isRenderFeatureTextureSource(source)) continue;
       if (
         isExternalTextureSource(source) ||
         (isCanvasTextureSource(source)
@@ -1031,6 +1114,7 @@ function materialTextureSourcesError(
             ))
       )
         return shapeError('missing material texture source');
+    }
   return undefined;
 }
 
@@ -1041,6 +1125,7 @@ function validStaticSkinBinding(binding: NonNullable<TemplateSnapshot['skinBindi
     Number.isSafeInteger(binding.skeleton) &&
     binding.skeleton > 0 &&
     binding.skeleton <= 0xffffffff &&
+    (binding.affinePoint === undefined || typeof binding.affinePoint === 'boolean') &&
     Array.isArray(binding.joints) &&
     binding.joints.length !== 0 &&
     !binding.joints.some(
@@ -1062,6 +1147,176 @@ function templateSkinError(snapshot: TemplateSnapshot): RenderPublicationError |
   if (snapshot.capsuleShadowRequested !== undefined && snapshot.capsuleShadowRequested !== true)
     return shapeError('capsule shadow author request');
   return undefined;
+}
+
+type StagedTemplate = Omit<RenderableSnapshot, 'entityKey' | 'transform'>;
+
+/** Resolve and validate each distinct template once per owned chunk. */
+function createTemplateDecoder(
+  material: (id: number) => MaterialResource | undefined,
+  canvasIds: ReadonlySet<string>,
+  sourceTokens: ReadonlySet<string>,
+  originKey: (key: string) => string | undefined,
+  bind?: (input: StagedTemplate) => StagedTemplate,
+) {
+  const stagedTemplates = new Map<RenderPublicationTemplate, StagedTemplate>();
+  return (template: RenderPublicationTemplate): StagedTemplate | RenderPublicationError => {
+    const known = stagedTemplates.get(template);
+    if (known !== undefined) return known;
+    if (!Array.isArray(template.snapshot?.materials) || !Array.isArray(template.dispatch))
+      return shapeError('template');
+    const sourceError =
+      templateGeometryError(template.snapshot) ?? templateBindingError(template.snapshot);
+    if (sourceError !== undefined) return sourceError;
+    const materials = resolveTemplateMaterials(template.snapshot, material);
+    if (!materials.ok) return materials.error;
+    const { first, resources, overrides } = materials.value;
+    const bindingError =
+      materialTextureSourcesError(
+        [...resources, ...(overrides ?? [])],
+        canvasIds,
+        sourceTokens,
+        originKey,
+      ) ?? templateSkinError(template.snapshot);
+    if (bindingError !== undefined) return bindingError;
+    const binding = template.snapshot.skinBinding;
+    const ownedBinding =
+      binding === undefined
+        ? undefined
+        : Object.freeze({
+            skeleton: binding.skeleton,
+            ...(binding.affinePoint ? { affinePoint: true } : {}),
+            joints: Object.freeze([...binding.joints]),
+          });
+    const { materialOverrides: _overrides, ...templateContent } = template.snapshot;
+    const waterMeshSource =
+      template.snapshot.waterMeshSource === undefined
+        ? undefined
+        : ownWaterMeshSource(template.snapshot.waterMeshSource);
+    const staged: StagedTemplate = {
+      ...templateContent,
+      ...(waterMeshSource === undefined ? {} : { waterMeshSource }),
+      ...(ownedBinding === undefined ? {} : { skinBinding: ownedBinding }),
+      ...(overrides === undefined
+        ? {}
+        : { materialOverrides: captureMaterialOverrides(overrides) }),
+      material: first,
+      materials: Object.freeze(resources),
+    };
+    const bound = bind?.(staged) ?? staged;
+    stagedTemplates.set(template, bound);
+    return bound;
+  };
+}
+
+/** Decode static rows whose payload ownership moved to this realm.
+ * The result has no ordinary scene, revision or material holding side effects.
+ * Asset version resolution, native prepare and commit belong to the Level owner. */
+export function decodeClosedLevelRows(
+  chunk: RenderPublicationRows,
+): Result<readonly RenderableSnapshot[], RenderPublicationError> {
+  if (
+    !(chunk.upserts instanceof Uint32Array) ||
+    !(chunk.transformEntities instanceof Uint32Array) ||
+    !(chunk.transforms instanceof Float32Array) ||
+    chunk.upserts.length !== chunk.transformEntities.length * 2 ||
+    chunk.transforms.length !== chunk.transformEntities.length * 16 ||
+    !finiteFloats(chunk.transforms) ||
+    !Array.isArray(chunk.templates) ||
+    !Array.isArray(chunk.materials)
+  )
+    return rejectPublication('shape', 'closed Level row columns');
+  const materials = stageSharedMaterials(
+    chunk.materials,
+    NO_MATERIALS,
+    adoptWorkerMaterialSnapshot,
+  );
+  if (!materials.ok) return materials;
+  const stage = createTemplateDecoder(
+    (id) => materials.value.get(id),
+    NO_KEYS,
+    NO_KEYS,
+    () => undefined,
+  );
+  const seen = new Set<number>();
+  const rows: RenderableSnapshot[] = [];
+  const poses = new ScenePoseWriter(chunk.transformEntities.length);
+  for (let index = 0; index < chunk.transformEntities.length; index++) {
+    const entityKey = chunk.transformEntities[index] as number;
+    const template = chunk.templates[chunk.upserts[2 * index + 1] as number];
+    if (
+      entityKey === 0 ||
+      seen.has(entityKey) ||
+      entityKey !== chunk.upserts[2 * index] ||
+      template == null
+    )
+      return rejectPublication('shape', 'closed Level row identity');
+    if (template.snapshot == null || !isClosedLevelTemplate(template.snapshot))
+      return rejectPublication('unsupported', 'closed Level static mesh source');
+    const snapshot = stage(template);
+    if (snapshot instanceof RenderPublicationError) return err(snapshot);
+    seen.add(entityKey);
+    rows.push({
+      ...snapshot,
+      entityKey,
+      transform: poses.capture(chunk.transforms, index * 16),
+    });
+  }
+  return ok(rows);
+}
+
+function isClosedLevelTemplate(snapshot: TemplateSnapshot): boolean {
+  const { assetHandle, instances } = snapshot;
+  if (
+    assetHandle === undefined ||
+    !Number.isInteger(assetHandle) ||
+    assetHandle <= 0 ||
+    assetHandle > 0xffffffff
+  )
+    return false;
+  return (
+    validStaticLevelGeometry(snapshot) &&
+    snapshot.residencyGroup === undefined &&
+    snapshot.temporal === undefined &&
+    snapshot.probeBlendRecord === undefined &&
+    validClosedLevelInstances(instances)
+  );
+}
+
+/** This transport carries authored static Mesh rows; derived geometry is prepared by Render. */
+function validStaticLevelGeometry(snapshot: TemplateSnapshot): boolean {
+  return (
+    snapshot.skinBinding === undefined &&
+    snapshot.morph === undefined &&
+    snapshot.terrain === undefined &&
+    snapshot.terrainSection === undefined &&
+    snapshot.tilemap === undefined &&
+    snapshot.glyph === undefined &&
+    snapshot.gpuVertexSource === undefined &&
+    snapshot.waterMeshSource === undefined &&
+    snapshot.waterGpuMesh === undefined &&
+    snapshot.waterMeshTiles === undefined &&
+    snapshot.waterOwner === undefined &&
+    snapshot.nativeDraw === undefined &&
+    snapshot.capsuleShadowRequested === undefined &&
+    snapshot.spriteRegion === undefined &&
+    snapshot.spriteInstances === undefined &&
+    snapshot.pointsLines === undefined
+  );
+}
+
+function validClosedLevelInstances(instances: StagedTemplate['instances']): boolean {
+  return (
+    instances === undefined ||
+    (instances !== null &&
+      instances.transforms instanceof Float32Array &&
+      Number.isInteger(instances.instanceCount) &&
+      instances.instanceCount >= 0 &&
+      instances.transforms.length === instances.instanceCount * 16 &&
+      instances.collectionId === undefined &&
+      instances.generations === undefined &&
+      finiteFloats(instances.transforms))
+  );
 }
 
 type TemplateDispatch = RenderPublicationTemplate['dispatch'];
@@ -1120,11 +1375,11 @@ class PublicationDispatch extends FrameListBase<DispatchEntry> {
   }
 }
 
-function canonicalRenderable(
-  row: RenderableSnapshot,
+function bindTemplateMaterials(
+  row: StagedTemplate,
   canonical: ReadonlyMap<MaterialResource, MaterialResource>,
-): RenderableSnapshot {
-  // Rows whose resources are already canonical stay the same object.
+): StagedTemplate {
+  // All entities using this template share its final receiver-local slots.
   const replaced = (resource: MaterialResource | undefined): boolean => {
     const mapped = resource === undefined ? undefined : canonical.get(resource);
     return mapped !== undefined && mapped !== resource;
@@ -1138,7 +1393,7 @@ function canonicalRenderable(
   return {
     ...row,
     material: canonical.get(row.material) ?? row.material,
-    materials: row.materials.map((resource) => canonical.get(resource) ?? resource),
+    materials: Object.freeze(row.materials.map((resource) => canonical.get(resource) ?? resource)),
     ...(row.materialOverrides === undefined
       ? {}
       : {
@@ -1174,30 +1429,62 @@ function validSkinSkeleton(skeleton: Asset | undefined): boolean {
 /** Accepted revisions a released prepared payload stays adoptable (covers in-flight draws). */
 const RELEASED_PREPARED_MESH_REVISIONS = 8;
 
+interface PreparedMeshEntry {
+  readonly mesh: MeshAsset;
+  readonly revision: number;
+  readonly leases: Set<{ retire(): void; published(): void }>;
+  readonly bytes: number;
+  fixedHolds: number;
+  cached: boolean;
+}
+
+interface FixedAssetVersion {
+  readonly value: Asset;
+  readonly preparation?: PreparedMeshEntry;
+}
+
+interface StagedAssetVersions {
+  readonly retired: ReadonlySet<string>;
+  readonly admitted: ReadonlyMap<string, FixedAssetVersion>;
+}
+
 export class RenderPublicationReceiver {
   private revision = 0;
   /** Completes the frame metadata a successor message omits as unchanged. */
   private acceptedMetadata: RenderPublicationMetadata | undefined;
+  private readonly transformRows = new PublicationTransformRows();
   private readonly skinJoints = new SkinJointReferences();
   // Receiver source facts, once per referenced joint. Per-view SkinInputs derive
   // their numeric roots from these facts; no Binding owns another pose copy.
   private readonly jointMatrices = new Map<number, Float32Array>();
   private readonly materials = new Map<
     number,
-    { readonly resource: MaterialResource; readonly holds: number }
+    { readonly resource: MaterialResource; holds: number }
   >();
+  /** Exact versions are immutable. Only their live material users can block retirement. */
+  private readonly versionMaterials = new Map<string, Set<number>>();
   private readonly materialIds = new WeakMap<MaterialResource, number>();
   private disposed = false;
   private failed = false;
   private accepting = false;
-  private readonly preparedMeshes = new Map<
-    number,
-    {
-      readonly mesh: MeshAsset;
-      readonly revision: number;
-      readonly leases: Set<{ retire(): void; published(): void }>;
-    }
-  >();
+  // The accepted Mesh and its next unpublished candidate may both hold leases.
+  private readonly preparedMeshes = new Map<number, Map<number, PreparedMeshEntry>>();
+  private preparedMeshBytes = 0;
+  private reservedMeshTransferBytes = 0;
+  private peakMeshBudgetBytes = 0;
+
+  private get meshBudgetBytesUsed(): number {
+    return this.preparedMeshBytes + this.reservedMeshTransferBytes;
+  }
+
+  inspectMeshStorage() {
+    return {
+      preparedBytes: this.preparedMeshBytes,
+      reservedTransferBytes: this.reservedMeshTransferBytes,
+      peakBudgetBytes: this.peakMeshBudgetBytes,
+      limitBytes: this.maxPreparedMeshBytes,
+    };
+  }
   /**
    * Payloads of released or superseded preparations stay adoptable for a few
    * revisions, keyed by handle and revision: a release, or a newer revision's
@@ -1206,17 +1493,98 @@ export class RenderPublicationReceiver {
    */
   private readonly releasedPreparedMeshes = new Map<
     string,
-    { readonly mesh: MeshAsset; readonly revision: number; readonly until: number }
+    { readonly entry: PreparedMeshEntry; readonly until: number }
   >();
-  private keepReleasedPrepared(
-    handle: number,
-    entry: { readonly mesh: MeshAsset; readonly revision: number },
-  ): void {
-    this.releasedPreparedMeshes.set(`${handle}:${entry.revision}`, {
-      mesh: entry.mesh,
-      revision: entry.revision,
+  private keepReleasedPrepared(handle: number, entry: PreparedMeshEntry): void {
+    const key = `${handle}:${entry.revision}`;
+    entry.cached = true;
+    this.releasedPreparedMeshes.set(key, {
+      entry,
       until: this.revision + RELEASED_PREPARED_MESH_REVISIONS,
     });
+  }
+  private dropReleasedPrepared(key: string, reactivated?: PreparedMeshEntry): void {
+    const released = this.releasedPreparedMeshes.get(key);
+    if (released === undefined) return;
+    const { entry } = released;
+    if (entry.fixedHolds > 0 && entry !== reactivated) return;
+    this.releasedPreparedMeshes.delete(key);
+    entry.cached = false;
+    this.releasePreparedMeshBytes(entry);
+  }
+
+  private releasePreparedMeshBytes(entry: PreparedMeshEntry): void {
+    if (entry.leases.size === 0 && entry.fixedHolds === 0 && !entry.cached)
+      this.preparedMeshBytes -= entry.bytes;
+  }
+
+  private findPreparedMesh(handle: number, revision: number): PreparedMeshEntry | undefined {
+    return (
+      this.preparedMeshes.get(handle)?.get(revision) ??
+      this.releasedPreparedMeshes.get(versionKey({ handle, revision }))?.entry
+    );
+  }
+
+  private preparedMeshBudgetError(bytes: number): MeshResidencyError | undefined {
+    const used = this.meshBudgetBytesUsed;
+    if (used <= this.maxPreparedMeshBytes - bytes) return undefined;
+    return new MeshResidencyError(
+      'mesh-residency-budget-exceeded',
+      'prepared and in-transit publication Mesh bytes fit the Render budget',
+      'retire earlier preparations or increase the Renderer mesh budget',
+      { used, requested: bytes, limit: this.maxPreparedMeshBytes },
+    );
+  }
+
+  reserveMeshTransfer(
+    bytes: number,
+  ): Result<PublishedMeshTransferReservation, RenderPublicationError | MeshResidencyError> {
+    if (this.disposed || this.failed)
+      return rejectPublication('disposed', 'receiver retired or failed; start a new source epoch');
+    if (!Number.isSafeInteger(bytes) || bytes < 1)
+      return rejectPublication('shape', 'Mesh transfer size must be a positive safe integer');
+    const failure = this.preparedMeshBudgetError(bytes);
+    if (failure !== undefined) return err(failure);
+    this.reservedMeshTransferBytes += bytes;
+    this.peakMeshBudgetBytes = Math.max(this.peakMeshBudgetBytes, this.meshBudgetBytesUsed);
+    let held = true;
+    return ok({
+      bytes,
+      release: () => {
+        if (!held) return;
+        held = false;
+        this.reservedMeshTransferBytes -= bytes;
+      },
+    });
+  }
+
+  private capturePreparedMesh(
+    input: PublishedMeshPreparation,
+    current: MeshAsset | undefined,
+    inputOwnership?: 'received',
+  ): Result<PreparedMeshEntry, RenderPublicationError | MeshResidencyError> {
+    const mesh = current ?? input.mesh;
+    try {
+      const take =
+        current !== undefined ||
+        (inputOwnership === 'received' && canOwnReceivedPublishedMesh(mesh));
+      const bytes = assetDataBytes(mesh, undefined, take ? 'receive' : 'copy');
+      const failure = this.preparedMeshBudgetError(bytes);
+      if (failure !== undefined) return err(failure);
+      const owned = current ?? (take ? ownPublishedMeshBuffers(mesh) : copyPublishedMesh(mesh));
+      this.preparedMeshBytes += bytes;
+      this.peakMeshBudgetBytes = Math.max(this.peakMeshBudgetBytes, this.meshBudgetBytesUsed);
+      return ok({
+        mesh: owned,
+        revision: input.revision,
+        leases: new Set(),
+        bytes,
+        fixedHolds: 0,
+        cached: false,
+      });
+    } catch (cause) {
+      return rejectPublication('shape', cause instanceof Error ? cause.message : String(cause));
+    }
   }
   private readonly canvases = new CanvasFrameReceiver();
   private readonly videoFrames = new Map<string, VideoFrame>();
@@ -1225,14 +1593,21 @@ export class RenderPublicationReceiver {
    * translation, shared by every view of the Renderer.
    */
   private readonly rows: SceneRows;
+  private readonly poses = new ScenePoseWriter();
+  private readonly stageRows: SceneRowWriteAccess;
   private readonly prepareRows: PublicationRowPreparation | undefined;
   private readonly targets: RenderPublicationTargetReceiver | undefined;
-  private readonly assetVersions = new Map<string, Asset>();
+  private readonly assetVersions = new Map<string, FixedAssetVersion>();
+  /** CPU payloads held for closed Level work in this publication namespace. */
+  private readonly levelAssets = new Map<number, HeldLevelAsset>();
+  private readonly levelGuids = new Map<string, HeldLevelAsset>();
   private readonly assets = new Map<number, RenderPublication['assets'][number]>();
   private readonly acceptedPrograms = new Set<string>();
   /** Validated, owned projections shared by every material row with equal content. */
   private readonly projections = new PublicationMaterialProjectionAdmission();
   private readonly resources: RenderResourceScope;
+  private drawParameters: Map<number, readonly number[]> | undefined;
+  private readonly readDrawParameters = (entity: number) => this.drawParameters?.get(entity);
   private guidHandles = new Map<string, number>();
 
   constructor(
@@ -1240,7 +1615,9 @@ export class RenderPublicationReceiver {
     targets?: RenderTargetAuthoring,
     prepareRows?: PublicationRowPreparation,
     private readonly memory?: World,
+    private readonly maxPreparedMeshBytes = DEFAULT_DYNAMIC_GEOMETRY_MESH_BUDGET_BYTES,
   ) {
+    validateDynamicGeometryMeshBudget(maxPreparedMeshBytes);
     this.prepareRows = prepareRows;
     this.targets = targets === undefined ? undefined : new RenderPublicationTargetReceiver(targets);
     const resolveAsset: AssetReader['resolveAsset'] = <T extends Asset>(
@@ -1249,8 +1626,9 @@ export class RenderPublicationReceiver {
     ) => {
       const value =
         revision === undefined
-          ? this.assets.get(handle)?.value
-          : this.assetVersions.get(`${handle}:${revision}`);
+          ? (this.assets.get(handle)?.value ?? this.currentLevelAsset(handle)?.value)
+          : (this.assetVersions.get(versionKey({ handle, revision }))?.value ??
+            this.levelAssetAtVersion(handle, revision));
       return value === undefined
         ? err(
             new AssetError({
@@ -1262,9 +1640,14 @@ export class RenderPublicationReceiver {
         : ok(value as T);
     };
     const acceptedRevision = () => (this.disposed || this.failed ? -1 : this.revision);
+    const readDrawParameters = () =>
+      this.drawParameters === undefined ? undefined : this.readDrawParameters;
     this.resources = {
       get revision() {
         return acceptedRevision();
+      },
+      get drawParameters() {
+        return readDrawParameters();
       },
       identity: `${identity.source}:${identity.epoch}`,
       time: {
@@ -1277,10 +1660,22 @@ export class RenderPublicationReceiver {
       },
       transparentSort: { mode: 0, yzAlpha: 1 },
       resolveAsset,
-      assetRevision: (handle) => this.assets.get(handle)?.revision,
+      resolveMaterialTemplate: (handle, revision) => {
+        const row = this.assets.get(handle);
+        const projection = row?.materialProjection;
+        if (
+          row?.revision !== revision ||
+          row.value.kind !== 'material' ||
+          projection?.sourceTemplate === undefined
+        )
+          return undefined;
+        return { asset: row.value as MaterialAsset, projection };
+      },
+      assetRevision: (handle) =>
+        this.assets.get(handle)?.revision ?? this.currentLevelAsset(handle)?.revision,
       canvasFrame: (id) => this.canvases.get(id),
       videoFrame: (entity, clip) => this.videoFrames.get(`${entity}:${clip}`),
-      handleForGuid: (guid) => this.guidHandles.get(guid.toLowerCase()),
+      handleForGuid: (guid) => this.readableGuidHandle(guid),
       sourceForAsset: (handle) => {
         const row = this.assets.get(handle);
         return row?.guid === undefined
@@ -1291,11 +1686,154 @@ export class RenderPublicationReceiver {
             };
       },
       lookupAsset: <T extends Asset>(guid: string): T | undefined => {
-        const handle = this.guidHandles.get(guid.toLowerCase());
-        return handle === undefined ? undefined : (this.assets.get(handle)?.value as T | undefined);
+        const handle = this.readableGuidHandle(guid);
+        if (handle === undefined) return undefined;
+        const asset = resolveAsset<T>(handle);
+        return asset.ok ? asset.value : undefined;
       },
     };
     this.rows = new SceneRows(this.resources);
+    this.stageRows = {
+      prepareRow: (snapshot) => this.rows.prepareRow(snapshot),
+      apply: (operations, spans) => this.rows.apply(operations, spans),
+      commitTransformSpans: (spans, world) => this.rows.commitTransformSpans(spans, world),
+    };
+  }
+
+  /** The ordinary publisher independently retains its complete asset dependencies. */
+  referencesAcceptedAsset(handle: number): boolean {
+    return this.assets.has(handle);
+  }
+
+  private readableGuidHandle(guid: string): number | undefined {
+    const key = guid.toLowerCase();
+    const held = this.levelGuids.get(key);
+    return this.guidHandles.get(key) ?? (held?.current === true ? held.handle : undefined);
+  }
+
+  private currentLevelAsset(handle: number): HeldLevelAsset | undefined {
+    const entry = this.levelAssets.get(handle);
+    return entry?.current ? entry : undefined;
+  }
+
+  private levelAssetAtVersion(handle: number, revision: number): Asset | undefined {
+    const level = this.levelAssets.get(handle);
+    return level?.revision === revision ? level.value : undefined;
+  }
+
+  /**
+   * Retain one received immutable asset in the source's existing render scope.
+   * Ordinary packet validation still uses the ordinary accepted dependency
+   * closure. This hold can be used by device preparation before participation.
+   */
+  retainClosedLevelAsset(
+    identity: RenderPublicationIdentity,
+    row: ClosedLevelAssetPublication,
+  ): Result<ClosedLevelAssetHold, RenderPublicationError> {
+    if (this.disposed || this.failed)
+      return rejectPublication('disposed', 'closed Level asset receiver');
+    if (identity.source !== this.identity.source || identity.epoch !== this.identity.epoch)
+      return rejectPublication('identity', 'closed Level asset source');
+    const hasPayload = row !== null && typeof row === 'object' && 'value' in row;
+    if (hasPayload) {
+      const invalid = closedLevelAssetError(identity, row);
+      if (invalid !== undefined) return rejectPublication('shape', invalid);
+    } else if (!validVersion(row)) return rejectPublication('shape', 'closed Level asset version');
+    const current = this.assets.get(row.handle);
+    const held = this.levelAssets.get(row.handle);
+    if (
+      (current !== undefined && current.revision !== row.revision) ||
+      (held !== undefined && (!held.current || held.revision !== row.revision))
+    )
+      return rejectPublication('revision', 'closed Level asset differs from the live revision');
+    if (hasPayload) return this.holdReceivedLevelAsset(row, current?.value, held);
+    return held === undefined
+      ? rejectPublication('revision', 'closed Level asset is no longer retained')
+      : ok(this.holdLevelAsset(held));
+  }
+
+  private holdReceivedLevelAsset(
+    row: ClosedLevelAssetPayload,
+    current: Asset | undefined,
+    held: HeldLevelAsset | undefined,
+  ): Result<ClosedLevelAssetHold, RenderPublicationError> {
+    const guid = row.guid?.toLowerCase();
+    const previous = guid === undefined ? undefined : this.levelGuids.get(guid);
+    if (
+      (previous?.current === true && previous.handle !== row.handle) ||
+      (held !== undefined && held.guid?.toLowerCase() !== guid)
+    )
+      return rejectPublication('shape', 'closed Level asset conflicts with its source identity');
+    const known =
+      held?.value ??
+      current ??
+      this.assetVersions.get(versionKey(row))?.value ??
+      this.findPreparedMesh(row.handle, row.revision)?.mesh;
+    if (known !== undefined && !sameAssetPayload(known, row.value))
+      return rejectPublication('shape', 'closed Level asset conflicts with the retained payload');
+    const value =
+      known ??
+      (row.value.kind === 'mesh'
+        ? ownReceivedPublishedMesh(row.value)
+        : ownAdmittedAssetValue(row.value));
+    return ok(this.holdLevelAsset(held ?? { ...row, value, holds: 0, current: true }));
+  }
+
+  private holdLevelAsset(entry: HeldLevelAsset): ClosedLevelAssetHold {
+    const { handle, value } = entry;
+    const guid = entry.guid?.toLowerCase();
+    entry.holds++;
+    this.levelAssets.set(handle, entry);
+    if (guid !== undefined) this.levelGuids.set(guid, entry);
+    let released = false;
+    return {
+      value,
+      isCurrent: () =>
+        !released &&
+        !this.disposed &&
+        !this.failed &&
+        entry.current &&
+        this.levelAssets.get(handle) === entry,
+      release: () => {
+        if (released) return;
+        released = true;
+        entry.holds--;
+        if (entry.holds === 0 && this.levelAssets.get(handle) === entry)
+          this.levelAssets.delete(handle);
+        if (entry.holds === 0 && guid !== undefined && this.levelGuids.get(guid) === entry)
+          this.levelGuids.delete(guid);
+      },
+    };
+  }
+
+  private prepareMeshEntry(
+    input: PublishedMeshPreparation,
+    key: string,
+    versions: ReadonlyMap<number, PreparedMeshEntry>,
+    inputOwnership?: 'received',
+  ): Result<PreparedMeshEntry, RenderPublicationError | MeshResidencyError> {
+    const accepted = this.assets.get(input.meshHandle);
+    const acceptedRevision = accepted?.revision ?? 0;
+    if (
+      input.revision < acceptedRevision ||
+      (input.revision !== acceptedRevision && [...versions.keys()].some((r) => r > input.revision))
+    )
+      return rejectPublication('revision', 'stale prepared mesh revision');
+    const active = versions.get(input.revision);
+    const mesh =
+      active?.mesh ??
+      (accepted?.revision === input.revision ? accepted.value : undefined) ??
+      this.levelAssetAtVersion(input.meshHandle, input.revision);
+    if (mesh !== undefined && (mesh.kind !== 'mesh' || !samePublishedMesh(mesh, input.mesh)))
+      return rejectPublication('shape', 'prepared mesh conflicts with its resource handle');
+    if (active !== undefined) return ok(active);
+    const cached = this.releasedPreparedMeshes.get(key)?.entry;
+    if (cached !== undefined && samePublishedMesh(cached.mesh, input.mesh)) return ok(cached);
+    if (cached !== undefined && cached.fixedHolds > 0)
+      return rejectPublication('shape', 'prepared mesh conflicts with a fixed asset version');
+    // A cancelled candidate may reuse its uncommitted slot with different data
+    // once its physical lease has been released. Keep the old cache until admission succeeds.
+    return this.capturePreparedMesh(input, mesh, inputOwnership);
   }
 
   /** Reserve a Mesh POD without admitting a scene row or an asset dependency. */
@@ -1304,6 +1842,7 @@ export class RenderPublicationReceiver {
     onRetire: () => void = () => {},
     onPublished: () => void = () => {},
     inputOwnership?: 'received',
+    reservation?: PublishedMeshTransferReservation,
   ): Result<
     {
       readonly resources: RenderResourceScope;
@@ -1311,7 +1850,7 @@ export class RenderPublicationReceiver {
       isCurrent(): boolean;
       release(): void;
     },
-    RenderPublicationError
+    RenderPublicationError | MeshResidencyError
   > {
     if (this.disposed || this.failed)
       return rejectPublication('disposed', 'receiver retired or failed; start a new source epoch');
@@ -1319,51 +1858,48 @@ export class RenderPublicationReceiver {
       return rejectPublication('identity', 'prepared mesh source/epoch');
     const invalid = preparedMeshShapeError(input);
     if (invalid !== undefined) return rejectPublication('shape', invalid);
-    const prior = this.preparedMeshes.get(input.meshHandle);
-    const accepted = this.assets.get(input.meshHandle);
-    if (input.revision < Math.max(prior?.revision ?? 0, accepted?.revision ?? 0))
-      return rejectPublication('revision', 'stale prepared mesh revision');
-    const mesh =
-      prior?.revision === input.revision
-        ? prior.mesh
-        : accepted?.revision === input.revision
-          ? accepted.value
-          : undefined;
-    if (mesh !== undefined && (mesh.kind !== 'mesh' || !samePublishedMesh(mesh, input.mesh)))
-      return rejectPublication('shape', 'prepared mesh conflicts with its resource handle');
-    const entry = (prior?.revision === input.revision ? prior : undefined) ?? {
-      revision: input.revision,
-      mesh:
-        (mesh as MeshAsset | undefined) ??
-        (inputOwnership === 'received'
-          ? ownReceivedPublishedMesh(input.mesh)
-          : copyPublishedMesh(input.mesh)),
-      leases: new Set<{ retire(): void; published(): void }>(),
-    };
+    if (reservation !== undefined) {
+      try {
+        if (
+          inputOwnership !== 'received' ||
+          assetDataBytes(input.mesh, undefined, 'receive') !== reservation.bytes
+        )
+          return rejectPublication('shape', 'received Mesh size does not match its reserved bytes');
+      } catch (cause) {
+        return rejectPublication('shape', cause instanceof Error ? cause.message : String(cause));
+      }
+      // No async work can intervene between returning credit and adopting the
+      // exact prepared storage (or reusing an earlier entry).
+      reservation.release();
+    }
+    const { meshHandle, revision } = input;
+    const versions = this.preparedMeshes.get(meshHandle) ?? new Map<number, PreparedMeshEntry>();
+    const key = `${meshHandle}:${revision}`;
+    const captured = this.prepareMeshEntry(input, key, versions, inputOwnership);
+    if (!captured.ok) return captured;
+    const entry = captured.value;
     const lease = { retire: onRetire, published: onPublished };
     entry.leases.add(lease);
-    this.preparedMeshes.set(input.meshHandle, entry);
-    if (prior !== undefined && prior !== entry) {
-      this.keepReleasedPrepared(input.meshHandle, prior);
-      for (const lease of prior.leases) lease.retire();
-    }
+    this.dropReleasedPrepared(key, entry);
+    versions.set(revision, entry);
+    this.preparedMeshes.set(meshHandle, versions);
+    this.retireOlderPreparations(meshHandle, revision, this.assets.get(meshHandle)?.revision);
+    const owns = () => this.preparedMeshes.get(meshHandle)?.get(revision) === entry;
     let released = false;
     return ok({
       resources: this.resources,
       mesh: entry.mesh,
-      isCurrent: () =>
-        !released &&
-        !this.disposed &&
-        !this.failed &&
-        this.preparedMeshes.get(input.meshHandle) === entry,
+      isCurrent: () => !released && !this.disposed && !this.failed && owns(),
       release: () => {
         if (released) return;
         released = true;
         entry.leases.delete(lease);
-        if (entry.leases.size === 0 && this.preparedMeshes.get(input.meshHandle) === entry) {
-          this.preparedMeshes.delete(input.meshHandle);
-          this.keepReleasedPrepared(input.meshHandle, entry);
+        if (entry.leases.size === 0 && owns()) {
+          versions.delete(revision);
+          if (versions.size === 0) this.preparedMeshes.delete(meshHandle);
+          this.keepReleasedPrepared(meshHandle, entry);
         }
+        this.releasePreparedMeshBytes(entry);
       },
     });
   }
@@ -1400,41 +1936,50 @@ export class RenderPublicationReceiver {
     const admitted = this.admitPacket(input);
     if (!admitted.ok) return admitted;
     const packet = admitted.value;
-    const textureSources = admitFrameTextureSources(packet);
+    const textureSources = admitFrameTextureSources(packet, this.canvases);
     if (!textureSources.ok) return textureSources;
     const versions = this.stageFixedAssetVersions(packet);
     if (!versions.ok) return versions;
     const featureError = featureIdentitiesError(packet.features);
     if (featureError !== undefined) return err(featureError);
-    const matrices = indexTransformRows(packet.transformEntities);
-    if (matrices === undefined) return rejectPublication('shape', 'duplicate transform identity');
-    const stagedMaterialRows = stageSharedMaterials(packet);
+    if (!this.transformRows.validate(packet.transformEntities, packet.upserts.length > 0))
+      return rejectPublication('shape', 'duplicate transform identity');
+    const retiredMaterials: ReadonlySet<number> =
+      packet.retiredMaterials.length === 0 ? NO_MATERIALS : new Set(packet.retiredMaterials);
+    const stagedMaterialRows = stageSharedMaterials(packet.materials, retiredMaterials);
     if (!stagedMaterialRows.ok) return stagedMaterialRows;
     const stagedMaterials = stagedMaterialRows.value;
     const { canvasIds, sourceTokens } = textureSources.value;
+    let residentMaterials: Map<MaterialResource, MaterialResource> | undefined;
     const material = (id: number): MaterialResource | undefined => {
-      let resource = stagedMaterials.get(id);
-      if (resource !== undefined) return resource;
-      const previous = this.materials.get(id);
-      if (previous === undefined) return undefined;
-      resource = new MaterialResource(previous.resource.snapshot);
-      stagedMaterials.set(id, resource);
-      return resource;
+      let staged = stagedMaterials.get(id);
+      const resident = this.materials.get(id)?.resource;
+      if (staged === undefined) {
+        if (resident === undefined) return undefined;
+        staged = new MaterialResource(resident.snapshot);
+        stagedMaterials.set(id, staged);
+      }
+      if (resident !== undefined) {
+        residentMaterials ??= new Map();
+        residentMaterials.set(staged, resident);
+      }
+      return staged;
     };
     const materialHolds = new Map<number, number>();
     const hold = (id: number, delta: number) =>
       materialHolds.set(id, this.materialHoldCount(materialHolds, id) + delta);
+    const releaseMaterial = (resource: MaterialResource) => {
+      const id = this.materialIds.get(resource);
+      if (id === undefined) throw new Error('missing accepted material identity');
+      hold(id, -1);
+    };
     const releaseEntityMaterials = (entity: number) => {
       const snapshot = this.rows.lookup(entity)?.snapshot;
-      for (const resource of [
-        ...(snapshot?.materials ?? []),
-        ...(snapshot?.materialOverrides ?? []),
-      ]) {
-        if (resource === undefined) continue;
-        const id = this.materialIds.get(resource);
-        if (id === undefined) throw new Error('missing accepted material identity');
-        hold(id, -1);
-      }
+      if (snapshot === undefined) return;
+      for (const resource of snapshot.materials) releaseMaterial(resource);
+      if (snapshot.materialOverrides !== undefined)
+        for (const resource of snapshot.materialOverrides)
+          if (resource !== undefined) releaseMaterial(resource);
     };
     const holdTemplateMaterials = (snapshot: TemplateSnapshot) => {
       for (const id of snapshot.materials) hold(id, 1);
@@ -1445,76 +1990,38 @@ export class RenderPublicationReceiver {
     const dispatch = new PublicationDispatch();
     const updated = new Set<number>();
     const removed = new Set<number>();
-    /**
-     * Template validation and material resolution depend only on the packet
-     * and the template, so rows sharing a template share one staged content.
-     */
-    type StagedTemplate = Omit<RenderableSnapshot, 'entityKey' | 'transform'>;
-    const stagedTemplates = new Map<RenderPublicationTemplate, StagedTemplate>();
-    const stageTemplate = (
-      template: RenderPublicationTemplate,
-    ): StagedTemplate | RenderPublicationError => {
-      const known = stagedTemplates.get(template);
-      if (known !== undefined) return known;
-      if (!Array.isArray(template.snapshot?.materials) || !Array.isArray(template.dispatch))
-        return shapeError('template');
-      const sourceError =
-        templateGeometryError(template.snapshot) ?? templateBindingError(template.snapshot);
-      if (sourceError !== undefined) return sourceError;
-      const materials = resolveTemplateMaterials(template.snapshot, material);
-      if (!materials.ok) return materials.error;
-      const { first, resources, overrides } = materials.value;
-      const bindingError =
-        materialTextureSourcesError(
-          [...resources, ...(overrides ?? [])],
-          canvasIds,
-          sourceTokens,
-          (key) => this.targets?.originKey(key),
-        ) ?? templateSkinError(template.snapshot);
-      if (bindingError !== undefined) return bindingError;
-      const binding = template.snapshot.skinBinding;
-      const ownedBinding =
-        binding === undefined
-          ? undefined
-          : Object.freeze({
-              skeleton: binding.skeleton,
-              joints: Object.freeze([...binding.joints]),
-            });
-      const { materialOverrides: _overrides, ...templateContent } = template.snapshot;
-      const waterMeshSource =
-        template.snapshot.waterMeshSource === undefined
-          ? undefined
-          : ownWaterMeshSource(template.snapshot.waterMeshSource);
-      const staged: StagedTemplate = {
-        ...templateContent,
-        ...(waterMeshSource === undefined ? {} : { waterMeshSource }),
-        ...(ownedBinding === undefined ? {} : { skinBinding: ownedBinding }),
-        ...(overrides === undefined
-          ? {}
-          : { materialOverrides: captureMaterialOverrides(overrides) }),
-        material: first,
-        materials: resources,
-      };
-      stagedTemplates.set(template, staged);
-      return staged;
-    };
+    // Dependencies read proposed values. Draw rows bind to stable receiver identities
+    // before fan-out; those identities adopt their values only after admission.
+    const templateInputs: StagedTemplate[] = [];
+    const stageTemplate = createTemplateDecoder(
+      material,
+      canvasIds,
+      sourceTokens,
+      (key) => this.targets?.originKey(key),
+      (input) => {
+        templateInputs.push(input);
+        return residentMaterials === undefined
+          ? input
+          : bindTemplateMaterials(input, residentMaterials);
+      },
+    );
     const stageUpsert = (
       entityKey: number,
       template: RenderPublicationTemplate | undefined,
     ): RenderPublicationError | undefined => {
-      const matrixIndex = matrices.get(entityKey);
+      const matrixIndex = this.transformRows.find(packet.transformEntities, entityKey);
       if (template === undefined || matrixIndex === undefined || updated.has(entityKey))
         return shapeError('upsert template/transform');
       const staged = stageTemplate(template);
       if (staged instanceof RenderPublicationError) return staged;
-      const world = ownPose(packet.transforms, matrixIndex * 16);
+      const transform = this.poses.capture(packet.transforms, matrixIndex * 16);
       updated.add(entityKey);
       releaseEntityMaterials(entityKey);
       holdTemplateMaterials(template.snapshot);
       const snapshot: RenderableSnapshot = {
         ...staged,
         entityKey,
-        transform: { world },
+        transform,
       };
       dispatch.push(entityKey, template.dispatch);
       renderables.push(snapshot);
@@ -1540,16 +2047,29 @@ export class RenderPublicationReceiver {
     };
     const sceneError = stageSceneEdits();
     if (sceneError !== undefined) return err(sceneError);
+    const drawParameters =
+      packet.drawParameters === undefined
+        ? undefined
+        : stageDrawParameters(
+            packet.drawParameters,
+            this.drawParameters,
+            (entity) => !removed.has(entity) && (updated.has(entity) || this.hasRow(entity)),
+          );
+    if (packet.drawParameters !== undefined && drawParameters === undefined)
+      return rejectPublication('shape', 'mesh draw parameter rows');
     const references = this.prepareSkinReferences(removed, renderables);
     const retiredJoints = this.stageRetiredJoints(packet.retiredJoints, references);
     if (!retiredJoints.ok) return retiredJoints;
     // Packet-backed ranges stay local to this synchronous transaction. Only
     // committed Scene pages and detached content leave receiver admission.
-    const worldRows: number[] = [];
+    // An unfiltered pose span addresses the wire column directly. Materialize
+    // selected ordinals only when a joint-only row or an upsert splits that span.
+    let worldRows: number[] | undefined;
     /** Joint matrix rows, plus world-only updates for unchanged accepted renderables. */
     const stageTransformRows = (): Result<number[], RenderPublicationError> => {
       const jointRows: number[] = [];
-      for (const [entityKey, index] of matrices) {
+      for (let index = 0; index < packet.transformEntities.length; index++) {
+        const entityKey = packet.transformEntities[index] as number;
         const renderable =
           !removed.has(entityKey) && (updated.has(entityKey) || this.hasRow(entityKey));
         const joint = references?.has(entityKey) ?? this.skinJoints.has(entityKey);
@@ -1558,51 +2078,59 @@ export class RenderPublicationReceiver {
         else if (!renderable)
           return rejectPublication('shape', 'retired joint also has a positive row');
         if (renderable && !updated.has(entityKey)) {
-          worldRows.push(index);
+          worldRows?.push(index);
+        } else if (worldRows === undefined) {
+          worldRows = [];
+          for (let row = 0; row < index; row++) worldRows.push(row);
         }
       }
       return ok(jointRows);
     };
     const jointRows = stageTransformRows();
     if (!jointRows.ok) return jointRows;
-    const retiredMaterials: ReadonlySet<number> =
-      packet.retiredMaterials.length === 0 ? NO_MATERIALS : new Set(packet.retiredMaterials);
     const holdError = this.materialHoldError(packet, retiredMaterials, materialHolds);
     if (holdError !== undefined) return err(holdError);
     const fixedAsset = (handle: number, revision: number): Asset | undefined => {
       const key = versionKey({ handle, revision });
       return (
-        versions.value.admitted.get(key) ??
-        (versions.value.retired.has(key) ? undefined : this.assetVersions.get(key))
+        versions.value.admitted.get(key)?.value ??
+        (versions.value.retired.has(key) ? undefined : this.assetVersions.get(key)?.value)
       );
     };
     const sourceError = this.materialSourceError(
       stagedMaterials,
       materialHolds,
       retiredMaterials,
+      versions.value.retired,
       fixedAsset,
     );
     if (sourceError !== undefined) return err(sourceError);
     // Validate the complete packet before changing the accepted asset namespace.
     const assets = this.stageAssets(
       packet,
-      renderables,
+      templateInputs,
       materialAssets,
       (handle, revision) => fixedAsset(handle, revision) !== undefined,
     );
     if (!assets.ok) return assets;
     const commitAdmittedPublication = () => {
+      const materialUpdates = [...stagedMaterials.values()];
       let prepared = this.admitPublicationPrograms(
         {
           ...(jointRows.value.length === 0 && retiredJoints.value.size === 0
             ? {}
             : { skinJoints: { rows: jointRows.value, retired: retiredJoints.value } }),
           assetChanges: assets.value.changes,
-          materialUpdates: [...stagedMaterials.values()],
+          materialUpdates,
           resources: this.resources,
           packet,
           operations,
-          scene: { rows: this.rows, before: this.rows.revision, delta: undefined },
+          scene: {
+            rows: this.rows,
+            stageRows: this.stageRows,
+            before: this.rows.revision,
+            delta: undefined,
+          },
           frame: {
             ...packet.metadata,
             renderables,
@@ -1617,22 +2145,26 @@ export class RenderPublicationReceiver {
       // Program/target admission can throw. Keep the accepted resource namespace
       // and revision unchanged until it succeeds so the same packet can retry.
       try {
-        prepared = this.commitMaterials(
-          prepared,
-          [...stagedMaterials.keys()],
-          materialHolds,
-          retiredMaterials,
-        );
+        this.commitMaterials(stagedMaterials, materialUpdates, materialHolds, retiredMaterials);
         this.commitAssetNamespace(packet, versions.value, assets.value.guidChanges);
         this.commitAssetRows(packet, assets.value.admitted, assets.value.patched, materialAssets);
-        this.retirePreparedMeshes(assets.value.stalePreparations);
-        this.commitFrameInputs(packet);
+        for (const change of assets.value.changes)
+          this.retireOlderPreparations(change.handle, change.revision);
+        this.commitFrameInputs(packet, canvasIds);
         references?.commit();
         this.commitJointMatrices(packet, retiredJoints.value, jointRows.value);
+        if (drawParameters !== undefined) {
+          this.drawParameters ??= new Map();
+          drawParameters.apply(this.drawParameters);
+        }
+        if (this.drawParameters !== undefined) {
+          for (const entity of removed) this.drawParameters.delete(entity);
+          if (this.drawParameters.size === 0) this.drawParameters = undefined;
+        }
         this.revision = packet.revision;
         this.acceptedMetadata = packet.metadata;
         for (const [key, released] of this.releasedPreparedMeshes)
-          if (released.until < this.revision) this.releasedPreparedMeshes.delete(key);
+          if (released.until < this.revision) this.dropReleasedPrepared(key);
         prepared = this.commitTransformRows(prepared, worldRows);
         this.publishPreparedMeshes(packet);
         return ok(prepared);
@@ -1687,12 +2219,9 @@ export class RenderPublicationReceiver {
       return rejectPublication('shape', 'prepared asset rows');
     const adopted: RenderPublication['assets'][number][] = [];
     for (const row of packet.preparedAssets) {
-      const live = this.preparedMeshes.get(row?.handle);
-      const prepared =
-        live?.revision === row?.revision
-          ? live
-          : this.releasedPreparedMeshes.get(`${row?.handle}:${row?.revision}`);
-      if (prepared === undefined || prepared.revision !== row.revision)
+      if (!validVersion(row)) return rejectPublication('shape', 'prepared asset identity');
+      const prepared = this.findPreparedMesh(row.handle, row.revision);
+      if (prepared === undefined)
         return rejectPublication('revision', 'prepared mesh reference without receiver residency');
       adopted.push({
         handle: row.handle,
@@ -1707,10 +2236,7 @@ export class RenderPublicationReceiver {
 
   private stageFixedAssetVersions(
     packet: RenderPublication,
-  ): Result<
-    { readonly retired: ReadonlySet<string>; readonly admitted: ReadonlyMap<string, Asset> },
-    RenderPublicationError
-  > {
+  ): Result<StagedAssetVersions, RenderPublicationError> {
     if (
       (packet.assetVersions !== undefined && !Array.isArray(packet.assetVersions)) ||
       (packet.retiredAssetVersions !== undefined && !Array.isArray(packet.retiredAssetVersions))
@@ -1728,20 +2254,55 @@ export class RenderPublicationReceiver {
         return rejectPublication('shape', 'retired fixed asset version');
       retired.add(versionKey(row));
     }
-    const admitted = new Map<string, Asset>();
+    const admitted = new Map<string, FixedAssetVersion>();
     for (const row of packet.assetVersions ?? []) {
-      if (
-        !validFixedAssetVersion(row) ||
-        admitted.has(versionKey(row)) ||
-        this.assetVersions.has(versionKey(row)) ||
-        retired.has(versionKey(row))
-      )
+      if (!validVersion(row)) return rejectPublication('shape', 'fixed asset version');
+      const key = versionKey(row);
+      if (admitted.has(key) || this.assetVersions.has(key) || retired.has(key))
         return rejectPublication('shape', 'fixed asset version');
-      admitted.set(versionKey(row), ownAdmittedAssetValue(structuredClone(row.value)));
+      const captured = this.captureFixedAssetVersion(row);
+      if (!captured.ok) return captured;
+      admitted.set(key, captured.value);
     }
     if (this.assetVersions.size + admitted.size - retired.size > 65536)
       return rejectPublication('shape', 'fixed asset version capacity');
     return ok({ retired, admitted });
+  }
+
+  private captureFixedAssetVersion(
+    row: NonNullable<RenderPublication['assetVersions']>[number],
+  ): Result<FixedAssetVersion, RenderPublicationError> {
+    const held = this.levelAssetAtVersion(row.handle, row.revision);
+    if (row.preparedRevision !== undefined) {
+      if (
+        row.value !== undefined ||
+        !Number.isSafeInteger(row.preparedRevision) ||
+        row.preparedRevision < 1 ||
+        row.preparedRevision > row.revision
+      )
+        return rejectPublication('shape', 'fixed prepared mesh revision');
+      const preparation = this.findPreparedMesh(row.handle, row.preparedRevision);
+      if (preparation === undefined)
+        return rejectPublication('revision', 'fixed mesh reference without receiver residency');
+      if (held !== undefined && !sameAssetPayload(held, preparation.mesh))
+        return rejectPublication(
+          'shape',
+          'fixed asset version conflicts with closed Level custody',
+        );
+      return ok({ value: preparation.mesh, preparation });
+    }
+    const value = row.value;
+    if (value === null || typeof value !== 'object' || typeof value.kind !== 'string')
+      return rejectPublication('shape', 'fixed asset value');
+    if (held !== undefined && !sameAssetPayload(held, value))
+      return rejectPublication('shape', 'fixed asset version conflicts with closed Level custody');
+    return ok({
+      value:
+        held ??
+        (value.kind === 'mesh'
+          ? ownReceivedPublishedMesh(value)
+          : ownAdmittedAssetValue(structuredClone(value))),
+    });
   }
 
   private materialHoldCount(holds: ReadonlyMap<number, number>, id: number): number {
@@ -1804,29 +2365,62 @@ export class RenderPublicationReceiver {
     staged: ReadonlyMap<number, MaterialResource>,
     holds: ReadonlyMap<number, number>,
     retired: ReadonlySet<number>,
+    retiredVersions: ReadonlySet<string>,
     resolveVersion: (handle: number, revision: number) => Asset | undefined,
   ): RenderPublicationError | undefined {
     const valid = (id: number, resource: MaterialResource): boolean => {
       if (retired.has(id) || this.materialHoldCount(holds, id) === 0) return true;
       const source = resource.snapshot.sourceAssets;
       if (source === undefined) return true;
-      return (
-        source.root === resource.snapshot.materialHandle &&
-        resolveVersion(source.root, source.revision)?.kind === 'material' &&
-        source.assets.every(
-          (asset) => resolveVersion(asset.handle, asset.revision) !== undefined,
-        ) &&
-        materialSnapshotDependencies(resource.snapshot).every((handle) =>
-          source.assets.some((asset) => asset.handle === handle),
-        )
-      );
+      if (
+        source.root !== resource.snapshot.materialHandle ||
+        resolveVersion(source.root, source.revision)?.kind !== 'material'
+      )
+        return false;
+      const needed = new Set<number>();
+      collectMaterialDependencies(resource.snapshot, needed);
+      for (const asset of source.assets) {
+        if (resolveVersion(asset.handle, asset.revision) === undefined) return false;
+        needed.delete(asset.handle);
+      }
+      return needed.size === 0;
     };
     for (const [id, resource] of staged)
       if (!valid(id, resource)) return shapeError('missing material source version');
-    for (const [id, { resource }] of this.materials)
-      if (!staged.has(id) && !valid(id, resource))
+    for (const [id, count] of holds) {
+      const previous = this.materials.get(id);
+      if (count > 0 && previous?.holds === 0 && !staged.has(id) && !valid(id, previous.resource))
         return shapeError('missing material source version');
+    }
+    for (const key of retiredVersions) {
+      const users = this.versionMaterials.get(key);
+      if (users === undefined) continue;
+      for (const id of users)
+        if (!staged.has(id) && !retired.has(id) && this.materialHoldCount(holds, id) > 0)
+          return shapeError('missing material source version');
+    }
     return undefined;
+  }
+
+  private indexMaterialVersion(key: string, id: number, add: boolean): void {
+    const users = this.versionMaterials.get(key);
+    if (add) {
+      if (users === undefined) this.versionMaterials.set(key, new Set([id]));
+      else users.add(id);
+    } else if (users?.delete(id) && users.size === 0) {
+      this.versionMaterials.delete(key);
+    }
+  }
+
+  private indexMaterialSource(id: number, resource: MaterialResource, add: boolean): void {
+    const source = resource.snapshot.sourceAssets;
+    if (source === undefined) return;
+    this.indexMaterialVersion(
+      versionKey({ handle: source.root, revision: source.revision }),
+      id,
+      add,
+    );
+    for (const asset of source.assets) this.indexMaterialVersion(versionKey(asset), id, add);
   }
 
   private assetRowAdmissible(row: AcceptedAssetRow): boolean {
@@ -1842,16 +2436,11 @@ export class RenderPublicationReceiver {
     );
   }
 
-  /** A newer row makes its prepared mesh stale; an equal revision must match it exactly. */
-  private preparedMeshRevisionError(
-    row: AcceptedAssetRow,
-    stalePreparations: Set<number>,
-  ): RenderPublicationError | undefined {
-    const prepared = this.preparedMeshes.get(row.handle);
-    if (prepared === undefined) return undefined;
-    if (prepared.revision < row.revision) stalePreparations.add(row.handle);
+  /** A published revision must match any preparation of that exact version. */
+  private preparedMeshRevisionError(row: AcceptedAssetRow): RenderPublicationError | undefined {
+    const prepared = this.preparedMeshes.get(row.handle)?.get(row.revision);
     if (
-      prepared.revision === row.revision &&
+      prepared !== undefined &&
       (row.value.kind !== 'mesh' || !samePublishedMesh(prepared.mesh, row.value))
     )
       return shapeError('accepted mesh differs from prepared residency');
@@ -1865,16 +2454,14 @@ export class RenderPublicationReceiver {
     {
       readonly assetHandles: Set<number>;
       readonly changes: AssetChange[];
-      readonly stalePreparations: Set<number>;
       readonly projections: ReadonlyMap<AcceptedAssetRow, MaterialRenderProjection>;
     },
     RenderPublicationError
   > {
     const assetHandles = new Set<number>();
     const changes: AssetChange[] = [];
-    const stalePreparations = new Set<number>();
     if (packet.assets.length === 0)
-      return ok({ assetHandles, changes, stalePreparations, projections: NO_PROJECTIONS });
+      return ok({ assetHandles, changes, projections: NO_PROJECTIONS });
     const packetPrograms = new Set(packet.programs.map((program) => program.key));
     const programKnown = (key: string) =>
       packetPrograms.has(key) ||
@@ -1894,8 +2481,14 @@ export class RenderPublicationReceiver {
       assetHandles.add(row.handle);
       const projection = this.receivedMaterialProjection(row, packet.retiredAssets, programKnown);
       if (!projection.ok) return rejectPublication('shape', projection.error);
-      if (projection.value !== undefined) projections.set(row, projection.value);
-      const preparedError = this.preparedMeshRevisionError(row, stalePreparations);
+      const held = this.levelAssets.get(row.handle);
+      if (held?.revision === row.revision && !sameAssetPayload(held.value, row.value))
+        return rejectPublication('shape', 'asset row conflicts with closed Level custody');
+      if (projection.value !== undefined) {
+        materialAssets?.bindReceivedMaterialTemplate(projection.value);
+        projections.set(row, projection.value);
+      }
+      const preparedError = this.preparedMeshRevisionError(row);
       if (preparedError !== undefined) return err(preparedError);
       changes.push({
         handle: row.handle as AssetChange['handle'],
@@ -1905,7 +2498,7 @@ export class RenderPublicationReceiver {
         ranges: [],
       });
     }
-    return ok({ assetHandles, changes, stalePreparations, projections });
+    return ok({ assetHandles, changes, projections });
   }
 
   /**
@@ -1944,21 +2537,24 @@ export class RenderPublicationReceiver {
       const prepared = prepareAssetPatch(
         current.value,
         patch,
-        this.preparedMeshes.has(patch.handle),
+        this.preparedMeshes.has(patch.handle) ||
+          this.releasedPreparedMeshes.has(versionKey(current)) ||
+          this.levelAssets.has(patch.handle),
       );
-      const candidate = this.preparedMeshes.get(patch.handle);
-      const candidateMatches = candidate !== undefined && candidate.revision === patch.revision;
-      if (candidateMatches) {
+      const fixed =
+        this.preparedMeshes.get(patch.handle)?.get(patch.revision)?.mesh ??
+        this.levelAssetAtVersion(patch.handle, patch.revision);
+      if (fixed !== undefined) {
         // The temporary COW buffers make candidate equality a validation step.
         prepared.commit();
-        if (prepared.value.kind !== 'mesh' || !samePublishedMesh(candidate.mesh, prepared.value))
-          return rejectPublication('shape', 'patched mesh differs from prepared residency');
+        if (!sameAssetPayload(fixed, prepared.value))
+          return rejectPublication('shape', 'patched asset differs from prepared residency');
       }
       return ok({
         row: {
           ...current,
           revision: patch.revision,
-          value: candidateMatches ? candidate.mesh : prepared.value,
+          value: fixed ?? prepared.value,
         },
         prepared,
       });
@@ -1972,7 +2568,6 @@ export class RenderPublicationReceiver {
     packet: RenderPublication,
     assetHandles: Set<number>,
     changes: AssetChange[],
-    stalePreparations: Set<number>,
   ): Result<PatchedAssetRow[], RenderPublicationError> {
     const patched: PatchedAssetRow[] = [];
     for (const patch of packet.assetPatches) {
@@ -1991,11 +2586,6 @@ export class RenderPublicationReceiver {
       patched.push({ row: staged.value.row, commit: staged.value.prepared.commit });
       changes.push(staged.value.prepared.change);
       assetHandles.add(patch.handle);
-      if (
-        (this.preparedMeshes.get(patch.handle)?.revision ?? Number.POSITIVE_INFINITY) <
-        patch.revision
-      )
-        stalePreparations.add(patch.handle);
     }
     return ok(patched);
   }
@@ -2012,7 +2602,7 @@ export class RenderPublicationReceiver {
   private missingAssetDependency(
     packet: RenderPublication,
     assetHandles: ReadonlySet<number>,
-    renderables: readonly RenderableSnapshot[],
+    templates: readonly StagedTemplate[],
     exactVersionAvailable: (handle: number, revision: number) => boolean,
   ): boolean {
     const missing = (handle: number) =>
@@ -2023,7 +2613,7 @@ export class RenderPublicationReceiver {
       publicationFrameDependencies(packet.metadata).some(missing)
     )
       return true;
-    for (const row of renderables)
+    for (const row of templates)
       if (publicationDependencies(row, exactVersionAvailable).some(missing)) return true;
     return false;
   }
@@ -2047,7 +2637,7 @@ export class RenderPublicationReceiver {
     packet: RenderPublication,
     assetHandles: ReadonlySet<number>,
     guidChanges: ReadonlyMap<string, number | undefined>,
-    renderables: readonly RenderableSnapshot[],
+    templates: readonly StagedTemplate[],
   ): boolean {
     const lodMissing = (mesh: NonNullable<RenderableSnapshot['lods']>[number]['mesh']) => {
       if (typeof mesh === 'number')
@@ -2057,7 +2647,7 @@ export class RenderPublicationReceiver {
         (guidChanges.has(guid) ? guidChanges.get(guid) : this.guidHandles.get(guid)) === undefined
       );
     };
-    for (const row of renderables) if (row.lods?.some((lod) => lodMissing(lod.mesh))) return true;
+    for (const row of templates) if (row.lods?.some((lod) => lodMissing(lod.mesh))) return true;
     return false;
   }
 
@@ -2071,12 +2661,11 @@ export class RenderPublicationReceiver {
     projections: ReadonlyMap<AcceptedAssetRow, MaterialRenderProjection>,
   ): AcceptedAssetRow[] {
     return packet.assets.map((row) => {
-      const admitted = ownAdmittedAssetValue(row.value);
+      const held = this.levelAssets.get(row.handle);
+      const admitted =
+        held?.revision === row.revision ? held.value : ownAdmittedAssetValue(row.value);
       const { materialProjectionSource: _source, ...received } = row;
-      const value =
-        (this.preparedMeshes.get(row.handle)?.revision === row.revision
-          ? this.preparedMeshes.get(row.handle)?.mesh
-          : undefined) ?? admitted;
+      const value = this.preparedMeshes.get(row.handle)?.get(row.revision)?.mesh ?? admitted;
       return {
         ...received,
         materialProjection: projections.get(row) ?? null,
@@ -2089,9 +2678,9 @@ export class RenderPublicationReceiver {
   private skinSkeletonMissing(
     packet: RenderPublication,
     patched: readonly PatchedAssetRow[],
-    renderables: readonly RenderableSnapshot[],
+    templates: readonly StagedTemplate[],
   ): boolean {
-    for (const row of renderables) {
+    for (const row of templates) {
       const binding = row.skinBinding;
       if (binding === undefined) continue;
       const skeleton =
@@ -2106,14 +2695,13 @@ export class RenderPublicationReceiver {
   /** Validate the complete asset closure before changing the accepted namespace. */
   private stageAssets(
     packet: RenderPublication,
-    renderables: readonly RenderableSnapshot[],
+    templates: readonly StagedTemplate[],
     materialAssets: AssetRegistry | undefined,
     exactVersionAvailable: (handle: number, revision: number) => boolean,
   ): Result<
     {
       readonly changes: AssetChange[];
       readonly patched: PatchedAssetRow[];
-      readonly stalePreparations: Set<number>;
       readonly guidChanges: ReadonlyMap<string, number | undefined>;
       readonly admitted: AcceptedAssetRow[];
     },
@@ -2121,18 +2709,18 @@ export class RenderPublicationReceiver {
   > {
     const rows = this.stageAssetRows(packet, materialAssets);
     if (!rows.ok) return rows;
-    const { assetHandles, changes, stalePreparations, projections } = rows.value;
-    const patched = this.stageAssetPatches(packet, assetHandles, changes, stalePreparations);
+    const { assetHandles, changes, projections } = rows.value;
+    const patched = this.stageAssetPatches(packet, assetHandles, changes);
     if (!patched.ok) return patched;
-    if (this.missingAssetDependency(packet, assetHandles, renderables, exactVersionAvailable))
+    if (this.missingAssetDependency(packet, assetHandles, templates, exactVersionAvailable))
       return rejectPublication('shape', 'missing asset dependency');
     const guidChanges = this.stageGuidChanges(packet);
-    if (this.missingLodDependency(packet, assetHandles, guidChanges, renderables))
+    if (this.missingLodDependency(packet, assetHandles, guidChanges, templates))
       return rejectPublication('shape', 'missing LOD dependency');
     const admitted = this.ownAdmittedAssets(packet, projections);
-    if (this.skinSkeletonMissing(packet, patched.value, renderables))
+    if (this.skinSkeletonMissing(packet, patched.value, templates))
       return rejectPublication('shape', 'Skin Skeleton definition');
-    return ok({ changes, patched: patched.value, stalePreparations, guidChanges, admitted });
+    return ok({ changes, patched: patched.value, guidChanges, admitted });
   }
 
   /** Target and program admission may throw before the accepted namespace changes. */
@@ -2140,7 +2728,9 @@ export class RenderPublicationReceiver {
     prepared: PreparedRenderPublication,
     materialAssets: AssetRegistry | undefined,
   ): PreparedRenderPublication {
-    let admitted = this.targets?.apply(prepared) ?? prepared;
+    const cameras = this.targets?.bind(prepared.packet, prepared.materialUpdates);
+    let admitted =
+      cameras === undefined ? prepared : { ...prepared, frame: { ...prepared.frame, ...cameras } };
     if (materialAssets !== undefined) {
       installPublicationPrograms(materialAssets, prepared.packet.programs);
       admitted = rebindPublicationMaterialSchemas(materialAssets.shaderRegistry, admitted);
@@ -2150,66 +2740,53 @@ export class RenderPublicationReceiver {
 
   /** Staged material copies adopt into their accepted resources, which rows then reference. */
   private commitMaterials(
-    prepared: PreparedRenderPublication,
-    stagedMaterialIds: readonly number[],
+    staged: ReadonlyMap<number, MaterialResource>,
+    updates: MaterialResource[],
     holds: ReadonlyMap<number, number>,
     retiredMaterials: ReadonlySet<number>,
-  ): PreparedRenderPublication {
-    if (prepared.materialUpdates.length === 0 && holds.size === 0 && retiredMaterials.size === 0)
-      return prepared;
-    const canonical = new Map<MaterialResource, MaterialResource>();
-    const materialUpdates = prepared.materialUpdates.map((resource, index) => {
-      const id = stagedMaterialIds[index] as number;
+  ): void {
+    let index = 0;
+    for (const [id, resource] of staged) {
       const previous = this.materials.get(id);
       const current = previous?.resource ?? resource;
+      if (previous?.resource.snapshot.sourceAssets !== resource.snapshot.sourceAssets) {
+        if (previous !== undefined) this.indexMaterialSource(id, previous.resource, false);
+        this.indexMaterialSource(id, resource, true);
+      }
       if (previous !== undefined) current.adopt(resource.snapshot);
       this.materials.set(id, {
         resource: current,
         holds: holds.get(id) ?? previous?.holds ?? 0,
       });
       this.materialIds.set(current, id);
-      canonical.set(resource, current);
-      return current;
-    });
+      updates[index++] = current;
+    }
     for (const [id, count] of holds) {
       const current = this.materials.get(id);
-      if (current !== undefined) this.materials.set(id, { ...current, holds: count });
+      if (current !== undefined) current.holds = count;
     }
-    for (const id of retiredMaterials) this.materials.delete(id);
-    // Only rows whose resources were replaced are copied and remapped.
-    const acceptedRows = new Map<RenderableSnapshot, RenderableSnapshot>();
-    const renderables = prepared.frame.renderables.map((row) => {
-      const accepted = canonicalRenderable(row, canonical);
-      if (accepted !== row) acceptedRows.set(row, accepted);
-      return accepted;
-    });
-    return {
-      ...prepared,
-      materialUpdates,
-      frame: { ...prepared.frame, renderables },
-      operations: prepared.operations.map((operation) => {
-        if (operation.kind !== 'update' || operation.snapshot === undefined) return operation;
-        const snapshot = acceptedRows.get(operation.snapshot) ?? operation.snapshot;
-        return snapshot === operation.snapshot ? operation : { ...operation, snapshot };
-      }),
-    };
+    for (const id of retiredMaterials) {
+      const entry = this.materials.get(id);
+      if (entry !== undefined) this.indexMaterialSource(id, entry.resource, false);
+      this.materials.delete(id);
+    }
   }
 
   private commitAssetNamespace(
     packet: RenderPublication,
-    versions: {
-      readonly retired: ReadonlySet<string>;
-      readonly admitted: ReadonlyMap<string, Asset>;
-    },
+    versions: StagedAssetVersions,
     guidChanges: ReadonlyMap<string, number | undefined>,
   ): void {
     if (packet.baseline) {
       this.assets.clear();
       this.acceptedPrograms.clear();
-      this.assetVersions.clear();
+      for (const key of this.assetVersions.keys()) this.retireFixedAssetVersion(key);
     }
-    for (const key of versions.retired) this.assetVersions.delete(key);
-    for (const [key, value] of versions.admitted) this.assetVersions.set(key, value);
+    for (const key of versions.retired) this.retireFixedAssetVersion(key);
+    for (const [key, version] of versions.admitted) {
+      if (version.preparation !== undefined) version.preparation.fixedHolds++;
+      this.assetVersions.set(key, version);
+    }
     for (const [guid, handle] of guidChanges) {
       if (handle === undefined) this.guidHandles.delete(guid);
       else this.guidHandles.set(guid, handle);
@@ -2221,8 +2798,23 @@ export class RenderPublicationReceiver {
     for (const handle of packet.retiredAssets) {
       this.assets.delete(handle);
       for (const key of [...this.releasedPreparedMeshes.keys()])
-        if (key.startsWith(`${handle}:`)) this.releasedPreparedMeshes.delete(key);
+        if (key.startsWith(`${handle}:`)) this.dropReleasedPrepared(key);
     }
+  }
+
+  private retireFixedAssetVersion(key: string): void {
+    const preparation = this.assetVersions.get(key)?.preparation;
+    this.assetVersions.delete(key);
+    if (preparation === undefined) return;
+    preparation.fixedHolds--;
+    this.releasePreparedMeshBytes(preparation);
+  }
+
+  private commitAcceptedAsset(row: AcceptedAssetRow): void {
+    const staged = this.levelAssets.get(row.handle);
+    if (staged !== undefined && (staged.revision !== row.revision || staged.value !== row.value))
+      staged.current = false;
+    this.assets.set(row.handle, row);
   }
 
   private commitAssetRows(
@@ -2232,14 +2824,14 @@ export class RenderPublicationReceiver {
     materialAssets: AssetRegistry | undefined,
   ): void {
     for (const row of admitted) {
-      this.assets.set(row.handle, row);
+      this.commitAcceptedAsset(row);
       if (row.materialProjection != null && materialAssets !== undefined)
         materialAssets.materialPayloadProjections.set(row.value, row.materialProjection);
     }
     for (const program of packet.programs) this.acceptedPrograms.add(program.key);
     for (const patch of patched) {
       patch.commit();
-      this.assets.set(patch.row.handle, patch.row);
+      this.commitAcceptedAsset(patch.row);
       if (patch.row.materialProjection != null && materialAssets !== undefined)
         materialAssets.materialPayloadProjections.set(
           patch.row.value,
@@ -2248,16 +2840,19 @@ export class RenderPublicationReceiver {
     }
   }
 
-  private retirePreparedMeshes(handles: ReadonlySet<number>): void {
-    for (const handle of handles) {
-      const entry = this.preparedMeshes.get(handle);
-      if (entry !== undefined) this.keepReleasedPrepared(handle, entry);
-      this.preparedMeshes.delete(handle);
-      for (const lease of entry?.leases ?? []) lease.retire();
+  private retireOlderPreparations(handle: number, revision: number, preserve?: number): void {
+    const versions = this.preparedMeshes.get(handle);
+    if (versions === undefined) return;
+    for (const [prior, entry] of versions) {
+      if (prior >= revision || prior === preserve) continue;
+      versions.delete(prior);
+      this.keepReleasedPrepared(handle, entry);
+      for (const lease of entry.leases) lease.retire();
     }
+    if (versions.size === 0) this.preparedMeshes.delete(handle);
   }
 
-  private commitFrameInputs(packet: RenderPublication): void {
+  private commitFrameInputs(packet: RenderPublication, canvasIds: ReadonlySet<string>): void {
     const resources = this.resources as {
       -readonly [K in 'time' | 'transparentSort']: RenderResourceScope[K];
     };
@@ -2266,7 +2861,7 @@ export class RenderPublicationReceiver {
     this.releaseVideoFrames();
     for (const row of packet.videoFrames)
       this.videoFrames.set(`${row.entity}:${row.clip}`, row.frame);
-    this.canvases.accept(packet.canvasFrames ?? []);
+    this.canvases.accept(packet.canvasFrames ?? [], canvasIds);
   }
 
   private commitJointMatrices(
@@ -2293,18 +2888,18 @@ export class RenderPublicationReceiver {
 
   private commitTransformRows(
     prepared: PreparedRenderPublication,
-    rows: readonly number[],
+    rows: readonly number[] | undefined,
   ): PreparedRenderPublication {
     const packet = prepared.packet;
     return this.commitRows(
       prepared,
-      rows.length === 0
-        ? []
+      (rows?.length ?? packet.transformEntities.length) === 0
+        ? NO_ROWS
         : [
             {
               entities: packet.transformEntities,
               worlds: packet.transforms,
-              rows,
+              ...(rows === undefined ? {} : { rows }),
             },
           ],
     );
@@ -2331,15 +2926,14 @@ export class RenderPublicationReceiver {
     // The receiver built every staged snapshot and owns it immutably: rows
     // adopt them as-is instead of copying matrices, bounds and draw tables.
     const delta = this.rows.apply(completed.operations, transforms, true, this.memory);
-    return { ...completed, scene: { rows: this.rows, before, delta } };
+    return { ...completed, scene: { rows: this.rows, stageRows: this.stageRows, before, delta } };
   }
 
   private publishPreparedMeshes(packet: RenderPublication): void {
     if (this.preparedMeshes.size === 0) return;
     const publish = (row: { readonly handle: number; readonly revision: number }) => {
-      const candidate = this.preparedMeshes.get(row.handle);
-      if (candidate !== undefined && candidate.revision === row.revision)
-        for (const lease of candidate.leases) lease.published();
+      const candidate = this.preparedMeshes.get(row.handle)?.get(row.revision);
+      if (candidate !== undefined) for (const lease of candidate.leases) lease.published();
     };
     packet.assets.forEach(publish);
     packet.assetPatches.forEach(publish);
@@ -2391,7 +2985,7 @@ export class RenderPublicationReceiver {
       materialUpdates: [...this.materials.values()].map(({ resource }) => resource),
       frame: { ...input.frame, renderables: [], dispatch: [] },
       operations: [],
-      scene: { rows: this.rows, before: -1, delta: undefined },
+      scene: { rows: this.rows, stageRows: this.stageRows, before: -1, delta: undefined },
     };
   }
 
@@ -2404,22 +2998,28 @@ export class RenderPublicationReceiver {
 
   dispose(): void {
     this.disposed = true;
-    for (const entry of this.preparedMeshes.values())
-      for (const lease of entry.leases) lease.retire();
+    for (const key of this.assetVersions.keys()) this.retireFixedAssetVersion(key);
+    for (const versions of this.preparedMeshes.values())
+      for (const entry of versions.values()) for (const lease of entry.leases) lease.retire();
     this.preparedMeshes.clear();
-    this.releasedPreparedMeshes.clear();
+    for (const key of this.releasedPreparedMeshes.keys()) this.dropReleasedPrepared(key);
     this.canvases.dispose();
     this.releaseVideoFrames();
     this.assets.clear();
     this.acceptedPrograms.clear();
     this.projections.clear();
-    this.assetVersions.clear();
+    this.levelAssets.clear();
+    this.levelGuids.clear();
     this.materials.clear();
+    this.versionMaterials.clear();
     this.guidHandles = new Map();
     // A retired source epoch removes only its own rows.
     this.rows.dispose();
+    this.poses.clear();
+    this.transformRows.dispose();
     this.skinJoints.clear();
     this.jointMatrices.clear();
+    this.drawParameters = undefined;
     this.acceptedMetadata = undefined;
   }
 

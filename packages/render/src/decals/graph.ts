@@ -17,6 +17,10 @@ import {
   type RenderPipelineFrame,
   type RenderPipelineTarget,
 } from '../render-pipeline';
+import {
+  STANDARD_GBUFFER_COMPACT_PIPELINE_CONSTANTS,
+  STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS,
+} from '../standard-attachments';
 import { ProjectedDecalInvalidError } from './component';
 import { DECAL_TEXTURE_FIELDS, MAX_PROJECTED_DECALS, type ProjectedDecalSnapshot } from './extract';
 
@@ -128,93 +132,14 @@ export interface ProjectedDecalChannels {
 }
 
 /** The semantic normal surface is shared by AO, SSR and Forward lighting. */
-export function addProjectedDecalNormalPass(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  normal: RenderPipelineTarget,
-  channels: ProjectedDecalChannels,
-  size: GraphTextureDescriptor['size'],
-) {
-  const target = createRenderPipelineTarget(graph, 'decal-surface-normal', {
-    size,
-    format: normal.format,
-    usage: 1,
-  });
-  if (!target.ok) return target;
-  const inputs = [normal.view, channels.normal.view, channels.roughness.view];
-  let prepared: State | undefined;
-  const pass = graph.addRasterPass('decal-normal-apply', {
-    accesses: [
-      ...inputs.map((resource) => ({ resource, usage: 'sampled-read' as const })),
-      { resource: target.value.view, usage: 'color-attachment' },
-    ],
-    colorAttachments: [{ view: target.value.view, loadOp: 'clear', storeOp: 'store' }],
-    encodeDirect: (pass, frame, resources) => {
-      const internal = frame as _InternalRenderPipelineContext;
-      const device = frame.runtime.device;
-      if (prepared === undefined) {
-        const source = internal.runtime.standardSceneShaders?.decalApply;
-        const factory = frame.runtime.shaderModuleFactory;
-        if (source === undefined || factory === undefined)
-          throw new ProjectedDecalInvalidError('shader', 'cooked decal surface normal shader');
-        const module = factory
-          .createShaderModule(shaderSourceDescriptor(source, 'forgeax::engine-decal-apply'))
-          .unwrap();
-        const layout = device
-          .createBindGroupLayout({
-            entries: inputs.map((_, i) => ({
-              binding: i === 0 ? 0 : i + 3,
-              visibility: GPU_SHADER_STAGE_FRAGMENT,
-              texture: {
-                sampleType: i === 0 ? ('uint' as const) : ('unfilterable-float' as const),
-                viewDimension: '2d' as const,
-              },
-            })),
-          })
-          .unwrap();
-        const pipeline = device
-          .createRenderPipeline({
-            label: 'decal-normal-apply',
-            layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }).unwrap(),
-            vertex: { module, entryPoint: 'vs_main', buffers: [] },
-            fragment: { module, entryPoint: 'fs_normal', targets: [{ format: normal.format }] },
-            primitive: { topology: 'triangle-list' },
-          })
-          .unwrap();
-        prepared = { pipeline, layout, groups: new WeakMap() };
-      }
-      const views = inputs.map((input) => resources.textureView(input).unwrap());
-      const layout = prepared.layout;
-      const group = getOrCreateFromChain(
-        prepared.groups,
-        views,
-        'decal-normal-apply',
-        () =>
-          device
-            .createBindGroup({
-              layout,
-              entries: views.map((value, i) => ({
-                binding: i === 0 ? 0 : i + 3,
-                resource: { kind: 'textureView' as const, value },
-              })),
-            })
-            .unwrap(),
-        internal.bindGroupCounts,
-      ) as BindGroup;
-      pass.setPipeline(prepared.pipeline);
-      pass.setBindGroup(0, group);
-      pass.draw(3);
-    },
-  });
-  return pass.ok ? ok(target.value) : pass;
-}
-
 /** Raster projection produces the same ordered DBuffer for Forward and Deferred. */
 export function addProjectedDecalChannels(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   topology: ProjectedDecalTopology,
   input: {
     depth: GraphTextureView;
-    normal: RenderPipelineTarget;
+    normal?: RenderPipelineTarget;
+    compactGbuffer?: true;
     size: GraphTextureDescriptor['size'];
   },
 ) {
@@ -284,7 +209,7 @@ export function addProjectedDecalChannels(
   let project: State | undefined;
   const projectViews = [
     input.depth,
-    input.normal.view,
+    ...(input.normal === undefined ? [] : [input.normal.view]),
     ...textureViews.flat().filter((view): view is GraphTextureView => view !== undefined),
   ];
   const projection = graph.addRasterPass('decal-project', {
@@ -305,7 +230,7 @@ export function addProjectedDecalChannels(
       const device = frame.runtime.device;
       if (project === undefined) {
         if (
-          input.normal.format === 'rg32uint' &&
+          input.normal?.format === 'rg32uint' &&
           internal.runtime.standardSceneShaders?.gbuffer !== 'standard-gbuffer/2'
         )
           throw new ProjectedDecalInvalidError(
@@ -327,13 +252,13 @@ export function addProjectedDecalChannels(
                 visibility: GPU_SHADER_STAGE_VERTEX | GPU_SHADER_STAGE_FRAGMENT,
                 buffer: { type: 'uniform', hasDynamicOffset: true, minBindingSize: PARAM_BYTES },
               },
-              ...(['depth', 'uint', 'float', 'float', 'float'] as const).map(
-                (sampleType, index) => ({
+              ...(['depth', 'uint', 'float', 'float', 'float'] as const)
+                .map((sampleType, index) => ({
                   binding: index + 1,
                   visibility: GPU_SHADER_STAGE_FRAGMENT,
                   texture: { sampleType, viewDimension: '2d' as const },
-                }),
-              ),
+                }))
+                .filter(({ binding }) => binding !== 2 || input.normal !== undefined),
               ...[6, 7, 8].map((binding) => ({
                 binding,
                 visibility: GPU_SHADER_STAGE_FRAGMENT,
@@ -353,8 +278,12 @@ export function addProjectedDecalChannels(
             vertex: { module, entryPoint: 'vs_main', buffers: [] },
             fragment: {
               module,
-              entryPoint: 'fs_main',
-              ...(input.normal.format === 'rg32uint' ? { constants: { '64003': 1 } } : {}),
+              entryPoint: input.normal === undefined ? 'fs_depth' : 'fs_main',
+              ...(input.compactGbuffer === true
+                ? { constants: STANDARD_GBUFFER_COMPACT_PIPELINE_CONSTANTS }
+                : input.normal?.format === 'rg32uint'
+                  ? { constants: STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS }
+                  : {}),
               targets: channels.map(({ format }) => ({
                 format,
                 blend: {
@@ -379,13 +308,15 @@ export function addProjectedDecalChannels(
       pass.setPipeline(project.pipeline);
       if (internal.viewBindGroup === null)
         throw new ProjectedDecalInvalidError('view', 'a prepared camera bind group');
-      pass.setBindGroup(0, internal.viewBindGroup, [internal.viewBindGroupDynamicOffset ?? 0, 0]);
+      pass.setBindGroup(0, internal.viewBindGroup, [internal.viewBindGroupDynamicOffset ?? 0]);
       const buffer = resources.buffer(uniforms.value).unwrap();
       for (const [index, slots] of textureViews.entries()) {
         const { decal, scope } = current(frame, index);
         const views = [
           resources.textureView(input.depth).unwrap(),
-          resources.textureView(input.normal.view).unwrap(),
+          ...(input.normal === undefined
+            ? []
+            : [resources.textureView(input.normal.view).unwrap()]),
           ...slots.map((view, slot) =>
             view === undefined
               ? slot === 1
@@ -416,7 +347,7 @@ export function addProjectedDecalChannels(
                     resource: { kind: 'buffer', value: { buffer, offset: 0, size: PARAM_BYTES } },
                   },
                   ...views.map((value, i) => ({
-                    binding: i + 1,
+                    binding: i + (i > 0 && input.normal === undefined ? 2 : 1),
                     resource: { kind: 'textureView' as const, value },
                   })),
                   ...samplers.map((value, i) => ({
@@ -450,6 +381,7 @@ export function addProjectedDecalPasses(
     normal: RenderPipelineTarget;
     albedo: RenderPipelineTarget;
     f0: RenderPipelineTarget;
+    compactGbuffer?: true;
     size: GraphTextureDescriptor['size'];
   },
 ) {
@@ -518,7 +450,7 @@ export function addProjectedDecalPasses(
             vertex: { module, entryPoint: 'vs_main', buffers: [] },
             fragment: {
               module,
-              entryPoint: 'fs_main',
+              entryPoint: input.compactGbuffer === true ? 'fs_default_gbuffer' : 'fs_main',
               targets: outputs.map(({ format }) => ({ format })),
             },
             primitive: { topology: 'triangle-list' },

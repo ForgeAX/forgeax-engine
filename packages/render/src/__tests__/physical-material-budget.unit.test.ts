@@ -1,11 +1,21 @@
+import type {
+  BindGroup,
+  BindGroupDescriptor,
+  BindGroupLayout,
+  Buffer,
+  RenderPipeline,
+  Sampler,
+  TextureView,
+} from '@forgeax/engine-rhi';
 import {
   ShaderRegistry,
   STANDARD_PIPELINE_PARAM_SCHEMA,
   standardTextureMask,
 } from '@forgeax/engine-shader';
-import { derive, STANDARD_MATERIAL_PARAM_SCHEMA } from '@forgeax/engine-types';
+import { derive, ok, STANDARD_MATERIAL_PARAM_SCHEMA } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { STANDARD_PHYSICAL_REQUIRED_SAMPLED_TEXTURES } from '../assembly/device-feature-admission';
+import { clusterViewLayoutEntries } from '../environment/bindings';
 import { Materials } from '../materials';
 import {
   buildBindGroupLayoutDescriptor,
@@ -14,6 +24,12 @@ import {
   standardInputField,
 } from '../pbr-pipeline';
 import type { PipelineSpec } from '../pipeline-spec';
+import {
+  createPrimitiveBindGroup,
+  primitiveForPipeline,
+  projectPrimitiveReflectionLayout,
+  retainPipelinePrimitiveReflection,
+} from '../reflection/primitive-bindings';
 
 it('fits the cooked physical carrier, extended view and clustered SSAO in the device budget', () => {
   const textureFields = new Set([
@@ -52,7 +68,7 @@ it('fits the cooked physical carrier, extended view and clustered SSAO in the de
       registry,
       caps,
     }).entries,
-    ...buildBindGroupLayoutDescriptor(spec, { kind: 'hdrp-7-slot', caps }).entries,
+    ...clusterViewLayoutEntries(caps.storageBuffer),
   ].filter((entry) => (entry.visibility & 2) !== 0);
   expect(entries.filter((entry) => entry.sampler !== undefined).length).toBeLessThanOrEqual(16);
   expect(entries.filter((entry) => entry.texture !== undefined).length).toBeLessThanOrEqual(
@@ -63,7 +79,7 @@ it('fits the cooked physical carrier, extended view and clustered SSAO in the de
 it.each([
   [16, false, false],
   [21, false, true],
-  [25, true, true],
+  [27, true, true],
 ] as const)('fits independent maps and clustered SSAO in the %i-texture profile', (limit, extendedLighting, transmissionBackdrop) => {
   const caps = {
     storageBuffer: true,
@@ -84,7 +100,7 @@ it.each([
   const entries = [
     ...buildPbrViewBglEntries(caps),
     ...materialEntries,
-    ...buildBindGroupLayoutDescriptor(spec, { kind: 'hdrp-7-slot', caps }).entries,
+    ...clusterViewLayoutEntries(caps.storageBuffer),
   ].filter((entry) => (entry.visibility & 2) !== 0);
   expect(entries.filter((entry) => entry.texture !== undefined).length).toBeLessThanOrEqual(limit);
   expect(entries.filter((entry) => entry.sampler !== undefined).length).toBeLessThanOrEqual(16);
@@ -115,16 +131,32 @@ it('fits the complete integer Cluster transport and Standard maps in WebGL2 sixt
     geometry: { topology: 'triangle-list', vertexLayout: {} },
     renderState: undefined,
   };
-  const cluster = buildBindGroupLayoutDescriptor(spec, { kind: 'hdrp-7-slot', caps }).entries;
-  expect(cluster.find((entry) => entry.binding === 3)?.texture?.sampleType).toBe('uint');
-  expect(cluster.map((entry) => entry.binding)).toEqual([0, 3, 6]);
+  const cluster = clusterViewLayoutEntries(false);
+  expect(cluster.find((entry) => entry.binding === 30)?.texture?.sampleType).toBe('uint');
+  expect(cluster.map((entry) => entry.binding)).toEqual([30, 33]);
+  const reflectionEntries: GPUBindGroupLayoutEntry[] = [];
+  projectPrimitiveReflectionLayout(
+    {
+      createBindGroupLayout(descriptor) {
+        reflectionEntries.push(...descriptor.entries);
+        return ok({} as BindGroupLayout);
+      },
+    },
+    {} as BindGroupLayout,
+    [],
+    0b111,
+  );
+  expect(
+    reflectionEntries.filter((entry) => entry.texture !== undefined).map((entry) => entry.binding),
+  ).toEqual([32]);
   const entries = [
     ...buildPbrViewBglEntries(caps),
     ...buildBindGroupLayoutDescriptor(spec, { kind: 'pbr-material-merged', caps }).entries,
     ...cluster,
+    ...reflectionEntries,
   ];
   // GLES allocates one texture-slot namespace across both shader stages.
-  expect(entries.filter((entry) => entry.texture !== undefined)).toHaveLength(16);
+  expect(entries.filter((entry) => entry.texture !== undefined)).toHaveLength(13);
   expect(
     entries.filter((entry) => entry.texture !== undefined && entry.visibility === 1),
   ).toHaveLength(1);
@@ -179,7 +211,7 @@ it('fits authored independent maps with clearcoat in the physical device budget'
       materialParamSchema: schema,
       caps,
     }).entries,
-    ...buildBindGroupLayoutDescriptor(spec, { kind: 'hdrp-7-slot', caps }).entries,
+    ...clusterViewLayoutEntries(caps.storageBuffer),
   ].filter((entry) => (entry.visibility & 2) !== 0);
   expect(schema.filter((field) => field.type === 'texture2d').map((field) => field.name)).toEqual(
     expect.arrayContaining([
@@ -218,4 +250,37 @@ it('keeps IBL intact when shared storage extends the material user region', () =
       8,
     ),
   ]).toEqual([14]);
+});
+
+it('projects only the occupied reflection slots for each primitive layout', () => {
+  const issued: BindGroupDescriptor[] = [];
+  const device = {
+    createBindGroupLayout: () => ok({} as BindGroupLayout),
+    createBindGroup: (descriptor: BindGroupDescriptor) => {
+      issued.push(descriptor);
+      return ok({} as BindGroup);
+    },
+  };
+  const layout = {} as BindGroupLayout;
+  const geometry = createPrimitiveBindGroup(device, { layout, entries: [] }).unwrap();
+  const reflection = {
+    prefilterView: {} as TextureView,
+    prefilterSampler: {} as Sampler,
+    intensityBuffer: {} as Buffer,
+  };
+  for (const mask of [1, 2, 3, 4, 5, 6, 7]) {
+    const pipeline = {} as RenderPipeline;
+    retainPipelinePrimitiveReflection(
+      pipeline,
+      projectPrimitiveReflectionLayout(device, layout, [], mask),
+    );
+    const first = primitiveForPipeline(device, pipeline, geometry, reflection);
+    expect(issued.at(-1)?.entries.map((entry) => entry.binding)).toEqual(
+      [32, 33, 34].filter((_, i) => mask & (1 << i)),
+    );
+    const changed = { ...reflection, prefilterSampler: {} as Sampler };
+    expect(primitiveForPipeline(device, pipeline, geometry, changed) === first).toBe(
+      (mask & 2) === 0,
+    );
+  }
 });

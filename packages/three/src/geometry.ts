@@ -1,17 +1,26 @@
+import type { MeshRange } from '@forgeax/engine-assets-runtime';
 import {
   computeTangentVec4,
-  packInterleavedVertexAttributes,
+  deriveVertexLayoutProjection,
+  isStandaloneStaticMesh,
+  meshAttributeLayout,
+  meshAttributeWindow,
+  packVertexAttributes,
   writeNormalPlaneTangent,
 } from '@forgeax/engine-geometry';
 import { box3 } from '@forgeax/engine-math';
 import { type MeshAsset, ok, type Result, type VertexAttributeMap } from '@forgeax/engine-types';
-import type {
+import {
   BufferAttribute,
   BufferGeometry,
+  Float32BufferAttribute,
   InterleavedBufferAttribute,
+  Uint16BufferAttribute,
+  Uint32BufferAttribute,
 } from 'three/src/Three.Core.js';
 import { invalid, unsupported } from './errors';
 import { applyMorphColor } from './morph-color';
+import { ownSourceValue } from './source-fields';
 
 const WIDTHS = {
   position: 3,
@@ -37,26 +46,33 @@ export interface GeometryMaterial {
 }
 
 export function geometryValues(geometry: BufferGeometry, grouped: boolean): unknown[] {
+  const index = geometry.index;
   const values: unknown[] = [
     grouped,
     geometry.drawRange.start,
     geometry.drawRange.count,
-    geometry.index,
-    geometry.index?.version,
+    index,
+    index?.array,
+    index?.version,
+    index?.count,
+    index?.itemSize,
+    index?.normalized,
   ];
   for (const [key, attribute] of Object.entries(geometry.attributes)) {
     if (!Object.hasOwn(WIDTHS, key)) continue;
     const buffer = 'data' in attribute ? attribute.data : attribute;
     values.push(
-      key,
-      attribute,
       buffer.array,
-      buffer.version,
       attribute.count,
       attribute.itemSize,
       attribute.normalized,
       'offset' in attribute ? attribute.offset : 0,
       'stride' in buffer ? buffer.stride : 0,
+      // Keep the version between its source attribute and name. Range publication
+      // can distinguish a content edit from every structural signature change.
+      attribute,
+      buffer.version,
+      key,
     );
   }
   values.push(geometry.morphTargetsRelative);
@@ -78,6 +94,244 @@ export function geometryValues(geometry: BufferGeometry, grouped: boolean): unkn
   return values;
 }
 
+type SourceAttribute = BufferGeometry['attributes'][string];
+type SourceBuffer = BufferAttribute | InterleavedBufferAttribute['data'];
+type VertexEdit = Extract<MeshRange, { readonly values: Float32Array }>;
+type FloatChannel = VertexEdit['attribute'];
+
+function versionAttribute(geometry: BufferGeometry, values: readonly unknown[], index: number) {
+  const name = values[index + 1];
+  if (typeof name !== 'string' || !Object.hasOwn(WIDTHS, name)) return;
+  const key = name as keyof typeof WIDTHS;
+  const attribute = geometry.attributes[key];
+  return attribute && attribute === values[index - 1] ? { key, attribute } : undefined;
+}
+
+/** Only buffers whose content revision was observed can acknowledge the author's ranges. */
+export function recordGeometryRanges(
+  geometry: BufferGeometry,
+  previous: readonly unknown[],
+  current: readonly unknown[],
+  receipts: Map<object, () => void> | undefined,
+) {
+  for (let i = 0; i < current.length; i++) {
+    if (Object.is(current[i], previous[i]) || typeof current[i] !== 'number') continue;
+    const entry = versionAttribute(geometry, current, i);
+    if (!entry) continue;
+    const buffer = 'data' in entry.attribute ? entry.attribute.data : entry.attribute;
+    if (buffer.updateRanges?.length && !receipts?.has(buffer)) {
+      receipts ??= new Map();
+      receipts.set(buffer, geometryRangeReceipt(buffer));
+    }
+  }
+  return receipts;
+}
+
+/** Consume an observed Three range list only after all variants commit. A later author edit wins. */
+function geometryRangeReceipt(buffer: SourceBuffer) {
+  const list = buffer.updateRanges,
+    version = buffer.version;
+  const observed = list.map(({ start, count }) => ({ start, count }));
+  return () => {
+    if (
+      buffer.version === version &&
+      buffer.updateRanges === list &&
+      list.length === observed.length &&
+      observed.every((range, i) => range.start === list[i]?.start && range.count === list[i]?.count)
+    )
+      buffer.clearUpdateRanges();
+  };
+}
+
+/** Number of this attribute's scalar lanes before an offset in the source buffer. */
+function channelPrefix(offset: number, stride: number, column: number, width: number): number {
+  return (
+    Math.floor(offset / stride) * width + Math.min(width, Math.max(0, (offset % stride) - column))
+  );
+}
+
+function changedLanes(attribute: SourceAttribute) {
+  const interleaved = 'data' in attribute;
+  const source = interleaved ? attribute.data : attribute;
+  const width = attribute.itemSize,
+    stride = interleaved ? attribute.data.stride : width;
+  const column = interleaved ? attribute.offset : 0;
+  if (
+    !source.updateRanges.length ||
+    !Number.isSafeInteger(stride) ||
+    stride < width ||
+    !Number.isSafeInteger(column) ||
+    column < 0 ||
+    column + width > stride
+  )
+    return;
+  const lanes: { first: number; end: number }[] = [];
+  for (const { start, count } of source.updateRanges) {
+    if (
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(count) ||
+      start < 0 ||
+      count < 1 ||
+      start + count > source.array.length
+    )
+      return;
+    const first = channelPrefix(start, stride, column, width);
+    const end = channelPrefix(start + count, stride, column, width);
+    if (first < end) lanes.push({ first, end });
+  }
+  return lanes.sort((a, b) => a.first - b.first);
+}
+
+function captureVertexChannel(
+  payload: MeshAsset,
+  key: FloatChannel,
+  attribute: SourceAttribute,
+  lanes: { first: number; end: number }[],
+  edits: VertexEdit[],
+  maxRanges: number,
+  uuid: string,
+): boolean {
+  const prior = meshAttributeWindow(payload, key);
+  const width = attribute.itemSize,
+    nativeWidth = WIDTHS[key];
+  if (!prior || prior.count !== attribute.count || prior.components !== nativeWidth) return false;
+  // Fold ranges that touch the same or adjacent vertices into one native write.
+  // A partly written vertex borrows its other lanes from the last admitted version.
+  let i = 0,
+    next = lanes[0];
+  while (next !== undefined) {
+    let cursor = i;
+    let active: (typeof lanes)[number] | undefined = next;
+    const first = Math.floor(next.first / width);
+    let end = Math.ceil(next.end / width);
+    next = lanes[++i];
+    while (next && Math.floor(next.first / width) <= end) {
+      end = Math.max(end, Math.ceil(next.end / width));
+      next = lanes[++i];
+    }
+    if (edits.length >= maxRanges) return false;
+    const values = new Float32Array((end - first) * nativeWidth);
+    for (let v = first, dst = 0; v < end; v++)
+      for (let lane = 0; lane < nativeWidth; lane++) {
+        const scalar = v * width + lane;
+        while (cursor < i && active && active.end <= scalar && lane < width)
+          active = lanes[++cursor];
+        const changed =
+          lane < width && cursor < i && active !== undefined && active.first <= scalar;
+        const value = changed
+          ? readComponent(attribute, v, lane)
+          : (prior.data[prior.offset + v * prior.stride + lane] as number);
+        if (!Number.isFinite(value)) invalid(`BufferGeometry.attributes.${key}`, uuid).unwrap();
+        values[dst++] = value;
+      }
+    edits.push({ attribute: key, first, values });
+  }
+  return true;
+}
+
+/** Compare actual source revisions and project declared component edits at fixed vertex ordinals. */
+export function rigidVertexEdits(
+  geometry: BufferGeometry,
+  previous: readonly unknown[],
+  current: readonly unknown[],
+  materials: readonly GeometryMaterial[],
+  payload: MeshAsset,
+  maxRanges: number,
+): VertexEdit[] | undefined {
+  if (
+    previous.length !== current.length ||
+    payload.attributeStorage === undefined ||
+    payload.morphTargets !== undefined ||
+    geometry.getAttribute !== stockGetAttribute ||
+    Object.keys(geometry.morphAttributes).length ||
+    (geometry.hasAttribute('color') &&
+      materials.some((m) => m.vertexColors) &&
+      materials.some((m) => !m.vertexColors))
+  )
+    return;
+  const derivedTangent = !geometry.hasAttribute('tangent');
+  const derivedFromTriangles =
+    derivedTangent &&
+    geometry.hasAttribute('uv') &&
+    !materials.every((m) => m.tangentBasis === 'normal');
+  const edits: VertexEdit[] = [];
+  for (let i = 0; i < current.length; i++) {
+    if (Object.is(current[i], previous[i])) continue;
+    const version = previous[i];
+    if (typeof version !== 'number' || current[i] !== version + 1) return;
+    const source = versionAttribute(geometry, current, i);
+    if (!source) return;
+    const { key, attribute } = source;
+    const lanes = changedLanes(attribute);
+    if (!lanes) return;
+    if (!lanes.length || (key === 'color' && !materials.some((m) => m.vertexColors))) continue;
+    // Normal repair and UV-derived tangent generation can affect other vertex lanes.
+    if (
+      key === 'skinIndex' ||
+      key === 'skinWeight' ||
+      (derivedFromTriangles && (key === 'uv' || key === 'position' || key === 'normal')) ||
+      (key === 'normal' && lanes.some((range) => range.first % 3 !== 0 || range.end % 3 !== 0))
+    )
+      return;
+    const start = edits.length;
+    const readers =
+      'data' in attribute ? InterleavedBufferAttribute.prototype : BufferAttribute.prototype;
+    if (
+      attribute.getX !== readers.getX ||
+      attribute.getY !== readers.getY ||
+      attribute.getZ !== readers.getZ ||
+      attribute.getW !== readers.getW ||
+      !captureVertexChannel(payload, key, attribute, lanes, edits, maxRanges, geometry.uuid)
+    )
+      return;
+    if (key === 'normal') {
+      const end = edits.length;
+      for (let n = start; n < end; n++) {
+        const normal = edits[n] as VertexEdit;
+        const values = normal.values;
+        // Replacing an unreferenced zero normal depends on the index buffer.
+        for (let j = 0; j < values.length; j += 3)
+          if (values[j] === 0 && values[j + 1] === 0 && values[j + 2] === 0) return;
+        if (derivedTangent) {
+          if (edits.length >= maxRanges) return;
+          const tangents = normalPlaneTangents(values, values.length / 3);
+          if (!tangents) return;
+          edits.push({ attribute: 'tangent', first: normal.first, values: tangents });
+        }
+      }
+    }
+  }
+  return edits;
+}
+
+/** A dispose between preparation and publication requires a new lease with the captured edit. */
+export function restoreRigidVertexEdits(base: MeshAsset, ranges: readonly VertexEdit[]): MeshAsset {
+  const mesh = {
+    ...base,
+    vertices: base.vertices.slice(),
+    ...(base.aabb === undefined ? {} : { aabb: base.aabb.slice() }),
+  };
+  for (const range of ranges) {
+    const view = meshAttributeWindow(base, range.attribute);
+    if (!view) throw new Error('missing captured vertex attribute');
+    const width = view.components;
+    for (
+      let src = 0, at = view.offset + range.first * view.stride;
+      src < range.values.length;
+      at += view.stride
+    )
+      for (let axis = 0; axis < width; axis++) {
+        const value = range.values[src++] as number;
+        mesh.vertices[at + axis] = value;
+        if (range.attribute === 'position' && mesh.aabb) {
+          mesh.aabb[axis] = Math.min(mesh.aabb[axis] as number, value);
+          mesh.aabb[axis + 3] = Math.max(mesh.aabb[axis + 3] as number, value);
+        }
+      }
+  }
+  return mesh;
+}
+
 type Topology = 'triangle-list' | 'point-list' | 'line-list' | 'line-strip';
 
 /** Mixed vertex-color groups duplicate the vertex stream; the second copy carries white. */
@@ -88,7 +342,7 @@ interface VertexLayout {
 }
 
 interface ProjectedIndices {
-  readonly indices: number[];
+  readonly indices: Uint16Array | Uint32Array;
   readonly submeshes: MeshAsset['submeshes'][number][];
   readonly slotCount: number;
 }
@@ -101,14 +355,12 @@ export function projectGeometry(
   projectedUvs: Readonly<Record<string, Float32Array>> = {},
   wireframe = false,
   morphColorWeights?: readonly number[],
+  packVertices: boolean | 'static-streams' = true,
 ): Result<MeshAsset | undefined, Error> {
   const position = geometry.getAttribute('position');
   if (position === undefined || position.count === 0) return ok(undefined);
-  const sourceCount = position.count;
-  const useColor =
-    geometry.hasAttribute('color') && (materials?.some((m) => m.vertexColors) ?? true);
-  const mixedColor = useColor && materials?.some((m) => !m.vertexColors) === true;
-  const layout = { sourceCount, count: sourceCount * (mixedColor ? 2 : 1), mixedColor };
+  const layout = geometryVertexLayout(geometry, materials, position.count);
+  const useColor = layout.useColor;
   const projected = projectVertexAttributes(geometry, useColor, layout, topology);
   if (!projected.ok) return projected;
   const attributes = projected.value;
@@ -127,32 +379,79 @@ export function projectGeometry(
   const { indices, submeshes, slotCount } = ranged.value;
   const count = layout.count;
   completeNormals(attributes, indices, count);
-  const nativeIndices = count > 65535 ? new Uint32Array(indices) : new Uint16Array(indices);
   const tangents = completeTangents(
     geometry,
     attributes,
     topology,
-    nativeIndices,
+    indices,
     count,
     materials?.every((material) => material.tangentBasis === 'normal') ?? false,
   );
   if (!tangents.ok) return tangents;
   const morphTargets = projectMorphTargets(geometry, layout);
   if (!morphTargets.ok) return morphTargets;
-  const packed = packInterleavedVertexAttributes(attributes, count);
-  if (!packed.ok) return packed;
-  return ok({
-    kind: 'mesh',
+  const mesh = {
+    kind: 'mesh' as const,
     ...(morphTargets.value.length === 0 ? {} : { morphTargets: morphTargets.value }),
-    vertices: packed.value.vertices,
     attributes,
-    indices: nativeIndices,
+    indices,
     aabb: box3.fromPositions(box3.create(), attributes.position as Float32Array),
     submeshes,
     materialSlots: Array.from({ length: slotCount }, (_, slot) => ({
       slotName: `material-${slot}`,
     })),
+  };
+  if (!packVertices) return ok({ ...mesh, vertices: new Float32Array() });
+  const storage =
+    packVertices === 'static-streams' && isStandaloneStaticMesh(mesh)
+      ? 'static-streams'
+      : 'interleaved';
+  const packed = packVertexAttributes(attributes, count, storage);
+  if (!packed.ok) return packed;
+  return ok({
+    ...mesh,
+    vertices: packed.value.vertices,
+    ...(packed.value.projection.streams === undefined
+      ? {}
+      : {
+          attributeStorage: 'static-streams' as const,
+          attributes: meshAttributeLayout(attributes),
+        }),
   });
+}
+
+function geometryVertexLayout(
+  geometry: BufferGeometry,
+  materials: readonly GeometryMaterial[] | undefined,
+  sourceCount: number,
+): VertexLayout & { readonly useColor: boolean } {
+  const useColor =
+    geometry.hasAttribute('color') && (materials?.some((m) => m.vertexColors) ?? true);
+  const mixedColor = useColor && materials?.some((m) => !m.vertexColors) === true;
+  return { sourceCount, count: sourceCount * (mixedColor ? 2 : 1), mixedColor, useColor };
+}
+
+function copyCompactSkinWeights(
+  attribute: BufferGeometry['attributes'][string],
+  layout: VertexLayout,
+  width: number,
+): Uint8Array | Uint16Array | undefined {
+  if (
+    !(attribute instanceof BufferAttribute) ||
+    !attribute.normalized ||
+    (attribute.array.constructor !== Uint8Array && attribute.array.constructor !== Uint16Array) ||
+    attribute.array.length !== layout.sourceCount * width ||
+    attribute.getX !== BufferAttribute.prototype.getX ||
+    attribute.getY !== BufferAttribute.prototype.getY ||
+    attribute.getZ !== BufferAttribute.prototype.getZ ||
+    attribute.getW !== BufferAttribute.prototype.getW
+  )
+    return;
+  const ArrayType = attribute.array.constructor as typeof Uint8Array | typeof Uint16Array;
+  const values = new ArrayType(layout.count * width);
+  values.set(attribute.array);
+  if (layout.mixedColor) values.set(attribute.array, attribute.array.length);
+  return values;
 }
 
 function projectVertexAttributes(
@@ -177,6 +476,12 @@ function projectVertexAttributes(
       (attribute.itemSize !== width && !(key === 'color' && attribute.itemSize === 3))
     )
       return invalid(`BufferGeometry.attributes.${key}.itemSize/count`, geometry.uuid);
+    const packedWeights =
+      name === 'skinWeight' ? copyCompactSkinWeights(attribute, layout, width) : undefined;
+    if (packedWeights !== undefined) {
+      attributes.skinWeight = packedWeights;
+      continue;
+    }
     const values =
       name === 'skinIndex'
         ? new Uint16Array(layout.count * width)
@@ -187,6 +492,166 @@ function projectVertexAttributes(
     else attributes[name] = values as Float32Array;
   }
   return ok(attributes);
+}
+
+export function hasPlainPointGeometry(geometry: BufferGeometry): boolean {
+  return (
+    geometry.index === null &&
+    geometry.groups.length === 0 &&
+    Object.keys(geometry.morphAttributes).length === 0 &&
+    Object.keys(geometry.attributes).every((key) => key === 'position' || key === 'color')
+  );
+}
+
+interface PointContent {
+  readonly position: Float32Array;
+  readonly color: Float32Array | undefined;
+  readonly colorWidth: 3 | 4;
+  readonly count: number;
+}
+
+const stockAttributeReaders = [
+  BufferAttribute.prototype.getX,
+  BufferAttribute.prototype.getY,
+  BufferAttribute.prototype.getZ,
+  BufferAttribute.prototype.getW,
+] as const;
+const stockGetAttribute = BufferGeometry.prototype.getAttribute;
+const stockHasAttribute = BufferGeometry.prototype.hasAttribute;
+
+function stockPointArray(source: unknown, width: number): Float32Array | undefined {
+  if (!(source instanceof BufferAttribute)) return;
+  const prototype = Object.getPrototypeOf(source);
+  if (
+    (prototype !== BufferAttribute.prototype && prototype !== Float32BufferAttribute.prototype) ||
+    source.getX !== stockAttributeReaders[0] ||
+    source.getY !== stockAttributeReaders[1] ||
+    source.getZ !== stockAttributeReaders[2] ||
+    source.getW !== stockAttributeReaders[3] ||
+    ownSourceValue(source, 'normalized') !== false ||
+    ownSourceValue(source, 'itemSize') !== width
+  )
+    return;
+  const array = ownSourceValue(source, 'array');
+  if (
+    array instanceof Float32Array &&
+    Object.getPrototypeOf(array) === Float32Array.prototype &&
+    array.buffer instanceof ArrayBuffer &&
+    array.length % width === 0 &&
+    ownSourceValue(source, 'count') === array.length / width
+  )
+    return array;
+  return undefined;
+}
+
+/** The general path remains authoritative for draw ranges and custom attribute readers. */
+export function readPointContent(
+  geometry: BufferGeometry,
+  useColor: boolean,
+): PointContent | undefined {
+  if (
+    geometry.getAttribute !== stockGetAttribute ||
+    geometry.hasAttribute !== stockHasAttribute ||
+    geometry.drawRange.start !== 0 ||
+    geometry.drawRange.count !== Infinity ||
+    !hasPlainPointGeometry(geometry)
+  )
+    return;
+
+  const attributes = geometry.attributes;
+  const position = stockPointArray(ownSourceValue(attributes, 'position'), 3);
+  if (!position?.length) return;
+  const count = position.length / 3;
+  const source = useColor ? ownSourceValue(attributes, 'color') : undefined;
+  if (source === undefined) {
+    if (useColor && 'color' in attributes) return;
+    return { position, count, color: undefined, colorWidth: 3 };
+  }
+  if (!(source instanceof BufferAttribute)) return;
+  const width = ownSourceValue(source, 'itemSize');
+  if (width !== 3 && width !== 4) return;
+  const color = stockPointArray(source, width);
+  if (color?.length === count * width) return { position, count, color, colorWidth: width };
+  return undefined;
+}
+
+export enum PointContentChannels {
+  Position = 1,
+  Color = 2,
+  All = Position | Color,
+}
+
+/** Capture the notified source lanes; native colors always occupy four lanes. */
+export function pointContentEdit(content: PointContent, channels: PointContentChannels) {
+  const ranges: MeshRange[] = [];
+  const position =
+    channels & PointContentChannels.Position ? content.position.slice() : content.position;
+  if (channels & PointContentChannels.Position)
+    ranges.push({ attribute: 'position', first: 0, values: position });
+  let color = content.color;
+  let colorWidth = content.colorWidth;
+  if (color !== undefined && channels & PointContentChannels.Color) {
+    if (content.colorWidth === 3) {
+      const values = new Float32Array(content.count * 4);
+      for (let src = 0, dst = 0; src < color.length; src += 3, dst += 4) {
+        values[dst] = color[src] as number;
+        values[dst + 1] = color[src + 1] as number;
+        values[dst + 2] = color[src + 2] as number;
+        values[dst + 3] = 1;
+      }
+      color = values;
+      colorWidth = 4;
+    } else color = color.slice();
+    ranges.push({ attribute: 'color', first: 0, values: color });
+  }
+  return { content: { ...content, position, color, colorWidth }, channels, ranges };
+}
+
+/** Keep the accepted static rows and indices. Source arrays are borrowed only for this copy. */
+export function repackPointContent(
+  content: PointContent,
+  accepted: MeshAsset,
+  geometry: BufferGeometry,
+  channels = PointContentChannels.All,
+): MeshAsset | undefined {
+  if (
+    accepted.attributeStorage !== 'interleaved' ||
+    accepted.indices?.length !== content.count ||
+    (accepted.attributes.color !== undefined) !== (content.color !== undefined)
+  )
+    return;
+  const layout = deriveVertexLayoutProjection(accepted.attributes);
+  const stride = layout.arrayStride / Float32Array.BYTES_PER_ELEMENT;
+  if (accepted.vertices.length !== content.count * stride) return;
+  const vertices = new Float32Array(accepted.vertices);
+  for (const channel of layout.attributes) {
+    if (
+      channel.key === 'position'
+        ? !(channels & PointContentChannels.Position)
+        : channel.key !== 'color' || !(channels & PointContentChannels.Color)
+    )
+      continue;
+    const source = channel.key === 'position' ? content.position : content.color;
+    if (source === undefined) continue;
+    const width = channel.key === 'position' ? 3 : content.colorWidth;
+    let offset = channel.offset / Float32Array.BYTES_PER_ELEMENT;
+    for (let index = 0; index < source.length; offset += stride) {
+      for (let lane = 0; lane < width; lane++) {
+        const value = source[index++] as number;
+        if (!Number.isFinite(value))
+          return invalid(`BufferGeometry.attributes.${channel.key}`, geometry.uuid).unwrap();
+        vertices[offset + lane] = value;
+      }
+      if (channel.key === 'color' && width === 3) vertices[offset + 3] = 1;
+    }
+  }
+  return {
+    ...accepted,
+    vertices,
+    ...(channels & PointContentChannels.Position
+      ? { aabb: box3.fromPositions(box3.create(), content.position) }
+      : {}),
+  };
 }
 
 /** Copy one source attribute into its native width; false when a component is not admissible. */
@@ -228,6 +693,34 @@ function appendProjectedUvs(
   }
 }
 
+const stockIndexPrototypes = new Set([
+  BufferAttribute.prototype,
+  Uint16BufferAttribute.prototype,
+  Uint32BufferAttribute.prototype,
+]);
+const stockIndexRead = BufferAttribute.prototype.getX;
+function contiguousIndices(index: BufferAttribute | null): Uint16Array | Uint32Array | undefined {
+  if (
+    !index ||
+    Object.hasOwn(index, 'getX') ||
+    !stockIndexPrototypes.has(Object.getPrototypeOf(index)) ||
+    index.getX !== stockIndexRead ||
+    ownSourceValue(index, 'itemSize') !== 1 ||
+    ownSourceValue(index, 'normalized') !== false
+  )
+    return;
+  const source = ownSourceValue(index, 'array');
+  if (
+    (source instanceof Uint16Array || source instanceof Uint32Array) &&
+    (Object.getPrototypeOf(source) === Uint16Array.prototype ||
+      Object.getPrototypeOf(source) === Uint32Array.prototype) &&
+    source.buffer instanceof ArrayBuffer &&
+    !Object.hasOwn(source, 'subarray')
+  )
+    return source;
+  return undefined;
+}
+
 /** Preserve the source index order when intersecting groups and drawRange. */
 function projectIndices(
   geometry: BufferGeometry,
@@ -246,6 +739,10 @@ function projectIndices(
   const ranges = grouped ? geometry.groups : [{ start: 0, count: available, materialIndex: 0 }];
   const primitiveSize =
     wireframe || topology === 'triangle-list' ? 3 : topology === 'line-list' ? 2 : 1;
+  const IndexArray = layout.count > 65535 ? Uint32Array : Uint16Array;
+  const source =
+    !grouped && !wireframe && !layout.mixedColor ? contiguousIndices(geometry.index) : undefined;
+  let direct: Uint16Array | Uint32Array | undefined;
   const indices: number[] = [];
   const submeshes: MeshAsset['submeshes'][number][] = [];
   let slotCount = 1;
@@ -261,12 +758,23 @@ function projectIndices(
     const offset = indices.length;
     const colorOffset =
       layout.mixedColor && !materials?.[slot]?.vertexColors ? layout.sourceCount : 0;
-    if (!appendSourceIndices(indices, geometry, first, last, colorOffset, layout.sourceCount))
-      return invalid('BufferGeometry.index', geometry.uuid);
-    if (wireframe) expandWireframe(indices, offset);
+    if (source) {
+      if (last > source.length) return invalid('BufferGeometry.index', geometry.uuid);
+      for (let i = first; i < last; i++)
+        if ((source[i] as number) >= layout.sourceCount)
+          return invalid('BufferGeometry.index', geometry.uuid);
+      // Borrow for this synchronous read. The asset keeps an independent revision.
+      direct = new IndexArray(
+        first === 0 && last === source.length ? source : source.subarray(first, last),
+      );
+    } else {
+      if (!appendSourceIndices(indices, geometry, first, last, colorOffset, layout.sourceCount))
+        return invalid('BufferGeometry.index', geometry.uuid);
+      if (wireframe) expandWireframe(indices, offset);
+    }
     submeshes.push({
       indexOffset: offset,
-      indexCount: indices.length - offset,
+      indexCount: direct?.length ?? indices.length - offset,
       vertexCount: layout.count,
       topology,
       materialSlot: slot,
@@ -274,7 +782,7 @@ function projectIndices(
     slotCount = Math.max(slotCount, slot + 1);
   }
   if (submeshes.length === 0) return ok(undefined);
-  return ok({ indices, submeshes, slotCount });
+  return ok({ indices: direct ?? new IndexArray(indices), submeshes, slotCount });
 }
 
 function isSafeRange(range: { readonly start: number; readonly count: number }): boolean {
@@ -322,26 +830,32 @@ function expandWireframe(indices: number[], offset: number): void {
   }
 }
 
-function completeNormals(attributes: VertexAttributeMap, indices: number[], count: number): void {
+function completeNormals(
+  attributes: VertexAttributeMap,
+  indices: Uint16Array | Uint32Array,
+  count: number,
+): void {
   if (attributes.normal === undefined) {
     // Fill the native vertex ABI without changing the source. Basic ignores
     // normals; admitted lit materials select primitive geometry in their Surface.
     const normals = new Float32Array(count * 3);
     for (let vertex = 0; vertex < count; vertex++) normals[vertex * 3 + 1] = 1;
     attributes.normal = normals;
+    return;
   }
   // Reserved BatchedMesh capacity can contain zero normals. Unreferenced
   // vertices do not participate in shading, but still need a valid native ABI.
-  const referenced = new Set(indices);
+  let referenced: Set<number> | undefined;
   const normals = attributes.normal as Float32Array;
   for (let vertex = 0; vertex < count; vertex++) {
     if (
-      !referenced.has(vertex) &&
       normals[vertex * 3] === 0 &&
       normals[vertex * 3 + 1] === 0 &&
       normals[vertex * 3 + 2] === 0
-    )
-      normals[vertex * 3 + 1] = 1;
+    ) {
+      referenced ??= new Set(indices);
+      if (!referenced.has(vertex)) normals[vertex * 3 + 1] = 1;
+    }
   }
 }
 

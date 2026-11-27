@@ -251,7 +251,7 @@ export async function runGpuDrivenIndirectRasterEvidence(): Promise<GpuDrivenInd
   availability.scene.sync(delta).unwrap();
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  const plan = topology.query(topology.sourcePlan(), undefined);
+  const plan = topology.query(topology.sourcePlan(), undefined).active;
   const gpuView = GpuDrivenView.create({
     device,
     shaderModuleFactory: { createShaderModule: () => ok(viewShader) },

@@ -1,3 +1,4 @@
+import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { assert, expect, it, vi } from 'vitest';
 import { EMPTY_GPU_DRAW_SELECTION } from '../../gpu-driven/draw-selection';
 import { MaterialResource } from '../../material-resource';
@@ -7,6 +8,7 @@ import { defaultMaterialSnapshot, type RenderableSnapshot } from '../../render-s
 import { FrameProjection, RetainedFrameProjection, rasterRowsOf } from '../frame-list';
 import { MeshFrame } from '../mesh-frame';
 import type { RenderSceneSlot } from '../render-scene-types';
+import { GeneratedViewRows, projectViewSources, RenderScene } from '../render-scene-view';
 import { SceneRows } from '../scene-rows';
 
 function fixture(count: number) {
@@ -161,4 +163,49 @@ it('observes material adoption and preserves the bounded warning latch in every 
     warn.mockRestore();
     vi.unstubAllEnvs();
   }
+});
+
+it('projects only current generated ranks while thousands of ordinary rows retain their native frame', () => {
+  const fixtureRows = fixture(4096);
+  const scene = new RenderScene();
+  scene.apply(
+    fixtureRows.values.map((snapshot) => ({
+      kind: 'update',
+      entityKey: snapshot.entityKey,
+      snapshot,
+    })),
+  );
+  const mesh = createPrimitiveMesh('cube').unwrap();
+  const old = scene.materialize();
+  const before = fixtureRows.values[18];
+  const other = fixtureRows.values[3800];
+  if (!before || !other) throw new Error('Missing fixture rows');
+  scene.apply([
+    { kind: 'update', entityKey: before.entityKey, snapshot: { ...before, generatedMesh: mesh } },
+  ]);
+  let previous: GeneratedViewRows | undefined;
+  for (let frame = 0; frame < 60; frame++) {
+    const row = frame % 2 ? before : other;
+    const retire = frame % 2 ? other : before;
+    scene.apply([
+      { kind: 'update', entityKey: retire.entityKey, snapshot: retire },
+      { kind: 'update', entityKey: row.entityKey, snapshot: { ...row, generatedMesh: mesh } },
+    ]);
+    const native = scene.materialize();
+    const project = vi.fn((source: RenderableSnapshot) => ({ ...source, layer: frame }));
+    const visible = projectViewSources(native, project);
+    assert(visible instanceof GeneratedViewRows);
+    expect(project).toHaveBeenCalledTimes(1);
+    expect(visible.draws.map((r) => r.entityKey)).toEqual([row.entityKey]);
+    expect(visible.at(row.entityKey)?.layer).toBe(frame);
+    expect(visible.at(17)).toBe(native.at(17));
+    if (previous) expect(previous.draws[0]?.layer).toBe(frame - 1);
+    previous = visible;
+  }
+  expect(old.at(18)?.generatedMesh).toBeUndefined();
+  const borrowed = [before, other];
+  const read = vi.fn((row: RenderableSnapshot) => row);
+  expect(projectViewSources(borrowed, read)).toEqual(borrowed);
+  expect(read).toHaveBeenCalledTimes(2);
+  scene.dispose();
 });

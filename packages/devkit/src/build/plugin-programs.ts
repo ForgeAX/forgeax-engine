@@ -1,8 +1,8 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
-import { readFile, realpath } from 'node:fs/promises';
+import { cp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { isBuiltin } from 'node:module';
-import { isAbsolute, posix, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, posix, relative, resolve } from 'node:path';
 import type { HostRootDescriptor } from '@forgeax/engine-host/protocol';
 import { resolvePluginProgram } from '@forgeax/engine-import';
 import { lowerPluginToolContract } from '@forgeax/engine-pack/source';
@@ -16,10 +16,11 @@ import type {
   PluginBuildTarget,
   RuntimeAssetBinding,
 } from '@forgeax/engine-types';
+import { sha256 } from '@forgeax/engine-types';
 import type { PluginPack } from '@forgeax/engine-vite-plugin-pack';
 import MagicString from 'magic-string';
 import ts from 'typescript';
-import type { Plugin, ResolvedConfig } from 'vite';
+import { build, normalizePath, type Plugin, type ResolvedConfig } from 'vite';
 import {
   filesystemPathKey,
   filesystemPathRelative,
@@ -27,18 +28,12 @@ import {
   isFilesystemPathWithin,
 } from '../filesystem-path.js';
 import { discoverProjectTools, type ProjectToolBinding } from '../tools/project-tools.js';
-import { markDevProgramResources } from './dev-program-resources.js';
-import {
-  devProgramSession,
-  devProgramSessionQuery,
-  normalizeDevProgramUrl,
-  withDevProgramSession,
-} from './dev-program-url.js';
 import {
   type ExecutionWorkerEntriesApi,
   engineCapabilityMeta,
   executionWorkerEntriesName,
 } from './execution-workers.js';
+import { literalMarkerSpans } from './module-specifiers.js';
 import { runtimeProgramIdentity } from './pack-program-imports.js';
 import {
   assertPluginSourceInputs,
@@ -50,7 +45,14 @@ import {
   pluginAssetClosure,
 } from './plugin-assets.js';
 import { BrowserPluginProgramArchive } from './plugin-programs-browser.js';
-import { captureDevPluginPrograms } from './plugin-programs-dev.js';
+import {
+  captureDevPluginPrograms,
+  devProgramSession,
+  devProgramSessionQuery,
+  markDevProgramResources,
+  normalizeDevProgramUrl,
+  withDevProgramSession,
+} from './plugin-programs-dev.js';
 
 export const pluginRuntimeQuery = '?forgeax-plugin-runtime';
 const prefix = 'virtual:forgeax/plugin-programs/';
@@ -59,7 +61,12 @@ const nativeEntriesMarker = '__forgeax_native_program_entries__';
 const devProgramSessions = new WeakMap<ResolvedConfig, string>();
 
 /** Player delivery admits the portable program service, never its Node authoring umbrella. */
-export function assertPlayerModule(id: string, filename: string): void {
+export function assertPlayerModule(id: string, filename: string, desktopAdapter?: string): void {
+  if (
+    desktopAdapter !== undefined &&
+    (isBuiltin(id) || normalizePath(id) === normalizePath(desktopAdapter))
+  )
+    return;
   if (isBuiltin(id) || id.includes('__vite-browser-external'))
     throw new TypeError(`${filename}: Node dependency ${id} leaked into the player`);
   const path = id.split('?')[0]?.replaceAll('\\', '/') ?? id;
@@ -86,38 +93,33 @@ export function exportModule(module: string, name: string): string {
   );
 }
 
-export function assertStaticPluginImports(source: string, filename: string): void {
-  const file = ts.createSourceFile(
-    filename,
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
+function pluginSourceFile(source: string, filename: string) {
+  return ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+}
+
+function assertLiteralImports(file: ts.SourceFile, removed?: ts.Node): void {
   function visit(node: ts.Node): void {
+    if (node === removed) return;
     if (
       ts.isCallExpression(node) &&
       node.expression.kind === ts.SyntaxKind.ImportKeyword &&
       (node.arguments.length !== 1 ||
         node.arguments[0] === undefined ||
         !ts.isStringLiteralLike(node.arguments[0]))
-    ) {
-      throw new TypeError(`${filename}: plugin runtime imports must have literal specifiers`);
-    }
+    )
+      throw new TypeError(`${file.fileName}: plugin runtime imports must have literal specifiers`);
     ts.forEachChild(node, visit);
   }
   visit(file);
 }
 
+export function assertStaticPluginImports(source: string, filename: string): void {
+  assertLiteralImports(pluginSourceFile(source, filename));
+}
+
 /** Remove the authoring expression. Remaining exports use standard bundler semantics. */
 export function projectPluginRuntimeSource(source: string, filename: string) {
-  const file = ts.createSourceFile(
-    filename,
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
+  const file = pluginSourceFile(source, filename);
   const defineNames = new Set<string>();
   for (const node of file.statements) {
     if (
@@ -145,6 +147,7 @@ export function projectPluginRuntimeSource(source: string, filename: string) {
   );
   if (!declaration)
     throw new TypeError(`${filename}: expected default definePack(...) for the runtime projection`);
+  assertLiteralImports(file, declaration);
   const edits = [{ start: declaration.getStart(file), end: declaration.end, text: '' }];
   for (const node of file.statements) {
     if (
@@ -206,6 +209,11 @@ export function pluginProgramSpecifier(
   return `${record.module}${pluginRuntimeQuery}`;
 }
 
+interface ProgramLocation {
+  readonly module: string;
+  readonly export: string;
+}
+
 /** Pure producer projection shared by normal delivery and portable program capture. */
 export function projectPluginPrograms(
   records: readonly PluginSourceRecord[],
@@ -213,7 +221,7 @@ export function projectPluginPrograms(
   tools: readonly ProjectToolBinding[] = [],
   projectRoot?: string,
 ) {
-  const programs = new Map<string, { readonly module: string; readonly export: string }>();
+  const programs = new Map<string, ProgramLocation>();
   const add = (key: string, module: string, name: string) => {
     const previous = programs.get(key);
     if (previous && (previous.module !== module || previous.export !== name))
@@ -255,7 +263,20 @@ export function pluginProgramSource(
   projectRoot?: string,
   archiveSuffix?: string,
 ): string {
-  const projection = projectPluginPrograms(records, target, tools, projectRoot);
+  return projectedProgramSource(
+    projectPluginPrograms(records, target, tools, projectRoot),
+    target,
+    definitions,
+    archiveSuffix,
+  );
+}
+
+function projectedProgramSource(
+  projection: ReturnType<typeof projectPluginPrograms>,
+  target: PluginBuildTarget,
+  definitions: readonly (readonly [string, PluginAssetDefinition['evidence']])[],
+  archiveSuffix: string | undefined,
+): string {
   const programs = [...projection.programs].map(
     ([key, value]) =>
       `[${JSON.stringify(key)}, { ${archiveSuffix ? `exportSource: () => exportProgram(${JSON.stringify(key)}),` : ''} load: () => import(${JSON.stringify(exportModule(value.module, value.export))}).then(module => module.default) }]`,
@@ -279,9 +300,12 @@ async function readArchive() {
   if (archive.error) throw new TypeError(archive.error);
   return archive;
 }
+function archiveSelection(archive, key) {
+  const entry = archive.programs?.[key];
+  return entry && archive.graph ? { ...archive.graph, ...entry } : entry;
+}
 async function exportProgram(key) {
-  const archive = await readArchive();
-  return verifyPackProgram(archive.programs?.[key]).unwrap();
+  return verifyPackProgram(archiveSelection(await readArchive(), key)).unwrap();
 }
 function createProgramHost(fallback) {
   // When the fallback owns a native loader, remember only the URLs this
@@ -292,7 +316,7 @@ function createProgramHost(fallback) {
     // program must not depend on unrelated static archive availability.
     if (nativeEntries.length && nativeEntries.every(name => Object.hasOwn(program.modules, name))) {
       const archive = await readArchive();
-      const delivered = Object.values(archive.programs)[0];
+      const delivered = archiveSelection(archive, Object.keys(archive.programs)[0]);
       if (delivered) {
         const nativeImports = Object.fromEntries(Object.entries(archive.imports).map(([name, entry]) => [name, { ...entry, url: new URL(entry.url, archiveUrl).href }]));
         if (packProgramModuleIdentity(program, bindings).unwrap() === packProgramModuleIdentity(delivered, nativeImports).unwrap()) {
@@ -304,7 +328,7 @@ function createProgramHost(fallback) {
     }
     if (!fallback) throw new TypeError('New program modules require runtime module delivery');
     return fallback.publish(program, bindings);
-  }, ...(nativeUrls ? { async importModule(url) {
+  }, ...(fallback?.publishForTask ? { publishForTask: (program, bindings) => fallback.publishForTask(program, bindings) } : {}), ...(nativeUrls ? { async importModule(url) {
     return nativeUrls.has(url) ? import(/* @vite-ignore */ url) : fallback.importModule(url);
   } } : {}) };
 }
@@ -316,6 +340,49 @@ const definitions = new Map(${JSON.stringify(definitions)});
 export function createPrograms(sessionId, contextId, sessionGeneration, programHost) {
   return Object.freeze({ sessionId, contextId, sessionGeneration, target: ${JSON.stringify(target)}, programs, definitions, tools${archiveSuffix ? ', imports, programHost: createProgramHost(programHost)' : ''} });
 }`;
+}
+
+/** Copy authored inputs for isolated Pack compilation, excluding derived or private work trees. */
+export function copyProjectSourceCandidate(root: string, candidate: string): Promise<void> {
+  const excluded = new Set(['node_modules', '.git', '.forgeax', '.worktrees', 'dist']);
+  return cp(root, candidate, {
+    recursive: true,
+    filter: (path) =>
+      !relative(root, path)
+        .split(/[\\/]/)
+        .some((part) => excluded.has(part)),
+  });
+}
+
+/** Compile a prepared authoring candidate without publishing to the project. */
+export async function compilePluginAuthoringCandidate(options: {
+  readonly root: string;
+  readonly input: string;
+  readonly source: string;
+  readonly target: PluginBuildTarget;
+  readonly browserFileName: string;
+  readonly plugin?: Plugin;
+}): Promise<void> {
+  const { root, input, source, target } = options;
+  await mkdir(dirname(input), { recursive: true });
+  await writeFile(input, source);
+  await build({
+    root,
+    configFile: false,
+    logLevel: 'silent',
+    plugins: [
+      pluginRuntimeProjection(root),
+      ...(options.plugin === undefined ? [] : [options.plugin]),
+    ],
+    build: {
+      write: false,
+      target: 'esnext',
+      minify: false,
+      ...(target === 'build' || target === 'host'
+        ? { ssr: input }
+        : { lib: { entry: input, formats: ['es'], fileName: options.browserFileName } }),
+    },
+  });
 }
 
 /** Shared projection for Node, browser and Worker module graphs. */
@@ -360,7 +427,7 @@ export function pluginRuntimeProjection(
   function assertSource(path: string, source: string | Uint8Array): void {
     if (!canonicalSourceInputs) return;
     refreshSourceInputAdditions();
-    const digest = `sha256:${createHash('sha256').update(source).digest('hex')}`;
+    const digest = `sha256:${sha256(source)}`;
     const expected = canonicalSourceInputs.get(canonicalPath(path));
     // The first authored module reaches this guard only after DevKit has
     // captured its compiler-resolved graph. Seal the append-only additions
@@ -418,9 +485,7 @@ export function pluginRuntimeProjection(
       this.addWatchFile(filename);
       const source = await readFile(filename, 'utf8');
       assertSource(filename, source);
-      const projected = projectPluginRuntimeSource(source, filename);
-      assertStaticPluginImports(projected.code, filename);
-      return projected;
+      return projectPluginRuntimeSource(source, filename);
     },
   };
 }
@@ -483,6 +548,7 @@ export interface PluginProgramBuildOptions {
   readonly namespace?: string;
   /** Prepare game programs on first Play, retaining the project's serving resources. */
   readonly deferPreparation?: boolean;
+  readonly desktopAdapter?: string;
   readonly tools?: readonly ProjectToolBinding[];
   readonly roots: Readonly<Partial<Record<PluginBuildTarget, string | undefined>>>;
   readonly inventory: () => Promise<PluginSourceInventory>;
@@ -510,6 +576,32 @@ export function pluginProgramsBuild(
     | undefined;
   let preparePrograms: (() => Promise<void>) | undefined;
   let preparation: Promise<void> | undefined;
+  const discoverTools = (inventory: PluginSourceInventory) =>
+    options.tools ?? discoverProjectTools(options.projectRoot, { inventory });
+  const captureSelectionInputs = async (
+    inventory: PluginSourceInventory,
+    resolveModule: NonNullable<Parameters<typeof capturePluginProgramInputs>[3]>,
+    onSelection?: (key: string, location: ProgramLocation) => void,
+  ) => {
+    const tools = await discoverTools(inventory);
+    for (const target of ['engine', 'frontend'] as const) {
+      const records = pluginAssetClosure(inventory, options.roots[target]);
+      for (const [key, location] of projectPluginPrograms(
+        records,
+        target,
+        tools,
+        options.projectRoot,
+      ).programs) {
+        await capturePluginProgramInputs(
+          options.projectRoot,
+          inventory,
+          location.module,
+          resolveModule,
+        );
+        onSelection?.(key, location);
+      }
+    }
+  };
   return {
     async prepare() {
       preparation ??= preparePrograms?.() ?? Promise.resolve();
@@ -586,21 +678,10 @@ export function pluginProgramsBuild(
       async handler() {
         if (command !== 'build' || !hasRoots) return;
         const inventory = await options.inventory();
-        const tools =
-          options.tools ?? (await discoverProjectTools(options.projectRoot, { inventory }));
-        for (const target of ['engine', 'frontend'] as const)
-          for (const value of projectPluginPrograms(
-            pluginAssetClosure(inventory, options.roots[target]),
-            target,
-            tools,
-            options.projectRoot,
-          ).programs.values())
-            await capturePluginProgramInputs(
-              options.projectRoot,
-              inventory,
-              value.module,
-              async (specifier, importer) => (await this.resolve(specifier, importer))?.id,
-            );
+        await captureSelectionInputs(
+          inventory,
+          async (specifier, importer) => (await this.resolve(specifier, importer))?.id,
+        );
       },
     },
     async configureServer(server) {
@@ -661,25 +742,14 @@ export function pluginProgramsBuild(
           markDevProgramResources(environment.plugins);
           await options.pack.ready();
           const inventory = await options.inventory();
-          const tools =
-            options.tools ?? (await discoverProjectTools(options.projectRoot, { inventory }));
           const selections = new Map<string, string>();
-          for (const target of ['engine', 'frontend'] as const)
-            for (const [key, value] of projectPluginPrograms(
-              pluginAssetClosure(inventory, options.roots[target]),
-              target,
-              tools,
-              options.projectRoot,
-            ).programs) {
-              await capturePluginProgramInputs(
-                options.projectRoot,
-                inventory,
-                value.module,
-                async (specifier, importer) =>
-                  (await environment.pluginContainer.resolveId(specifier, importer))?.id,
-              );
-              selections.set(key, `/@id/__x00__${exportModule(value.module, value.export)}`);
-            }
+          await captureSelectionInputs(
+            inventory,
+            async (specifier, importer) =>
+              (await environment.pluginContainer.resolveId(specifier, importer))?.id,
+            (key, location) =>
+              selections.set(key, `/@id/__x00__${exportModule(location.module, location.export)}`),
+          );
           const engineManifest = await environment.pluginContainer.resolveId(
             '@forgeax/engine/package.json',
           );
@@ -800,24 +870,16 @@ export function pluginProgramsBuild(
           },
         ] as const;
       });
-      const tools =
-        options.tools ?? (await discoverProjectTools(options.projectRoot, { inventory }));
+      const tools = await discoverTools(inventory);
+      const projection = projectPluginPrograms(records, target, tools, options.projectRoot);
       if (command === 'build' && options.delivery !== 'native') {
-        for (const [key, value] of projectPluginPrograms(
-          records,
-          target,
-          tools,
-          options.projectRoot,
-        ).programs) {
+        for (const [key, value] of projection.programs)
           archive.entries.set(key, `\0${exportModule(value.module, value.export)}`);
-        }
       }
       projections.set(target, {
         root: options.roots[target],
         definitions,
-        programs: [
-          ...projectPluginPrograms(records, target, tools, options.projectRoot).programs.keys(),
-        ],
+        programs: [...projection.programs.keys()],
       });
       const rootDefinition = records.find(
         (record) => record.definition.guid === options.roots[target],
@@ -831,12 +893,10 @@ export function pluginProgramsBuild(
               evidence: rootEvidence,
             })
           : null;
-      const source = pluginProgramSource(
-        records,
+      const source = projectedProgramSource(
+        projection,
         target,
         definitions,
-        tools,
-        options.projectRoot,
         options.delivery === 'native' ? undefined : archiveSuffix,
       );
       return `${command === 'serve' ? source.replace(JSON.stringify(nativeEntriesMarker), JSON.stringify(dev?.entries ?? [])) : source}\nexport const root = ${JSON.stringify(options.roots[target] ?? null)};\nexport const rootDescriptor = ${JSON.stringify(descriptor)};`;
@@ -845,38 +905,24 @@ export function pluginProgramsBuild(
       if (command === 'build') archive.preserveParsedModule(this, info.id);
     },
     async buildEnd(error) {
-      // One complete walk over the final graph keeps membership exact even if
-      // a module's parse facts were refined after its own moduleParsed hook.
-      if (!error && command === 'build') archive.preserveModules(this);
-      if (!error) archive.prepareGroups(this, facades);
-      if (!error && command === 'build' && archive.entries.size) {
-        const engineManifest = await this.resolve('@forgeax/engine/package.json', undefined, {
-          skipSelf: true,
-        });
-        if (!engineManifest || engineManifest.external)
-          this.error('Engine manifest unavailable from the Vite host');
-        engineIdentity = await runtimeProgramIdentity(engineManifest.id);
-      }
+      if (error || command !== 'build' || options.delivery === 'native') return;
+      // Complete the incremental walk using the compiler's final module facts.
+      archive.preserveModules(this);
+      archive.prepareGroups(this, facades);
+      if (archive.entries.size === 0) return;
+      const engineManifest = await this.resolve('@forgeax/engine/package.json', undefined, {
+        skipSelf: true,
+      });
+      if (!engineManifest || engineManifest.external)
+        this.error('Engine manifest unavailable from the Vite host');
+      engineIdentity = await runtimeProgramIdentity(engineManifest.id);
     },
     renderChunk: {
       order: 'post',
       handler(code, chunk) {
         const output = new MagicString(code);
         if (code.includes(nativeEntriesMarker)) {
-          const file = ts.createSourceFile(
-            chunk.fileName,
-            code,
-            ts.ScriptTarget.Latest,
-            true,
-            ts.ScriptKind.JS,
-          );
-          const edits: { start: number; end: number }[] = [];
-          const visit = (node: ts.Node) => {
-            if (ts.isStringLiteralLike(node) && node.text === nativeEntriesMarker)
-              edits.push({ start: node.getStart(file), end: node.end });
-            ts.forEachChild(node, visit);
-          };
-          visit(file);
+          const edits = literalMarkerSpans(code, chunk.fileName, nativeEntriesMarker);
           const entries = JSON.stringify(archive.entryFiles(this));
           for (const edit of edits) output.overwrite(edit.start, edit.end, entries);
         }
@@ -904,12 +950,9 @@ export function pluginProgramsBuild(
         await assertPluginSourceInputs(inventory, options.projectRoot);
         inventory.sourceSnapshot.releaseResolvers();
         if (archive.entries.size) {
-          let data: unknown;
+          let data: ReturnType<typeof archive.capture> | { error: string };
           try {
-            data = {
-              programs: archive.capture(this, bundle, engineIdentity),
-              imports: archive.imports(this, engineIdentity),
-            };
+            data = archive.capture(this, bundle, engineIdentity);
           } catch (cause) {
             // Static startup remains valid when a dependency cannot be archived.
             // Export consumers must surface this failure, never an incomplete graph.
@@ -925,31 +968,21 @@ export function pluginProgramsBuild(
               type: 'asset',
               fileName: `${chunk.fileName}${archiveSuffix}`,
               source: JSON.stringify(
-                'error' in (data as object)
+                'error' in data
                   ? data
                   : {
-                      ...(data as object),
+                      ...data,
                       imports: Object.fromEntries(
-                        Object.entries(archive.imports(this, engineIdentity)).map(
-                          ([name, entry]) => [
-                            name,
-                            {
-                              ...entry,
-                              url: posix.relative(posix.dirname(chunk.fileName), entry.url),
-                            },
-                          ],
-                        ),
+                        Object.entries(data.imports).map(([name, entry]) => [
+                          name,
+                          {
+                            ...entry,
+                            url: posix.relative(posix.dirname(chunk.fileName), entry.url),
+                          },
+                        ]),
                       ),
                       urls: Object.fromEntries(
-                        Object.keys(
-                          Object.values(
-                            (
-                              data as {
-                                programs: Record<string, { modules: Record<string, string> }>;
-                              }
-                            ).programs,
-                          )[0]?.modules ?? {},
-                        ).map((path) => [
+                        Object.keys(data.graph.modules).map((path) => [
                           path,
                           posix.relative(posix.dirname(chunk.fileName), path),
                         ]),
@@ -970,12 +1003,12 @@ export function pluginProgramsBuild(
               ...chunk.dynamicImports,
               ...Object.keys(chunk.modules),
             ]) {
-              assertPlayerModule(id, chunk.fileName);
+              assertPlayerModule(id, chunk.fileName, options.desktopAdapter);
             }
           }
           return {
             path: chunk.fileName,
-            digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+            digest: `sha256:${sha256(bytes)}`,
           };
         });
         const inputs = await Promise.all(
@@ -991,7 +1024,7 @@ export function pluginProgramsBuild(
               const bytes = await readFile(id);
               return {
                 path: relative(options.projectRoot, id).replaceAll('\\', '/'),
-                digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+                digest: `sha256:${sha256(bytes)}`,
               };
             }),
         );
@@ -999,9 +1032,7 @@ export function pluginProgramsBuild(
           try {
             inputs.push({
               path,
-              digest: `sha256:${createHash('sha256')
-                .update(await readFile(`${options.projectRoot}/${path}`))
-                .digest('hex')}`,
+              digest: `sha256:${sha256(await readFile(`${options.projectRoot}/${path}`))}`,
             });
           } catch (cause) {
             if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;

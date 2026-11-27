@@ -4,12 +4,22 @@ import {
   type MipmapShaderModuleFactory,
 } from '@forgeax/engine-assets-runtime';
 import { halfFloat } from '@forgeax/engine-math';
-import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
+import { RenderGraphBuilder, renderGraphCompileCount } from '@forgeax/engine-render-graph';
 import type { RhiDevice, Texture } from '@forgeax/engine-rhi';
 import { mipDimension, numMipLevels } from '@forgeax/engine-types';
 import { assert, expect, vi } from 'vitest';
-import { addPlanarMipPasses } from '../record/planar-mip-passes';
+import { addGraphColorMipPasses } from '../graph-color-mips';
+import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
+import { NativeTargetCapture } from '../record/native-target-capture';
+import type { _InternalRenderPipelineContext } from '../record/render-context';
+import { CaptureScenePasses } from '../record/scene-pass-work';
 import type { RenderPipelineFrame } from '../render-pipeline';
+import type { RenderTarget } from '../targets/contracts';
+import {
+  createRenderTargetPhysical,
+  destroyRenderTargetPhysical,
+  type RenderTargetPhysical,
+} from '../targets/physical';
 
 function checkerboardMipInput(
   width: number,
@@ -68,7 +78,11 @@ export async function verifyPlanarMipChain(
     return { width: w, height: h, stride: Math.ceil((w * bytesPerPixel) / 256) * 256 };
   });
   const blockSize = layout.reduce((n, row) => n + row.stride * row.height, 0);
-  const readback = device.createBuffer({ size: blockSize * 2, usage: 9 }).unwrap();
+  const nativeMips = device.caps.backendKind !== 'wgpu-webgl2';
+  let target: RenderTargetPhysical | undefined;
+  const readback = device
+    .createBuffer({ size: blockSize * (nativeMips ? 3 : 2), usage: 9 })
+    .unwrap();
   try {
     for (const backendKind of ['wgpu-webgl2', device.caps.backendKind] as const) {
       const physical = device
@@ -93,7 +107,7 @@ export async function verifyPlanarMipChain(
           () => physical,
         )
         .unwrap();
-      addPlanarMipPasses(
+      addGraphColorMipPasses(
         builder,
         'mirror',
         texture,
@@ -106,9 +120,35 @@ export async function verifyPlanarMipChain(
       ).unwrap();
       graphs.push(builder.compile({ device, surfaceSize: { width, height } }).unwrap());
     }
+    let native: NativeTargetCapture | undefined;
+    if (nativeMips) {
+      const allocated = createRenderTargetPhysical(device, descriptor, 1);
+      assert(allocated.ok);
+      target = allocated.value;
+      const camera = makeZeroCameraFallbackSnapshot();
+      const handle = {} as RenderTarget;
+      const write = {
+        target: handle,
+        clearColor: false,
+        clearDepth: true,
+        clearStencil: true,
+        clearOnly: true,
+      };
+      // Preserve the authored checkerboard and fill its resident mip chain.
+      native = new NativeTargetCapture(
+        { physical: target, target: handle, faceCamera: camera, layer: 0, write },
+        target,
+        levels,
+        undefined,
+        { directional: 'disabled', pointCount: 0, pointFaceSize: 1, spotCount: 0, spotMapSize: 1 },
+        undefined,
+        new CaptureScenePasses(camera),
+      );
+    }
+    const written = target === undefined ? textures : [...textures, target.texture];
     for (let update = 0; update < 2; update++) {
       const data = checkerboardMipInput(width, height, format, bytesPerPixel, update);
-      for (const texture of textures)
+      for (const texture of written)
         device.queue
           .writeTexture(
             { texture },
@@ -127,8 +167,17 @@ export async function verifyPlanarMipChain(
         );
         device.queue.submit([encoder.finish().unwrap()]).unwrap();
       }
+      if (native !== undefined) {
+        const encoder = device.createCommandEncoder().unwrap();
+        const copies = vi.spyOn(encoder, 'copyTextureToTexture');
+        const before = renderGraphCompileCount();
+        native.encode({ encoder } as _InternalRenderPipelineContext, undefined);
+        expect(renderGraphCompileCount()).toBe(before);
+        expect(copies).not.toHaveBeenCalled();
+        device.queue.submit([encoder.finish().unwrap()]).unwrap();
+      }
       const encoder = device.createCommandEncoder().unwrap();
-      for (const [index, texture] of textures.entries()) {
+      for (const [index, texture] of written.entries()) {
         let offset = index * blockSize;
         for (const [mipLevel, row] of layout.entries()) {
           encoder.copyTextureToBuffer(
@@ -146,9 +195,11 @@ export async function verifyPlanarMipChain(
       for (const row of layout) {
         for (let y = 0; y < row.height; y++) {
           const start = offset + y * row.stride;
-          expect(
-            bytes.slice(blockSize + start, blockSize + start + row.width * bytesPerPixel),
-          ).toEqual(bytes.slice(start, start + row.width * bytesPerPixel));
+          const expected = bytes.slice(start, start + row.width * bytesPerPixel);
+          for (let lane = 1; lane < written.length; lane++) {
+            const offset = blockSize * lane + start;
+            expect(bytes.slice(offset, offset + expected.length)).toEqual(expected);
+          }
         }
         offset += row.stride * row.height;
       }
@@ -168,6 +219,7 @@ export async function verifyPlanarMipChain(
     }
   } finally {
     for (const graph of graphs) (await graph.retire()).unwrap();
+    if (target !== undefined) expect(destroyRenderTargetPhysical(target).ok).toBe(true);
     for (const texture of textures) device.destroyTexture(texture).unwrap();
     device.destroyBuffer(readback).unwrap();
   }

@@ -71,7 +71,7 @@ describe('game-default guided mission gate', () => {
   });
 
   it('gives the imported font a visible presentation and keeps legacy as reset baseline', () => {
-    const legacy = worldScoreFontPresentation('legacy-pack');
+    const legacy = worldScoreFontPresentation('baked-pack');
     const ttf = worldScoreFontPresentation('ttf-plugin');
     expect(legacy).toEqual({ fontSize: 0.024, color: [1, 0.8, 0.2, 1] });
     expect(ttf.fontSize).toBeGreaterThan(legacy.fontSize);

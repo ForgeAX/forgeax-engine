@@ -131,17 +131,10 @@ export {
   projectCloudShadowUv,
 } from './cloud/lighting/shadow.js';
 export {
-  AMBIENT_OCCLUSION_ALGORITHMS,
-  AMBIENT_OCCLUSION_APPLICATIONS,
-  AMBIENT_OCCLUSION_GTAO,
-  AMBIENT_OCCLUSION_LIGHTING,
-  AMBIENT_OCCLUSION_QUALITIES,
+  AMBIENT_OCCLUSION_INHERIT,
   AMBIENT_OCCLUSION_QUALITY_HIGH,
   AMBIENT_OCCLUSION_QUALITY_LOW,
   AMBIENT_OCCLUSION_QUALITY_MEDIUM,
-  AMBIENT_OCCLUSION_SCENE_COLOR,
-  AMBIENT_OCCLUSION_SPIRAL_SSAO,
-  AMBIENT_OCCLUSION_SSAO,
   AmbientOcclusion,
   type AmbientOcclusionData,
   ambientOcclusionParameters,
@@ -174,6 +167,10 @@ export {
   ANTIALIAS_TSR,
   BLOOM_DISABLED,
   BLOOM_ENABLED,
+  BLOOM_QUALITY_HIGH,
+  BLOOM_QUALITY_LOW,
+  BLOOM_QUALITY_MEDIUM,
+  type BloomQuality,
   CAMERA_BLOOM_INTENSITY_MAX,
   CAMERA_BLOOM_INTENSITY_MIN,
   CAMERA_BLOOM_RADIUS_MAX,
@@ -183,6 +180,7 @@ export {
   CAMERA_BLOOM_THRESHOLD_MAX,
   CAMERA_BLOOM_THRESHOLD_MIN,
   CAMERA_EXPOSURE_MODE_AUTO,
+  CAMERA_EXPOSURE_MODE_AUTO_UE,
   CAMERA_EXPOSURE_MODE_MANUAL,
   CAMERA_PROJECTION_ORTHOGRAPHIC,
   CAMERA_PROJECTION_PERSPECTIVE,
@@ -192,6 +190,7 @@ export {
   CAMERA_TINT_MIN,
   Camera,
   CameraError,
+  cameraExposureColumns,
   cameraExposureFromColumns,
   cameraProjectionFromF32,
   orthographic,
@@ -274,6 +273,7 @@ export {
   lineCapFromU32,
   lineWidthUnitsFromU32,
 } from './components/lines.js';
+export { MeshDrawParameters } from './components/mesh-draw-parameters';
 export * from './components/mesh-filter.js';
 export * from './components/mesh-renderer.js';
 export { MotionBlur } from './components/motion-blur.js';
@@ -316,8 +316,6 @@ export { SceneInstance } from './components/scene-instance.js';
 export {
   ScreenSpaceReflection,
   type ScreenSpaceReflectionData,
-  type WaterSsrTemporal,
-  WaterSsrTemporalValue,
 } from './components/screen-space-reflection';
 export { ShadowParticipation } from './components/shadow-participation.js';
 export {
@@ -552,6 +550,7 @@ export type {
   RenderFeatureWorkPlan,
   RenderFeatureWorkScope,
 } from './features/plan.js';
+export type { RenderFeatureGpuProgramDescriptor } from './features/prepared-gpu-work.js';
 export type { RenderFeatureTemporalStage } from './features/temporal-stage';
 export {
   isRenderFeatureTextureReference,
@@ -764,6 +763,8 @@ export type { PointsLinesInspection } from './points-lines/inspection.js';
 export {
   type PreparedPublishedMeshResidency,
   type PublishedMeshPreparation,
+  type PublishedMeshPreparationOptions,
+  type PublishedMeshTransferReservation,
   type PublishedRenderFrameInput,
   type RenderPublication,
   RenderPublicationError,
@@ -775,6 +776,7 @@ export {
   type RenderPublicationSide,
   renderPublicationAssetTransfers,
   renderPublicationBytes,
+  renderPublicationSendTransfers,
   renderPublicationTransfers,
 } from './publication/record';
 export { RenderPublicationTargetOwner, type RenderTargetAuthoring } from './publication/targets';
@@ -936,6 +938,8 @@ export {
   SHADOW_ATLAS_DEFAULT_LAYERS,
   ShadowAtlas,
 } from './shadow-atlas.js';
+export type { AmbientOcclusionSettings } from './ssao-config.js';
+export { migrateSavedAmbientOcclusion } from './ssao-config.js';
 export type {
   SsrAdmissionBudget,
   SsrAdmissionFailure,
@@ -1092,6 +1096,7 @@ export {
   type SingleLayerMediumCoefficients,
   type SingleLayerMediumOptics,
 } from './transmission/single-layer-medium.js';
+export type { ViewportHitRequest, ViewportHitResult } from './viewport-hit';
 export {
   hasVolumetricFogCapability,
   type IntegratedVolumeResource,

@@ -2,10 +2,10 @@ import { type AssetRevisionGuard, runtimeAssets } from '@forgeax/engine-assets-r
 import { Entity, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { readComponentMutationEpoch } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
+import { meshAttributeWindow } from '@forgeax/engine-geometry';
 import { GlobalTransform, readPresentationWorldMatrix } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import type { AssetHandle, MeshAsset, SkeletonAsset } from '@forgeax/engine-types';
-import { skinGeometryEnvelopes } from '../scene/skin-geometry';
 import { skeletonDefinitionValid } from '../scene/skin-inputs';
 import type { SkinBindingInput } from '../scene/skin-scene-inputs';
 
@@ -33,7 +33,12 @@ export function readCandidateSkinBinding(
     if (joint === undefined) return false;
     joints.push(joint);
   }
-  const binding = { skeleton, joints: Object.freeze(joints) };
+  const affinePoint = reader.getFieldValue(owner, Skin, 'affinePoint');
+  const binding = {
+    skeleton,
+    joints: Object.freeze(joints),
+    ...(affinePoint ? { affinePoint: true } : {}),
+  };
   return candidateSkinBindingValid(world, entity, mesh, binding) ? binding : false;
 }
 
@@ -59,8 +64,16 @@ export function candidateSkinBindingValid(
     skeleton.value.jointCount !== binding.joints.length
   )
     return false;
-  const envelopes = skinGeometryEnvelopes(mesh);
-  if (envelopes === undefined || (envelopes[2] as number) > binding.joints.length) return false;
+  // Admission only needs valid joint addresses. Missing culling envelopes
+  // (such as for signed or zero weights) leave the draw uncullable.
+  const indices = meshAttributeWindow(mesh, 'skinIndex');
+  const weights = meshAttributeWindow(mesh, 'skinWeight');
+  if (!indices || !weights || indices.count !== weights.count) return false;
+  for (let vertex = 0; vertex < indices.count; vertex++) {
+    const base = indices.offset + vertex * indices.stride;
+    for (let lane = 0; lane < 4; lane++)
+      if ((indices.data[base + lane] as number) >= binding.joints.length) return false;
+  }
   for (const joint of binding.joints) {
     const matrix = readPresentationWorldMatrix(world, joint as EntityHandle);
     if (matrix === undefined) return false;
@@ -74,7 +87,8 @@ function sameBinding(world: World, entity: number, binding: SkinBindingInput): b
     owner = entity as EntityHandle;
   if (
     reader.getFieldValue(owner, Skin, 'skeleton') !== binding.skeleton ||
-    reader.getArrayLength(owner, Skin, 'joints') !== binding.joints.length
+    reader.getArrayLength(owner, Skin, 'joints') !== binding.joints.length ||
+    Boolean(reader.getFieldValue(owner, Skin, 'affinePoint')) !== Boolean(binding.affinePoint)
   )
     return false;
   for (let index = 0; index < binding.joints.length; index++) {

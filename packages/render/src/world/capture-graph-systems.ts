@@ -1,9 +1,6 @@
 import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { markDerivedComponentChanged } from '@forgeax/engine-ecs/projection';
-import {
-  compiledRenderGraphPassDeclarations,
-  type RenderGraphPassExecution,
-} from '@forgeax/engine-render-graph';
+import type { RenderGraphPassExecution } from '@forgeax/engine-render-graph';
 import { err } from '@forgeax/engine-rhi';
 import {
   type CaptureGraphBatch,
@@ -13,6 +10,7 @@ import {
   compileCaptureGraphBatch,
   retireCaptureGraphBatch,
 } from '../record/frame-capture';
+import { captureRecordingPasses, NativeCaptureRecording } from '../record/native-target-capture';
 import type { RenderSystemInternals } from '../record/render-context';
 import {
   RenderCaptureGraphCompileOrder,
@@ -35,7 +33,7 @@ import { ViewRecorder, viewCameraOf } from './render-views';
 import { RenderCleanup, RenderRecord, renderSubmission, renderWorldFor } from './render-world';
 import { ViewStandardLighting, viewStandardLightingOf } from './standard-lighting-systems';
 import { retireAfterSubmission } from './submission-systems';
-import { requireViewField } from './view-field';
+import { readViewState, requireViewField } from './view-field';
 import { recordContext } from './view-record-context';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
 import { ViewTopologyInputs, viewTopologyOf } from './view-topology-systems';
@@ -108,14 +106,14 @@ function capturePassManifest(
     previous !== undefined && sameCapturePassProducer(previous.producer, producer);
   const compareCapturePassVocabulary = (outcome: Extract<CaptureGraphOutcome, { ok: true }>) => {
     for (const capture of outcome.value.cube)
-      for (const pass of compiledRenderGraphPassDeclarations(capture.graph)) {
+      for (const pass of captureRecordingPasses(capture.recording)) {
         if (pass.kind === 'subgraph') continue;
         const old = previous?.passes[count];
         if (old?.name !== pass.name || old.kind !== pass.kind) sameVocabulary = false;
         count += 1;
       }
     for (const capture of outcome.value.probes)
-      for (const pass of compiledRenderGraphPassDeclarations(capture.graph)) {
+      for (const pass of captureRecordingPasses(capture.recording)) {
         if (pass.kind === 'subgraph') continue;
         const old = previous?.passes[count];
         if (old?.name !== pass.name || old.kind !== pass.kind) sameVocabulary = false;
@@ -127,11 +125,11 @@ function capturePassManifest(
   if (sameVocabulary && previous?.passes.length === count) return previous;
   const declarations: Pick<RenderGraphPassExecution, 'name' | 'kind'>[] = [];
   for (const capture of outcome.value.cube)
-    for (const pass of compiledRenderGraphPassDeclarations(capture.graph))
+    for (const pass of captureRecordingPasses(capture.recording))
       if (pass.kind !== 'subgraph')
         declarations.push(Object.freeze({ name: pass.name, kind: pass.kind }));
   for (const capture of outcome.value.probes)
-    for (const pass of compiledRenderGraphPassDeclarations(capture.graph))
+    for (const pass of captureRecordingPasses(capture.recording))
       if (pass.kind !== 'subgraph')
         declarations.push(Object.freeze({ name: pass.name, kind: pass.kind }));
   return Object.freeze({
@@ -146,12 +144,8 @@ export const ViewCaptureGraphs = defineComponent('ViewCaptureGraphs', {
 });
 
 function stateOf(world: World, entity: EntityHandle | undefined): CaptureGraphsState | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewCaptureGraphs)) return undefined;
-  const state = world
-    .resolveUniqueRef<CaptureGraphsState>(
-      requireViewField(world, entity, ViewCaptureGraphs, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<CaptureGraphsState>(world, entity, ViewCaptureGraphs);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state : undefined;
 }
 
@@ -228,12 +222,8 @@ export function captureGraphPassPhaseManifest(
   if (root.profiler === undefined) return undefined;
   const world = renderWorldFor(internals);
   const entity = internals.viewEntity;
-  if (entity === undefined || !world.hasComponent(entity, ViewCaptureGraphs)) return undefined;
-  const state = world
-    .resolveUniqueRef<CaptureGraphsState>(
-      requireViewField(world, entity, ViewCaptureGraphs, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<CaptureGraphsState>(world, entity, ViewCaptureGraphs);
+  if (state === undefined) return undefined;
   const manifest = state.phaseManifest;
   if (manifest === undefined) return undefined;
   return sameCapturePassProducer(manifest.producer, capturePassProducer(internals, cameraEntityKey))
@@ -306,10 +296,10 @@ function stageFaceFeatureReceipts(
   const submission = renderSubmission(world);
   for (const frame of batch.planar === undefined ? batch.cube : [...batch.cube, batch.planar]) {
     const feature = frame.work.feature;
-    if (feature === undefined) continue;
+    if (feature === undefined || frame.recording instanceof NativeCaptureRecording) continue;
     stageRecordedFeatureGraph(world, {
       kind: 'compiled',
-      graph: frame.graph,
+      graph: frame.recording,
       frame: submission.frame,
       generation: submission.generation,
       view: entity,

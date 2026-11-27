@@ -1,7 +1,8 @@
 import { RAY_QUERY_FEATURE } from '@forgeax/engine-rhi';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { NativeBinding } from '../binding';
-import { NativeGPU } from '../gpu';
+import type { NativeBinding, NativeDevice } from '../binding';
+import { NativeGPU, NativeGPUDevice } from '../gpu';
+import { NativeGPUTexture } from '../objects';
 
 const ADDON_ENV = 'FORGEAX_RHI_WGPU_NATIVE_ADDON';
 
@@ -101,4 +102,31 @@ describe('NativeGPU objects in descriptor snapshots', () => {
     };
     walk(event);
   });
+});
+
+it('retires native views with their presented texture even while JavaScript retains them', () => {
+  let nextViewId = 2;
+  const release = vi.fn();
+  const native = {
+    features: () => [],
+    limits: () => '{}',
+    createView: () => nextViewId++,
+    textureDestroy: vi.fn(),
+    drainErrors: () => '[]',
+    lostInfo: () => null,
+    release,
+  } as unknown as NativeDevice;
+  const device = new NativeGPUDevice(native, {} as GPUAdapterInfo, undefined);
+  const texture = new NativeGPUTexture(
+    device,
+    { size: [1, 1], format: 'bgra8unorm', usage: 0x10 },
+    1,
+  );
+  const views = [texture.createView(), texture.createView({ label: 'second view' })];
+
+  expect(release).not.toHaveBeenCalled();
+  texture.expire();
+  texture.expire();
+  expect(release.mock.calls).toEqual([...views.map((view) => [view.nativeId]), [texture.nativeId]]);
+  expect(() => texture.createView()).toThrow(/expired/);
 });

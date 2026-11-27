@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { defineSystem, FixedTime, FixedUpdate, Time, Update, World } from '@forgeax/engine-ecs';
+import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
 import {
   buildMeshCardLayout,
   buildVisibilityDistanceField,
@@ -47,6 +48,7 @@ import {
 } from '../../components';
 import type { RenderFeature } from '../../features/types';
 import { Materials } from '../../materials';
+import { extractSource } from '../../render-system-extract-tail';
 import { PersistentRenderScene } from '../../scene/render-scene';
 import { subsurfaceDemand } from '../../subsurface/demand';
 import type { RenderPublication } from '../contract';
@@ -137,6 +139,62 @@ function fixture(
     publish,
   };
 }
+
+it.each([
+  'publication',
+  'release',
+] as const)('checks fixed Level assets once per publication and invalidates on %s', (invalidation) => {
+  const f = fixture();
+  const { packet, resources } = f.publish();
+  const asset = packet.assets.find(({ handle }) => handle === f.cube);
+  if (asset === undefined) throw new Error('Missing published fixture mesh');
+  const hold = f.receiver.retainClosedLevelAsset(f.publisher.identity, asset).unwrap();
+  const revisions = vi.spyOn(resources, 'assetRevision');
+  try {
+    const task = f.scene.shared.beginPublishedStagedGroup(
+      {
+        members: [],
+        chunks: [],
+        content: {
+          handles: [f.cube],
+          matchesCurrent: hold.isCurrent,
+          version: () => ok(asset.revision),
+          read: () => {
+            throw new Error('A collider-only source needs no mesh payload reads');
+          },
+        },
+        isCurrent: () => true,
+      },
+      (handle) => f.receiver.referencesAcceptedAsset(handle),
+    );
+    expect(task.step().unwrap().phase).toBe('resident-input');
+    revisions.mockClear();
+    expect(task.isCurrent()).toBe(true);
+    expect(task.isCurrent()).toBe(true);
+    expect(revisions).not.toHaveBeenCalled();
+
+    f.publish();
+    revisions.mockClear();
+    expect(task.isCurrent()).toBe(true);
+    expect(task.isCurrent()).toBe(true);
+    expect(revisions).toHaveBeenCalledTimes(1);
+
+    if (invalidation === 'release') hold.release();
+    else {
+      f.assets.replace(f.cube, BUILTIN_QUAD).unwrap();
+      f.publish();
+    }
+    expect(hold.isCurrent()).toBe(false);
+    expect(task.isCurrent()).toBe(false);
+  } finally {
+    revisions.mockRestore();
+    hold.release();
+    f.scene.dispose();
+    f.receiver.dispose();
+    f.publisher.dispose();
+    f.assets.dispose();
+  }
+});
 
 describe('native render publication', () => {
   it('transfers ordinary lens offsets without retaining author storage', () => {
@@ -1652,6 +1710,8 @@ it('publishes detached view configuration and seeds a late view from the current
 
 it('publishes the same interpolated root, camera and animated skin across half-fixed frames', () => {
   const f = fixture();
+  const direct = new PersistentRenderScene({ assets: f.assets });
+  const lease = createRenderReadLease(f.world);
   const identity = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
   const skinMaterial = f.assets
     .create({
@@ -1725,10 +1785,24 @@ it('publishes the same interpolated root, camera and animated skin across half-f
     let previous: number | undefined;
     for (let frame = 0; frame < 12; frame += 1) {
       f.world.update(1 / 120).unwrap();
+      const local = direct.extractComposition(
+        f.world,
+        f.assets,
+        (renderables) =>
+          extractSource(f.world, f.assets, direct.materialSnapshotCacheStore(), {
+            cull: 'none',
+            retainHidden: true,
+            renderables,
+          }),
+        lease,
+      );
       const published = f.publish();
       const root = published.frame.renderables.find((row) => row.entityKey === f.first);
       const expected = f.world.getResource(Time).elapsed * 60 - 1;
       expect(root?.transform.world[12]).toBeCloseTo(expected, 5);
+      expect(
+        local.renderables.find((row) => row.entityKey === f.first)?.transform.world[12],
+      ).toBeCloseTo(expected, 5);
       const jointIndex = published.packet.transformEntities.indexOf(Number(joint));
       expect(jointIndex).toBeGreaterThanOrEqual(0);
       expect(published.packet.transforms[jointIndex * 16 + 12]).toBeCloseTo(
@@ -1742,6 +1816,8 @@ it('publishes the same interpolated root, camera and animated skin across half-f
       previous = root?.transform.world[12];
     }
   } finally {
+    lease.dispose();
+    direct.dispose();
     f.publisher.dispose();
   }
 });

@@ -89,7 +89,7 @@ function expectDraws(recorded: ReturnType<typeof recorder>, rows: readonly GpuDr
       expect(draw?.material).toBe(row.materialGroup);
       expect(draw?.mesh).toBe(row.meshBindGroup);
       expect(draw?.visible).toBe(visible);
-      expect(draw?.meshOffsets).toEqual(row.deformation === 'skin' ? [0, 768] : [0]);
+      expect(draw?.meshOffsets).toEqual(row.deformation === 'skin' ? [768] : []);
     }
   }
   expect(recorded.draws).toHaveLength(cursor);
@@ -235,13 +235,13 @@ describe('GPU shadow indirect binding state', () => {
     // transitions still require each of these exact, ordered setter calls.
     const expectedBindings = [
       [1, first.materialGroup, [0]],
-      [2, first.meshBindGroup, [0]],
+      [2, first.meshBindGroup, []],
       [3, first.visibleBindGroups[0], undefined],
       [1, second.materialGroup, [0]],
-      [2, second.meshBindGroup, [0]],
-      [2, skin.meshBindGroup, [0, 768]],
+      [2, second.meshBindGroup, []],
+      [2, skin.meshBindGroup, [768]],
       [1, first.materialGroup, [0]],
-      [2, first.meshBindGroup, [0]],
+      [2, first.meshBindGroup, []],
     ] as const;
     expect(recorded.bind.mock.calls).toHaveLength(expectedBindings.length);
     for (const [index, expected] of expectedBindings.entries()) {
@@ -253,7 +253,7 @@ describe('GPU shadow indirect binding state', () => {
   });
 });
 
-async function preparedFixture() {
+async function preparedFixture(retainIndirectBundles = false) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const buffer = device.createBuffer({ size: 4096, usage: 0xa8 }).unwrap();
   const replacement = device.createBuffer({ size: 4096, usage: 0xa8 }).unwrap();
@@ -280,6 +280,7 @@ async function preparedFixture() {
   return {
     ...preparedShadowFixture({
       device,
+      retainIndirectBundles,
       buffer,
       layout,
       shared,
@@ -297,7 +298,7 @@ async function preparedFixture() {
 }
 
 it('retains native commands per projected batch through membership and local resource edits', async () => {
-  const fixture = await preparedFixture();
+  const fixture = await preparedFixture(true);
   const recorded = recorder();
   const record = vi.spyOn(fixture.shadowView, 'recordShadow');
   try {
@@ -329,7 +330,7 @@ it('retains native commands per projected batch through membership and local res
 });
 
 it('records the same directional indirect draws without bundles on devices with the WebGPU limitation', async () => {
-  const fixture = await preparedFixture();
+  const fixture = await preparedFixture(true);
   try {
     const bundled = recorder();
     encodeDirectionalShadowPass(fixture.context, bundled.pass, 0);
@@ -561,7 +562,7 @@ it('accepts a proved empty partial update before composing the retained static l
 });
 
 it('counts actual prepared shadow bundle commands on every successful execution, including cache hits', async () => {
-  const fixture = await preparedFixture();
+  const fixture = await preparedFixture(true);
   const target = recorder();
   const ledger = new ShadowRasterLedger();
   try {

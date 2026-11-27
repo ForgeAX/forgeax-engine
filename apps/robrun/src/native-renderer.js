@@ -113,7 +113,11 @@ export async function createNativeRenderer(quality, debug) {
       ...(profiler ? { profiler } : {}),
       ...(diagnostics.has('gpu-timing') ? { gpuPassTiming: {} } : {}),
       ...(diagnostics.has('ablation') ? { renderAblation: diagnostics.get('ablation') } : {}),
-      standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: false },
+      standardProfile: {
+        ...DEFAULT_STANDARD_PROFILE,
+        renderPath: 'forward',
+        ambientOcclusion: { enabled: false },
+      },
     },
     bundler,
   );

@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { fontContribution } from '@forgeax/engine-font';
 import { tilesetContribution, videoContribution } from '@forgeax/engine-graphics-extras';
 import { textureContribution } from '@forgeax/engine-image';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { samplerContribution } from '@forgeax/engine-render';
 import {
   type CatalogDelta,
@@ -13,6 +12,7 @@ import {
 } from '@forgeax/engine-types';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
+import { catalogPack } from './fixtures/catalog-pack';
 
 const ROOT = '11111111-1111-4111-8111-111111111111';
 const ATLAS = '22222222-2222-4222-8222-222222222222';
@@ -58,58 +58,58 @@ function fixture(kind: 'tileset' | 'font' | 'video') {
       body === undefined
         ? undefined
         : new TextEncoder().encode(typeof body === 'string' ? body : JSON.stringify(body));
-    const publication = createRuntimePackPublication({
-      scopeId: 'graphics-source',
-      sourcePath: 'graphics.pack',
-      sourceRevision: String(revision),
-      packageUrl,
-      pack: {
-        assets: [
-          {
-            guid: ROOT,
-            kind,
-            payload,
-            refs,
-            artifacts:
-              bytes === undefined
-                ? {}
-                : {
-                    body: {
-                      path: 'body.json',
-                      mediaType: 'application/json',
-                      contentEncoding: 'identity',
-                      byteLength: bytes.length,
-                      integrity: {
-                        algorithm: 'sha256',
-                        digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-                      },
+    const publication = catalogPack(
+      [
+        {
+          guid: ROOT,
+          kind,
+          payload,
+          refs,
+          artifacts:
+            bytes === undefined
+              ? {}
+              : {
+                  body: {
+                    path: 'body.json',
+                    mediaType: 'application/json',
+                    contentEncoding: 'identity',
+                    byteLength: bytes.length,
+                    integrity: {
+                      algorithm: 'sha256',
+                      digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
                     },
                   },
-          },
-          {
-            guid: ATLAS,
+                },
+        },
+        {
+          guid: ATLAS,
+          kind: 'texture',
+          refs: [],
+          artifacts: {},
+          payload: {
             kind: 'texture',
-            refs: [],
-            artifacts: {},
-            payload: {
-              kind: 'texture',
-              shape: { viewDimension: '2d', extent: { width: 2, height: 1 } },
-              format: 'rgba8unorm',
-              colorSpace: 'linear',
-              mips: { kind: 'none' },
-              data: [255, 0, 0, 255, 0, 255, 0, 255],
-            },
+            shape: { viewDimension: '2d', extent: { width: 2, height: 1 } },
+            format: 'rgba8unorm',
+            colorSpace: 'linear',
+            mips: { kind: 'none' },
+            data: [255, 0, 0, 255, 0, 255, 0, 255],
           },
-          {
-            guid: SAMPLER,
-            kind: 'sampler',
-            refs: [],
-            artifacts: {},
-            payload: { kind: 'sampler', magFilter: 'nearest', minFilter: 'nearest' },
-          },
-        ],
+        },
+        {
+          guid: SAMPLER,
+          kind: 'sampler',
+          refs: [],
+          artifacts: {},
+          payload: { kind: 'sampler', magFilter: 'nearest', minFilter: 'nearest' },
+        },
+      ],
+      {
+        scopeId: 'graphics-source',
+        sourcePath: 'graphics.pack',
+        sourceRevision: String(revision),
+        packageUrl,
       },
-    });
+    );
     packages.set(packageUrl, JSON.stringify(publication.pack));
     if (bytes !== undefined) packages.set(new URL('body.json', packageUrl).href, bytes);
     const previous = new Set(rows.map((row) => row.guid));

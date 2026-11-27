@@ -1,4 +1,4 @@
-import { selectBrowserExecutable } from './browser-executable.mjs';
+import { browserGpuLaunchOptions, selectBrowserExecutable } from './browser-executable.mjs';
 
 /** Test placement only; runtime capabilities remain owned by the device. */
 export function compatibilityPhases(carrier) {
@@ -11,22 +11,30 @@ export function compatibilityPhases(carrier) {
       : ['owners'];
 }
 
-/** Keep software Vulkan admission, but retain browser limit and driver policy. */
-export function compatibilityLaunch(defaults, phase, env = process.env) {
+/** Preserve the carrier defaults and the scene's explicit local GPU selection. */
+export function compatibilityLaunch(
+  defaults,
+  phase,
+  env = process.env,
+  platform = process.platform,
+) {
   if (!['owners', 'policy', 'compatibility', 'scene'].includes(phase))
     throw new Error(`Unknown compatibility phase: ${phase}`);
-  const selected = selectBrowserExecutable(defaults, env);
-  if (phase === 'owners') return selected;
-  return {
-    ...selected,
+  if (phase === 'owners') return selectBrowserExecutable(defaults, env);
+  const nativeScene = phase === 'scene' && env.FORGEAX_BROWSER_GPU === 'native';
+  const launch = {
+    ...defaults,
     chromiumSandbox: true,
     args: [
       '--enable-unsafe-webgpu',
-      '--enable-features=Vulkan',
-      '--use-vulkan=swiftshader',
-      '--use-angle=swiftshader',
-      ...(phase === 'scene' ? selected.args.filter((arg) => arg === '--disable-gpu-watchdog') : []),
+      ...(nativeScene
+        ? []
+        : ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']),
+      ...(phase === 'scene' ? defaults.args.filter((arg) => arg === '--disable-gpu-watchdog') : []),
       '--autoplay-policy=no-user-gesture-required',
     ],
   };
+  return nativeScene
+    ? browserGpuLaunchOptions(launch, env, platform)
+    : selectBrowserExecutable(launch, env);
 }

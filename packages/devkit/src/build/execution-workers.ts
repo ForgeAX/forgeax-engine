@@ -8,9 +8,47 @@ import { moduleResolve } from 'import-meta-resolve';
 import MagicString from 'magic-string';
 import ts from 'typescript';
 import { normalizePath, type Plugin, type Rollup, searchForWorkspaceRoot } from 'vite';
-import { moduleSpecifierEdits } from './module-specifiers.js';
+import { literalMarkerSpans, moduleSpecifierEdits } from './module-specifiers.js';
 import { moduleUrlResources } from './module-url-resources.js';
 import { PACK_PROGRAM_ENGINE_IMPORTS, runtimeProgramIdentity } from './pack-program-imports.js';
+
+function emitRuntimeEntry(
+  context: Pick<Rollup.PluginContext, 'emitFile'>,
+  id: string,
+  name: string,
+) {
+  const reference = context.emitFile({ type: 'chunk', id, name, preserveSignature: 'strict' });
+  return `import.meta.ROLLUP_FILE_URL_${reference}`;
+}
+
+/** Link the URL-loaded bootstrap into the same content-addressed module graph as the page. */
+export function executionBootstrapEntry(generatedRoot: string): Plugin {
+  const host = normalizePath(resolve(generatedRoot, 'main.ts'));
+  const bootstrap = resolve(generatedRoot, 'execution-bootstrap.ts');
+  return {
+    name: 'forgeax:execution-bootstrap-entry',
+    apply: 'build',
+    enforce: 'pre',
+    transform(code, id) {
+      if (normalizePath(id.split('?')[0] ?? id) !== host) return null;
+      const pattern =
+        /new URL\(\s*(['"])\.\/execution-bootstrap\.ts\1\s*,\s*import\.meta\.url\s*,?\s*\)/g;
+      const matches = [...code.matchAll(pattern)];
+      if (matches.length === 0) return null;
+      const reference = emitRuntimeEntry(this, bootstrap, 'execution-bootstrap');
+      const output = new MagicString(code);
+      for (const match of matches) {
+        if (match.index === undefined) continue;
+        output.overwrite(
+          match.index,
+          match.index + match[0].length,
+          `new URL(${reference}, import.meta.url)`,
+        );
+      }
+      return { code: output.toString(), map: output.generateMap({ hires: true }) };
+    },
+  };
+}
 
 const require = createRequire(import.meta.url);
 async function canonicalModuleId(id: string): Promise<string> {
@@ -72,6 +110,13 @@ export async function runtimeDependencyEntries(
   return [...entries.values()].filter((entry) => entry !== undefined);
 }
 
+const staticPackTaskUrlPrefix = 'virtual:forgeax/static-pack-task-url:';
+export const staticPackEntryUrlPrefix = 'forgeax-pack-task:///';
+
+export function staticPackTaskUrlSpecifier(path: string): string {
+  return `${staticPackTaskUrlPrefix}${path}`;
+}
+
 /**
  * Keep runtime entries and URL-loaded project plugins in one module graph.
  *
@@ -84,6 +129,7 @@ export function executionWorkerEntries(
   delivery: 'browser' | 'native' = 'browser',
   hostRoot?: string,
   workers: ExecutionWorkersOptions = {},
+  expectedRuntimeIdentity?: string,
 ): Plugin {
   let building = false;
   let base = '/';
@@ -97,8 +143,13 @@ export function executionWorkerEntries(
   ): Promise<string> => {
     if (!engineManifest || engineManifest.external)
       throw new Error('Engine manifest unavailable from the Vite host');
-    runtimeIdentity = await runtimeProgramIdentity(engineManifest.id);
-    return runtimeIdentity;
+    const selected = await runtimeProgramIdentity(engineManifest.id);
+    if (expectedRuntimeIdentity !== undefined && expectedRuntimeIdentity !== selected)
+      throw new Error(
+        'The Engine changed after Runtime Pack preparation. Finish building the Engine, then retry the project build.',
+      );
+    runtimeIdentity = selected;
+    return selected;
   };
   const externalPrefix = 'forgeax-host-import:';
   const hostPrefix = hostRoot === undefined ? undefined : `${normalizePath(resolve(hostRoot))}/`;
@@ -106,6 +157,7 @@ export function executionWorkerEntries(
     hostPrefix !== undefined && normalizePath(filename).startsWith(hostPrefix);
   const facades = new Map<string, string>();
   const facadeModules = new Set<string>();
+  const staticPackTaskReferences = new Set<string>();
   const imports = new Map<string, string>();
   const admitDevelopmentModule = (id: string): void => {
     const file = id.split('?')[0];
@@ -126,6 +178,15 @@ export function executionWorkerEntries(
     imports.set(key, selected);
     admitDevelopmentModule(selected);
     return selected;
+  };
+  const developmentModuleUrl = (id: string): string => {
+    const file = id.split('?')[0] ?? id;
+    const query = id.slice(file.length);
+    const pathname = pathToFileURL(file).pathname;
+    const url = file.startsWith(`${root}/`)
+      ? `${base}${pathname.slice(pathToFileURL(`${root}/`).pathname.length)}`
+      : `${base}@fs${pathname}`;
+    return `new URL(${JSON.stringify(`${url}${query}`)}, globalThis.location.origin).href`;
   };
   const linkedEdges = new Map<string, { imports: string[]; dynamicImports: string[] }>();
   const owners = new Map<string, Promise<string | undefined>>();
@@ -159,9 +220,10 @@ export function executionWorkerEntries(
     id: string,
   ): Promise<ExecutionWorker | undefined> => {
     const kind = source.slice(2, source.indexOf('-worker-runtime'));
-    const worker = kind === 'task' ? 'kernels' : kind;
+    // The Engine Worker owns the task pool; shared kernels are one consumer.
+    const worker = kind === 'task' ? 'engine' : kind;
     if (
-      (worker === 'engine' || worker === 'render' || worker === 'kernels') &&
+      (worker === 'engine' || worker === 'render') &&
       workers[worker] === false &&
       (await ownerName(dirname(id.split('?')[0] ?? id))) === '@forgeax/engine-app'
     )
@@ -178,7 +240,7 @@ export function executionWorkerEntries(
       allowedFiles = config.command === 'serve' ? config.server.fs.allow : undefined;
     },
     async resolveId(id, importer, options) {
-      if (id === virtual) return `\0${virtual}`;
+      if (id === virtual || id.startsWith(staticPackTaskUrlPrefix)) return `\0${id}`;
       if (delivery === 'native') return null;
       if (id.startsWith(externalPrefix)) return { id, external: true };
       if (!importer || !/^@forgeax\/engine(?:$|[/-])/.test(id)) return null;
@@ -224,6 +286,20 @@ export function executionWorkerEntries(
       };
     },
     async load(id) {
+      if (id.startsWith(`\0${staticPackTaskUrlPrefix}`)) {
+        const path = id.slice(staticPackTaskUrlPrefix.length + 1);
+        if (!building) {
+          admitDevelopmentModule(path);
+          return `export default ${developmentModuleUrl(path)};`;
+        }
+        const reference = this.emitFile({
+          type: 'chunk',
+          id: normalizePath(path),
+          preserveSignature: 'strict',
+        });
+        staticPackTaskReferences.add(reference);
+        return `export default import.meta.ROLLUP_FILE_URL_${reference};`;
+      }
       if (id !== `\0${virtual}`) return null;
       const identity =
         runtimeIdentity ||
@@ -263,15 +339,10 @@ export function executionWorkerEntries(
         ? `export default Object.freeze(${JSON.stringify(importTableMarker)});`
         : `export default { ${[...imports]
             .sort(([a], [b]) => a.localeCompare(b))
-            .map(([key, id]) => {
-              const file = id.split('?')[0] ?? id;
-              const query = id.slice(file.length);
-              const pathname = pathToFileURL(file).pathname;
-              const url = file.startsWith(`${root}/`)
-                ? `${base}${pathname.slice(pathToFileURL(`${root}/`).pathname.length)}`
-                : `${base}@fs${pathname}`;
-              return `${JSON.stringify(decodeURIComponent(key.slice(externalPrefix.length)))}: { identity: ${JSON.stringify(identity)}, url: new URL(${JSON.stringify(`${url}${query}`)}, globalThis.location.origin).href }`;
-            })
+            .map(
+              ([key, id]) =>
+                `${JSON.stringify(decodeURIComponent(key.slice(externalPrefix.length)))}: { identity: ${JSON.stringify(identity)}, url: ${developmentModuleUrl(id)} }`,
+            )
             .join(',')} };`;
       // Literal imports stay in the same native module graph as the game.
       // Embedded hosts receive these namespaces instead of bundled substitutes.
@@ -282,6 +353,13 @@ export function loadImport(specifier) {
   if (!load) throw new TypeError('Runtime program import unavailable: ' + specifier);
   return load();
 }`;
+    },
+    resolveFileUrl({ referenceId, fileName, relativePath }) {
+      if (!staticPackTaskReferences.has(referenceId)) return null;
+      // Single HTML closes this emitted entry before publishing its embedded URL.
+      return `(typeof globalThis.__forgeaxImport === 'function'
+        ? ${JSON.stringify(`${staticPackEntryUrlPrefix}${fileName}`)}
+        : new URL(${JSON.stringify(relativePath)}, import.meta.url).href)`;
     },
     renderChunk(code, chunk) {
       const output = new MagicString(code);
@@ -295,20 +373,7 @@ export function loadImport(specifier) {
             const path = posix.relative(posix.dirname(chunk.fileName), this.getFileName(reference));
             return `${JSON.stringify(specifier)}: { identity: ${JSON.stringify(runtimeIdentity)}, url: new URL(${JSON.stringify(path.startsWith('./') || path.startsWith('../') ? path : `./${path}`)}, import.meta.url).href }`;
           });
-        const file = ts.createSourceFile(
-          chunk.fileName,
-          code,
-          ts.ScriptTarget.Latest,
-          true,
-          ts.ScriptKind.JS,
-        );
-        const edits: { start: number; end: number }[] = [];
-        const visit = (node: ts.Node) => {
-          if (ts.isStringLiteralLike(node) && node.text === importTableMarker)
-            edits.push({ start: node.getStart(file), end: node.end });
-          ts.forEachChild(node, visit);
-        };
-        visit(file);
+        const edits = literalMarkerSpans(code, chunk.fileName, importTableMarker);
         for (const edit of edits) output.overwrite(edit.start, edit.end, `{ ${fields.join(',')} }`);
       }
       const edges = { imports: [] as string[], dynamicImports: [] as string[] };
@@ -504,17 +569,8 @@ export function loadImport(specifier) {
         }
         const resolved = await this.resolve(source, id, { skipSelf: true });
         if (resolved === null) this.error(`Cannot resolve execution Worker ${source} from ${id}`);
-        const reference = this.emitFile({
-          type: 'chunk',
-          id: resolved.id,
-          name: basename(source, '.mjs'),
-          preserveSignature: 'strict',
-        });
-        output.overwrite(
-          match.index,
-          match.index + match[0].length,
-          `new Worker(import.meta.ROLLUP_FILE_URL_${reference}`,
-        );
+        const reference = emitRuntimeEntry(this, resolved.id, basename(source, '.mjs'));
+        output.overwrite(match.index, match.index + match[0].length, `new Worker(${reference}`);
       }
       return { code: output.toString(), map: output.generateMap({ hires: true }) };
     },

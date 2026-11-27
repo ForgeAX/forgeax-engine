@@ -1,10 +1,16 @@
 import {
+  admitShaderTemplateManifest,
   readShaderManifestPublication,
   SHADER_MANIFEST_PUBLICATION_VERSION,
+  SHADER_PROJECT_MANIFEST_VERSION,
 } from '@forgeax/engine-shader';
+import {
+  buildEngineShaderTemplateManifest,
+  publishShaderManifest,
+} from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { waterInfoShaderFixture } from '../../../render/src/__tests__/shader-manifest-fixture';
-import { shaderManifestUrl } from './shader-manifest-url.fixture';
+import { rewriteShaderTemplateSources, shaderManifestUrl } from './shader-manifest-url.fixture';
 
 it('fetches every shader variant and binding through a verified shared-source publication', async () => {
   const common = 'fn shared() {}\n\n';
@@ -63,4 +69,30 @@ it('fetches every shader variant and binding through a verified shared-source pu
     },
   });
   expect(await (await fetch(shaderManifestUrl(manifest))).json()).toEqual(publication);
+});
+
+it('transports template and mixed publications with a republished source control', async () => {
+  const original = await buildEngineShaderTemplateManifest();
+  const authored = 'return EnvironmentScattering(single, multi, ems);';
+  const replacement = 'return EnvironmentScattering(single, vec3<f32>(0.0), ems);';
+  const control = rewriteShaderTemplateSources(original, (source) =>
+    source.replace(authored, replacement),
+  );
+  expect(control.patched).toBe(1);
+  const result = await (await fetch(shaderManifestUrl(control.manifest))).json();
+  const { wire } = admitShaderTemplateManifest(result).unwrap();
+  expect(wire.entries).toEqual(original.entries);
+  expect(wire.materialShaders).toEqual(original.materialShaders);
+  expect(Object.values(wire.library.sources).some((source) => source.includes(replacement))).toBe(
+    true,
+  );
+  expect(Object.values(wire.library.sources).some((source) => source.includes(authored))).toBe(
+    false,
+  );
+  const mixed = {
+    schemaVersion: SHADER_PROJECT_MANIFEST_VERSION,
+    templates: control.manifest,
+    cooked: publishShaderManifest([], []),
+  };
+  expect(await (await fetch(shaderManifestUrl(mixed))).json()).toEqual(mixed);
 });

@@ -12,10 +12,6 @@
       "browser": null,
       "import": "./dist/index.mjs"
     },
-    "./catalog-client": {
-      "types": "./dist/catalog-client.d.ts",
-      "import": "./dist/catalog-client.mjs"
-    },
     "./http-artifact": {
       "types": "./dist/http-artifact.d.ts",
       "browser": null,

@@ -1,7 +1,10 @@
 import { err, RhiError, type RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
-import { buildFullscreenPostProcessPass } from '../fullscreen-post-process-pass';
+import {
+  buildFullscreenPostProcessPass,
+  postProcessShaderEntrySignature,
+} from '../fullscreen-post-process-pass';
 import { SINGLE_LAYER_MEDIUM_MSAA_SURFACE_PROGRAMS } from '../pipeline/single-layer-medium-passes';
 
 it('binds the reserved empty group before fullscreen draws and preserves View bindings', async () => {
@@ -23,8 +26,7 @@ it('binds the reserved empty group before fullscreen draws and preserves View bi
   for (const source of ['output-transform', 'standard-tone']) {
     const built = buildFullscreenPostProcessPass(context, { source });
     if (built === null) throw new Error('fullscreen pass was not built');
-    const handle = built.createHandle(source, {}, null);
-    handle.draw(pass as unknown as RhiRenderPassEncoder, {} as never);
+    built.draw(pass as unknown as RhiRenderPassEncoder, {} as never);
   }
   expect(groups).toHaveBeenCalledTimes(1);
   expect(groups.mock.calls[0]?.[0].entries).toEqual([]);
@@ -36,9 +38,7 @@ it('binds the reserved empty group before fullscreen draws and preserves View bi
   );
   const view = buildFullscreenPostProcessPass(context, { source: 'view-effect', usesView: true });
   if (view === null) throw new Error('View fullscreen pass was not built');
-  view
-    .createHandle('view-effect', {}, null)
-    .draw(pass as unknown as RhiRenderPassEncoder, {} as never);
+  view.draw(pass as unknown as RhiRenderPassEncoder, {} as never);
   expect(pass.setBindGroup).toHaveBeenCalledTimes(2);
   const nextDevice = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const next = buildFullscreenPostProcessPass(
@@ -46,9 +46,7 @@ it('binds the reserved empty group before fullscreen draws and preserves View bi
     { source: 'output-transform' },
   );
   if (next === null) throw new Error('fullscreen pass was not rebuilt for the new device');
-  next
-    .createHandle('output-transform', {}, null)
-    .draw(pass as unknown as RhiRenderPassEncoder, {} as never);
+  next.draw(pass as unknown as RhiRenderPassEncoder, {} as never);
   expect(pass.setBindGroup.mock.calls[2]?.[1]).not.toBe(pass.setBindGroup.mock.calls[0]?.[1]);
 });
 
@@ -220,14 +218,26 @@ it('derives every matched-surface texture type from the registered fullscreen re
       }),
       expect.objectContaining({
         binding: 5,
-        texture: { sampleType: 'uint', viewDimension: '2d', multisampled: true },
-      }),
-      expect.objectContaining({
-        binding: 6,
         texture: { sampleType: 'unfilterable-float', viewDimension: '2d', multisampled: true },
       }),
     ]),
   );
+  expect(layouts.mock.calls.at(-1)?.[0].entries).not.toEqual(
+    expect.arrayContaining([expect.objectContaining({ binding: 6 })]),
+  );
+  const depth = SINGLE_LAYER_MEDIUM_MSAA_SURFACE_PROGRAMS.find(
+    ({ name }) => name === 'forgeax.single-layer-medium-msaa-depth',
+  );
+  if (depth === undefined) throw new Error('missing depth-only resolve program');
+  expect(buildFullscreenPostProcessPass(context, depth, true)).not.toBeNull();
+  const depthEntries = layouts.mock.calls.at(-1)?.[0].entries;
+  expect(depthEntries?.map(({ binding }) => binding)).toEqual([0, 1, 2, 3, 4]);
+  expect(depthEntries?.find(({ binding }) => binding === 2)).toMatchObject({
+    buffer: { type: 'uniform' },
+  });
+  expect(depthEntries?.find(({ binding }) => binding === 3)).toMatchObject({
+    texture: { sampleType: 'depth', viewDimension: '2d', multisampled: true },
+  });
   const gather = SINGLE_LAYER_MEDIUM_MSAA_SURFACE_PROGRAMS[2];
   if (gather === undefined) throw new Error('missing selected color program');
   expect(buildFullscreenPostProcessPass(context, gather)).not.toBeNull();
@@ -247,4 +257,39 @@ it('derives every matched-surface texture type from the registered fullscreen re
       }),
     ]),
   );
+});
+
+it('binds a sole primary depth read before params and storage', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const layouts = vi.spyOn(device, 'createBindGroupLayout');
+  const context = {
+    device,
+    errorRegistry: {
+      fire: (error: RhiError) => {
+        throw error;
+      },
+    },
+  };
+  const read: { key: string; sampleType: 'depth'; primary?: true } = {
+    key: 'depth',
+    sampleType: 'depth',
+    primary: true,
+  };
+  const entry = {
+    source: '',
+    reads: [read],
+    params: { byteSize: 16, defaultValue: new Uint8Array(16) },
+    storageBindings: [3],
+  };
+  expect(buildFullscreenPostProcessPass(context, entry)).not.toBeNull();
+  const entries = layouts.mock.calls.at(-1)?.[0].entries;
+  expect(Array.from(entries ?? [])).toMatchObject([
+    { binding: 0, texture: { sampleType: 'depth' } },
+    { binding: 1, sampler: { type: 'non-filtering' } },
+    { binding: 2, buffer: { type: 'uniform' } },
+    { binding: 3, buffer: { type: 'read-only-storage' } },
+  ]);
+  const signature = postProcessShaderEntrySignature(entry);
+  delete read.primary;
+  expect(postProcessShaderEntrySignature(entry)).not.toBe(signature);
 });

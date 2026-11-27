@@ -7,7 +7,11 @@ import type {
 } from '@forgeax/engine-rhi-debug';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import type { ArtifactRef, RhiDebugOperationContext } from '../rhi-debug/operations';
+import type {
+  ArtifactRef,
+  OpenedReplayLease,
+  RhiDebugOperationContext,
+} from '../rhi-debug/operations';
 import { withTimingTimeout } from '../rhi-debug/timing';
 import {
   coverageCheck,
@@ -16,11 +20,7 @@ import {
   quantizationCheck,
 } from '../rhi-debug/timing-environment';
 import { formatTimingTable } from '../rhi-debug/timing-format';
-import {
-  type OpenedTimingReplay,
-  runTimingOperation,
-  type TimingRunDeps,
-} from '../rhi-debug/timing-run';
+import { runTimingOperation, type TimingRunDeps } from '../rhi-debug/timing-run';
 
 const artifact: ArtifactRef = { kind: 'rhi-tape', source: 'cli', path: 'b.rhitape', digest: 'b' };
 const baseline: ArtifactRef = { kind: 'rhi-tape', source: 'cli', path: 'a.rhitape', digest: 'a' };
@@ -150,6 +150,7 @@ function harness(
     readonly before?: number | null;
     readonly after?: number | null;
     readonly hang?: boolean;
+    readonly failedClose?: readonly string[];
     readonly quantization?: 'disabled' | 'enabled' | 'unknown';
   } = {},
 ): Harness {
@@ -172,7 +173,7 @@ function harness(
   const deps: TimingRunDeps = {
     validateArtifactRef: (value) => ({ ok: true, value: value as ArtifactRef }),
     coreError: (error) => ({ code: error.code, expected: '', hint: '', detail: {} }),
-    async openTapeReplay(ref): Promise<{ ok: true; value: OpenedTimingReplay }> {
+    async openTapeReplay(ref): Promise<{ ok: true; value: OpenedReplayLease }> {
       const name = ref.path ?? ref.digest;
       opened.push(name);
       return {
@@ -184,6 +185,7 @@ function harness(
           timestampQuantization: options.quantization ?? 'disabled',
           close: async () => {
             closed.push(name);
+            if (options.failedClose?.includes(name)) throw new Error(`release failed for ${name}`);
           },
         },
       };
@@ -309,6 +311,27 @@ describe('rhi.timing timeout', () => {
 });
 
 describe('rhi.timing compare', () => {
+  it('closes the comparison baseline when candidate cleanup throws', async () => {
+    const h = harness({ failedClose: ['b.rhitape'] });
+    await expect(
+      runTimingOperation({ artifact, compare: baseline }, h.context, h.deps),
+    ).rejects.toThrow('release failed for b.rhitape');
+    expect(h.closed).toEqual(['b.rhitape', 'a.rhitape']);
+  });
+
+  it('reports both cleanup failures in acquisition order', async () => {
+    const h = harness({ failedClose: ['b.rhitape', 'a.rhitape'] });
+    await expect(
+      runTimingOperation({ artifact, compare: baseline }, h.context, h.deps),
+    ).rejects.toMatchObject({
+      name: 'AggregateError',
+      errors: [
+        { message: 'release failed for b.rhitape' },
+        { message: 'release failed for a.rhitape' },
+      ],
+    });
+  });
+
   it('opens both tapes, times the baseline session against the candidate and closes both', async () => {
     const h = harness();
     const result = await runTimingOperation(

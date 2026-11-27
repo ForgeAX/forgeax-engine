@@ -10,7 +10,7 @@ export function InspectorAssetReference({ reference, openAsset, browseAsset, inl
   browseAsset?: (guid: string) => void;
   inline?: boolean;
 }) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const thumbnail = useInspectorThumbnail(reference.guid);
   const rawName = reference.rawValue && typeof reference.rawValue === 'object' && 'name' in reference.rawValue
     && typeof reference.rawValue.name === 'string' ? reference.rawValue.name : undefined;
@@ -31,7 +31,7 @@ export function InspectorAssetReference({ reference, openAsset, browseAsset, inl
   ].filter(([, value]) => value !== undefined && value !== '');
   return <div className={`insp-resource${inline ? ' insp-resource--inline' : ''}`}>
     <div data-testid="insp-resource-reference">
-      <AssetReferenceField value={value} readOnly labels={{
+      <AssetReferenceField value={value} locale={locale} readOnly labels={{
         none: t('inspector.assetRef.none'), missing: t('inspector.assetRef.missing'), open: t('inspector.openResource'),
         openUnavailable: t('inspector.assetRef.openUnavailable'), readOnly: t('inspector.assetRef.readOnly'),
         identityUnavailable: t('inspector.resourceIdentityUnavailable'),

@@ -1,10 +1,13 @@
 import type { RenderPipeline } from '@forgeax/engine-rhi';
 import {
+  boundGeometryObservationMetadata,
   captureGeometrySource,
   GEOMETRY_OBSERVATION_MAX_MEMBERS,
   type GeometryCommandCapture,
   type GeometryGBufferProgram,
+  type GeometryObservation,
   type GeometrySourceIdentity,
+  unavailableGeometry,
 } from '../geometry-observation';
 import { SKIN_UNCOVERED_GBUFFER_ENTRY } from '../pbr-pipeline';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
@@ -13,6 +16,7 @@ import { gbufferProgramDigest } from './gbuffer-order-diagnostic';
 import type { LiveRasterBatch } from './live-raster';
 import type { ProjectedRasterClass } from './production-raster-classes';
 import type { BatchPreparation } from './production-raster-prepare';
+import type { GpuDrivenView } from './view-gpu';
 
 /** Primary-view indirect commands captured for one requested geometry observation. */
 export interface GpuGeometryCapture {
@@ -95,4 +99,40 @@ export function gbufferGeometryProgram(
     pipelineIdentity: getOpaqueResourceIdentity(pipeline as object),
     nativeShader: 'unobserved' as const,
   });
+}
+
+export async function observeProductionGeometry(
+  capture: GpuGeometryCapture | undefined,
+  view: GpuDrivenView | undefined,
+  receipt: { frameId: number; deviceGeneration: number },
+  current: () => boolean,
+): Promise<GeometryObservation> {
+  if (capture === undefined || view === undefined)
+    return unavailableGeometry('not-captured', receipt.frameId, receipt.deviceGeneration);
+  try {
+    if (capture.failure !== undefined) throw Error(capture.failure);
+    const { commands, viewConstants } = await view.readGeometryCommands(capture.commands, receipt);
+    if (!current()) throw Error('superseded');
+    const result: GeometryObservation = {
+      scope: 'primary-display-view-gpu-commands',
+      otherViews: 'unobserved',
+      shadows: 'unobserved',
+      cpuDraws: 'unobserved',
+      featureDraws: 'unobserved',
+      status: 'complete',
+      frameId: receipt.frameId,
+      deviceGeneration: receipt.deviceGeneration,
+      viewConstants,
+      commands,
+      commandCount: commands.length,
+      indexOrVertexWork: commands.reduce((n, c) => n + c.indexOrVertexWork, 0),
+    };
+    return boundGeometryObservationMetadata(result);
+  } catch (error) {
+    return unavailableGeometry(
+      error instanceof Error ? error.message : 'readback-failed',
+      receipt.frameId,
+      receipt.deviceGeneration,
+    );
+  }
 }

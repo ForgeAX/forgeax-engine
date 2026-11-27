@@ -306,7 +306,8 @@ fn evaluate_surface(input: SingleLayerWaterSurfaceInput) -> SingleLayerWaterSurf
   let fluidDistance = max(abs(fluidPosition - vec2<f32>(0.5)) - vec2<f32>(0.5 * fluidBounds), vec2<f32>(0.0));
   let fluidBoxMask = 1.0 - clamp(length(fluidDistance) / material.foamEraseNearFluidSize, 0.0, 1.0);
   let eraseMask = mix(1.0, 1.0 - fluidBoxMask, material.foamMaskNearFluid);
-  let legacyResponse = waterFoamResponse(simulationFoam, attachedPosition, eraseMask);
+  let foamOffset = vec3<f32>(material.foamVelocityMPerSec.x, 0.0, material.foamVelocityMPerSec.y) * input.frameTime;
+  let legacyResponse = waterFoamResponse(simulationFoam, attachedPosition - foamOffset, eraseMask);
   // This source follows the submitted original-grid waves through their actual WPO.
   let crestCompression = clamp((physicalWave.compression - material.surfaceCrestFoamCompressionMinimum)
     / max(material.surfaceCrestFoamCompressionRange, 0.000001), 0.0, 1.0);
@@ -332,8 +333,10 @@ fn evaluate_surface(input: SingleLayerWaterSurfaceInput) -> SingleLayerWaterSurf
   worldActive=worldActive||shallowFoamSource>0.0;
 #endif
 #endif
-  let worldHeightResponse = waterFoamResponse(worldSource, input.positionWS, eraseMask);
-  let worldCoverageResponse = waterFoamCoverageResponse(residualFoamCoverage, input.positionWS, eraseMask);
+  // Leave space for local fluid foam only when that producer is active for this body.
+  let worldEraseMask = select(1.0, eraseMask, waterFluidFoamActive(bodyIndex));
+  let worldHeightResponse = waterFoamResponse(worldSource, input.positionWS - foamOffset, worldEraseMask);
+  let worldCoverageResponse = waterFoamCoverageResponse(residualFoamCoverage, input.positionWS - foamOffset, worldEraseMask);
   let worldResponse = max(worldHeightResponse,worldCoverageResponse);
   let response = max(legacyResponse, select(vec2<f32>(0.0), worldResponse, worldActive && input.frontFacing));
   let worldResponseSelected = worldActive && input.frontFacing && worldResponse.x >= legacyResponse.x;
@@ -349,7 +352,7 @@ fn evaluate_surface(input: SingleLayerWaterSurfaceInput) -> SingleLayerWaterSurf
     let y = textureSampleLevel(surfaceFoamSimulationTexture, surfaceFoamHeightSampler, sharedFoamUv + vec2<f32>(0.0, material.foamNormalUvOffset), 0.0).r;
     simulationNormal = vec3<f32>((base - x) * material.foamNormalIntensity, (base - y) * material.foamNormalIntensity, 1.0);
   }
-  let foamUv = select(legacyFoamUv, input.positionWS.xz / material.foamTilingM, worldResponseSelected);
+  let foamUv = select(legacyFoamUv, input.positionWS.xz / material.foamTilingM, worldResponseSelected) - foamOffset.xz / material.foamTilingM;
   let staticNormal = decodeTangentSpaceNormalRg(textureSample(waterFoamNormalTexture, waterFoamNormalTexture_sampler, foamUv).rg)
     * material.foamNormalMultiplier;
   let baseNormal = normalize(vec3<f32>(tangentNormal.xy, material.foamNormalZ) * select(-1.0, 1.0, input.frontFacing));

@@ -158,7 +158,7 @@ it('captures offscreen geometry, clips the opposite half space and records the w
         },
         {
           component: MeshRenderer,
-          data: { materials: [water] },
+          data: { materials: [water], renderLayers: 0b10 },
         },
       )
       .unwrap();
@@ -196,7 +196,10 @@ it('captures offscreen geometry, clips the opposite half space and records the w
     world
       .addComponent(displayCamera, {
         component: PlanarReflection,
-        data: { target: world.allocSharedRef('RenderTarget', target.value) },
+        data: {
+          target: world.allocSharedRef('RenderTarget', target.value),
+          captureCullMask: 0b01,
+        },
       })
       .unwrap();
     const lease = renderer.attach(world);
@@ -433,6 +436,14 @@ it('captures offscreen geometry, clips the opposite half space and records the w
     world.set(displayCamera, ClippingPlanes, clippingPlanesData({ planes: [] })).unwrap();
     const restored = countColors((await readTarget()).bytes);
     expect(restored.red).toBeGreaterThan(10);
+    // The receiver stays eligible beyond the old millimetre cutoff. Capture
+    // culling leaves the independently displaced water out of the mirror view.
+    world.set(waterEntity, Transform, { pos: [0, 0.02, 0] }).unwrap();
+    expect((await displayRed()).count).toBeGreaterThan(10);
+    world.set(waterEntity, Transform, { pos: [0, 1.2, 0] }).unwrap();
+    expect((await displayRed()).count).toBe(0);
+    expect(countColors((await readTarget()).bytes).red).toBeGreaterThan(10);
+    world.set(waterEntity, Transform, { pos: [0, 0, 0] }).unwrap();
     // Falsifier: moving the rejected green object above the plane must make it visible.
     world.set(clipped, Transform, { pos: [1, 1, -2] }).unwrap();
     const above = countColors((await readTarget()).bytes);

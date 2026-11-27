@@ -1,5 +1,6 @@
+import { prepareShaderProgramCompiler } from '@forgeax/engine/shader-compiler/program';
 import { halfFloat, mat4 } from '@forgeax/engine/math';
-import { readShaderManifestPublication } from '@forgeax/engine/shader';
+import { ShaderRegistry } from '@forgeax/engine/shader';
 import * as THREE from 'three/webgpu';
 import { texture, vec3, vec4 } from 'three/tsl';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
@@ -88,7 +89,7 @@ async function native(manifest, data, scale) {
     const encoder=device.createCommandEncoder();
     const write=encoder.beginRenderPass({colorAttachments:[],depthStencilAttachment:{view:depth.createView(),depthLoadOp:'clear',depthStoreOp:'store',depthClearValue:0}});
     write.setPipeline(seedPipeline);write.setBindGroup(0,device.createBindGroup({layout:seedPipeline.getBindGroupLayout(0),entries:[{binding:0,resource:depthInput.createView()}]}));write.draw(3);write.end();
-    const entry=manifest.entries.find(e=>e.wgsl.includes('fn gtaoVisibility'));if(!entry)throw new Error('Production GTAO missing');
+    const entry=manifest.entries.find(e=>e.role === 'ssao');if(!entry)throw new Error('Production GTAO missing');
     const module=device.createShaderModule({code:entry.wgsl});
     const uniform=makeBuffer(256,64|8), kernel=makeBuffer(1024,64|8);
     const values=new Float32Array(64);values.set(mat4.identity(mat4.create()));values.set(data.projection,16);values.set(mat4.invert(mat4.create(),data.projection),32);values.set([scale,.25,0,16,1,1,1,1],48);device.queue.writeBuffer(uniform,0,values);
@@ -109,7 +110,12 @@ async function native(manifest, data, scale) {
   } finally {for(const item of owned)item.destroy();device.destroy();}
 }
 async function run() {
- const manifest=await readShaderManifestPublication(await(await fetch('/shaders/manifest.json')).json());
+ const shaderRegistry = new ShaderRegistry({
+    manifestUrl: '/shaders/manifest.json',
+    prepareProgramCompiler: prepareShaderProgramCompiler,
+  });
+  (await shaderRegistry.loadManifest()).unwrap();
+  const manifest = { entries: [...shaderRegistry.entries()] };
  const report={reference:'Three r184 GTAONode + optional DenoiseNode',defaults:{radius:.25,thickness:1,samples:16,distanceExponent:1,distanceFallOff:1,scale:1},denoise:{three:'optional: 16 Poisson samples, radius=5, lumaPhi=depthPhi=normalPhi=5',forgeax:'enabled with AO: 5×5 depth/normal bilateral'},cases:[]};
  for(const kind of ['plane','slope','contact','distant-edge']) {
   const data=input(kind), actual=await native(manifest,data,1), expected=await reference(data,1);

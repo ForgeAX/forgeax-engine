@@ -112,11 +112,13 @@ export function registerGpuDrivenRasterSystem(world: World): void {
             requireViewField(world, entity, ViewRecorder, 'state'),
           ).scene.stageRasterLane(lane.ownership);
           const queue = viewPassPlanQueue(world, entity);
-          if (queue.opaque !== undefined)
+          if (queue.opaque !== undefined) {
+            queue.requestedLateOcclusion = queue.opaque.lateOcclusion;
             queue.opaque = {
               ...queue.opaque,
               lateOcclusion: queue.opaque.lateOcclusion && lane.raster !== undefined,
             };
+          }
           storeViewGpuDrivenOutcome(world, entity, { ...outcome, raster: lane });
         } catch (cause) {
           storeViewGpuDrivenOutcome(world, entity, {

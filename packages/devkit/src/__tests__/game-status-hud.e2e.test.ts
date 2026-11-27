@@ -1,5 +1,6 @@
 // @perf-budget-skip: generated Host DOM/layout contract; no GPU qualification.
 import { existsSync } from 'node:fs';
+import { resolveLoadProgressLabels } from '@forgeax/engine-types';
 import { chromium } from 'playwright';
 import { expect, it } from 'vitest';
 import { hostStartupDocument, hostStartupScript } from '../host/startup-source.js';
@@ -39,7 +40,9 @@ it('shows English version and completed-frame diagnostics without intercepting g
       await page.setViewportSize({ width, height: 720 });
       const hud = page.locator('#forgeax-status');
       await hud.waitFor({ state: 'visible' });
-      expect(await hud.textContent()).toMatch(/^Game 123456abcdef \| Engine abcdef123456 \| FPS /);
+      expect(await hud.textContent()).toMatch(
+        /^Game 123456abcdef \| Engine abcdef123456 \| Render FPS /,
+      );
       const layout = await hud.evaluate((node) => {
         const bounds = node.getBoundingClientRect();
         const style = getComputedStyle(node);
@@ -70,7 +73,11 @@ it('shows English version and completed-frame diagnostics without intercepting g
   }
 });
 
-it('keeps startup diagnostics expanded and copies the structured failure', async () => {
+it.each([
+  'en',
+  'zh-CN',
+])('keeps startup diagnostics expanded and copies the structured failure (%s)', async (lang) => {
+  const labels = resolveLoadProgressLabels({ lang });
   const executablePath = [
     process.env.FORGEAX_BROWSER_EXECUTABLE,
     '/opt/google/chrome-beta/chrome',
@@ -83,7 +90,7 @@ it('keeps startup diagnostics expanded and copies the structured failure', async
   });
   try {
     const page = await browser.newPage({ viewport: { width: 390, height: 720 } });
-    await page.setContent(hostStartupDocument('Game'));
+    await page.setContent(hostStartupDocument('Game', labels));
     await page.addScriptTag({
       content: `
         const host = {
@@ -94,7 +101,7 @@ it('keeps startup diagnostics expanded and copies the structured failure', async
             writeText: text => document.documentElement.dataset.copiedDiagnostics = text,
           },
         };
-        const startup = ${hostStartupScript(true, 'host')};
+        const startup = ${hostStartupScript(true, 'host', labels)};
         startup.bindSession('game');
         startup.prepare();
         startup.fail({
@@ -111,10 +118,16 @@ it('keeps startup diagnostics expanded and copies the structured failure', async
     expect(await page.locator('#forgeax-fatal-details').textContent()).toContain(
       'detail.phase: engine-code',
     );
-    await page.getByRole('button', { name: 'Copy diagnostics' }).click();
+    expect(await page.locator('#forgeax-fatal-message').textContent()).toBe(
+      labels.host.startupFailed,
+    );
+    expect(await page.locator('#forgeax-fatal-copy').textContent()).toBe(
+      labels.host.copyDiagnostics,
+    );
+    await page.locator('#forgeax-fatal-copy').click();
     await page.waitForFunction(
-      () =>
-        document.querySelector('#forgeax-fatal-copy-status')?.textContent === 'Diagnostics copied.',
+      (expected) => document.querySelector('#forgeax-fatal-copy-status')?.textContent === expected,
+      labels.host.diagnosticsCopied,
     );
     const copied = await page.evaluate(
       () => document.documentElement.dataset.copiedDiagnostics ?? '',

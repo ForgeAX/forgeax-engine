@@ -1,4 +1,5 @@
 #define_import_path forgeax_skin::task
+#import forgeax_view::common::{Mesh}
 
 #if STORAGE_BUFFER_AVAILABLE == true
 struct SkinTaskAddress {
@@ -17,6 +18,7 @@ struct SkinUniformTask {
 };
 struct SkinUniformPrevious {
   joints: array<mat4x4<f32>, 255>,
+  meshTranslation: vec4<f32>,
 };
 @group(2) @binding(1) var<uniform> skinTaskCurrent: SkinUniformTask;
 @group(2) @binding(2) var<uniform> skinTaskPrevious: SkinUniformPrevious;
@@ -44,6 +46,25 @@ fn skinTaskDescriptor(candidate: u32) -> vec4<u32> {
 
 fn skinTaskHistoryValid(descriptor: vec4<u32>) -> bool {
   return (descriptor.w & 3u) == 3u;
+}
+
+fn skinTaskPreviousTranslation(mesh: Mesh) -> vec3<f32> {
+#if STORAGE_BUFFER_AVAILABLE == true
+  return mesh.previousWorldFromLocal[3].xyz;
+#else
+  return skinTaskPrevious.meshTranslation.xyz;
+#endif
+}
+
+// Palettes already include the mesh world transform in affine-point mode.
+// Replace its weighted translation with one application after the local
+// blend drops w, without applying the mesh linear transform a second time.
+fn skinTaskPosition(descriptor: vec4<u32>, matrix: mat4x4<f32>, position: vec3<f32>, meshTranslation: vec3<f32>) -> vec4<f32> {
+  let blended = matrix * vec4<f32>(position, 1.0);
+  if ((descriptor.w & 4u) != 0u) {
+    return vec4<f32>(blended.xyz + (1.0 - blended.w) * meshTranslation, 1.0);
+  }
+  return blended;
 }
 
 fn skinTaskJoint(descriptor: vec4<u32>, index: u32, previous: bool) -> mat4x4<f32> {

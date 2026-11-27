@@ -1,7 +1,6 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { RhiNullAdapter } from '@forgeax/engine-rhi-null';
 import { describe, expect, it, vi } from 'vitest';
-import { WaterSsrTemporalValue } from '../../components/screen-space-reflection';
 import { DeviceScope } from '../../device/device-scope';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
@@ -9,28 +8,62 @@ import {
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
 } from '../../gpu-texture-usage';
 import { createRenderPipelineTarget, type RenderPipelineFrame } from '../../render-pipeline';
-import type { SsrSpatialAdmission } from '../../ssr/admission';
-import { createSsrHistoryOwner } from '../../ssr/history';
+import { addSsrHitColor } from '../../ssr/hit-color';
 import { SSR_SCENE_COLOR_HISTORY_PROGRAM } from '../../ssr/scene-color-input';
-import { TemporalViewHistory } from '../../temporal/frame';
 import {
   abortStagedTemporalGpuState,
   commitStagedTemporalGpuState,
-  commitTemporalGpuSubmit,
   getTemporalGpuState,
   hasPendingTemporalGpuSubmit,
   retireTemporalGpuState,
-  stageTemporalGpuSubmit,
   stageTemporalGpuWrite,
   temporalWriteIndex,
 } from '../../temporal/gpu';
-import { createTemporalView } from '../../temporal/view';
 import { addTypedFullscreenPass } from '../../typed-render-graph-primitives';
 import type { RenderFrameState } from '../frame-snapshot';
-import type { RenderSystemInternals } from '../render-context';
-import { beginSsrHistoryFrame } from '../ssr-history-frame';
 
 describe('SSR scene-color producer admission', () => {
+  it('produces a single half-resolution color level and one downsample', async () => {
+    const device = (await new RhiNullAdapter().requestDevice()).unwrap();
+    const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+    const context = { graph };
+    const size = { width: 17, height: 9 };
+    const source = createRenderPipelineTarget(graph, 'scene', {
+      format: 'rgba16float',
+      size,
+    }).unwrap();
+    graph
+      .addRasterPass('scene-opaque', {
+        accesses: [{ resource: source.view, usage: 'color-attachment' }],
+        colorAttachments: [{ view: source.view, loadOp: 'clear', storeOp: 'store' }],
+        encode: () => {},
+      })
+      .unwrap();
+    const color = addSsrHitColor(context, source, size, 'ssr-color').unwrap();
+    graph
+      .addComputePass('ssr-trace', {
+        accesses: [{ resource: color.view, usage: 'sampled-read' }],
+        encode: () => {},
+      })
+      .unwrap();
+    const plan = graph.compile({ device, surfaceSize: size }).unwrap();
+    try {
+      expect(plan.inspect().passes.map(({ name }) => name)).toEqual([
+        'scene-opaque',
+        'ssr-color-downsample',
+        'ssr-trace',
+      ]);
+      expect(
+        plan.inspect().resources.filter((resource) => resource.kind === 'texture'),
+      ).toHaveLength(2);
+      expect(plan.inspect().resources.find(({ label }) => label === 'ssr-color')).toMatchObject({
+        descriptor: { width: 8, height: 4, mipLevelCount: 1 },
+      });
+    } finally {
+      (await plan.retire()).unwrap();
+    }
+  });
+
   it.each([
     true,
     false,
@@ -70,7 +103,8 @@ describe('SSR scene-color producer admission', () => {
         'snapshot-scene-color-output',
         {
           format: 'rgba16float',
-          size: { width: 8, height: 8 },
+          size: { width: 4, height: 4 },
+          mipLevelCount: 3,
           domain: 'linear-hdr',
           usage:
             GPU_TEXTURE_USAGE_COPY_SRC |
@@ -84,7 +118,7 @@ describe('SSR scene-color producer admission', () => {
       )
       .unwrap();
     const outputView = graph
-      .importView(output, { dimension: '2d' }, () => {
+      .importView(output, { dimension: '2d', mipLevelCount: 1 }, () => {
         const state = candidate();
         return state.color[temporalWriteIndex(state)].view;
       })
@@ -154,68 +188,5 @@ describe('SSR scene-color producer admission', () => {
         retireTemporalGpuState(frameState.activeTemporalGpuState);
       await compiled.retire();
     }
-  });
-
-  it.each([
-    'none',
-    'taa',
-  ] as const)('uses accepted color under %s without allocating Water resolve history', async (antialias) => {
-    const device = (await new RhiNullAdapter().requestDevice()).unwrap();
-    const scope = DeviceScope.create(9, 'ssr-color-reader');
-    const temporalView = new TemporalViewHistory();
-    const accepted = createTemporalView({ antialias, width: 8, height: 8, deviceGeneration: 9 });
-    temporalView.stage({ kind: antialias === 'taa' ? 'taa' : 'off', view: accepted });
-    temporalView.commit();
-    const frameState = { temporalView } as RenderFrameState;
-    const color = getTemporalGpuState(
-      frameState,
-      device,
-      scope,
-      8,
-      8,
-      false,
-      undefined,
-      antialias === 'taa' ? 'taa' : 'scene-color',
-    );
-    stageTemporalGpuSubmit(color);
-    commitTemporalGpuSubmit(color);
-    frameState.activeTemporalGpuState = color;
-    frameState.ssrHistoryOwner = createSsrHistoryOwner({
-      device,
-      scope,
-      width: 8,
-      height: 8,
-    }).unwrap();
-    const writes = vi.spyOn(device.queue, 'writeBuffer');
-    const errors = vi.fn();
-    const result = beginSsrHistoryFrame(
-      { device, errorRegistry: { fire: errors } } as unknown as RenderSystemInternals,
-      frameState,
-      {
-        status: 'admitted',
-        config: {
-          maxDistance: 4,
-          thickness: 0.1,
-          maxRoughness: 1,
-          waterTemporal: WaterSsrTemporalValue.off,
-        },
-      } as SsrSpatialAdmission,
-      { kind: 'staged', cameraReset: undefined },
-      accepted,
-      true,
-    );
-    expect(result).toBe(true);
-    expect(errors).not.toHaveBeenCalled();
-    expect(frameState.waterSsrHistoryOwner).toBeUndefined();
-    const write = writes.mock.calls.find(
-      ([buffer]) => buffer === frameState.ssrHistoryOwner?.resources.waterParamsBuffer,
-    );
-    expect(write).toBeDefined();
-    const payload = write?.[2] as Uint8Array;
-    expect(
-      new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getFloat32(64, true),
-    ).toBe(1);
-    frameState.ssrHistoryOwner.dispose();
-    color.childScope.retire();
   });
 });

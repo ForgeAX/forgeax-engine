@@ -1,6 +1,9 @@
 import type { ArrayRangesChange } from '@forgeax/engine-ecs/projection';
 import type { RhiErrorCode } from '@forgeax/engine-rhi';
 import { InstanceTransformsStrideMismatchError } from './errors/component-validation';
+import { issueInstanceGenerations } from './instance-generations';
+
+export { uniqueInstanceIdentities } from './instance-generations';
 
 const MATRIX_STRIDE = 16;
 
@@ -140,22 +143,6 @@ function scanInstanceTransforms(
     }
   }
   return same;
-}
-
-const uniqueIdentities = new WeakMap<Uint32Array, boolean>();
-
-/**
- * Whether a generation column names distinct, non-zero identities. Snapshot
- * generation columns are immutable, so the proof is memoized per column and a
- * stable collection pays O(N) once instead of on every row move.
- */
-export function uniqueInstanceIdentities(generations: Uint32Array): boolean {
-  let unique = uniqueIdentities.get(generations);
-  if (unique === undefined) {
-    unique = !generations.includes(0) && new Set(generations).size === generations.length;
-    uniqueIdentities.set(generations, unique);
-  }
-  return unique;
 }
 
 /**
@@ -534,11 +521,8 @@ export class InstanceProjectionStore {
 
   /** Fresh store-issued identities: distinct and non-zero by construction. */
   private seedGenerations(count: number): Uint32Array {
-    const generations = new Uint32Array(count);
-    for (let ordinal = 0; ordinal < count; ordinal += 1) {
-      generations[ordinal] = this.nextGeneration++;
-    }
-    uniqueIdentities.set(generations, true);
+    const generations = issueInstanceGenerations(this.nextGeneration, count);
+    this.nextGeneration += count;
     return generations;
   }
 
@@ -552,15 +536,61 @@ export class InstanceProjectionStore {
     return { ...this.work };
   }
 
-  release(world: object, entity: number): void {
+  release(
+    world: object,
+    entity: number,
+    expected?: {
+      readonly collectionId?: InstanceCollectionId;
+      readonly revision?: number;
+      readonly transforms: Float32Array;
+      readonly generations?: Uint32Array;
+    },
+  ): void {
     const entities = this.identities.get(world);
     const id = entities?.get(entity);
     if (id === undefined) return;
+    const current = this.records.get(id);
+    if (
+      expected !== undefined &&
+      (current === undefined ||
+        id !== expected.collectionId ||
+        current.revision !== expected.revision ||
+        current.transforms !== expected.transforms ||
+        current.generations !== expected.generations)
+    )
+      return;
     entities?.delete(entity);
     this.records.delete(id);
     this.candidates.delete(id);
     this.backs.delete(id);
     this.residency.delete(id);
+  }
+  /** Cancel only the exact detached producer result, including before its first accept. */
+  discardProjection(
+    world: object,
+    entity: number,
+    expected: {
+      readonly collectionId?: InstanceCollectionId;
+      readonly revision?: number;
+      readonly transforms: Float32Array;
+      readonly generations?: Uint32Array;
+    },
+  ): void {
+    const id = expected.collectionId;
+    if (id === undefined) return;
+    const candidate = this.candidates.get(id);
+    if (
+      candidate === undefined ||
+      candidate.world !== world ||
+      candidate.entity !== entity ||
+      candidate.revision !== expected.revision ||
+      candidate.transforms !== expected.transforms ||
+      candidate.generations !== expected.generations
+    )
+      return;
+    this.candidates.delete(id);
+    const back = this.backs.get(id);
+    if (back?.candidate === candidate) back.candidate = undefined;
   }
   retain(ids: ReadonlySet<InstanceCollectionId>): void {
     for (const record of this.records.values()) {

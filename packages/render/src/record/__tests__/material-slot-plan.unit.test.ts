@@ -4,7 +4,7 @@ import {
   capturedGpuMaterialLayout,
   captureGpuMaterialBindings,
 } from '../../gpu-driven/captured-material-bindings';
-import { MaterialResource } from '../../material-resource';
+import { captureMaterialSnapshot, MaterialResource } from '../../material-resource';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { DispatchList, MaterialSnapshot } from '../../render-system-extract';
 import { MaterialFrame } from '../../scene/material-dispatch';
@@ -226,6 +226,41 @@ describe('material slot identity and scope', () => {
 });
 
 describe('independent geometry and material capacity', () => {
+  it('holds the accepted values of split CPU and appended GPU slots across later adoption and capacity selection', () => {
+    const a = material();
+    const b = material();
+    const c = material();
+    for (const resource of [a, b, c])
+      resource.adopt(captureMaterialSnapshot({ ...resource.snapshot, immutableValues: true }));
+    const frame = new MaterialFrame(undefined).with(a).with(b).with(c);
+    const rows = [row(0, a), row(1, a), row(2, b)];
+    const sourceScope = row(0, a).world;
+    const classes = new Map([['1', 'probe:2']]);
+    const plan = buildDispatchPlan(ceiling(3, 4), rows, [], [], [], classes, false, {
+      frame,
+      sourceScope,
+      bindings: [{ material: c, resourceClass: 'gpu' }],
+    });
+    const original = plan.materialSlots.slice();
+    expect(original).toEqual([
+      frame.get(a)?.snapshot,
+      frame.get(a)?.snapshot,
+      frame.get(b)?.snapshot,
+      frame.get(c)?.snapshot,
+    ]);
+    a.adopt(captureMaterialSnapshot({ ...a.snapshot, metallic: 0.45 }));
+    expect(plan.materialBindingSlots.get(a)?.get('probe:2')).toBe(1);
+    expect(plan.materialBindingSlots.get(c)?.get('gpu')).toBe(3);
+    const clipped = buildDispatchPlan(ceiling(2, 6), rows, [], [], [], classes, false, {
+      frame,
+      sourceScope,
+      bindings: [],
+    });
+    expect(clipped.materialSlots).toEqual(original.slice(0, 2));
+    expect(clipped.materialBindingSlots.has(b)).toBe(false);
+    expect(plan.materialSlots).toEqual(original);
+  });
+
   it('truncates only at complete material prefixes', () => {
     const indices = [[0], [1, 2, 3], [0, 4], [5, 6, 7, 8]];
     expect(findRenderablePrefixForSlotCapacity(indices, 3)).toBe(1);
@@ -255,7 +290,7 @@ describe('independent geometry and material capacity', () => {
     const plan = buildDispatchPlan(ceiling(3, 1), rows.slice(0, 2), [], [], rows);
     expect(plan.validatedOrdered).toEqual(rows.slice(0, 2));
     expect(plan.shadowValidatedOrdered.map((entry) => entry.source)).toEqual([rows[0]?.source]);
-    expect(plan.shadowValidatedOrdered[0]?.meshSlot).toBe(2);
+    expect(plan.shadowValidatedOrdered.at(0)?.meshSlot).toBe(2);
     expect(plan.materialSlotIndices).toEqual([[0], [0], [0]]);
     expect(plan.materialSlotCount).toBe(1);
   });

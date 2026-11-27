@@ -1,3 +1,4 @@
+import { createMaterialShaderProgram } from '@forgeax/engine-shader';
 import type {
   MaterialRenderState,
   ShaderEntryPointEffects,
@@ -76,11 +77,9 @@ it('retains authored depth, blending, scene-depth reads and fixed-function alpha
   expect(predepthCoversMaterial(declared, undefined)).toBe(false);
 });
 
-it('uses the stock AO coverage entry when a template has no dedicated depth fragment', () => {
+it('leaves old templates with color-writing predepth on the Base Pass', () => {
   const stock = program([entry('fs_main'), entry('fs_ao_input')]);
-  expect(predepthCoversMaterial(stock, undefined)).toBe(true);
-  expect(predepthFragmentEntry(stock)).toBe('fs_ao_input');
-  expect(predepthFragmentEntry(program())).toBe('fs_depth_masked');
+  expect(predepthCoversMaterial(stock, undefined)).toBe(false);
 });
 
 it('withholds a coverage proof from non-color entries even when their native effects are pure', () => {
@@ -91,4 +90,60 @@ it('withholds a coverage proof from non-color entries even when their native eff
     };
     expect(predepthCoversMaterial(candidate, undefined), fragmentEntry).toBe(false);
   }
+});
+
+it('keeps color-entry effects independent across fixed and borrowed shader revisions', () => {
+  const inputs = [
+    entry('fs_main'),
+    entry('fs_opaque', { ...effects, writesDepth: true }),
+    entry('fs_forward_screen'),
+    entry('fs_ao_input'),
+    entry('fs_depth_masked'),
+  ];
+  const borrowed = program(inputs);
+  const fixed = { ...borrowed, program: createMaterialShaderProgram('depth-entry-test', inputs) };
+  const covers = (artifact: typeof borrowed | typeof fixed, fragmentEntry: string) =>
+    predepthCoversMaterial({ ...artifact, fragmentEntry }, undefined);
+  for (const artifact of [borrowed, fixed]) {
+    expect(covers(artifact, 'fs_main')).toBe(true);
+    expect(covers(artifact, 'fs_opaque')).toBe(false);
+    expect(covers(artifact, 'fs_forward_screen')).toBe(true);
+  }
+  inputs.splice(3, 2, entry('fs_ao_input', { ...effects, writesStorage: true }));
+  expect(covers(borrowed, 'fs_main')).toBe(false);
+  expect(predepthFragmentEntry(borrowed)).toBe('fs_ao_input');
+  expect(covers(fixed, 'fs_main')).toBe(true);
+  expect(predepthFragmentEntry(fixed)).toBe('fs_depth_masked');
+  const replaced = { ...fixed, program: { ...fixed.program, entryPoints: inputs } };
+  expect(covers(replaced, 'fs_main')).toBe(false);
+});
+
+it('checks changing draw state without iterating admitted shader reflection again', () => {
+  const entries = Object.freeze(
+    ['fs_main', 'fs_opaque', 'fs_depth_masked'].map((name) =>
+      Object.freeze({
+        name,
+        stage: 'fragment' as const,
+        bindings: Object.freeze([]),
+        effects: Object.freeze({ ...effects }),
+      }),
+    ),
+  );
+  let indexedReads = 0;
+  const observed = new Proxy(entries, {
+    get(target, key, receiver) {
+      if (typeof key === 'string' && /^\d+$/.test(key)) indexedReads++;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const shader = createMaterialShaderProgram('fixed-depth-entry-test', observed);
+  expect(shader.entryPoints).toBe(observed);
+  const afterAdmission = indexedReads;
+  const draw = { receipt: { positionBounds: 'standard-input' as const }, program: shader };
+  for (let frame = 0; frame < 60; frame++) {
+    const writes = frame % 2 === 0;
+    expect(predepthCoversMaterial(draw, { depthWriteEnabled: writes })).toBe(writes);
+    expect(predepthFragmentEntry(draw)).toBe('fs_depth_masked');
+  }
+  expect(indexedReads).toBe(afterAdmission);
 });

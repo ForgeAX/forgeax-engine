@@ -1,3 +1,5 @@
+import { definePackageId } from '@forgeax/engine/pack';
+import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { scanInventory } from '@forgeax/engine/pack/scanner';
 import { defineFeature } from '../../lab/feature';
 import {
@@ -8,18 +10,13 @@ import {
   withFixture,
 } from './support/fixture';
 
-const G1 = '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a21';
-const G2 = '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a22';
 const PACKAGE = '0190a1b2-0000-7000-8000-00000000c001';
-
-const transport = (assets: readonly unknown[]) =>
-  JSON.stringify({ schemaVersion: '2.0.0', kind: 'internal-text-package', assets });
-const sampler = (guid: string, refs: readonly string[] = []) => ({
-  guid,
-  kind: 'sampler',
-  payload: {},
-  refs,
-});
+const guid = (key: string) => AssetGuid.format(AssetGuid.derive(definePackageId(PACKAGE), key));
+const G1 = guid('a');
+const G2 = guid('b');
+const sampler = (refs: readonly string[] = []) => ({ kind: 'sampler', payload: {}, refs });
+const pack = (assets: Readonly<Record<string, ReturnType<typeof sampler>>>) =>
+  JSON.stringify({ schemaVersion: '3.0.0', packageId: PACKAGE, assets });
 const gltfMeta = (subAssets: readonly unknown[]) =>
   JSON.stringify({
     schemaVersion: '1.0.0',
@@ -33,7 +30,7 @@ const CASES: ReadonlyArray<readonly [string, FixtureFiles, string]> = [
   [
     'clean tree scans',
     {
-      'a.pack.json': transport([sampler(G1)]),
+      'a.pack.json': pack({ a: sampler() }),
       'hero.png': PNG_SIGNATURE,
       'hero.png.meta.json': imageMeta(G2),
     },
@@ -48,7 +45,7 @@ const CASES: ReadonlyArray<readonly [string, FixtureFiles, string]> = [
   [
     'duplicate GUID across Pack and Meta',
     {
-      'a.pack.json': transport([sampler(G1)]),
+      'a.pack.json': pack({ a: sampler() }),
       'hero.png': PNG_SIGNATURE,
       'hero.png.meta.json': imageMeta(G1),
     },
@@ -84,7 +81,7 @@ const CASES: ReadonlyArray<readonly [string, FixtureFiles, string]> = [
   ],
   [
     'reference cycle',
-    { 'a.pack.json': transport([sampler(G1, [G2]), sampler(G2, [G1])]) },
+    { 'a.pack.json': pack({ a: sampler([G2]), b: sampler([G1]) }) },
     'pack-cyclic-reference',
   ],
 ];

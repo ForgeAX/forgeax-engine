@@ -509,12 +509,86 @@ struct Ray { origin: vec3f, mask: u32, direction: vec3f, t_max: f32 }
         pub(crate) caps: RayQueryCaps,
     }
 
-    /// A Ray Query device, or `None` (skip) unless `FORGEAX_REQUIRE_NATIVE_RAY_QUERY=1`.
+    fn check_test_adapter(
+        actual: &crate::NativeCapabilities,
+        expected: &str,
+    ) -> Result<(), NativeError> {
+        let expected: serde_json::Value = serde_json::from_str(expected)
+            .map_err(|error| invalid(format!("invalid test adapter expectation: {error}")))?;
+        let identity = serde_json::json!({
+            "backend": actual.backend,
+            "name": actual.adapter.name,
+            "vendor": actual.adapter.vendor,
+            "device": actual.adapter.device,
+            "deviceType": actual.adapter.device_type,
+        });
+        if expected != identity {
+            return Err(invalid(format!(
+                "test adapter mismatch: expected {expected}, selected {identity}"
+            )));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_adapter_expectation_requires_complete_actual_identity() {
+        let actual = crate::NativeCapabilities {
+            backend: "Dx12".into(),
+            ray_query: true,
+            adapter: crate::AdapterFacts {
+                name: "NVIDIA GeForce RTX 4080".into(),
+                vendor: 0x10de,
+                device: 0x2704,
+                device_type: "DiscreteGpu".into(),
+                driver: "recorded independently".into(),
+                driver_info: "recorded independently".into(),
+            },
+        };
+        let expected = serde_json::json!({
+            "backend": "Dx12", "name": "NVIDIA GeForce RTX 4080",
+            "vendor": 4318, "device": 9988, "deviceType": "DiscreteGpu"
+        });
+        check_test_adapter(&actual, &expected.to_string()).unwrap();
+        for (key, value) in [
+            ("backend", serde_json::json!("Vulkan")),
+            ("name", serde_json::json!("Intel UHD Graphics 770")),
+            ("vendor", serde_json::json!(0x8086)),
+            ("device", serde_json::json!(0x2684)),
+            ("deviceType", serde_json::json!("Cpu")),
+        ] {
+            let mut wrong = expected.clone();
+            wrong[key] = value;
+            assert!(check_test_adapter(&actual, &wrong.to_string()).is_err());
+            let mut missing = expected.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            assert!(check_test_adapter(&actual, &missing.to_string()).is_err());
+        }
+        for invalid in ["{}", "null", "[]", "not JSON"] {
+            assert!(check_test_adapter(&actual, invalid).is_err());
+        }
+        let mut extended = expected;
+        extended["ignored"] = serde_json::json!(true);
+        assert!(check_test_adapter(&actual, &extended.to_string()).is_err());
+    }
+
+    /// A Ray Query device, or `None` unless Ray Query or an exact adapter is required.
     pub(crate) fn gpu() -> Option<Gpu> {
-        let required = std::env::var("FORGEAX_REQUIRE_NATIVE_RAY_QUERY").as_deref() == Ok("1");
+        let expected = std::env::var_os("FORGEAX_NATIVE_TEST_EXPECTED_ADAPTER");
+        let required = expected.is_some()
+            || std::env::var("FORGEAX_REQUIRE_NATIVE_RAY_QUERY").as_deref() == Ok("1");
         let attempt = pollster::block_on(async {
             let instance = create_native_instance()?;
             let selected = select_native_adapter(&instance, None).await?;
+            eprintln!(
+                "native-ray-query-adapter: {}",
+                serde_json::to_string(&selected.capabilities).unwrap()
+            );
+            if let Some(expected) = expected {
+                let expected = expected
+                    .into_string()
+                    .map_err(|_| invalid("test adapter expectation must be valid Unicode"))?;
+                check_test_adapter(&selected.capabilities, &expected)?;
+            }
             if !selected.capabilities.ray_query {
                 return Err(invalid(format!(
                     "adapter '{}' lacks EXPERIMENTAL_RAY_QUERY",
@@ -542,7 +616,7 @@ struct Ray { origin: vec3f, mask: u32, direction: vec3f, t_max: f32 }
                 eprintln!("skipping native Ray Query GPU test: {error}");
                 None
             }
-            Err(error) => panic!("FORGEAX_REQUIRE_NATIVE_RAY_QUERY=1 but {error}"),
+            Err(error) => panic!("required native Ray Query test device unavailable: {error}"),
         }
     }
 

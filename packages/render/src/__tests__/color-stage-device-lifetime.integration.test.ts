@@ -41,7 +41,8 @@ it('retains the admitted source descriptor with the existing program across grap
     expect((await f.draw({ factory })).pipeline).not.toBe(first.pipeline);
     expect(modules.mock.calls.at(-1)?.[0]).toBe(descriptor);
     await f.draw({ factory, strength: 0.5 });
-    expect(modules.mock.calls.at(-1)?.[0]).not.toBe(descriptor);
+    expect(modules.mock.calls.at(-1)?.[0]).toBe(descriptor);
+    expect(compile).toHaveBeenCalledTimes(2);
   } finally {
     adapter.dispose();
     hash.mockRestore();
@@ -67,7 +68,7 @@ it('reuses LUT programs across graph replacement and resize while binding curren
     kind: 'textureView',
     value: second.inputView,
   });
-  expect(modules.mock.calls[0]?.[0].code).toContain('mix(color.rgb, mapped, 0.35)');
+  expect(modules.mock.calls[0]?.[0].code).toContain('mix(color.rgb, mapped, lutParams.x)');
   expect(creates.mock.calls[0]?.[0]).toMatchObject({
     fragment: { entryPoint: 'color_stage_fs', targets: [{ format: 'rgba8unorm' }] },
     primitive: { topology: 'triangle-list' },
@@ -75,18 +76,18 @@ it('reuses LUT programs across graph replacement and resize while binding curren
   f.scope.retire();
 });
 
-it('separates exact strength source, target, stage layout, factory and device generation', async () => {
+it('separates target, stage layout, factory and device generation while preserving strength-independent programs', async () => {
   const f = await colorStageFixture(),
     creates = vi.spyOn(f.device, 'createRenderPipeline');
   const initial = await f.draw();
-  expect((await f.draw({ strength: 0.5 })).pipeline).not.toBe(initial.pipeline);
+  expect((await f.draw({ strength: 0.5 })).pipeline).toBe(initial.pipeline);
   expect((await f.draw()).pipeline).toBe(initial.pipeline);
   expect((await f.draw({ format: 'rgba16float' })).pipeline).not.toBe(initial.pipeline);
   expect((await f.draw({ layout: f.lutLayout() })).pipeline).not.toBe(initial.pipeline);
   expect((await f.draw({ factory: { ...f.factory } })).pipeline).not.toBe(initial.pipeline);
   const next = DeviceScope.create(2, f.scope.owner);
   expect((await f.draw({ scope: next })).pipeline).not.toBe(initial.pipeline);
-  expect(creates).toHaveBeenCalledTimes(6);
+  expect(creates).toHaveBeenCalledTimes(5);
   f.scope.retire();
   next.retire();
 });
@@ -113,13 +114,23 @@ it('never admits a failed pipeline and retries the complete unchanged request', 
   f.scope.retire();
 });
 
-it('bounds changing strength variants and releases retained programs at scope retirement', async () => {
+it('uploads changing LUT strengths with one program and retires it with the scope', async () => {
   const f = await colorStageFixture(),
-    creates = vi.spyOn(f.device, 'createRenderPipeline');
+    creates = vi.spyOn(f.device, 'createRenderPipeline'),
+    writes = vi.spyOn(f.device.queue, 'writeBuffer');
+  const strengths = [...Array.from({ length: 17 }, (_, index) => index / 32), 0];
   const first = await f.draw({ strength: 0 });
-  for (let i = 1; i <= 16; i++) await f.draw({ strength: i / 32 });
-  expect((await f.draw({ strength: 0 })).pipeline).not.toBe(first.pipeline);
-  expect(creates).toHaveBeenCalledTimes(18);
+  for (const strength of strengths.slice(1)) {
+    expect((await f.draw({ strength })).pipeline).toBe(first.pipeline);
+  }
+  expect(creates).toHaveBeenCalledTimes(1);
+  expect(
+    writes.mock.calls.map(([, offset, bytes]) => {
+      expect(offset).toBe(0);
+      if (!(bytes instanceof Uint8Array)) throw new Error('Expected LUT uniform bytes');
+      return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getFloat32(0, true);
+    }),
+  ).toEqual(strengths);
   expect(f.scope.resourceDelta()).toBe(1);
   f.scope.retire();
   expect(f.scope.resourceDelta()).toBe(0);

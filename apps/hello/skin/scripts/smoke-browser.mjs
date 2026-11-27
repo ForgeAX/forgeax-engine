@@ -138,7 +138,7 @@ page.on('response', (resp) => {
   }
   const scopedKind = pathname.endsWith('/catalog.json')
     ? 'catalog'
-    : pathname.includes('/asset/') && pathname.endsWith('.pack.json')
+    : pathname.includes('/asset/') && pathname.endsWith('.runtime-pack.json')
       ? 'package'
       : pathname.includes('/asset/') && pathname.endsWith('/body.bin')
         ? 'artifact'

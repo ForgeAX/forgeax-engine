@@ -10,15 +10,12 @@ import {
 } from '@forgeax/engine-types';
 import { transmissionBackdropAvailable } from '../assembly/device-feature-admission';
 import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
-import {
-  materialUsesPlanarReflection,
-  planarReflectionMaterialEntries,
-} from '../capture/planar-material';
 import { getOrCreateDirectDfgLut, materialUsesDirectDfgLut } from '../device/direct-dfg-lut';
 import type { ResidencyLease } from '../device/residency-lifetime';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
 import {
+  assembleLitMaterialEntries,
   assembleMaterialWithSkylightEntries,
   skylightBindGroupResources,
 } from '../ibl/skylight-bind-group';
@@ -27,8 +24,10 @@ import {
   buildPbrMaterialUserRegionEntries,
   isCanonicalStandardPbrMaterialShader,
   isStandardPbrMaterialShader,
+  materialUsesLitSceneInputs,
   omittedStandardMaterialBindings,
   programDeclaresTransmissionBackdrop,
+  projectMaterialLayoutEntries,
   sharedMaterialBindingDeclarations,
   standardInputField,
 } from '../pbr-pipeline';
@@ -238,14 +237,23 @@ export function preparedMaterialBindings(
     const derived = derive(schema);
     const fields = [...derived.textureFieldNames];
     // Match the PBR layout's reserved dynamic UBO, including an empty schema.
-    const userRegion = buildPbrMaterialUserRegionEntries(schema);
+    const emptyLit =
+      schema.length === 0 && materialUsesLitSceneInputs(runtime.shaderRegistry, materialShaderId);
+    const userRegion = emptyLit
+      ? []
+      : buildPbrMaterialUserRegionEntries(
+          schema,
+          [],
+          [],
+          materialUsesLitSceneInputs(runtime.shaderRegistry, materialShaderId),
+        );
     const payload = new Uint8Array(Math.max(16, derived.uboLayout.totalBytes));
     writePreparedMaterialUbo(
       payload,
       schema,
       values as Readonly<Record<string, number | readonly number[]>>,
     );
-    return { schema, values, userRegion, fields, payload };
+    return { schema, values, userRegion, fields, payload: emptyLit ? undefined : payload };
   };
   const { schema, values, userRegion, fields, payload } = prepareMaterialParameterPayload();
   const resolvePreparedMaterialTextureResources = () => {
@@ -330,7 +338,14 @@ export function preparedMaterialBindings(
   if (fallback === null) {
     return err(new Error('prepared material skylight fallback is unavailable'));
   }
+  const litMaterial = materialUsesLitSceneInputs(runtime.shaderRegistry, materialShaderId);
   const projectPreparedMaterialLayoutEntries = () => {
+    if (litMaterial)
+      return assembleLitMaterialEntries(
+        entries,
+        skylightResources ?? skylightBindGroupResources(fallback),
+        derive(schema).userRegionBindingEnd,
+      );
     const programBindings = sharedMaterialBindingDeclarations(
       runtime.shaderRegistry,
       materialShaderId,
@@ -360,7 +375,7 @@ export function preparedMaterialBindings(
         : standardEntries.filter((entry) => !omitted.has(entry.binding));
     return completeEntries;
   };
-  const completeEntries = projectPreparedMaterialLayoutEntries();
+  let completeEntries = projectPreparedMaterialLayoutEntries();
   const appendPreparedMaterialOwnedEntries = () => {
     for (let index = 0; index < completeEntries.length; index++) {
       const entry = completeEntries[index];
@@ -372,7 +387,14 @@ export function preparedMaterialBindings(
       )
         completeEntries[index] = entry.binding;
     }
-    if (materialUsesDirectDfgLut(schema)) {
+    if (litMaterial) return undefined;
+    if (
+      materialUsesDirectDfgLut(schema) &&
+      !isCanonicalStandardPbrMaterialShader(materialShaderId) &&
+      sharedMaterialBindingDeclarations(runtime.shaderRegistry, materialShaderId)?.includes(
+        STANDARD_DIRECT_DFG_LUT_BINDING,
+      ) !== false
+    ) {
       const lut = getOrCreateDirectDfgLut(device, recordContext(runtime).deviceScope);
       if (!lut.ok) {
         return lut;
@@ -381,16 +403,6 @@ export function preparedMaterialBindings(
         binding: STANDARD_DIRECT_DFG_LUT_BINDING,
         resource: { kind: 'textureView', value: lut.value.view },
       });
-    }
-    // Prepared bindings serve no current capture: the projection stays disabled.
-    if (materialUsesPlanarReflection(schema)) {
-      completeEntries.push(
-        ...planarReflectionMaterialEntries(
-          pipelineState.viewUniformBuffer,
-          undefined,
-          (skylightResources ?? skylightBindGroupResources(fallback)).brdfLutView,
-        ),
-      );
     }
     // Per-shader PBR layouts reserve the scene-material SSBO at binding 46 on
     // storage-capable devices. Prepared feature materials use this same layout,
@@ -410,6 +422,7 @@ export function preparedMaterialBindings(
   };
   const ownedEntryFailure = appendPreparedMaterialOwnedEntries();
   if (ownedEntryFailure !== undefined) return ownedEntryFailure;
+  completeEntries = projectMaterialLayoutEntries(layout, completeEntries);
   // Resolve all current values and physical resources before sharing. Neither
   // a material GUID nor an immutable-looking source is sufficient authority.
   const findPreparedMaterialBindingReuse = () => {

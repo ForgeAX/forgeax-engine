@@ -33,23 +33,29 @@ export class RasterMeshBindings {
 
   capture(): void {
     for (const row of this.rows.values()) {
-      const vertex = row.mesh.vertexBuffer;
-      const index = row.mesh.indexBuffer;
-      if (vertex.isDestroyed || index?.isDestroyed) {
-        throw new Error('current raster mesh buffers must be live on the recording device');
-      }
-      const vertexHandle = vertex.handle;
-      const indexHandle = index?.handle;
-      if (
-        vertexHandle === undefined ||
-        vertexHandle === null ||
-        (index !== null && (indexHandle === undefined || indexHandle === null))
-      ) {
-        throw new Error('current raster mesh buffers must resolve before any pass executes');
-      }
-      if (row.vertex !== vertexHandle || row.index !== indexHandle) this.revision++;
-      row.vertex = vertexHandle;
-      row.index = indexHandle;
+      if (captureRasterMeshBinding(row)) this.revision++;
     }
   }
+}
+
+/** Resolve one original mesh row without executing a graph or synthesizing a frame. */
+export function captureRasterMeshBinding(row: RasterMeshBinding): boolean {
+  const vertex = row.mesh.vertexBuffer;
+  const index = row.mesh.indexBuffer;
+  if (vertex.isDestroyed || index?.isDestroyed) {
+    throw new Error('current raster mesh buffers must be live on the recording device');
+  }
+  const vertexHandle = vertex.handle;
+  const indexHandle = index?.handle;
+  if (
+    vertexHandle === undefined ||
+    vertexHandle === null ||
+    (index !== null && (indexHandle === undefined || indexHandle === null))
+  ) {
+    throw new Error('current raster mesh buffers must resolve before any pass executes');
+  }
+  const changed = row.vertex !== vertexHandle || row.index !== indexHandle;
+  row.vertex = vertexHandle;
+  row.index = indexHandle;
+  return changed;
 }

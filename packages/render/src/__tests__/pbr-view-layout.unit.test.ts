@@ -11,7 +11,7 @@ describe('PBR view bind-group layout', () => {
       entries
         .filter((entry) => entry.buffer?.hasDynamicOffset === true)
         .map((entry) => entry.binding),
-    ).toEqual([0, 10]);
+    ).toEqual([0]);
   });
 
   it('omits the cloud map while retaining the shared medium sampler on the minimum profile', () => {

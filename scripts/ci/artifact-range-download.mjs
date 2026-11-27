@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { Readable, Transform } from 'node:stream';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { discardHttpResponse } from '../lib/http-deadline.mjs';
+import { artifactResponseStream, withinArtifactDeadline } from './artifact-response.mjs';
 
 export const ARTIFACT_RANGE_MINIMUM_BYTES = 128 * 1024 * 1024;
 const CONNECTIONS = 4;
@@ -27,26 +29,22 @@ function rangeIdentity(response, metadata, minimumBytes) {
 }
 
 async function rangeResponse(fetchFn, identity, start, end, controller, timeoutMs) {
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let response;
-  try {
-    // The redirect already authorized this immutable blob. Never forward the
-    // GitHub API bearer token to its storage origin.
-    response = await fetchFn(identity.url, {
-      headers: {
-        Range: `bytes=${start}-${end}`,
-        'If-Match': identity.etag,
-        'Accept-Encoding': 'identity',
-      },
-      signal: controller.signal,
-    });
-  } catch (error) {
-    if (controller.signal.aborted)
-      throw new Error(`artifact request timeout after ${timeoutMs}ms`, { cause: error });
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
+  // The redirect already authorized this immutable blob. Never forward the
+  // GitHub API bearer token to its storage origin.
+  const response = await withinArtifactDeadline(
+    () =>
+      fetchFn(identity.url, {
+        headers: {
+          Range: `bytes=${start}-${end}`,
+          'If-Match': identity.etag,
+          'Accept-Encoding': 'identity',
+        },
+        signal: controller.signal,
+      }),
+    controller,
+    timeoutMs,
+    'request',
+  );
   if (response.status === 200)
     throw new ArtifactRangesUnavailable('artifact storage ignored byte ranges');
   if (response.status !== 206)
@@ -64,19 +62,9 @@ async function rangeResponse(fetchFn, identity, start, end, controller, timeoutM
 }
 
 async function writeRange(response, destination, start, end, controller, idleTimeoutMs) {
-  let timer;
-  let timedOut = false;
   let bytes = 0;
-  const arm = () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, idleTimeoutMs);
-  };
   const bounded = new Transform({
     transform(chunk, _encoding, callback) {
-      arm();
       bytes += chunk.byteLength;
       callback(
         bytes > end - start + 1 ? new Error('artifact range body exceeds declared length') : null,
@@ -84,22 +72,13 @@ async function writeRange(response, destination, start, end, controller, idleTim
       );
     },
   });
-  arm();
-  try {
-    await pipeline(
-      Readable.fromWeb(response.body),
-      bounded,
-      createWriteStream(destination, { flags: 'r+', start }),
-    );
-    if (bytes !== end - start + 1) throw new Error('artifact range body is truncated');
-    return bytes;
-  } catch (error) {
-    if (timedOut)
-      throw new Error(`artifact transfer idle timeout after ${idleTimeoutMs}ms`, { cause: error });
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
+  await pipeline(
+    artifactResponseStream(response.body, controller, idleTimeoutMs),
+    bounded,
+    createWriteStream(destination, { flags: 'r+', start }),
+  );
+  if (bytes !== end - start + 1) throw new Error('artifact range body is truncated');
+  return bytes;
 }
 
 /** Null preserves the original response; unsupported advertised ranges need a fresh full GET. */
@@ -115,8 +94,7 @@ export async function tryDownloadArtifactRanges({
 }) {
   const identity = rangeIdentity(response, metadata, minimumBytes);
   if (identity === null) return null;
-  controller.abort();
-  await response.body?.cancel().catch(() => {});
+  discardHttpResponse(response, controller);
   const file = await open(destination, 'w');
   try {
     await file.truncate(identity.bytes);

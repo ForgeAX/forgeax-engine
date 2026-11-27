@@ -68,6 +68,7 @@ export function createNodeMaterialProgramCompiler(workerLimit?: number): {
   );
   const serial = createShaderProgramCompiler();
   const workers = new Map<number, CompilerWorker>();
+  const routes = new Map<string, number>();
   const pending = new Set<Promise<Compilation>>();
   let nextId = 0;
   let closed = false;
@@ -109,6 +110,37 @@ export function createNodeMaterialProgramCompiler(workerLimit?: number): {
     return owner;
   };
 
+  const route = (digest: Buffer): number => {
+    const key = digest.toString('hex');
+    const previous = routes.get(key);
+    if (previous !== undefined) {
+      routes.delete(key);
+      routes.set(key, previous);
+      return previous;
+    }
+    // Give new source compositions the least occupied Worker. Equal requests
+    // retain that Worker's cache and in-flight compilation through the same route.
+    const preferred = digest.readUInt32LE(0) % concurrency;
+    let selected = preferred;
+    let queued = workers.get(preferred)?.jobs.size ?? 0;
+    for (let offset = 1; offset < concurrency && queued > 0; offset++) {
+      const index = (preferred + offset) % concurrency;
+      const pending = workers.get(index)?.jobs.size ?? 0;
+      if (pending < queued) {
+        selected = index;
+        queued = pending;
+      }
+    }
+    // A route stores only a digest and index. Bound it independently of the
+    // compiled program caches while giving active sources stable affinity.
+    if (routes.size >= 4096) {
+      const oldest = routes.keys().next().value;
+      if (oldest !== undefined) routes.delete(oldest);
+    }
+    routes.set(key, selected);
+    return selected;
+  };
+
   const compile: typeof compileShader = (source, options = {}) => {
     if (closed) return Promise.reject(new Error('material compiler is closed'));
     if (concurrency === 1) {
@@ -120,15 +152,12 @@ export function createNodeMaterialProgramCompiler(workerLimit?: number): {
       );
       return promise;
     }
-    // Stable routing retains one worker's bounded cache without hashing/copying the
-    // import closure again. Imports still enter the compiler's exact content key.
-    // Entry selectors and diagnostic IDs do not partition identical shader bodies.
-    const index =
-      createHash('sha256')
-        .update(JSON.stringify([source, options.defines]))
-        .digest()
-        .readUInt32LE(0) % concurrency;
-    const owner = getWorker(index);
+    // Imports still enter the compiler's exact content key. Entry selectors
+    // and diagnostic IDs share the same shader body and Worker route.
+    const digest = createHash('sha256')
+      .update(JSON.stringify([source, options.defines]))
+      .digest();
+    const owner = getWorker(route(digest));
     const id = nextId++;
     const promise = new Promise<Compilation>((resolve, reject) => {
       owner.jobs.set(id, { resolve, reject });
@@ -167,6 +196,7 @@ export function createNodeMaterialProgramCompiler(workerLimit?: number): {
         }),
       );
       workers.clear();
+      routes.clear();
     },
   };
 }

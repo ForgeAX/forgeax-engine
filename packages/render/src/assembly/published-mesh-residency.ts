@@ -6,6 +6,8 @@ import { type DynamicGeometryRecordStageLane, MeshResidencyError } from '../dyna
 import {
   type PreparedPublishedMeshResidency,
   type PublishedMeshPreparation,
+  type PublishedMeshPreparationOptions,
+  type PublishedMeshTransferReservation,
   RenderPublicationError,
 } from '../publication/contract';
 import {
@@ -18,7 +20,33 @@ import type {
   CandidatePipelineInput,
   PreparedCandidatePipelines,
 } from '../record/candidate-pipeline-preparation';
-import type { FrameReceipt } from '../render-contract';
+import type { FrameReceipt, RenderInspection } from '../render-contract';
+
+function unavailablePublicationSource() {
+  return err(
+    new RenderPublicationError({
+      reason: 'identity',
+      subject: 'Renderer has no publication source',
+    }),
+  );
+}
+
+export function reservePublishedMeshTransfer(
+  receiver: RenderPublicationReceiver | undefined,
+  bytes: number,
+): Result<PublishedMeshTransferReservation, RenderPublicationError | MeshResidencyError> {
+  return receiver?.reserveMeshTransfer(bytes) ?? unavailablePublicationSource();
+}
+
+export function inspectPublishedMeshResidency(
+  receiver: RenderPublicationReceiver | undefined,
+  store: GpuResidencyCache,
+): NonNullable<RenderInspection['meshResidency']> {
+  return {
+    ...(receiver === undefined ? {} : { publication: receiver.inspectMeshStorage() }),
+    gpuBuffers: store.inspectMeshBufferBytes(),
+  };
+}
 
 /** Physical preparation only; the source owns its candidate and fixed-step admission. */
 export function createPublishedMeshResidencyHost(options: {
@@ -41,17 +69,19 @@ export function createPublishedMeshResidencyHost(options: {
   return async (
     input: PublishedMeshPreparation,
     inputOwnership?: 'received',
-    preparationOptions?: { readonly signal?: AbortSignal },
+    preparationOptions?: PublishedMeshPreparationOptions,
   ): Promise<
     Result<PreparedPublishedMeshResidency, RenderPublicationError | MeshResidencyError>
   > => {
     const receiver = options.receiver;
-    if (receiver === undefined)
+    if (receiver === undefined) return unavailablePublicationSource();
+    if (preparationOptions?.reservation !== undefined && preparationOptions.signal?.aborted)
       return err(
-        new RenderPublicationError({
-          reason: 'identity',
-          subject: 'Renderer has no publication source',
-        }),
+        new MeshResidencyError(
+          'mesh-residency-gpu-not-ready',
+          'mesh transfer is active at receiver admission',
+          'discard the cancelled preparation',
+        ),
       );
     const { meshHandle } = input;
     let retire = () => {};
@@ -61,6 +91,7 @@ export function createPublishedMeshResidencyHost(options: {
       () => retire(),
       () => published(),
       inputOwnership,
+      preparationOptions?.reservation,
     );
     if (!prepared.ok) return prepared;
     const source = prepared.value;
@@ -142,7 +173,11 @@ export function createPublishedMeshResidencyHost(options: {
       return completion;
     };
     retire = () => {
-      release(true);
+      try {
+        preparationOptions?.onRetired?.(generation);
+      } finally {
+        release(true);
+      }
     };
     published = () => {
       physical.commit();

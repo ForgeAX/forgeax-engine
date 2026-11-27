@@ -1,4 +1,5 @@
 import {
+  ASSET_ERROR_HINTS,
   AssetError,
   type AssetPublicationEnvelope,
   type CatalogEntry,
@@ -31,6 +32,98 @@ function record(value: unknown): value is Record<string, unknown> {
 
 function strings(value: unknown): boolean {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+/** Inline assets can lack a source path. This projection is used for identity lookup. */
+export type CatalogNavigationRow = Omit<CatalogEntry, 'sourcePath'> & {
+  readonly sourcePath?: string;
+};
+
+const navigationFields = {
+  name: (value: unknown) => typeof value === 'string',
+  sourcePath: (value: unknown) => typeof value === 'string',
+  cookReceiptUrl: (value: unknown) => typeof value === 'string',
+  packageId: (value: unknown) => typeof value === 'string',
+  sourceKey: (value: unknown) => typeof value === 'string',
+  sourceIndex: (value: unknown) => typeof value === 'number',
+  relations: Array.isArray,
+  diagnostics: Array.isArray,
+  subject: (value: unknown) => value === 'internal-asset' || value === 'imported-output',
+  execution: (value: unknown) => value === 'direct' || value === 'cooked',
+  lifecycle: (value: unknown) =>
+    value === 'missing' ||
+    value === 'cooking' ||
+    value === 'current' ||
+    value === 'stale' ||
+    value === 'failed',
+} satisfies Partial<Record<keyof CatalogNavigationRow, (value: unknown) => boolean>>;
+const navigationChecks = Object.entries(navigationFields);
+const producerFields = [
+  'authoring',
+  'refs',
+  'provenance',
+  'revision',
+  'sourceOverrides',
+  'sourceOverrideDescriptors',
+  'projection',
+  'publication',
+] as const satisfies readonly (keyof CatalogNavigationRow)[];
+const locatorFields = [
+  ['relative', 'Url'].join(''),
+  'metadata',
+  'compression',
+  'artifacts',
+  'assetCodec',
+  'contentEncoding',
+];
+
+function isRawSourceLocator(packageUrl: string): boolean {
+  const path = packageUrl.split(/[?#]/, 1)[0]?.toLowerCase() ?? packageUrl.toLowerCase();
+  return (
+    /\.(bin|fbx|gltf|glb|hdr|jpg|jpeg|png|wav|mp3|ogg|ttf|otf|woff|woff2|svg)$/.test(path) ||
+    path.endsWith('.particle-effect.json')
+  );
+}
+
+function navigationError(expected: string): Result<never, AssetError> {
+  return err(
+    new AssetError({
+      code: 'asset-parse-failed',
+      expected,
+      hint: ASSET_ERROR_HINTS['asset-parse-failed'],
+    }),
+  );
+}
+
+/** Keep locator metadata in the Pack and preserve legacy inline navigation rows. */
+export function readCatalogNavigationRow(raw: unknown): Result<CatalogNavigationRow, AssetError> {
+  if (!record(raw)) return navigationError('each catalog row to be an object');
+  if (locatorFields.some((key) => key in raw))
+    return navigationError('catalog rows to expose navigation fields only');
+  const { guid, packageUrl, kind } = raw;
+  if (
+    typeof guid !== 'string' ||
+    !guid ||
+    typeof packageUrl !== 'string' ||
+    !packageUrl ||
+    typeof kind !== 'string' ||
+    !kind
+  )
+    return navigationError('each catalog row to contain guid, packageUrl, and kind strings');
+  if (isRawSourceLocator(packageUrl))
+    return navigationError(`catalog packageUrl ${packageUrl} to identify a cooked package`);
+  if (raw.refs !== undefined && !strings(raw.refs))
+    return navigationError(`catalog refs for GUID ${guid} to be a string array`);
+  if (raw.sourceOverrides !== undefined && !record(raw.sourceOverrides))
+    return navigationError(`catalog sourceOverrides for GUID ${guid} to be an object`);
+  if (raw.sourceOverrideDescriptors !== undefined && !Array.isArray(raw.sourceOverrideDescriptors))
+    return navigationError(`catalog sourceOverrideDescriptors for GUID ${guid} to be an array`);
+
+  const row = { guid, packageUrl, kind };
+  const fields: Record<string, unknown> = row;
+  for (const [key, check] of navigationChecks) if (check(raw[key])) fields[key] = raw[key];
+  for (const key of producerFields) if (raw[key] !== undefined) fields[key] = raw[key];
+  return ok(row);
 }
 
 function publicationField(value: unknown): string | undefined {
@@ -191,6 +284,15 @@ function wireFailure(field: string, index?: number): Result<never, AssetError> {
   );
 }
 
+function wireTable(
+  name: 'publications' | 'projections',
+  target: 'publication' | 'projection',
+  values: readonly unknown[],
+  field: (value: unknown) => string | undefined,
+) {
+  return { name, target, index: `${target}Index`, values, field, used: new Set<number>() };
+}
+
 /** Restore existing readonly rows before ordinary Catalog validation. */
 export function decodeCatalogWire(raw: unknown): Result<readonly CatalogEntry[], AssetError> {
   if (record(raw) && raw.schemaVersion === RUNTIME_CATALOG_SNAPSHOT_SCHEMA) {
@@ -211,18 +313,15 @@ export function decodeCatalogWire(raw: unknown): Result<readonly CatalogEntry[],
   if (!Array.isArray(raw.entries)) return wireFailure('entries');
   if (!Array.isArray(raw.publications)) return wireFailure('publications');
   if (!Array.isArray(raw.projections)) return wireFailure('projections');
-  for (let index = 0; index < raw.publications.length; index++) {
-    const field = publicationField(raw.publications[index]);
-    if (field !== undefined) return wireFailure(`publications[${index}]${field}`, index);
+  const publications = wireTable('publications', 'publication', raw.publications, publicationField);
+  const projections = wireTable('projections', 'projection', raw.projections, projectionField);
+  const tables = [publications, projections];
+  for (const table of tables) {
+    for (let index = 0; index < table.values.length; index++) {
+      const field = table.field(table.values[index]);
+      if (field !== undefined) return wireFailure(`${table.name}[${index}]${field}`, index);
+    }
   }
-  for (let index = 0; index < raw.projections.length; index++) {
-    const field = projectionField(raw.projections[index]);
-    if (field !== undefined) return wireFailure(`projections[${index}]${field}`, index);
-  }
-  const publications = raw.publications as AssetPublicationEnvelope[];
-  const projections = raw.projections as CatalogProjection[];
-  const referenced = new Set<number>();
-  const referencedProjections = new Set<number>();
   const entries: CatalogEntry[] = [];
   for (let index = 0; index < raw.entries.length; index++) {
     const entry: unknown = raw.entries[index];
@@ -231,38 +330,28 @@ export function decodeCatalogWire(raw: unknown): Result<readonly CatalogEntry[],
       return wireFailure(`entries[${index}].publication`, index);
     if (Object.hasOwn(entry, 'projection'))
       return wireFailure(`entries[${index}].projection`, index);
-    const { publicationIndex, projectionIndex, ...row } = entry;
-    if (Object.hasOwn(entry, 'publicationIndex')) {
+    const { publicationIndex: _publication, projectionIndex: _projection, ...row } = entry;
+    for (const table of tables) {
+      if (!Object.hasOwn(entry, table.index)) continue;
+      const reference = entry[table.index];
       if (
-        typeof publicationIndex !== 'number' ||
-        !Number.isSafeInteger(publicationIndex) ||
-        publicationIndex < 0 ||
-        publicationIndex >= publications.length
+        typeof reference !== 'number' ||
+        !Number.isSafeInteger(reference) ||
+        reference < 0 ||
+        reference >= table.values.length
       )
-        return wireFailure(`entries[${index}].publicationIndex`, index);
-      referenced.add(publicationIndex);
-      row.publication = publications[publicationIndex];
-    }
-    if (Object.hasOwn(entry, 'projectionIndex')) {
-      if (
-        typeof projectionIndex !== 'number' ||
-        !Number.isSafeInteger(projectionIndex) ||
-        projectionIndex < 0 ||
-        projectionIndex >= projections.length
-      )
-        return wireFailure(`entries[${index}].projectionIndex`, index);
-      referencedProjections.add(projectionIndex);
-      row.projection = projections[projectionIndex];
+        return wireFailure(`entries[${index}].${table.index}`, index);
+      table.used.add(reference);
+      row[table.target] = table.values[reference];
     }
     // Producer rows already share a readonly envelope. Restore that same model;
     // neither the input document nor any of its publication fields is mutated.
     entries.push(row as unknown as CatalogEntry);
   }
-  for (let index = 0; index < projections.length; index++) {
-    if (!referencedProjections.has(index)) return wireFailure(`projections[${index}]`, index);
-  }
-  for (let index = 0; index < publications.length; index++) {
-    if (!referenced.has(index)) return wireFailure(`publications[${index}]`, index);
+  for (const table of [projections, publications]) {
+    if (table.used.size === table.values.length) continue;
+    const index = table.values.findIndex((_, index) => !table.used.has(index));
+    return wireFailure(`${table.name}[${index}]`, index);
   }
   return ok(entries);
 }

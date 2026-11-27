@@ -4,9 +4,9 @@ import {
   AMBIENT_OCCLUSION_QUALITY_LOW,
   AMBIENT_OCCLUSION_QUALITY_MEDIUM,
   AmbientOcclusion,
+  type AmbientOcclusionSettings,
   ANTIALIAS_MSAA,
   ANTIALIAS_NONE,
-  BLOOM_ENABLED,
   buildCubeCameraFaceViews,
   type FrameReceipt,
   type FrameReceiptObservation,
@@ -34,40 +34,36 @@ import type Color4 from 'three/src/renderers/common/Color4.js';
 import type { RenderItem } from 'three/src/renderers/common/Renderer.js';
 import type { WebGPURendererParameters as UpstreamParameters } from 'three/src/renderers/webgpu/WebGPURenderer.js';
 import {
-  type BufferGeometry,
   type Camera,
   Color,
   type ColorRepresentation,
   CubeCamera,
   CubeTexture,
   HalfFloatType,
-  Line,
   LinearToneMapping,
-  LOD,
-  Mesh,
   NoToneMapping,
   type Object3D,
   PCFShadowMap,
   PerspectiveCamera,
-  Points,
   type RenderTarget,
   Scene,
   type ShadowMapType,
-  Sprite,
   SRGBColorSpace,
-  Texture,
+  type Texture,
   type ToneMapping,
   UnsignedByteType,
   Vector2,
   Vector4,
   WebGPUCoordinateSystem,
 } from 'three/src/Three.Core.js';
-import { cameraData, writeSceneClearColor } from './camera';
+import { cameraData } from './camera';
 import { invalid, ThreeCompatibilityError, unsupported } from './errors';
-import { ExternalTextures, isExternalTexture } from './external-textures';
-import { materialTextures, validateMaterial } from './material';
+import {
+  type ExternalTextureDemand,
+  ExternalTextures,
+  isExternalTexture,
+} from './external-textures';
 import { prepareMaterialPrograms } from './material-programs';
-import { surfaceInput } from './node-inputs';
 import { createThreePipeline } from './pipeline';
 import { renderThreePostProcessing, type ThreePostProcessing } from './post-processing';
 import { RenderTargets } from './render-targets';
@@ -81,8 +77,8 @@ export interface WebGPURendererParameters extends Omit<UpstreamParameters, 'canv
     readonly backend?: RecordableBackend;
     readonly renderer?: Omit<RendererOptions, 'rhi' | 'rhiInstrumentation' | 'pipeline'>;
     readonly bundler?: BundlerOptions;
-    /** Extra exact Physical texture variants, produced by three/build at build time. */
-    readonly materialPrograms?: readonly string[];
+    /** Build-produced publications. A pending load can overlap device initialization. */
+    readonly materialPrograms?: readonly string[] | PromiseLike<readonly string[]>;
   };
 }
 
@@ -97,6 +93,19 @@ export interface ThreeFrameCapture {
 /** Settings for a native capture owned by a projected display camera. */
 export type ThreePlanarReflectionOptions = Partial<Omit<PlanarReflectionData, 'target'>>;
 const configurePlanarReflection = Symbol('configurePlanarReflection');
+const readFrame = Symbol('readFrame');
+
+export interface ThreeFrameObservation {
+  readonly receipt: FrameReceipt;
+  readonly observe: (
+    request: Parameters<Renderer['observe']>[1],
+  ) => ReturnType<Renderer['observe']>;
+}
+
+/** Snapshot the latest submission without gathering scene diagnostics or redrawing. */
+export function readThreeFrame(renderer: WebGPURenderer): ThreeFrameObservation | undefined {
+  return renderer[readFrame]();
+}
 
 /** ForgeaX integration entry; source cameras retain the upstream Three contract. */
 export function setThreePlanarReflection(
@@ -138,6 +147,10 @@ async function targetWork<T>(work: Promise<T>, deadline: number): Promise<T> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function hasBeforeRender(scene: Object3D): boolean {
+  return scene instanceof Scene && scene.onBeforeRender !== Scene.prototype.onBeforeRender;
 }
 
 /** Three's authoring objects, one Forgeax Renderer, and no upstream GPU renderer. */
@@ -195,6 +208,7 @@ export class WebGPURenderer {
   private sampleCount = 0;
   private renderTarget: RenderTarget | null = null;
   private asyncTargetOperation = false;
+  private cubeFacePoses?: readonly Pick<Object3D, 'position' | 'scale' | 'quaternion'>[];
   private activeCubeFace = 0;
   private activeMipmapLevel = 0;
   private readonly outputType: typeof HalfFloatType | typeof UnsignedByteType;
@@ -203,6 +217,7 @@ export class WebGPURenderer {
   outputColorSpace: string = SRGBColorSpace;
   private readonly recorder: RecorderAttachment;
   private readonly initializing: Promise<void>;
+  private readonly profiler: RendererOptions['profiler'];
   private runtime:
     | {
         native: Renderer;
@@ -216,6 +231,7 @@ export class WebGPURenderer {
   private disposed = false;
   private disposing: Promise<void> | undefined;
   private captureAbort: AbortController | undefined;
+  private cancelMaterialStartup: (() => void) | undefined;
   private canvasTarget: CanvasTarget;
   private readonly canvasSize = new Vector2();
   private readonly canvasRectangle = new Vector4();
@@ -227,6 +243,7 @@ export class WebGPURenderer {
   private loop: ((time: number) => void) | null = null;
   private animationRequest: number | undefined;
   private receipt: FrameReceipt | undefined;
+  private composerAoBase: AmbientOcclusionSettings | undefined;
 
   constructor(parameters: WebGPURendererParameters = {}) {
     if (parameters.forgeax?.renderer && 'pipeline' in parameters.forgeax.renderer)
@@ -270,6 +287,7 @@ export class WebGPURenderer {
     this.domElement = parameters.canvas ?? document.createElement('canvas');
     this.canvasTarget = new CanvasTarget(this.domElement);
     this.recorder = attachRecorder(parameters.forgeax?.backend ?? webgpu).unwrap();
+    this.profiler = parameters.forgeax?.renderer?.profiler;
     this.initializing = this.initialize(
       parameters.forgeax,
       output === HalfFloatType ? 'rgba16float' : 'rgba8unorm',
@@ -284,6 +302,14 @@ export class WebGPURenderer {
   ): Promise<void> {
     let native: Renderer | undefined;
     let projection: SceneProjection | undefined;
+    const materialPrograms = Promise.race([
+      Promise.resolve(options?.materialPrograms),
+      new Promise<undefined>((resolve) => {
+        this.cancelMaterialStartup = () => resolve(undefined);
+      }),
+    ]);
+    // Material loading can fail while the native host still owns its startup.
+    void materialPrograms.catch(() => undefined);
     try {
       const host = value(
         await constructRuntimeRendererHost(
@@ -299,6 +325,7 @@ export class WebGPURenderer {
       );
       native = host.renderer;
       value(await host.initialization);
+      const publications = await materialPrograms;
       if (this.disposed) {
         value(await native.dispose());
         return;
@@ -308,8 +335,8 @@ export class WebGPURenderer {
       projection = new SceneProjection(
         host.assets,
         external,
-        await prepareMaterialPrograms(host.assets, options?.materialPrograms),
-        { targets },
+        await prepareMaterialPrograms(host.assets, publications),
+        { targets, canvasTextures: options?.backend === undefined },
       );
       const lease = value(native.attach(projection.world));
       const unsubscribe = forwardRendererEvents(native, this);
@@ -322,6 +349,8 @@ export class WebGPURenderer {
         (await this.recorder.dispose()).unwrap();
       }
       throw error;
+    } finally {
+      this.cancelMaterialStartup = undefined;
     }
   }
 
@@ -671,7 +700,7 @@ export class WebGPURenderer {
     this.assertNotCapturing();
     if (this.asyncTargetOperation)
       invalid('Await the active target operation before rendering').unwrap();
-    const receipt = this.submit(this.prepare(scene, camera, false, post));
+    const receipt = this.submit(this.prepare(scene, camera, undefined, post));
     if (this.renderTarget !== null && receipt.presentation !== 'ready')
       throw new ThreeCompatibilityError(
         'renderer-not-ready',
@@ -719,15 +748,24 @@ export class WebGPURenderer {
 
   inspect(): {
     renderer: ReturnType<Renderer['inspect']>;
+    sourceWork: ReturnType<SceneProjection['sourceWork']>;
     sources: readonly ThreeSourceIdentity[];
     receipt: FrameReceipt | undefined;
   } {
     const { native, projection } = this.ready();
     return {
       renderer: native.inspect(),
-      sources: projection.sources(),
+      sourceWork: projection.sourceWork(),
+      sources: projection.sources('admitted'),
       receipt: this.receipt,
     };
+  }
+
+  [readFrame](): ThreeFrameObservation | undefined {
+    const receipt = this.receipt;
+    const native = this.runtime?.native;
+    if (receipt === undefined || native === undefined || this.disposed) return undefined;
+    return { receipt, observe: (request) => native.observe(receipt, request) };
   }
 
   /** Capture one already prepared scene through the existing RHI recorder. No simulation time advances. */
@@ -740,7 +778,7 @@ export class WebGPURenderer {
     if (this.asyncTargetOperation) invalid('Concurrent target operations').unwrap();
     const entity = this.prepare(scene, camera);
     const { native, projection } = this.ready();
-    const sources = projection.sources();
+    const sources = projection.sources('admitted');
     const abort = new AbortController();
     this.captureAbort = abort;
     const signal =
@@ -778,6 +816,7 @@ export class WebGPURenderer {
     this.loop = null;
     if (this.animationRequest !== undefined) cancelAnimationFrame(this.animationRequest);
     this.captureAbort?.abort();
+    this.cancelMaterialStartup?.();
     this.disposing = (async () => {
       await this.initializing.catch(() => undefined);
       const runtime = this.runtime;
@@ -813,87 +852,57 @@ export class WebGPURenderer {
       face = this.activeCubeFace,
       mip = this.activeMipmapLevel;
     await this.init();
-    if (
-      target !== this.renderTarget ||
-      face !== this.activeCubeFace ||
-      mip !== this.activeMipmapLevel
-    )
-      invalid('Render target changed during renderAsync; await the active operation').unwrap();
-    this.assertNotCapturing();
-    if (this.asyncTargetOperation) invalid('Concurrent target operations').unwrap();
-    await this.prepareAsyncScene(scene, camera);
-    if (
-      target !== this.renderTarget ||
-      face !== this.activeCubeFace ||
-      mip !== this.activeMipmapLevel
-    )
-      invalid('Render target changed during renderAsync; await the active operation').unwrap();
-    this.assertNotCapturing();
-    if (this.renderTarget === null) this.submit(this.prepare(scene, camera, true));
-    else {
+    const assertTarget = () => {
+      if (
+        target !== this.renderTarget ||
+        face !== this.activeCubeFace ||
+        mip !== this.activeMipmapLevel
+      )
+        invalid('Render target changed during renderAsync; await the active operation').unwrap();
+      this.assertNotCapturing();
       if (this.asyncTargetOperation) invalid('Concurrent target operations').unwrap();
-      this.asyncTargetOperation = true;
-      try {
-        await this.submitTargetReady(scene, camera);
-      } finally {
-        this.asyncTargetOperation = false;
-      }
-    }
+    };
+    assertTarget();
+    await this.withPreparedScene(
+      scene,
+      camera,
+      (entity) => {
+        assertTarget();
+        if (target === null) {
+          this.submit(entity);
+          return;
+        }
+        this.asyncTargetOperation = true;
+        return this.submitTargetReady(entity).finally(() => {
+          this.asyncTargetOperation = false;
+        });
+      },
+      assertTarget,
+    );
     this.sceneCallback(scene, camera, 'onAfterRender');
   }
 
-  private async prepareAsyncScene(scene: Object3D, camera: Camera): Promise<void> {
-    this.updateScene(scene, camera);
-    scene.traverseVisible((object) => {
-      if (object instanceof LOD && object.autoUpdate && object.layers.test(camera.layers))
-        object.update(camera);
-    });
-    const pending: Promise<void>[] = [];
-    scene.traverseVisible((object) => {
-      if (!object.layers.test(camera.layers)) return;
-      if (
-        !(
-          object instanceof Mesh ||
-          object instanceof Sprite ||
-          object instanceof Line ||
-          object instanceof Points
-        )
-      )
-        return;
-      const materials = Array.isArray(object.material) ? object.material : [object.material];
-      const geometry = object.geometry as BufferGeometry;
-      const slots = Array.isArray(object.material)
-        ? geometry.groups
-            .filter(
-              (group) =>
-                Math.min(
-                  group.start + group.count,
-                  geometry.drawRange.start + geometry.drawRange.count,
-                ) > Math.max(group.start, geometry.drawRange.start),
-            )
-            .map((group) => group.materialIndex ?? 0)
-        : [0];
-      for (const slot of new Set(slots)) {
-        const material = materials[slot];
-        if (material === undefined || !material.visible) continue;
-        const effective =
-          scene instanceof Scene && material.allowOverride && scene.overrideMaterial !== null
-            ? scene.overrideMaterial
-            : material;
-        // Overrides inherit coverage from the original material in r187.
-        const textures = materialTextures(validateMaterial(effective).unwrap());
-        if (
-          effective !== material &&
-          surfaceInput(effective, 'opacityNode') === null &&
-          'alphaMap' in material &&
-          material.alphaMap instanceof Texture
-        )
-          textures.push(['alphaTexture', material.alphaMap]);
-        for (const [, texture] of textures)
-          if (isExternalTexture(texture)) pending.push(this.ready().external.initialize(texture));
-      }
-    });
-    await Promise.all(pending);
+  private async withPreparedScene<T>(
+    scene: Object3D,
+    camera: Camera,
+    consume: (entity: ReturnType<SceneProjection['sync']>) => T,
+    assertTarget?: () => void,
+  ): Promise<T> {
+    const sourceMatricesReady = this.updateScene(scene, camera);
+    const demand: ExternalTextureDemand = new Set();
+    let entity: ReturnType<SceneProjection['sync']>;
+    try {
+      entity = this.prepare(scene, camera, sourceMatricesReady, undefined, demand);
+    } catch (error) {
+      if (error !== demand) throw error;
+      const { external } = this.ready();
+      await Promise.all(Array.from(demand, (texture) => external.initialize(texture)));
+      assertTarget?.();
+      // Re-read source admission after the wait. Further uninitialized inputs
+      // use the ordinary binding error instead of chasing a moving scene.
+      entity = this.prepare(scene, camera, sourceMatricesReady);
+    }
+    return consume(entity);
   }
 
   /** Full-target raw readback. Region copies and depth readback are explicit gaps. */
@@ -1001,13 +1010,21 @@ export class WebGPURenderer {
         far = (source as PerspectiveCamera).far;
       if (!Number.isFinite(near) || near <= 0 || !Number.isFinite(far) || far <= near)
         invalid('CubeCamera near/far').unwrap();
-      const original = new CubeCamera(near, far, cubeTarget);
-      original.coordinateSystem = this.coordinateSystem;
-      original.updateCoordinateSystem();
+      if (this.cubeFacePoses === undefined) {
+        const original = new CubeCamera(near, far, cubeTarget);
+        original.coordinateSystem = this.coordinateSystem;
+        original.updateCoordinateSystem();
+        this.cubeFacePoses = original.children.map(({ position, scale, quaternion }) => ({
+          position,
+          scale,
+          quaternion,
+        }));
+      }
+      const facePoses = this.cubeFacePoses;
       if (
         camera.children.length !== 6 ||
         camera.children.some((child, index) => {
-          const expected = original.children[index];
+          const expected = facePoses[index];
           return (
             !(child instanceof PerspectiveCamera) ||
             expected === undefined ||
@@ -1047,18 +1064,16 @@ export class WebGPURenderer {
           projected = new PerspectiveCamera(90, 1, near, far);
           projected.layers.mask = camera.layers.mask;
           projected.matrixAutoUpdate = false;
-          projected.matrix.fromArray(Array.from(view.view)).invert();
+          projected.matrix.fromArray(view.view).invert();
           projected.matrixWorld.copy(projected.matrix);
-          await this.prepareAsyncScene(scene, projected);
-          const entity = this.prepare(scene, projected, true);
-          return {
+          return this.withPreparedScene(scene, projected, (entity) => ({
             source: lease,
             camera: { entityKey: entity },
-            geometryLane: 'direct',
+            geometryLane: 'direct' as const,
             clearColor: this.autoClear && this.autoClearColor,
             clearDepth: this.autoClear && this.autoClearDepth,
             clearStencil: this.autoClear && this.autoClearStencil,
-          };
+          }));
         },
         onFaceSubmitted: (_layer, receipt) => {
           this.noteSubmission(receipt);
@@ -1199,7 +1214,7 @@ export class WebGPURenderer {
       Reflect.apply(scene[event], scene, [this, scene, camera, this.renderTarget]);
   }
 
-  private updateScene(scene: Object3D, camera: Camera): void {
+  private updateScene(scene: Object3D, camera: Camera): boolean {
     if (
       camera.coordinateSystem !== this.coordinateSystem ||
       camera.reversedDepth !== this.reversedDepthBuffer
@@ -1209,12 +1224,19 @@ export class WebGPURenderer {
       if ('updateProjectionMatrix' in camera && typeof camera.updateProjectionMatrix === 'function')
         camera.updateProjectionMatrix();
     }
-    if (scene.matrixWorldAutoUpdate) scene.updateMatrixWorld();
-    if (camera.parent === null && camera.matrixWorldAutoUpdate) camera.updateMatrixWorld();
+    const sourceMatricesReady = hasBeforeRender(scene);
+    if (sourceMatricesReady) this.ready().projection.updateMatrices(scene, camera);
     this.sceneCallback(scene, camera, 'onBeforeRender');
+    return sourceMatricesReady;
   }
 
-  private prepare(scene: Object3D, camera: Camera, updated = false, post?: ThreePostProcessing) {
+  private prepare(
+    scene: Object3D,
+    camera: Camera,
+    sourceMatricesReady?: boolean,
+    post?: ThreePostProcessing,
+    externalDemand?: ExternalTextureDemand,
+  ) {
     const { projection, native } = this.ready();
     if (this.shadowMap.transmitted)
       unsupported('Transmitted-color shadow maps require native colored shadow transport').unwrap();
@@ -1235,50 +1257,59 @@ export class WebGPURenderer {
     value(
       native.setOutputColorSpace(this.outputColorSpace === 'display-p3' ? 'display-p3' : 'srgb'),
     );
-    if (!updated) this.updateScene(scene, camera);
-    const data = cameraData(
-      camera,
-      this.toneMapping === NoToneMapping ? LinearToneMapping : this.toneMapping,
-      this.toneMapping === NoToneMapping ? 1 : this.toneMappingExposure,
-    );
-    const entity = projection.sync(
+    const sourceReady = sourceMatricesReady ?? this.updateScene(scene, camera);
+    const entity = projection.syncCamera(
       scene,
       camera,
       {
-        ...data,
-        ...(post?.bloom === undefined
-          ? {}
-          : {
-              bloom: BLOOM_ENABLED,
-              bloomIntensity: post.bloom.intensity,
-              bloomRadius: post.bloom.radius,
-              bloomThreshold: post.bloom.threshold,
-            }),
+        toneMapping: this.toneMapping === NoToneMapping ? LinearToneMapping : this.toneMapping,
+        exposure: this.toneMapping === NoToneMapping ? 1 : this.toneMappingExposure,
         antialias: this.antialias,
-        clearColor: writeSceneClearColor(
-          new Float32Array(4),
-          scene,
-          this.clearColorValue,
-          this.clearAlpha,
-        ),
+        bloom: post?.bloom,
+        clearColor: this.clearColorValue,
+        clearAlpha: this.clearAlpha,
       },
       {
+        externalDemand,
         deferResourceSweep: this.renderTarget !== null,
         pixelRatio: this.getPixelRatio(),
         depth: this.renderTarget?.depthBuffer ?? this.depth,
         stencil: this.renderTarget?.stencilBuffer ?? this.stencil,
         sortObjects: this.sortObjects,
+        nativeTransparentOrder: this.sortObjects && this.transparentSort === null,
         transparentSort: this.transparentSort,
         opaqueOrder: true,
         opaqueSort: this.opaqueSort,
         opaque: this.opaque,
         transparent: this.transparent,
-        updateMatrices: false,
+        updateMatrices: !sourceReady,
+        ecsPoses: !sourceReady,
         shadowMap: { ...this.shadowMap, cameraLayers: camera.layers.mask },
       },
     );
     this.projectCameraEffects(projection, entity, camera, post);
+    this.projectComposerProfile(native, post);
     return entity;
+  }
+
+  private projectComposerProfile(
+    native: ReturnType<WebGPURenderer['ready']>['native'],
+    post: ThreePostProcessing | undefined,
+  ): void {
+    const composerUsesGtao = post?.ao !== undefined;
+    if (composerUsesGtao !== (this.composerAoBase !== undefined)) {
+      const { profile } = native.inspect({ fields: ['profile'] });
+      const ambientOcclusion = this.composerAoBase ?? {
+        ...profile.ambientOcclusion,
+        method: 'gtao' as const,
+        gtao: {
+          ...(post?.ao?.radius === undefined ? {} : { falloffEnd: post.ao.radius }),
+          ...(post?.ao?.downsample === undefined ? {} : { downsample: post.ao.downsample }),
+        },
+      };
+      value(native.setProfile({ ...profile, ambientOcclusion }));
+      this.composerAoBase = composerUsesGtao ? profile.ambientOcclusion : undefined;
+    }
   }
 
   private projectCameraEffects(
@@ -1289,7 +1320,7 @@ export class WebGPURenderer {
   ): void {
     const hasAO = projection.world.hasComponent(entity, AmbientOcclusion);
     if (post?.ao !== undefined) {
-      const { samples, ...settings } = post.ao;
+      const { samples, downsample: _downsample, ...settings } = post.ao;
       const quality =
         samples === undefined || samples > 16
           ? AMBIENT_OCCLUSION_QUALITY_HIGH
@@ -1335,9 +1366,8 @@ export class WebGPURenderer {
     };
   }
 
-  private async submitTargetReady(scene: Object3D, camera: Camera): Promise<void> {
+  private async submitTargetReady(entity: ReturnType<SceneProjection['sync']>): Promise<void> {
     const deadline = Date.now() + 20000;
-    const entity = this.prepare(scene, camera, true);
     const write = this.targetWrite();
     for (;;) {
       const receipt = this.submit(entity, write);
@@ -1361,11 +1391,13 @@ export class WebGPURenderer {
     targetWrite = this.targetWrite(),
   ): FrameReceipt {
     const { native, lease } = this.ready();
+    const profileFrame = this.profiler?.activeSession()?.currentFrameToken();
     const receipt = value(
       native.draw({
         source: lease,
         camera: { entityKey: entity },
         geometryLane: 'direct',
+        ...(profileFrame === undefined ? {} : { profileFrame }),
         ...(targetWrite === undefined ? {} : { targetWrite }),
       }),
     );

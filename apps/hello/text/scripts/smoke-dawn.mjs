@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { useBuiltAssetSource } from '../../../shared/scripts/source-publication.mjs';
 import { smokeFrameBudget, emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 // Complete 60 presented Renderer submissions using the baked DejaVu Font closure.
 // Native GlyphText must remain free of generated ECS Mesh components and render
@@ -7,7 +8,6 @@ import { smokeFrameBudget, emitSmokeReceipt } from '../../../shared/scripts/smok
 // pipeline completion, reproducing a slow (lavapipe) compiler on any machine.
 
 import { setTimeout as delay } from 'node:timers/promises';
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
@@ -137,6 +137,7 @@ const TEXT_SCENES = [
 ];
 
 const here = dirname(fileURLToPath(import.meta.url));
+const dist = resolve(here, '..', 'dist');
 const MANIFEST_PATH = resolve(here, '..', 'dist', 'shaders', 'manifest.json');
 const MANIFEST_URL = URL.createObjectURL(
   new Blob([readShaderManifestText(MANIFEST_PATH)], { type: 'application/json' }),
@@ -158,7 +159,8 @@ let fontHandle;
 if (FALSIFY === 'atlas-empty') {
   fontHandle = 0;
 } else {
-  fontHandle = await registerBakedFont(assets);
+  useBuiltAssetSource(assets, dist);
+  fontHandle = (await assets.load('0172daac-227f-5a3b-b6ae-313f9fd52081', 'font')).unwrap();
 }
 
 const textEntities = spawnTextScenes(world, fontHandle).map((e) => e);
@@ -298,38 +300,6 @@ function spawnTextScenes(world, fontHandle) {
     );
   }
   return out;
-}
-
-async function registerBakedFont(assets) {
-  // Reuse the source Pack metrics and decode its atlas into the managed runtime closure.
-  const repoRoot = resolve(here, '..', '..', '..', '..');
-  const fontDir = resolve(repoRoot, 'forgeax-engine-assets', 'dejavu-fonts');
-  const atlasPngBytes = readFileSync(resolve(fontDir, 'DejaVuSansMono.atlas.png'));
-  const packJson = JSON.parse(readFileSync(resolve(fontDir, 'DejaVuSansMono.font.pack.json'), 'utf8'));
-
-  const { parseImage } = await import('@forgeax/engine-image/parse-image');
-  const result = parseImage(atlasPngBytes, 'image/png', { colorSpace: 'linear', mipmap: false });
-  if (!result.ok) throw result.error;
-  const decoded = result.value;
-
-  const fontPayload = packJson.assets[0].payload;
-  const atlas = assets.create({
-    kind: 'texture',
-    shape: { viewDimension: '2d', extent: { width: decoded.width, height: decoded.height } },
-    format: 'rgba8unorm',
-    data: decoded.bytes,
-    colorSpace: 'linear',
-    mips: { kind: 'none' },
-  }).unwrap();
-  const sampler = assets.create({kind:'sampler',addressModeU:'clamp-to-edge',addressModeV:'clamp-to-edge',magFilter:'linear',minFilter:'linear'}).unwrap();
-
-  return assets.create({
-    kind: 'font',
-    atlas,
-    sampler,
-    glyphs: fontPayload.glyphs,
-    common: fontPayload.common,
-  }).unwrap();
 }
 
 // Count "text" pixels across the whole frame: bright pixels that are NOT the

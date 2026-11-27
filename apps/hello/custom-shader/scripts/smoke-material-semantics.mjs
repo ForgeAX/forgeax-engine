@@ -127,7 +127,7 @@ async function cookVariant(work, warm, values = {}, guidOverride) {
 }
 
 async function writeSemanticFixture(kind, publications) {
-  const path = resolve(ROOT, `scripts/forgeax/material-witness-fixtures/semantic-${kind}.pack.json`);
+  const path = resolve(ROOT, `scripts/forgeax/material-witness-fixtures/semantic-${kind}.runtime-pack.json`);
   assert(
     new Set(publications.map((publication) => publication.record.guid)).size === publications.length,
     'semantic Pack contains duplicate material GUID publications',
@@ -196,8 +196,7 @@ async function draw(wgsl) {
 
 async function runBrowser(rootGuid, derivedGuid, fixturePath) {
   const env = { ...process.env };
-  env.FORGEAX_CUSTOM_SHADER_SEMANTIC_FIXTURE_PATH = fixturePath;
-  env.FORGEAX_CUSTOM_SHADER_SEMANTIC_PACK_PATH = fixturePath;
+  env.FORGEAX_CUSTOM_SHADER_PACK_URL = `/@fs${fixturePath}`;
   env.FORGEAX_CUSTOM_SHADER_SEMANTIC = '1';
   if (mode === 'runtime-bool-no-compile') env.FORGEAX_CUSTOM_SHADER_RUNTIME_BOOL = '1';
   env.FORGEAX_CUSTOM_SHADER_EXPECTED_GUID = rootGuid;

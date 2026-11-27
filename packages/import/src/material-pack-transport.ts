@@ -42,6 +42,15 @@ function matchesExternalBytes(inline: unknown, externalValue: unknown): boolean 
   );
 }
 
+function hasCookedMaterialPrograms(
+  value: Record<string, unknown> | undefined,
+): value is Record<string, unknown> & { readonly programs: readonly unknown[] } {
+  return (
+    (value?.schemaVersion === 'material-cook/5' || value?.schemaVersion === 'material-cook/6') &&
+    Array.isArray(value.programs)
+  );
+}
+
 /** Compact only a verified copy; retain mismatches for full material validation. */
 export function projectMaterialPayloadTransport(
   payloadValue: unknown,
@@ -50,14 +59,13 @@ export function projectMaterialPayloadTransport(
   const payload = object(payloadValue);
   if (payload === undefined) return payloadValue;
   const field =
-    payload.schemaVersion === 'material-cook/5'
+    payload.schemaVersion === 'material-cook/5' || payload.schemaVersion === 'material-cook/6'
       ? undefined
       : payload.cooked !== undefined
         ? 'cooked'
         : 'record';
   const cooked = object(field === undefined ? payload : payload[field]);
-  if (cooked?.schemaVersion !== 'material-cook/5' || !Array.isArray(cooked.programs))
-    return payloadValue;
+  if (!hasCookedMaterialPrograms(cooked)) return payloadValue;
   const artifacts = object(artifactsValue);
   let changed = false;
   const programs = cooked.programs.map((rawProgram: unknown) => {

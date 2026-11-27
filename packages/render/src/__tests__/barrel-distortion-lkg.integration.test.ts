@@ -1,10 +1,9 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
-import { RenderGraphBuilder, type RenderGraphFrame } from '@forgeax/engine-render-graph';
 import { RhiNullQueue, rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
-import { err, ok } from '@forgeax/engine-types';
+import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { createRenderer as constructRenderer } from '../assembly/factory';
 import { BarrelDistortion, MeshFilter, MeshRenderer } from '../components';
@@ -20,6 +19,7 @@ import type { RenderFeaturePlanContext, RenderFeatureWork } from '../features/pl
 import type { RenderFeature } from '../features/types';
 import * as helpers from '../record/helpers';
 import * as viewUbo from '../record/view-ubo';
+import { rejectMainViewBinding } from './graph-compile.fixture';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
 interface ViewUboCameraInput {
@@ -72,16 +72,7 @@ describe('barrel distortion retained graph frame authority', () => {
   it('uses current View UBO and receipt camera after an LKG compile failure', async () => {
     cameraInputs.length = 0;
     viewUboInputs.length = 0;
-    const standardGraphs = new WeakSet<RenderGraphBuilder<never>>();
-    const addRasterPass = RenderGraphBuilder.prototype.addRasterPass;
-    const passSpy = vi
-      .spyOn(RenderGraphBuilder.prototype, 'addRasterPass')
-      .mockImplementation(function (this: RenderGraphBuilder<RenderGraphFrame>, ...args) {
-        if (args[0] === 'main') standardGraphs.add(this as RenderGraphBuilder<never>);
-        return addRasterPass.apply(this, args);
-      });
-    const compileGraph = RenderGraphBuilder.prototype.compile;
-    const compileSpy = vi.spyOn(RenderGraphBuilder.prototype, 'compile');
+    let fault: ReturnType<typeof rejectMainViewBinding> | undefined;
     let candidateEnabled = false;
     let featurePlanCalls = 0;
     let renderer: Awaited<ReturnType<typeof constructRenderer>> | undefined;
@@ -217,15 +208,7 @@ describe('barrel distortion retained graph frame authority', () => {
         .unwrap();
       expect(world.update().ok).toBe(true);
       candidateEnabled = true;
-      compileSpy.mockImplementation(function (this: RenderGraphBuilder<RenderGraphFrame>, ...args) {
-        return standardGraphs.has(this as RenderGraphBuilder<never>)
-          ? (err(
-              Object.assign(new Error('forced compile rejection'), {
-                code: 'graph-compile-failed',
-              }),
-            ) as never)
-          : compileGraph.apply(this, args);
-      });
+      fault = rejectMainViewBinding();
       const candidate = renderer.draw(frameInput);
       expect(candidate.ok, JSON.stringify({ candidate, rendererErrors })).toBe(true);
       if (!candidate.ok) return;
@@ -252,7 +235,7 @@ describe('barrel distortion retained graph frame authority', () => {
       expect(pendingMapping?.camera?.viewMatrix).toEqual(Array.from(expectedView));
       expect(pendingMapping?.camera?.viewMatrix[12]).not.toBe(0);
       expect(featurePlanCalls).toBeGreaterThan(1);
-      expect(compileSpy).toHaveBeenCalled();
+      expect(fault.count).toBeGreaterThan(0);
       expect(renderer.perFramePassNames).toEqual(lastKnownGoodPasses);
       expect(
         renderer
@@ -263,8 +246,7 @@ describe('barrel distortion retained graph frame authority', () => {
         status: 'active',
       });
     } finally {
-      compileSpy.mockRestore();
-      passSpy.mockRestore();
+      fault?.restore();
       await renderer?.dispose();
     }
   });
@@ -325,25 +307,7 @@ describe('barrel distortion retained graph frame authority', () => {
       expect(resized.value.barrelDistortion?.strength).toBeCloseTo(0.2, 6);
       world.removeComponent(cameraEntity, BarrelDistortion).unwrap();
       expect(world.update().ok).toBe(true);
-      const standardGraphs = new WeakSet<RenderGraphBuilder<never>>();
-      const addRasterPass = RenderGraphBuilder.prototype.addRasterPass;
-      const passSpy = vi
-        .spyOn(RenderGraphBuilder.prototype, 'addRasterPass')
-        .mockImplementation(function (this: RenderGraphBuilder<RenderGraphFrame>, ...args) {
-          if (args[0] === 'main') standardGraphs.add(this as RenderGraphBuilder<never>);
-          return addRasterPass.apply(this, args);
-        });
-      const compileGraph = RenderGraphBuilder.prototype.compile;
-      const compileSpy = vi.spyOn(RenderGraphBuilder.prototype, 'compile');
-      compileSpy.mockImplementation(function (this: RenderGraphBuilder<RenderGraphFrame>, ...args) {
-        return standardGraphs.has(this as RenderGraphBuilder<never>)
-          ? (err(
-              Object.assign(new Error('forced disable rejection'), {
-                code: 'graph-compile-failed',
-              }),
-            ) as never)
-          : compileGraph.apply(this, args);
-      });
+      const fault = rejectMainViewBinding();
       try {
         const candidate = renderer.draw(frameInput);
         expect(candidate.ok, JSON.stringify({ candidate, rendererErrors })).toBe(true);
@@ -369,8 +333,7 @@ describe('barrel distortion retained graph frame authority', () => {
           ),
         ).toBe(true);
       } finally {
-        compileSpy.mockRestore();
-        passSpy.mockRestore();
+        fault.restore();
       }
 
       const disabled = renderer.draw(frameInput);

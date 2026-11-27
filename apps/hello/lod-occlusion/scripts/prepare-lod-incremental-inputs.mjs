@@ -1,3 +1,4 @@
+import { prepareShaderProgramCompiler } from '@forgeax/engine/shader-compiler/program';
 // @ts-check
 
 import { execFileSync } from 'node:child_process';
@@ -9,7 +10,7 @@ import { decodeMeshBinary, packMeshBin } from '@forgeax/engine-geometry';
 import { gltfImporter } from '@forgeax/engine-gltf';
 import { ImporterRegistry, normaliseForPack, produceSourcePackage } from '@forgeax/engine-import';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { isEngineMaterial, readShaderManifestPublication } from '@forgeax/engine-shader';
+import { isEngineMaterial, ShaderRegistry } from '@forgeax/engine-shader';
 import { decodeShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const appRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -109,14 +110,13 @@ export async function prepareLodIncrementalInputs(options) {
   let shaderBytes;
   if (options.shaderManifest !== undefined) {
     shaderBytes = await readFile(resolve(options.shaderManifest));
-    const expanded = await readShaderManifestPublication(JSON.parse(decodeShaderManifestText(shaderBytes)));
-    /** @type {{ materialShaders?: {identifier: string}[] }} */
-    const publication = /** @type {{ materialShaders?: {identifier: string}[] }} */ (expanded);
-    if (
-      !programs.every((module) =>
-        publication.materialShaders?.some((row) => row.identifier === module),
-      )
-    ) {
+    const shaderRegistry = new ShaderRegistry({
+      manifestUrl: '/shaders/manifest.json',
+      readText: async () => decodeShaderManifestText(shaderBytes),
+      prepareProgramCompiler: prepareShaderProgramCompiler,
+    });
+    (await shaderRegistry.loadManifest()).unwrap();
+    if (!programs.every((module) => shaderRegistry.materialShaderManifestEntry(module))) {
       throw new Error('Shader publication is missing an original material program');
     }
     shaderClosure.status = 'cpu-publication-verified';

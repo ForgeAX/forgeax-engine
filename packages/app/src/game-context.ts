@@ -1,3 +1,4 @@
+import type { FileStore } from '@forgeax/engine-platform';
 // @forgeax/engine-app -- Host service for asset-resident game plugins.
 //
 // App, Preview, and Devkit provide one realm-local GameHost service. Project
@@ -9,6 +10,7 @@ import type { WebAudioEngine } from '@forgeax/engine-audio-webaudio';
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import type { Plugin } from '@forgeax/engine-plugin';
 import type { Renderer } from '@forgeax/engine-render';
+import type { GameSaves } from './game-saves';
 import type { App, AppHostAdapter, CanvasDrawingBufferSize, ExecutionApp } from './types';
 
 /** JSON-shaped data a game may intentionally project through a host bridge. */
@@ -81,6 +83,10 @@ export interface GameHost {
   readonly renderer?: Renderer;
   /** Borrowed current Host audio engine. App owns replacement and disposal; never retain it across rebuilds. */
   readonly audio?: WebAudioEngine;
+  /** Durable slots owned by this installed or hosted game project. */
+  readonly saves?: GameSaves;
+  /** Project-scoped immutable file versions supplied by the host. */
+  readonly files?: FileStore;
   /**
    * Optional per-App source message endpoint. In a Worker, the presentation
    * Host borrows the opposite end; in one realm it is presentationPort. The

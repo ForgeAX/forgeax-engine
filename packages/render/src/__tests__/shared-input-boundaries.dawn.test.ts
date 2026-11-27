@@ -3,14 +3,121 @@ import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { ok, type RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { expect, it, vi } from 'vitest';
+import { GPU_TASK_HEADER_BYTES } from '../gpu-driven/task-header';
 import { GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
-import { GpuScene } from '../gpu-scene';
+import { GpuScene, type GpuSceneResourceFrame } from '../gpu-scene';
 import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
 import { receiptRow } from './gpu-draw-selection-fixture';
 import { runSharedGeometryCullEvidence } from './gpu-driven-view-gpu-evidence';
 import { nativeDeviceFixture } from './native-device-fixture';
 import { shadowSourceFixture } from './shadow-source-content.fixture';
+
+it('reuses a compiled shadow graph only with fresh real reads after background native growth', async () => {
+  const { device, native } = await nativeDeviceFixture();
+  const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
+  const f = shadowSourceFixture(device, { createShaderModule: () => ok(shader) });
+  const source = { ...f.input(), candidatePrimitiveIndices: [0, 1] };
+  const inputs = f.scene.inputs;
+  if (source.sourcePlan.sourceGroups !== undefined)
+    inputs.adoptSources(source.sourcePlan.sourceGroups);
+  const first = f.scene.captureResources().unwrap();
+  const slots: number[] = [];
+  let upload: ReturnType<typeof inputs.capture> | undefined;
+  let next: GpuSceneResourceFrame | undefined;
+  let refreshed: GpuSceneResourceFrame | undefined;
+  let graph: ReturnType<RenderGraphBuilder<{ encoder: RhiCommandEncoder }>['compile']> | undefined;
+  native.pushErrorScope('validation');
+  try {
+    const initial = f.pool.update({ ...source, inputReads: first.inputReads() }).unwrap();
+    const oldBuffer = first.inputReads().buffer().unwrap().buffer;
+    const builder = new RenderGraphBuilder<{ encoder: RhiCommandEncoder }>();
+    f.pool.project(builder, source.identity).unwrap();
+    graph = builder.compile({ device, surfaceSize: { width: 1, height: 1 } });
+    const compiled = graph.unwrap();
+    const execute = async () => {
+      const encoder = device.createCommandEncoder().unwrap();
+      compiled.execute({ encoder }).unwrap();
+      device.queue.submit([encoder.finish().unwrap()]).unwrap();
+      await device.queue.onSubmittedWorkDone();
+    };
+    first.seal().unwrap();
+    f.pool._closeInputReads();
+    await execute();
+    f.pool._commitResourceReplacement();
+    first.release();
+
+    // The independent background reader really publishes the larger native
+    // arena before the retained View observes its next ordinary frame.
+    for (let index = 0; index < 1024; index++) slots.push(inputs.allocateResource(0));
+    upload = inputs.capture();
+    const grownBuffer = upload.buffer().unwrap().buffer;
+    expect(grownBuffer).not.toBe(oldBuffer);
+    upload.seal().unwrap();
+    upload.release();
+    await device.queue.onSubmittedWorkDone();
+    expect(compiled.execute({ encoder: device.createCommandEncoder().unwrap() }).ok).toBe(false);
+
+    next = f.scene.captureResources().unwrap();
+    const headers = vi.spyOn(next.inputReads(), 'header');
+    const reuse = vi.spyOn(next.inputReads(), 'reuseHeader');
+    const updates = vi.spyOn(initial.view, 'update');
+    const retained = f.pool.update({ ...source, inputReads: next.inputReads() }).unwrap();
+    expect(retained.cache).toBe('hit');
+    expect(updates).not.toHaveBeenCalled();
+    expect(initial.view.sceneInputBuffer).toBe(grownBuffer);
+    expect(headers).not.toHaveBeenCalled();
+    expect(reuse).not.toHaveBeenCalled();
+    next.seal().unwrap();
+    f.pool._closeInputReads();
+    await execute();
+
+    // Observing a depth-only cache hit refreshes bindings, never the old
+    // compute uniform's mapping root. Actual compute must first update it.
+    f.pool.invalidate('view-changed', source.identity);
+    expect(compiled.execute({ encoder: device.createCommandEncoder().unwrap() }).ok).toBe(false);
+    next.release();
+    refreshed = f.scene.captureResources().unwrap();
+    const updated = f.pool.update({ ...source, inputReads: refreshed.inputReads() }).unwrap();
+    expect(updated.cache).toBe('invalidated');
+    refreshed.seal().unwrap();
+    f.pool._closeInputReads();
+    await execute();
+
+    const indirect = initial.view.indirectBuffer;
+    if (indirect === undefined) throw Error('Missing actual retained indirect buffer');
+    const size = 20 * updated.plan.batches.length;
+    const readback = device.createBuffer({ size, usage: 1 | 8 }).unwrap();
+    try {
+      const encoder = device.createCommandEncoder().unwrap();
+      encoder.copyBufferToBuffer(indirect, 0, readback, 0, size);
+      device.queue.submit([encoder.finish().unwrap()]).unwrap();
+      await device.queue.onSubmittedWorkDone();
+      const mapped = (await readback.mapAsync(1)).unwrap();
+      try {
+        const values = new Uint32Array(mapped.getMappedRange().unwrap());
+        let instances = 0;
+        for (let index = 1; index < values.length; index += 5) instances += values[index] ?? 0;
+        expect(instances).toBe(updated.plan.candidateCount);
+        expect(instances).toBeGreaterThan(0);
+      } finally {
+        mapped.unmap();
+      }
+    } finally {
+      device.destroyBuffer(readback);
+    }
+    expect(await native.popErrorScope()).toBeNull();
+  } finally {
+    if (graph?.ok) await graph.value.retire();
+    first.release();
+    upload?.release();
+    next?.release();
+    refreshed?.release();
+    for (const slot of slots) inputs.releaseResource(slot);
+    f.dispose();
+    native.destroy();
+  }
+}, 30_000);
 
 it('executes retained-shadow replacement compute with a fresh arena after old reads retire', async () => {
   const { device, native } = await nativeDeviceFixture();
@@ -19,9 +126,9 @@ it('executes retained-shadow replacement compute with a fresh arena after old re
   const source = { ...f.input(), candidatePrimitiveIndices: [0, 1] };
   if (source.sourcePlan.sourceGroups !== undefined)
     f.scene.inputs.adoptSources(source.sourcePlan.sourceGroups);
-  const first = f.scene.inputs.capture();
+  const first = f.scene.captureResources().unwrap();
   const slots: number[] = [];
-  let next: ReturnType<typeof f.scene.inputs.capture> | undefined;
+  let next: GpuSceneResourceFrame | undefined;
   native.pushErrorScope('validation');
   const execute = async (graph: RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>) => {
     const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
@@ -35,8 +142,8 @@ it('executes retained-shadow replacement compute with a fresh arena after old re
     }
   };
   try {
-    const initial = f.pool.update({ ...source, inputReads: first }).unwrap();
-    const oldBuffer = first.buffer().unwrap().buffer;
+    const initial = f.pool.update({ ...source, inputReads: first.inputReads() }).unwrap();
+    const oldBuffer = first.inputReads().buffer().unwrap().buffer;
     const firstGraph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
     f.pool.project(firstGraph, source.identity).unwrap();
     first.seal().unwrap();
@@ -45,19 +152,21 @@ it('executes retained-shadow replacement compute with a fresh arena after old re
     f.pool._commitResourceReplacement();
     first.release();
     for (let index = 0; index < 1024; index++) slots.push(f.scene.inputs.allocateResource(0));
-    next = f.scene.inputs.capture();
-    const demands = vi.spyOn(next, 'members');
-    const retained = f.pool.update({ ...source, inputReads: next }).unwrap();
+    next = f.scene.captureResources().unwrap();
+    const headers = vi.spyOn(next.inputReads(), 'header');
+    const reuse = vi.spyOn(next.inputReads(), 'reuseHeader');
+    const demands = () => headers.mock.calls.length + reuse.mock.calls.length;
+    const retained = f.pool.update({ ...source, inputReads: next.inputReads() }).unwrap();
     expect(retained.cache).toBe('hit');
-    expect(demands).not.toHaveBeenCalled();
+    expect(demands()).toBe(0);
     const depthOnly = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
     expect(f.pool.project(depthOnly, source.identity).unwrap().passNames).toEqual([]);
     const replacement = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
     expect(f.pool.project(replacement, source.identity, true).unwrap().passNames).toEqual([
       'gpu-driven.shadow.directional-cascade-0.static.view-selection',
     ]);
-    expect(demands).toHaveBeenCalled();
-    expect(Object.is(next.buffer().unwrap().buffer, oldBuffer)).toBe(false);
+    expect(demands()).toBeGreaterThan(0);
+    expect(Object.is(next.inputReads().buffer().unwrap().buffer, oldBuffer)).toBe(false);
     next.seal().unwrap();
     f.pool._closeInputReads();
     await execute(replacement);
@@ -166,11 +275,15 @@ it('reads the exact held Mesh descriptor after replacement, aborted preparation 
 it('culls old and current shared Mesh bounds with actual descriptor and map upload costs', async () => {
   const result = await runSharedGeometryCullEvidence();
   expect(result.frames.map((frame) => frame.visible)).toEqual([0, 1024, 0, 1024, 0]);
-  expect(result.geometryUpload).toBe(4 * 1024 + 32);
+  expect(result.geometryUpload).toBe(4 * 1024 + 32 + GPU_TASK_HEADER_BYTES);
   expect(result.frames.slice(1).map((frame) => frame.sharedInputUploadBytes)).toEqual([
-    4 * 1024 + 32,
-    0,
-    4 * 1024 + 12,
-    0,
+    4 * 1024 + 32 + GPU_TASK_HEADER_BYTES,
+    GPU_TASK_HEADER_BYTES,
+    4 * 1024 + 12 + GPU_TASK_HEADER_BYTES,
+    GPU_TASK_HEADER_BYTES,
   ]);
+  const members = result.frames[0]?.memberNodesWritten;
+  expect(members).toBeGreaterThan(0);
+  expect(result.frames.map((frame) => frame.memberNodesWritten)).toEqual(Array(5).fill(members));
+  expect(result.frames.map((frame) => frame.taskHeadersWritten)).toEqual([1, 2, 3, 4, 5]);
 }, 30_000);

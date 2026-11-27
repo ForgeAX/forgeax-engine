@@ -77,8 +77,15 @@ it('publishes skinned Standard diffusion through both real Worker layouts', asyn
            return encodeTape(decodeTape(result.value.bytes).unwrap(), { compression: 'gzip' }).unwrap();`, identity);
         expect(capture).toBeInstanceOf(Uint8Array);
         const model = buildFrameModel(decodeTape(capture as Uint8Array).unwrap());
-        expect(model.works.some((work) => work.pipeline.shaders.some(shader => shader.entryPoint === 'cs_subsurface')),
-          'actual Renderer realm capture must contain diffusion work').toBe(true);
+        const entryPoints = model.works.flatMap((work) =>
+          work.pipeline.shaders.map((shader) => shader.entryPoint),
+        );
+        expect(entryPoints, 'actual Renderer realm capture must contain the diffusion stages')
+          .toEqual(expect.arrayContaining([
+            'cs_subsurface_setup',
+            'cs_subsurface_horizontal',
+            'cs_subsurface_vertical',
+          ]));
         await advance((await request('disable')).revision);
         expect(difference(baseline, await image(canvas, `${mode}-${renderWorker}-disabled`))).toBeLessThanOrEqual(.005);
         await advance((await request('zero')).revision);

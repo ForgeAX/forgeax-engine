@@ -11,9 +11,21 @@ import {
   type WechatDownloadFiles,
 } from './download-cache.js';
 
+interface BrotliDownload {
+  readonly packedBytes: number;
+  readonly decodedBytes: number;
+}
+
+interface WechatRemoteFiles extends WechatDownloadFiles {
+  stat?: WechatCacheFiles['stat'];
+  readCompressedFile?: ReturnType<
+    import('./package-fetch.js').WechatPackageSource['getFileSystemManager']
+  >['readCompressedFile'];
+}
+
 export interface WechatDownloadSource {
   readonly env: { readonly USER_DATA_PATH: string };
-  getFileSystemManager(): WechatDownloadFiles;
+  getFileSystemManager(): WechatRemoteFiles;
   downloadFile(options: {
     readonly url: string;
     readonly filePath: string;
@@ -29,11 +41,122 @@ export interface WechatRemotePackageOptions {
   readonly directory: string;
   readonly timeoutMs?: number;
   readonly cache?: WechatDownloadCacheOptions;
-  /** Report recoverable cache failures and native cleanup that arrives after cancellation. */
+  /** Published sizes for logical files hosted with a .br suffix. Other files use their original URL. */
+  readonly brotli?: (relativePath: string) => BrotliDownload | undefined;
+  /** Report recoverable filesystem failures and native cleanup that arrives after cancellation. */
   readonly onError: (cause: unknown) => void;
 }
 
 const directoryOwners = new WeakMap<WechatDownloadFiles, Set<string>>();
+
+function resolvePublishedDownload(
+  base: URL,
+  url: string,
+  publishedBrotli: WechatRemotePackageOptions['brotli'],
+) {
+  const resolved = new URL(url, base);
+  const relative = decodeURIComponent(resolved.pathname.slice(base.pathname.length));
+  if (
+    resolved.origin !== base.origin ||
+    !resolved.pathname.startsWith(base.pathname) ||
+    resolved.username ||
+    resolved.password ||
+    resolved.search ||
+    resolved.hash ||
+    !relative ||
+    /[\\\0]/.test(relative) ||
+    relative.split('/').some((part) => !part || part === '.' || part === '..')
+  )
+    throw new TypeError(`remote package URL is outside its published namespace: ${url}`);
+  const brotli = publishedBrotli?.(relative);
+  if (brotli) {
+    if (
+      !Number.isSafeInteger(brotli.packedBytes) ||
+      brotli.packedBytes <= 0 ||
+      !Number.isSafeInteger(brotli.decodedBytes) ||
+      brotli.decodedBytes < 0
+    )
+      throw new TypeError('invalid published Brotli sizes');
+    resolved.pathname += '.br';
+  }
+  return { url: resolved.href, brotli };
+}
+
+type PublishedDownload = ReturnType<typeof resolvePublishedDownload>;
+type BinaryRead = { readonly data: ArrayBuffer };
+
+class NativeDownloadReadError extends Error {
+  constructor(
+    readonly operation: string,
+    cause: unknown,
+  ) {
+    super(operation, { cause });
+  }
+}
+
+function readNativeFile<T>(operation: string, start: Parameters<typeof nativeFile<T>>[0]) {
+  return nativeFile<T>(start).catch((cause) => {
+    throw new NativeDownloadReadError(operation, cause);
+  });
+}
+
+async function readDownload(
+  files: WechatRemoteFiles,
+  filePath: string,
+  signal: AbortSignal,
+  brotli: BrotliDownload | undefined,
+): Promise<Uint8Array> {
+  const read = () =>
+    readNativeFile<BinaryRead>('FileSystemManager.readFile', (done) =>
+      files.readFile({ filePath, ...done }),
+    );
+  const { data } = brotli
+    ? await readBrotliDownload(files, filePath, signal, brotli, read)
+    : await read();
+  signal.throwIfAborted();
+  if (!(data instanceof ArrayBuffer)) throw new TypeError('expected binary file bytes');
+  if (brotli && data.byteLength !== brotli.decodedBytes)
+    throw new Error('decoded Brotli download size does not match the publication');
+  return new Uint8Array(data);
+}
+
+async function readBrotliDownload(
+  files: WechatRemoteFiles,
+  filePath: string,
+  signal: AbortSignal,
+  brotli: BrotliDownload,
+  read: () => Promise<BinaryRead>,
+): Promise<BinaryRead> {
+  const { stat, readCompressedFile } = files;
+  if (typeof stat !== 'function') throw new Error('native Brotli downloads require stat');
+  const { stats } = await readNativeFile<{ readonly stats: { readonly size: number } }>(
+    'FileSystemManager.stat',
+    (done) => stat.call(files, { path: filePath, ...done }),
+  );
+  signal.throwIfAborted();
+  // wx.downloadFile can write decoded HTTP bodies. A distinct decoded size needs no decompressor.
+  if (stats.size !== brotli.packedBytes) {
+    if (stats.size === brotli.decodedBytes) return read();
+    throw new Error('download size does not match the published Brotli or decoded size');
+  }
+  if (typeof readCompressedFile !== 'function')
+    throw new Error('native packed Brotli downloads require readCompressedFile');
+  try {
+    return await readNativeFile<BinaryRead>('FileSystemManager.readCompressedFile', (done) =>
+      readCompressedFile.call(files, { filePath, compressionAlgorithm: 'br', ...done }),
+    );
+  } catch (cause) {
+    signal.throwIfAborted();
+    // The sizes can coincide. Only then may a failed decompression be a decoded body.
+    if (stats.size !== brotli.decodedBytes) throw cause;
+    return read().catch((rawCause) => {
+      throw new NativeDownloadReadError(
+        'read equal-size Brotli download',
+        new AggregateError([cause, rawCause]),
+      );
+    });
+  }
+}
 
 /** Read one remote publication namespace through the existing Catalog/Pack contract. */
 export function createWechatRemotePackageFetcher(
@@ -126,10 +249,13 @@ export function createWechatRemotePackageFetcher(
     return preparation;
   }
   async function download(
-    url: string,
+    publication: PublishedDownload,
     signal: AbortSignal,
     persist: boolean,
+    refresh = true,
   ): Promise<PackageResponse> {
+    signal.throwIfAborted();
+    const { url, brotli } = publication;
     const filePath = `${directory}/${cacheHash(new TextEncoder().encode(url))}-${++nextDownload}.download`;
     let aborted = false;
     let task: { abort(): void } | undefined;
@@ -192,16 +318,11 @@ export function createWechatRemotePackageFetcher(
       if (result.filePath !== filePath) throw nativeFailure('wx.downloadFile destination', result);
       if (result.statusCode < 200 || result.statusCode >= 300)
         return createPackageResponse(new Uint8Array(), { status: result.statusCode });
-      const { data } = await nativeFile<{ data: ArrayBuffer }>((done) =>
-        files.readFile({ filePath, ...done }),
-      ).catch((cause) => {
+      const bytes = await readDownload(files, filePath, signal, brotli).catch((cause) => {
         if (signal.aborted) throw signal.reason;
+        if (cause instanceof NativeDownloadReadError) throw cause;
         throw nativeFailure('read download', cause);
       });
-      signal.throwIfAborted();
-      if (!(data instanceof ArrayBuffer))
-        throw nativeFailure('read download', new TypeError('expected binary file bytes'));
-      const bytes = new Uint8Array(data);
       if (cache && persist) {
         try {
           await cache.write(cache.key(url), bytes, signal);
@@ -226,8 +347,12 @@ export function createWechatRemotePackageFetcher(
             ),
       );
     }
-    if (!outcome.ok) throw outcome.error;
-    return outcome.value;
+    if (outcome.ok) return outcome.value;
+    if (!(outcome.error instanceof NativeDownloadReadError)) throw outcome.error;
+    const failure = nativeFailure(outcome.error.operation, outcome.error.cause);
+    if (!refresh) throw failure;
+    options.onError(failure);
+    return download(publication, signal, persist, false);
   }
   const fetch: PackageFetcher = (url, init) => {
     if (disposed)
@@ -246,34 +371,24 @@ export function createWechatRemotePackageFetcher(
         throw new TypeError('remote packages accept only GET and cancellation options');
       if (init?.cache !== undefined && !['default', 'reload', 'no-store'].includes(init.cache))
         throw new TypeError('remote packages support default, reload or no-store cache policy');
-      const resolved = new URL(url, base);
-      const relative = decodeURIComponent(resolved.pathname.slice(base.pathname.length));
-      if (
-        resolved.origin !== base.origin ||
-        !resolved.pathname.startsWith(base.pathname) ||
-        resolved.username ||
-        resolved.password ||
-        resolved.search ||
-        resolved.hash ||
-        !relative ||
-        /[\\\0]/.test(relative) ||
-        relative.split('/').some((part) => !part || part === '.' || part === '..')
-      )
-        throw new TypeError(`remote package URL is outside its published namespace: ${url}`);
-      const absolute = resolved.href;
+      const publication = resolvePublishedDownload(base, url, options.brotli);
       await prepareDirectory();
       controller.signal.throwIfAborted();
       if (cache && init?.cache !== 'reload' && init?.cache !== 'no-store') {
         try {
-          const bytes = await cache.read(cache.key(absolute), controller.signal);
+          const bytes = await cache.read(cache.key(publication.url), controller.signal);
           controller.signal.throwIfAborted();
-          if (bytes) return createPackageResponse(bytes);
+          if (
+            bytes &&
+            (!publication.brotli || bytes.byteLength === publication.brotli.decodedBytes)
+          )
+            return createPackageResponse(bytes);
         } catch (cause) {
           if (controller.signal.aborted) throw controller.signal.reason;
           options.onError(nativeFailure('cache read', cause));
         }
       }
-      return download(absolute, controller.signal, init?.cache !== 'no-store');
+      return download(publication, controller.signal, init?.cache !== 'no-store');
     })();
     pending.set(controller, operation);
     void operation.catch((cause) => {

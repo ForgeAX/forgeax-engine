@@ -27,7 +27,7 @@ import { ViewCascadeFit } from './render-lights';
 import { ViewRecorder } from './render-views';
 import { RenderCleanup, RenderCommit, RenderPrepare, renderSubmission } from './render-world';
 
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import { ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { ownerOf } from './view-settlement';
 
@@ -174,10 +174,8 @@ export function viewDiffuseGiOf(
   world: World,
   entity: EntityHandle | undefined,
 ): ViewDiffuseGiOutcome | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewDiffuseGi)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewDiffuseGiState>(requireViewField(world, entity, ViewDiffuseGi, 'state'))
-    .unwrap();
+  const state = readViewState<ViewDiffuseGiState>(world, entity, ViewDiffuseGi);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.outcome : undefined;
 }
 

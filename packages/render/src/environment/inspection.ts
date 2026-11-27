@@ -1,3 +1,4 @@
+import type { RenderPipelineTopology } from '../render-pipeline';
 import type { EnvironmentGeneration } from './generation';
 
 export type EnvironmentInspectionStatus = 'empty' | 'active' | 'candidate' | 'failed';
@@ -18,7 +19,30 @@ export interface EnvironmentInspectionGeneration {
   readonly retiringBytes: number;
 }
 
+export interface AtmosphereTransportInspection {
+  readonly solar: 'none' | 'ground' | 'per-pixel';
+  readonly aerial: 'none' | 'rgb' | 'fast';
+  readonly carrier: 'none' | 'volume' | 'cluster-texture';
+  readonly opaqueApplication: 'none' | 'screen';
+}
+
+export function atmosphereTransportOf(
+  topology: RenderPipelineTopology,
+): AtmosphereTransportInspection | undefined {
+  if (topology.atmosphere !== true) return;
+  if (topology.atmosphereBackgroundOnly === true)
+    return { solar: 'none', aerial: 'none', carrier: 'none', opaqueApplication: 'none' };
+  return {
+    solar: topology.perPixelAtmosphereTransmittance === false ? 'ground' : 'per-pixel',
+    aerial:
+      topology.standardProfile?.atmosphere?.aerialPerspectiveQuality === 'fast' ? 'fast' : 'rgb',
+    carrier: topology.lane.storageBuffer && topology.lane.compute ? 'volume' : 'cluster-texture',
+    opaqueApplication: 'screen',
+  };
+}
+
 export interface EnvironmentInspection {
+  readonly transport?: AtmosphereTransportInspection | undefined;
   readonly signature: string | undefined;
   readonly generation: number | undefined;
   readonly retired: boolean | undefined;

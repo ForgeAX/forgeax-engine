@@ -1,5 +1,5 @@
 import type { World } from '@forgeax/engine-ecs';
-import type { Renderer } from '@forgeax/engine-render';
+import type { Renderer, RenderWorldLease } from '@forgeax/engine-render';
 
 /** Serialize realm rebuilds so candidate Worlds never overlap ownership. */
 export class SerializedRebuildQueue {
@@ -16,12 +16,12 @@ export class SerializedRebuildQueue {
 export async function commitAttachedWorld(
   renderer: Pick<Renderer, 'attach'>,
   nextWorld: World,
-  initializeCandidate: () => Promise<boolean>,
+  initializeCandidate: (source: RenderWorldLease) => Promise<boolean>,
 ): Promise<boolean> {
   const attached = renderer.attach(nextWorld);
   if (!attached.ok) throw attached.error;
   try {
-    if (!(await initializeCandidate())) {
+    if (!(await initializeCandidate(attached.value))) {
       attached.value.dispose();
       return false;
     }

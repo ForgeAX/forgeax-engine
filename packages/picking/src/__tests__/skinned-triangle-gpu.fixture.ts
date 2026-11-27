@@ -95,7 +95,11 @@ export async function verifySkinnedPicking(
   let frames = 0;
   try {
     renderValue(
-      renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'forward', ssao: false }),
+      renderer.setProfile({
+        ...renderer.inspect().profile,
+        renderPath: 'forward',
+        ambientOcclusion: { enabled: false },
+      }),
     );
     for (const [name, x, angle, scale] of [
       ['rest', 0, 0, 1],

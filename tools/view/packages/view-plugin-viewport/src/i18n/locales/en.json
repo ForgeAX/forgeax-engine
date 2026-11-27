@@ -1,0 +1,22 @@
+{
+  "viewport": {
+    "execution": "Scene execution",
+    "navigation": "WASD/QE move · Shift boost · RMB look/fly · wheel speed · F focus",
+    "play": "Play",
+    "stop": "Stop",
+    "eject": "Eject",
+    "possess": "Possess",
+    "scene": "Scene",
+    "game": "Game",
+    "waitingForPage": "Waiting for the game page…",
+    "readingCamera": "Reading the game camera…",
+    "stopping": "Stopping…",
+    "preparing": "Preparing Play…",
+    "copyError": "Copy error",
+    "copyReason": "Copy the error reason",
+    "close": "Close",
+    "dismissError": "Dismiss the error banner",
+    "copied": "Copied",
+    "copyFailed": "Copy failed"
+  }
+}

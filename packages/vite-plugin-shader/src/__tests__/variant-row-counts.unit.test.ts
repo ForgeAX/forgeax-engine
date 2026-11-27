@@ -33,7 +33,7 @@ it('pins the published variant row count per engine material and program', async
     if (key === 'forgeax::default-standard-pbr' || key === 'forgeax::default-shadow-caster') {
       const rowsPerWaterLane: Readonly<Record<`${boolean}/${boolean}`, number>> =
         key === 'forgeax::default-standard-pbr'
-          ? { 'false/false': 5920, 'false/true': 640, 'true/false': 5536, 'true/true': 5536 }
+          ? { 'false/false': 3640, 'false/true': 640, 'true/false': 3504, 'true/true': 3488 }
           : { 'false/false': 224, 'false/true': 32, 'true/false': 160, 'true/true': 160 };
       // Independent full-receiver lean lighting adds 96 rows per active lane;
       // its 32 lean-input rows also retain the dormant Water format.
@@ -44,11 +44,29 @@ it('pins the published variant row count per engine material and program', async
           expect(
             variants.filter(
               (variant) =>
-                variant.WATER_WAVES_AVAILABLE === waves && variant.WATER_INFO_RGBA16 === rgba16,
+                !variant.FORWARD_INLINE_SSR &&
+                variant.WATER_WAVES_AVAILABLE === waves &&
+                variant.WATER_INFO_RGBA16 === rgba16,
             ),
           ).toHaveLength(rowsPerWaterLane[`${waves}/${rgba16}`]);
         }
       }
+    }
+    if (key === 'forgeax::default-standard-pbr' || key === 'forgeax::pbr-skin') {
+      expect(variants.filter((row) => row.COVERAGE_ONLY)).toHaveLength(
+        key === 'forgeax::default-standard-pbr' ? 40 : 12,
+      );
+    }
+    if (key === 'forgeax::engine-standard-deferred-lighting') {
+      expect(
+        variants.filter(
+          (row) =>
+            !row.DEFERRED_DIFFUSE_GI_AVAILABLE &&
+            !row.DEFERRED_LIGHT_PROBE_AVAILABLE &&
+            !row.DEFERRED_SCREEN_AO_AVAILABLE &&
+            !row.DEFERRED_CAPSULE_SHADOW_AVAILABLE,
+        ),
+      ).toHaveLength(16);
     }
     if (
       key === 'forgeax::vfx-render.particles.mesh' ||
@@ -59,10 +77,15 @@ it('pins the published variant row count per engine material and program', async
       expect(modifierFree).toHaveLength(8);
       expect(modifierFree.every((row) => row.STORAGE_BUFFER_AVAILABLE === true)).toBe(true);
     }
-    if (key === 'forgeax::standard-terrain' || key === 'forgeax::standard-terrain-ids') {
-      const added = variants.filter((row) => !row.DIRECTIONAL_SHADOW_SIMPLE && row.LEAN_LIGHTING);
+    if (
+      key === 'forgeax::standard-terrain' ||
+      key === 'forgeax::standard-terrain-detail' ||
+      key === 'forgeax::standard-terrain-ids'
+    ) {
+      const withoutSsr = variants.filter((row) => !row.FORWARD_INLINE_SSR);
+      const added = withoutSsr.filter((row) => !row.DIRECTIONAL_SHADOW_SIMPLE && row.LEAN_LIGHTING);
       expect(added).toHaveLength(16);
-      expect(variants.filter((row) => !added.includes(row))).toHaveLength(128);
+      expect(withoutSsr.filter((row) => !added.includes(row))).toHaveLength(128);
     }
   }
   const total = Object.values(rows).reduce((sum, count) => sum + count, 0);
@@ -70,16 +93,18 @@ it('pins the published variant row count per engine material and program', async
     {
       "rows": {
         "forgeax::default-shadow-caster": 576,
-        "forgeax::default-standard-pbr": 17632,
+        "forgeax::default-standard-pbr": 13000,
         "forgeax::default-unlit": 416,
         "forgeax::engine-ray-path-tracer": 2,
-        "forgeax::engine-standard-deferred-lighting": 16,
+        "forgeax::engine-standard-deferred-lighting": 256,
         "forgeax::msdf-text": 6,
-        "forgeax::pbr-skin": 1728,
+        "forgeax::pbr-skin": 1420,
         "forgeax::sprite": 12,
         "forgeax::sprite-lit": 12,
-        "forgeax::standard-terrain": 144,
-        "forgeax::standard-terrain-ids": 144,
+        "forgeax::standard-terrain": 176,
+        "forgeax::standard-terrain-detail": 176,
+        "forgeax::standard-terrain-detail-shadow": 16,
+        "forgeax::standard-terrain-ids": 176,
         "forgeax::standard-terrain-ids-shadow": 16,
         "forgeax::standard-terrain-shadow": 16,
         "forgeax::vfx-render.particles.beam": 3,
@@ -97,7 +122,7 @@ it('pins the published variant row count per engine material and program', async
         "forgeax::vfx-render.particles.trail": 3,
         "forgeax::vfx-render.particles.trail-inputs": 3,
       },
-      "total": 20795,
+      "total": 16351,
     }
   `);
 });

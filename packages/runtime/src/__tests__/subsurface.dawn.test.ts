@@ -9,7 +9,7 @@ import {
   tapeDigest,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildProjectShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { FOLIAGE_MATERIAL_PACKAGES } from '../../../../apps/hello/foliage-transmission/src/material-contract';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -18,7 +18,7 @@ import { renderValue } from './standard-gbuffer-replay.fixture';
 import { verifySubsurface } from './subsurface.fixture';
 
 const manifest = shaderManifestUrl(
-  await buildEngineShaderManifest({
+  await buildProjectShaderTemplateManifest({
     materialPackages: FOLIAGE_MATERIAL_PACKAGES.map((file) =>
       resolve(process.cwd(), 'apps/hello/foliage-transmission/src', file),
     ),
@@ -117,10 +117,12 @@ it.each([
               ),
             );
             const work = model.works.find((candidate) =>
-              candidate.pipeline.shaders.some((shader) => shader.entryPoint === 'cs_subsurface'),
+              candidate.pipeline.shaders.some(
+                (shader) => shader.entryPoint === 'cs_subsurface_vertical',
+              ),
             );
             if (work === undefined) {
-              throw new Error(`captured SSS frame has no cs_subsurface work: ${prefix}`);
+              throw new Error(`captured SSS frame has no cs_subsurface_vertical work: ${prefix}`);
             }
             const adapter = renderValue(await webgpu.rhi.requestAdapter());
             const replayDevice = renderValue(
@@ -234,7 +236,7 @@ it.each([
                   digest: captureDigest,
                   workIndex: work.workIndex,
                   shader: work.pipeline.shaders.find(
-                    (shader) => shader.entryPoint === 'cs_subsurface',
+                    (shader) => shader.entryPoint === 'cs_subsurface_vertical',
                   )?.entryPoint,
                   readbacks,
                 }),
@@ -244,8 +246,7 @@ it.each([
               rawDevice.destroy();
             }
           },
-      // One numerical owner retains the 25-tap quality path. Ordinary geometry
-      // and Worker publication use the shared 13-tap profile.
+      // One numerical owner covers the half-resolution High quality path.
       kind === 'rigid' ? 'high' : undefined,
     );
   } finally {

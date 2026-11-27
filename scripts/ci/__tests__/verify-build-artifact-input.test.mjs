@@ -332,15 +332,15 @@ test('t8: app artifact globs match nested body and Pack sidecars', async () => {
       'apps/learn-render/6.pbr/2.ibl-irradiance/dist/shaders/manifest.json': '{}',
       [`${appDistRoot}/pack-index.json`]: '[]',
       [`${appAssetRoot}/${guid}-body.bin`]: 'body',
-      [`${appAssetRoot}/${guid}.pack.json`]: '{}',
-      [`${appAssetRoot}/${guid}.pack-material.json`]: '{}',
+      [`${appAssetRoot}/${guid}.runtime-pack.json`]: '{}',
+      [`${appAssetRoot}/${guid}.runtime-pack-material.json`]: '{}',
     },
     (contract) => {
       contract.artifactClasses['app-dist'].fileClasses = [
         'apps/**/dist/shaders/manifest.json',
         'apps/**/dist/pack-index.json',
         'apps/**/dist/assets/*-body.bin',
-        'apps/**/dist/assets/*.pack*.json',
+        'apps/**/dist/assets/*.runtime-pack*.json',
       ];
     },
   );

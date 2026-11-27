@@ -503,8 +503,10 @@ function deformationLocks(mesh: MeshAsset, indices: Uint32Array, count: number):
       target.tangent,
     ]),
   ].filter(
-    (stream): stream is Float32Array | Uint16Array =>
-      stream instanceof Float32Array || stream instanceof Uint16Array,
+    (stream): stream is Float32Array | Uint8Array | Uint16Array =>
+      stream instanceof Float32Array ||
+      stream instanceof Uint8Array ||
+      stream instanceof Uint16Array,
   );
   for (let i = 0; i < indices.length; i += 3) {
     for (let edge = 0; edge < 3; edge++) {
@@ -531,12 +533,10 @@ function compactMesh(
   count: number,
   submeshes: MeshAsset['submeshes'],
 ): MeshAsset {
-  const remapStream = <T extends Float32Array | Uint16Array>(stream: T, width: number): T => {
-    const output = (
-      stream instanceof Uint16Array
-        ? new Uint16Array(count * width)
-        : new Float32Array(count * width)
-    ) as T;
+  type VertexStream = Float32Array | Uint8Array | Uint16Array | Uint32Array;
+  const remapStream = (stream: VertexStream, width: number): VertexStream => {
+    const ArrayType = stream.constructor as new (length: number) => VertexStream;
+    const output = new ArrayType(count * width);
     for (let old = 0; old < remap.length; old++) {
       const next = remap[old] as number;
       if (next !== 0xffffffff)
@@ -546,7 +546,7 @@ function compactMesh(
   };
   const attributes = Object.fromEntries(
     deriveVertexLayoutProjection(mesh.attributes).attributes.map((entry) => {
-      const stream = mesh.attributes[entry.key] as Float32Array | Uint16Array;
+      const stream = mesh.attributes[entry.key] as VertexStream;
       return [entry.key, remapStream(stream, entry.byteLength / stream.BYTES_PER_ELEMENT)];
     }),
   ) as VertexAttributeMap;

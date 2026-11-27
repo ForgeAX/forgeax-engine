@@ -252,7 +252,13 @@ export async function renderFogFrames(
     if (event.kind === 'error') errors.push(event.error);
   });
   const original = renderer.inspect().profile;
-  unwrap(renderer.setProfile({ ...original, renderPath: options.path, ssao: false }));
+  unwrap(
+    renderer.setProfile({
+      ...original,
+      renderPath: options.path,
+      ambientOcclusion: { enabled: false },
+    }),
+  );
   try {
     let image: LinearImage | undefined;
     for (let index = 0; index < frames; index++) {

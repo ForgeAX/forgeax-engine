@@ -61,7 +61,7 @@ const SMOKE_WALL_BUDGET_MS = Number.parseInt(process.env.SMOKE_WALL_BUDGET_MS ??
 
 const CUBE_MESH_GUID = '019e3968-6007-71ae-856e-1fd6c9728cfb';
 // LO 2.6 own material GUID -- last byte 03 (vs 01 LO 2.4, 02 LO 2.5).
-const CUBE_MATERIAL_GUID = '019e3969-2000-7000-8000-000000000003';
+const CUBE_MATERIAL_GUID = '5b5dd038-44f0-5bb2-b984-d04f68bd39f9';
 const LAMP_SCALE = 0.2;
 
 const CUBE_POSITIONS = [
@@ -206,8 +206,8 @@ console.log(
   `[learn-render-multiple-lights] decoded diffuse=${diffuseDecoded.width}x${diffuseDecoded.height} specular=${specularDecoded.width}x${specularDecoded.height}`,
 );
 
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-const ENGINE_MANIFEST = await buildEngineShaderManifest();
+const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const ENGINE_MANIFEST = await buildEngineShaderTemplateManifest();
 const EMPTY_MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(EMPTY_MANIFEST_URL));
 

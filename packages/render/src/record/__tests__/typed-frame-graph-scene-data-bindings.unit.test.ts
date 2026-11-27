@@ -14,8 +14,8 @@ import type {
 import { SCENE_DATA_TEMPORAL_V1_SCHEMA, sceneDataTargetOwner } from '../../temporal/scene-data';
 import {
   createSceneDataCatalog,
+  SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
-  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
 } from '../../temporal/scene-data-catalog';
 import {
   createStandardSceneSurfaceAdmission,
@@ -46,8 +46,8 @@ function normalCatalog(identity: FixtureIdentity = {}) {
     materialShaderId: 'forgeax::default-standard-pbr',
     geometry: 'mesh',
     deformation: 'rigid',
-    entryPoint: 'fs_ao_input',
-    selectedProgram: 'direct:artifact-1:forward',
+    entryPoint: 'fs_gbuffer',
+    selectedProgram: 'direct:artifact-1:deferred',
   } as const;
   const surfaceAdmission = createStandardSceneSurfaceAdmission({
     viewIdentity,
@@ -56,7 +56,7 @@ function normalCatalog(identity: FixtureIdentity = {}) {
     standardPipeline: true,
     cameraAvailable: true,
     lane: 'direct',
-    renderPath: 'forward',
+    renderPath: 'deferred',
     contributors: [contributor],
   });
   const catalog = createSceneDataCatalog({
@@ -71,7 +71,7 @@ function normalCatalog(identity: FixtureIdentity = {}) {
   });
   return {
     admission: surfaceAdmission,
-    target: catalog.require(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA),
+    target: catalog.require(SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA),
     depthTarget: catalog.require(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA),
   };
 }
@@ -354,7 +354,7 @@ describe('typed frame graph SceneData bindings', () => {
     const bindings = sceneDataSurfaceBindings([sampledSurfacePlan(temporal)], undefined);
     expect(bindings).toEqual([{ schema: SCENE_DATA_TEMPORAL_V1_SCHEMA, owners: [owner] }]);
 
-    const wrongSchema = semanticTarget(temporal, SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA);
+    const wrongSchema = semanticTarget(temporal, SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA);
     expect(targetResolver([], [wrongSchema.target])(temporal)).toBeUndefined();
     const { sceneDataBindings, ...unannotatedTarget } = physical.target;
     expect(sceneDataBindings).toHaveLength(1);
@@ -416,13 +416,13 @@ describe('typed frame graph SceneData bindings', () => {
     const consumed = withPasses([...plain.passes, consume]);
     expect(sampledSceneDataReads(consumed)).toHaveLength(1);
     expect(sceneDataSurfaceBindings([consumed], admission)).toEqual([
-      { schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA, owners: [owner] },
+      { schema: SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA, owners: [owner] },
     ]);
 
     const twice = withPasses([consume, ...plain.passes, { ...consume, name: 'consume-again' }]);
     expect(sampledSceneDataReads(twice)).toHaveLength(2);
     expect(sceneDataSurfaceBindings([twice], admission)).toEqual([
-      { schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA, owners: [owner] },
+      { schema: SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA, owners: [owner] },
     ]);
 
     expect(sceneDataSurfaceBindings([withPasses([])], admission)).toEqual([]);

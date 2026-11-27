@@ -3,19 +3,18 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createToolRuntime } from '@forgeax/engine-tool-runtime';
 import { describe, expect, it } from 'vitest';
-import { createPreviewContributions } from '../preview-contributions.js';
+import { createPreviewContributions } from '../contributions.js';
 
 const toolsDir = dirname(fileURLToPath(import.meta.url));
 const sourceRoot = resolve(toolsDir, '..');
 
 describe('preview owner gate', () => {
-  it('does not expose a generic asset.preview dispatcher or legacy preview alias', async () => {
-    const [catalog, contributions, previewContributions] = await Promise.all([
+  it('keeps the generic asset.preview convenience command out of domain preview contributions', async () => {
+    const [catalog, contributions] = await Promise.all([
       readFile(resolve(sourceRoot, 'catalog.ts'), 'utf8'),
       readFile(resolve(sourceRoot, 'contributions.ts'), 'utf8'),
-      readFile(resolve(sourceRoot, 'preview-contributions.ts'), 'utf8'),
     ]);
-    const source = `${catalog}\n${contributions}\n${previewContributions}`;
+    const source = `${catalog}\n${contributions}`;
 
     expect(source).not.toMatch(/asset\.preview/);
     expect(source).not.toMatch(/PreviewSpec|previewRegistry|previewDispatcher/);

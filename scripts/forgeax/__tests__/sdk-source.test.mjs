@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { relative, resolve } from 'node:path';
 import test from 'node:test';
@@ -162,6 +162,24 @@ async function fixture(t) {
   const engineCommit = await commit(root, 'pin dependency');
   return { root, destination, upstream, sourceCommit, viewCommit, modelingCommit, engineCommit };
 }
+
+test('SDK materializes demo shader links from the selected source commit', async (t) => {
+  const { root, destination } = await fixture(t);
+  const demo = 'apps/hello/physical-material/src/default-standard-pbr.wgsl';
+  const shader = 'packages/shader/src/default-standard-pbr.wgsl';
+  for (const file of [demo, shader]) await mkdir(resolve(root, file, '..'), { recursive: true });
+  const selected = '// selected shader source\n';
+  await writeFile(resolve(root, shader), selected);
+  await symlink(`../../../../${shader}`, resolve(root, demo));
+  const revision = await commit(root, 'link the demo shader');
+  await writeFile(resolve(root, shader), '// uncommitted source\n');
+
+  await archiveEngineSource({ root, destination, commit: revision });
+  assert.ok((await lstat(resolve(destination, demo))).isFile());
+  assert.equal(await readFile(resolve(destination, demo), 'utf8'), selected);
+  assert.equal(await readFile(resolve(destination, shader), 'utf8'), selected);
+  assert.ok((await lstat(resolve(root, demo))).isSymbolicLink());
+});
 
 test('SDK archives the Engine gitlink revision, including licenses, without remote access', async (t) => {
   const context = await fixture(t);

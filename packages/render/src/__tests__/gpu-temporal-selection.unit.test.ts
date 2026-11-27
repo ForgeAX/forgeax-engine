@@ -21,7 +21,7 @@ it.each([
   topology.apply(scene.apply([{ kind: 'update', entityKey: source.entityKey, snapshot: source }]));
   const batches = topology
     .query(topology.sourcePlan(), undefined)
-    .batches.map(({ lod: _lod, ...batch }) => ({
+    .active.batches.map(({ lod: _lod, ...batch }) => ({
       ...batch,
       prepared: {
         identity: { material, deformation, geometry: 'triangle' },

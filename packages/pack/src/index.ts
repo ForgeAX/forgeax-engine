@@ -68,7 +68,6 @@ export {
   validateMaterialCookProgramContext,
   validateMaterialCookReceipt,
 } from './evidence/material-cook.js';
-export { buildOfflineAssetEvidence, packageVerification } from './evidence/offline-evidence.js';
 export {
   AssetGuid,
   isValidPackSourceKey,
@@ -91,8 +90,7 @@ export {
 } from './mesh-bin-contract.js';
 export * from './pack-authoring.js';
 export { validateProducerContract, validateProducerOutputs } from './producer-contract.js';
-export { projectRuntimePack } from './runtime-projection.js';
-export { parsePackV2, validateMeta, validatePack, validatePackV2 } from './schema-compiled.js';
+export { parsePackV2, validateMeta, validatePackV2 } from './schema-compiled.js';
 export {
   type AssetReader,
   isScriptablePackAssetKind,

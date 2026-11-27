@@ -3,14 +3,20 @@ import { describe, expect, it } from 'vitest';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { CameraSnapshot } from '../../render-contract';
 import type { DispatchEntry } from '../../render-system-extract';
+import { CapturedSceneTransform } from '../../scene/captured-transform';
 import { FrameProjection } from '../../scene/frame-list';
-import { TransparentSortCache, type TransparentSortSource } from '../transparent-dispatch';
+import {
+  TransparentSortCache,
+  type TransparentSortSource,
+  transparentSortValue,
+} from '../transparent-dispatch';
 import {
   TRANSPARENT_SORT_MODE_DISTANCE,
   TRANSPARENT_SORT_MODE_LAYER_Y,
   TRANSPARENT_SORT_MODE_LAYER_YZ,
   TRANSPARENT_SORT_MODE_LAYER_Z,
 } from '../transparent-sort-config';
+import { ViewDrawOrderReader, type ViewDrawOrderSelection } from '../view-draw-order';
 
 function scope(mode: number, yzAlpha = 1): RenderResourceScope {
   return {
@@ -487,4 +493,99 @@ describe('TransparentSortCache retained phase', () => {
       expect(moving.compared).toBeLessThanOrEqual(2 * (t + moving.moved) + 256);
     }
   });
+});
+
+it('releases departed transparent rows and sizes backing to the remaining selected draws', () => {
+  const sorter = new TransparentSortCache();
+  const count = 4096;
+  const rows = Array.from({ length: count }, (_, i) => renderable(0, 0, -i));
+  const all = rows.map((_, i) => entry(i, RenderQueue.Transparent, 0, 1));
+  const state = scope(TRANSPARENT_SORT_MODE_DISTANCE);
+  const cameraList = [camera(0, 0, 0)];
+  const sort = (entries: DispatchEntry[], cameras = cameraList) =>
+    sorter.sort(entries, state, cameras, rows);
+  const storage = sorter as unknown as {
+    slotPositions: Int32Array;
+    slotPoses: readonly unknown[];
+    poses: readonly unknown[];
+    source: unknown;
+    value: unknown;
+  };
+  const full = sort(all);
+  expect(storage.slotPositions.length).toBeGreaterThanOrEqual(count);
+  const mixed = all.map((e, index) => (index < 3 ? e : { ...e, queue: RenderQueue.Geometry }));
+  const partial = sort(mixed);
+  expect(partial.slice(0, 3).map((e) => e.renderableIndex)).toEqual([2, 1, 0]);
+  expect(storage.slotPositions.length).toBe(3);
+  expect(storage.slotPoses.length).toBe(3);
+  expect(storage.poses.length).toBe(3);
+  expect(sort(mixed, [])).toBe(mixed);
+  expect(storage.slotPoses.length).toBe(0);
+  expect(storage.poses.length).toBe(0);
+  expect(storage.source).toBeUndefined();
+  expect(storage.value).toBeUndefined();
+  expect(full.at(0)?.renderableIndex).toBe(count - 1);
+  expect(sort(all).at(0)?.renderableIndex).toBe(count - 1);
+  sort([]);
+  expect(storage.slotPositions.byteLength).toBe(0);
+});
+
+it('orders changing poses from a shared page and reads independently authored anchors at offset zero', () => {
+  const page = new Float32Array(80).fill(Number.NaN);
+  const camera = { position: new Float32Array([1, 3, -2]) } as CameraSnapshot;
+  const identity = renderable(0, 0, 0).transform.world;
+  for (let frame = 0; frame < 60; frame++) {
+    const plain = renderable(frame % 3, 16 - frame, frame / 2).transform.world;
+    const offset = 16 + (frame % 4) * 16;
+    page.set(plain, offset);
+    const packed = new CapturedSceneTransform(page, offset);
+    Object.defineProperty(packed, 'world', {
+      get() {
+        throw new Error('Sorting opened a matrix window');
+      },
+    });
+    for (const mode of [
+      TRANSPARENT_SORT_MODE_DISTANCE,
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      TRANSPARENT_SORT_MODE_LAYER_Y,
+      TRANSPARENT_SORT_MODE_LAYER_YZ,
+    ])
+      expect(transparentSortValue(packed, undefined, mode, 0.3, camera)).toBe(
+        transparentSortValue(plain, undefined, mode, 0.3, camera),
+      );
+    const reader = new ViewDrawOrderReader();
+    const order: ViewDrawOrderSelection = {
+      view: identity,
+      readLocal: (_entity, out) => {
+        out.group = 0;
+        out.priority = 1;
+        out.tie = frame;
+        out.x = 0.4;
+        out.y = 1.2;
+        out.z = 2;
+        out.authoredWorld = frame % 2 === 0 ? identity : undefined;
+        return true;
+      },
+    };
+    const expected = [0, 1, 2 + (frame % 2 === 0 ? 0 : frame / 2), frame];
+    expect(reader.read(order, 1, page, offset)).toEqual(expected);
+  }
+});
+
+it('orders distinct submitted rows of the same entity by their own rendered pose', () => {
+  const view = renderable(0, 0, 0).transform.world;
+  const reader = new ViewDrawOrderReader();
+  const order: ViewDrawOrderSelection = {
+    view,
+    readLocal: (entity, out) => {
+      out.group = 0;
+      out.priority = 2;
+      out.tie = entity;
+      out.x = out.y = out.z = 0;
+      out.authoredWorld = undefined;
+      return true;
+    },
+  };
+  expect(reader.read(order, 9, renderable(0, 0, -3).transform.world)).toEqual([0, 2, -3, 9]);
+  expect(reader.read(order, 9, renderable(0, 0, -8).transform.world)).toEqual([0, 2, -8, 9]);
 });

@@ -4,9 +4,12 @@ import {
   isMaterialSurfaceModel,
   isShaderCompilerProfile,
   type ManifestEntry,
+  type MaterialCookProgramContext,
   type MaterialProgram,
   type MaterialProgramAbi,
+  type MaterialRootAsset,
   type MaterialSurfaceModel,
+  type MaterialTemplateSources,
   type ParamSchemaEntry,
   type ShaderCompilerProfile,
 } from '@forgeax/engine-types';
@@ -55,6 +58,49 @@ export interface ShaderProgramCompilation {
   readonly receipt?: MaterialProgramAbi;
 }
 
+/** An admitted Pack material supplies compiler inputs without selecting a target program. */
+export interface MaterialShaderTemplate {
+  readonly guid: string;
+  readonly material: MaterialRootAsset;
+  readonly sources: MaterialTemplateSources;
+}
+
+export interface MaterialShaderSelection {
+  readonly pass: string;
+  readonly context: MaterialCookProgramContext;
+  readonly vertexColorAvailable: boolean;
+}
+
+export interface MaterialShaderTemplateProgram {
+  readonly wgsl: string;
+  readonly entry?: string;
+  readonly abi?: MaterialProgramAbi;
+}
+
+export interface MaterialShaderSelectionResult {
+  readonly direct: MaterialShaderTemplateProgram;
+  readonly sceneIndex?: MaterialShaderTemplateProgram;
+  readonly rasterCoverage?: 'clipping' | 'clipping-and-lod';
+}
+
+export interface PreparedMaterialShaderTemplate {
+  /** Prepare a single address without materializing the alternate raster program. */
+  selectAddress?(
+    request: MaterialShaderSelection,
+    address: import('@forgeax/engine-types').MaterialProgramAddress,
+  ): Result<
+    | {
+        readonly program: MaterialShaderTemplateProgram;
+        readonly rasterCoverage?: MaterialShaderSelectionResult['rasterCoverage'];
+      }
+    | undefined,
+    ShaderError
+  >;
+  select(
+    request: MaterialShaderSelection,
+  ): Result<MaterialShaderSelectionResult | undefined, ShaderError>;
+}
+
 /** Initialized portable compiler. The Registry, rather than the compiler, owns reuse. */
 export interface ShaderProgramCompiler {
   readonly profile: ShaderCompilerProfile;
@@ -62,6 +108,14 @@ export interface ShaderProgramCompiler {
     template: ShaderProgramTemplate,
     defines: Readonly<Record<string, boolean>>,
   ): Result<ShaderProgramCompilation, ShaderError>;
+  /** Optional off-realm preparation for already selected programs. */
+  compileAsync?(
+    template: ShaderProgramTemplate,
+    defines: Readonly<Record<string, boolean>>,
+  ): Promise<Result<ShaderProgramCompilation, ShaderError>>;
+  prepareMaterial?(
+    template: MaterialShaderTemplate,
+  ): Result<PreparedMaterialShaderTemplate, ShaderError>;
 }
 
 /** Native immutable template admission. Source and every semantic input determine identity. */

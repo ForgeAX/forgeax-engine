@@ -13,6 +13,9 @@ import { playwrightWithBackgroundPages } from './vitest-browser-provider';
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
 const selected = explicitBrowserFiles(rootDir);
 const include = selected?.every((file) => hostFiles.includes(file)) ? selected : hostFiles;
+const includesSpatialAudio = include.includes(
+  'packages/audio-webaudio/src/__tests__/source-pose.browser.test.ts',
+);
 
 // These contracts use native DOM, WebSocket and Web Audio, without a Renderer.
 // Keep Chromium and its interaction/audio policies; do not prepare shader/Pack
@@ -29,6 +32,9 @@ const project = defineProject({
       '@forgeax/engine-geometry > earcut',
       '@forgeax/engine-assets-runtime > @forgeax/engine-codec > fzstd',
       '@forgeax/engine-assets-runtime > @forgeax/engine-codec > @hpcc-js/wasm-zstd',
+      ...(includesSpatialAudio
+        ? ['@forgeax/engine-render > @forgeax/engine-water > clipper2-ts']
+        : []),
     ],
   },
   server: {

@@ -6,6 +6,7 @@ const read = (path: string): string => readFileSync(new URL(path, import.meta.ur
 const count = (source: string, pattern: RegExp): number => source.match(pattern)?.length ?? 0;
 
 const productionRaster = read('../gpu-driven/production-raster.ts');
+const productionRasterEncode = read('../gpu-driven/production-raster-encode.ts');
 const productionRasterMaterial = read('../gpu-driven/production-raster-material.ts');
 const frameRecord = read('../record/frame.ts');
 const frameGpuDriven = read('../record/frame-gpu-driven.ts');
@@ -44,15 +45,23 @@ describe('GPU-driven baseline characterization', () => {
     expect(productionRaster).not.toContain('GPU_DRIVEN_STANDARD_PBR_WGSL');
     expect(productionRaster).not.toContain('class GpuDrivenPbrRaster');
     expect(productionRaster).toContain('MaterialAbiRasterAdapter');
-    expect(productionRasterMaterial).toContain('deriveVertexBufferLayoutFromProjection');
-    expect(productionRasterMaterial).toContain('vertexLayout.arrayStride');
+    expect(productionRasterMaterial).toContain('layoutProjection.arrayStride');
+    expect(productionRasterMaterial).toContain('layoutProjection.digest');
+    expect(productionRasterMaterial).toContain(
+      'deriveVertexBufferLayoutFromProjection(layoutProjection,',
+    );
   });
 
   it('keeps CPU-only video slots out of the global GPU receipt gate', () => {
-    expect(mainPass).toContain('videoTextureFields?.size');
-    expect(mainPass).toContain('prepareMaterialBinding = (slot)');
+    expect(read('../gpu-driven/batch-execution.ts')).toContain('videoTextureFields?.size');
+    expect(mainPass).toMatch(
+      /prepareMaterialBinding = \(slot, standardMaterialLayoutIndex, program\)/,
+    );
     expect(mainPass).not.toContain('for (let materialSlot = 0; materialSlot < materialSlotCount;');
     expect(productionRaster).toMatch(
+      /bindMaterialSlot\(\s*bindings,\s*batch,\s*frameResources,\s*globalMaterialSlot\b/,
+    );
+    expect(productionRasterEncode).toMatch(
       /material bind group for global slot \$\{globalMaterialSlot\}/,
     );
   });
@@ -68,10 +77,11 @@ describe('GPU-driven baseline characterization', () => {
     );
   });
 
-  it('freezes CPU shadow caster enumeration as the pre-GPU baseline', () => {
-    expect(shadowPass).toContain('validatedOrdered');
-    expect(shadowPass).toMatch(/for \(let i = 0; i < validatedOrdered\.length; i\+\+\)/);
+  it('keeps CPU shadow caster enumeration on admitted drawing rows', () => {
+    expect(shadowPass).toContain('shadowValidatedOrdered ?? mainValidatedOrdered');
+    expect(shadowPass).toContain('visitSubmittedDrawRows(validatedOrdered, (entry, i)');
     expect(shadowPass).toContain('recordShadowCasterDraws');
+    expect(read('../record/draw-row-pages.ts')).toContain('consume(row, start + index)');
   });
 
   it('freezes current ownership and stable-frame inspection signals', () => {

@@ -1,4 +1,5 @@
 import { resolveTextureResource } from '../draw-call-resources';
+import { useViewerTranslation } from '../i18n';
 import { useOpenViewerPanel } from '../panel-navigation';
 import { useSelection } from '../selection-context';
 import { pipelineStateAnchor } from '../selectors';
@@ -81,6 +82,7 @@ export function selectedShaderPreview(
 }
 
 export function PipelineState(_props?: { readonly className?: string }) {
+  const t = useViewerTranslation();
   const model = useViewModel();
   const openPanel = useOpenViewerPanel();
   const { selectedWorkIndex, selectResource } = useSelection();
@@ -105,13 +107,12 @@ export function PipelineState(_props?: { readonly className?: string }) {
       {...{ [pipelineStateAnchor()]: selected ? 'selected' : 'default' }}
     >
       {!selected || model === null ? (
-        <EmptyState
-          title="No work selected"
-          description="Select a work item to inspect its pipeline"
-        />
+        <EmptyState title={t('noWork')} description={t('selectPipeline')} />
       ) : (
         <div className="space-y-fx-12 p-fx-12 text-compact">
-          <div className="text-caption text-muted-foreground">Work {work.workIndex}</div>
+          <div className="text-caption text-muted-foreground">
+            {t('work', { index: work.workIndex })}
+          </div>
           <div className="grid grid-cols-2 gap-x-fx-12 gap-y-fx-4 border-b border-border pb-fx-12">
             <span className="text-muted-foreground">workIndex</span>
             <span data-forgeax-work-index={String(work.workIndex)}>{work.workIndex}</span>
@@ -119,56 +120,68 @@ export function PipelineState(_props?: { readonly className?: string }) {
             <span>{work.eventIndex}</span>
             <span className="text-muted-foreground">passIndex</span>
             <span>{work.passIndex}</span>
-            <span className="text-muted-foreground">method</span>
+            <span className="text-muted-foreground">{t('method')}</span>
             <span className="font-mono">{work.kind}</span>
           </div>
           <div className="grid grid-cols-2 gap-fx-6">
             {ALL_SECTIONS.map((section) => (
               <div key={section} className="border-b border-border p-fx-8">
-                <div className="text-caption font-medium text-foreground">
-                  {SECTION_LABELS[section]}
-                </div>
+                <div className="text-caption font-medium text-foreground">{t(section)}</div>
                 <div className="mt-fx-4 break-all text-muted-foreground">
                   {section === 'shaders'
                     ? work.pipeline.shaders
                         .map((shader) => `${shader.stage}:${shader.entryPoint ?? '-'}`)
-                        .join(', ') || 'none'
+                        .join(', ') || t('none')
                     : section === 'resourceBindings'
                       ? work.bindings.length === 0
-                        ? 'none'
-                        : `${work.bindings.length} bindings · ${work.bindings.map((binding) => binding.resourceKind ?? 'unknown').join(', ')}`
+                        ? t('none')
+                        : t('bindings', {
+                            count: work.bindings.length,
+                            kinds: work.bindings
+                              .map((binding) => binding.resourceKind ?? t('unknown'))
+                              .join(', '),
+                          })
                       : section === 'vertexInput'
-                        ? `${work.vertexBuffers.length} vertex buffers${work.indexBuffer === null ? '' : `, index ${work.indexBuffer.format}`}`
+                        ? t('vertexBuffers', {
+                            count: work.vertexBuffers.length,
+                            index:
+                              work.indexBuffer === null
+                                ? ''
+                                : t('indexFormat', { format: work.indexBuffer.format }),
+                          })
                         : section === 'inputAssembly'
                           ? JSON.stringify(work.drawCall)
                           : section === 'rasterizer'
-                            ? (work.pipeline.kind ?? 'unavailable')
+                            ? (work.pipeline.kind ?? t('unavailable'))
                             : section === 'depthStencil'
-                              ? (work.attachments?.depthStencilViewHandleId ?? 'none')
-                              : 'captured'}
+                              ? (work.attachments?.depthStencilViewHandleId ?? t('none'))
+                              : t('captured')}
                 </div>
               </div>
             ))}
           </div>
           <div className="grid grid-cols-2 gap-x-fx-12 gap-y-fx-8 border-t border-border pt-fx-12">
-            <span className="text-muted-foreground">pipeline</span>
+            <span className="text-muted-foreground">{t('pipeline')}</span>
             {work.pipeline.pipelineHandleId === undefined ? (
               <span className="font-mono">{work.pipeline.status}</span>
             ) : (
               <button
                 type="button"
                 className="forgeax-resource-link"
-                aria-label={`Open ${work.pipeline.pipelineHandleId} in Resource Inspector`}
-                title="Open Resource Inspector"
+                aria-label={t('openResource', {
+                  id: work.pipeline.pipelineHandleId,
+                  panel: t('resourceInspector'),
+                })}
+                title={t('openPanel', { panel: t('resourceInspector') })}
                 onClick={() => openResource(work.pipeline.pipelineHandleId as string)}
               >
                 {work.pipeline.pipelineHandleId}
               </button>
             )}
-            <span className="text-muted-foreground">pipeline descriptor</span>
+            <span className="text-muted-foreground">{t('pipelineDescriptor')}</span>
             <pre className="forgeax-code-block min-w-0" data-forgeax-pipeline-descriptor>
               {work.pipeline.descriptor === undefined
-                ? (work.pipeline.reason ?? 'unavailable')
+                ? (work.pipeline.reason ?? t('unavailable'))
                 : JSON.stringify(work.pipeline.descriptor, null, 2)}
             </pre>
             {work.pipeline.shaders.map((shader) => {
@@ -179,7 +192,7 @@ export function PipelineState(_props?: { readonly className?: string }) {
                     {shader.stage} {shader.moduleHandleId} {shader.entryPoint ?? '-'}
                   </span>
                   {selection === null ? (
-                    <p className="text-muted-foreground">Shader facts unavailable.</p>
+                    <p className="text-muted-foreground">{t('shaderUnavailable')}</p>
                   ) : (
                     <CodeMirrorShader selection={selection} />
                   )}
@@ -190,22 +203,28 @@ export function PipelineState(_props?: { readonly className?: string }) {
               const resourceId = binding.resourceId;
               const texture =
                 resourceId === null ? undefined : resolveTextureResource(model, resourceId);
-              const panel = texture === undefined ? 'Resource Inspector' : 'Draw Call Viewer';
+              const panel = t(texture === undefined ? 'resourceInspector' : 'drawCallViewer');
               return (
                 <button
                   type="button"
                   key={`${binding.groupIndex}:${binding.binding}`}
                   className="forgeax-resource-link col-span-2"
-                  aria-label={`Open ${resourceId ?? 'unavailable resource'} in ${panel}`}
-                  title={`Open ${panel}`}
+                  aria-label={t('openResource', {
+                    id: resourceId ?? t('unavailableResource'),
+                    panel,
+                  })}
+                  title={t('openPanel', { panel })}
                   disabled={resourceId === null}
                   onClick={() => {
                     if (resourceId !== null) openResource(resourceId);
                   }}
                 >
-                  group {binding.groupIndex} · binding {binding.binding} ·{' '}
-                  {binding.resourceKind ?? 'unknown'} · {binding.bindGroupId} ·{' '}
-                  {resourceId ?? 'no resource'}
+                  {t('bindingDescription', {
+                    group: binding.groupIndex,
+                    binding: binding.binding,
+                  })}{' '}
+                  · {binding.resourceKind ?? t('unknown')} · {binding.bindGroupId} ·{' '}
+                  {resourceId ?? t('noResource')}
                 </button>
               );
             })}
@@ -214,24 +233,38 @@ export function PipelineState(_props?: { readonly className?: string }) {
                 type="button"
                 key={buffer.slot}
                 className="forgeax-resource-link col-span-2"
-                aria-label={`Open ${buffer.bufferHandleId} in Resource Inspector`}
-                title="Open Resource Inspector"
+                aria-label={t('openResource', {
+                  id: buffer.bufferHandleId,
+                  panel: t('resourceInspector'),
+                })}
+                title={t('openPanel', { panel: t('resourceInspector') })}
                 onClick={() => openResource(buffer.bufferHandleId)}
               >
-                vertex slot {buffer.slot} {buffer.bufferHandleId} offset {buffer.offset} size{' '}
-                {buffer.size ?? 'all'}
+                {t('vertexBufferDescription', {
+                  slot: buffer.slot,
+                  id: buffer.bufferHandleId,
+                  offset: buffer.offset,
+                  size: buffer.size ?? t('all'),
+                })}
               </button>
             ))}
             {work.indexBuffer !== null && (
               <button
                 type="button"
                 className="forgeax-resource-link col-span-2"
-                aria-label={`Open ${work.indexBuffer.bufferHandleId} in Resource Inspector`}
-                title="Open Resource Inspector"
+                aria-label={t('openResource', {
+                  id: work.indexBuffer.bufferHandleId,
+                  panel: t('resourceInspector'),
+                })}
+                title={t('openPanel', { panel: t('resourceInspector') })}
                 onClick={() => openResource(work.indexBuffer?.bufferHandleId as string)}
               >
-                index {work.indexBuffer.bufferHandleId} {work.indexBuffer.format} offset{' '}
-                {work.indexBuffer.offset} size {work.indexBuffer.size ?? 'all'}
+                {t('indexBufferDescription', {
+                  id: work.indexBuffer.bufferHandleId,
+                  format: work.indexBuffer.format,
+                  offset: work.indexBuffer.offset,
+                  size: work.indexBuffer.size ?? t('all'),
+                })}
               </button>
             )}
           </div>

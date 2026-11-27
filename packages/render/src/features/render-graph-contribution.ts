@@ -19,7 +19,6 @@ import { projectRenderFeatureCopies } from './render-graph-copy';
 import {
   type RenderFeatureGraphBindingsResolver,
   type RenderFeatureGraphTargetResolver,
-  type RenderFeatureLightingResolver,
   RenderFeatureRasterGraphProjection,
   type RenderFeatureShadowDraws,
   resolveRenderFeatureDrawBuffers,
@@ -236,7 +235,6 @@ export function projectRenderFeaturePlans<FrameCtx extends RenderGraphFrame>(
     readonly resolveTarget: RenderFeatureGraphTargetResolver;
     readonly resolveBindings?: RenderFeatureGraphBindingsResolver<FrameCtx> | undefined;
     readonly reportError?: ((error: RenderError) => void) | undefined;
-    readonly resolveStandardLighting?: RenderFeatureLightingResolver<FrameCtx> | undefined;
     readonly standardSurfaceAccesses?: readonly GraphAccess[] | undefined;
     readonly viewAccesses?: readonly GraphAccess[] | undefined;
     /** Restrict projection to one Standard graph placement. */
@@ -270,7 +268,6 @@ export function projectRenderFeaturePlans<FrameCtx extends RenderGraphFrame>(
     options.resolveBindings,
     buffers,
     options.reportError,
-    options.resolveStandardLighting,
     options.standardSurfaceAccesses,
     options.viewAccesses,
   );

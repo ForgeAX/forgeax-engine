@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -43,7 +43,7 @@ test('a static App opens and transfers its View before any backend request', asy
   }
 });
 
-test('reopening a healthy bootstrap avoids restart, while unavailable bootstrap uses owner startup', async () => {
+test('reopening a healthy bootstrap avoids restart, while unavailable bootstrap uses owner startup', async (context) => {
   const directory = await mkdtemp(join(tmpdir(), 'forgeax-app-reopen-hosting-'));
   let healthy = true;
   const server = createServer((_request, response) => {
@@ -52,9 +52,20 @@ test('reopening a healthy bootstrap avoids restart, while unavailable bootstrap 
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
+  const bootstrapUrl = `http://127.0.0.1:${server.address().port}/`;
+  const probes = new EventEmitter();
+  const readBody = Response.prototype.json;
+  context.mock.method(Response.prototype, 'json', function () {
+    const body = readBody.call(this);
+    if (healthy && this.url === bootstrapUrl) {
+      // The next loop turn follows the owner's JSON and coalescing continuations.
+      void body.then(() => setImmediate(() => probes.emit('healthy')), () => {});
+    }
+    return body;
+  });
   await mkdir(join(directory, 'dist/modules'), { recursive: true });
   await writeFile(join(directory, 'dist/modules/service.mjs'), `
-    export const service = { server: { viewerUrl: 'http://localhost/', bootstrapUrl: 'http://127.0.0.1:${server.address().port}/' },
+    export const service = { server: { viewerUrl: 'http://localhost/', bootstrapUrl: '${bootstrapUrl}' },
       calls: [], start(project) { this.calls.push(project); }, close() {} };
     export async function createViewService() { return service; }
   `);
@@ -63,8 +74,9 @@ test('reopening a healthy bootstrap avoids restart, while unavailable bootstrap 
   const hosting = createAppHosting(binding);
   try {
     await hosting.open();
+    const healthyProbe = once(probes, 'healthy', { signal: AbortSignal.timeout(1000) });
     hosting.start();
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await healthyProbe;
     assert.deepEqual(observed.calls, []);
     healthy = false;
     hosting.start();

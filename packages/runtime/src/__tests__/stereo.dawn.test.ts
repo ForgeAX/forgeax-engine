@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
@@ -47,7 +47,7 @@ it.each([
         ssrIdentity: gbufferReplayIdentity,
         ...(mode === 'publication' ? { publicationSource: identity } : {}),
       },
-      { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()) },
+      { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()) },
     ),
   );
   const directory = `artifacts/stereo/${mode === 'world' ? 'dawn' : 'publication-dawn'}`;

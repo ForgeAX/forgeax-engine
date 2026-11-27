@@ -44,6 +44,49 @@ async function fixture(indexFormat: 'uint16' | 'uint32' = 'uint32') {
   return { device, store, assets, records, handle, current, first, update, dispose };
 }
 
+it('routes a material edit without reading pixels or probing unrelated physical residents', () => {
+  const assets = new AssetRegistry();
+  const store = new GpuResidencyCache();
+  const scope = worldRenderResources(new World({ assets }));
+  const material = assets
+    .create({
+      kind: 'material',
+      passes: [{ name: 'main', program: { module: 'forgeax::standard' } }],
+      values: { roughness: 1 },
+    })
+    .unwrap();
+  const observer = assets.observe().unwrap();
+  const read = vi.spyOn(scope, 'resolveAsset');
+  const mesh = vi.spyOn(store, 'adoptMeshChange');
+  const texture = vi.spyOn(store, 'adoptTextureChange');
+  const sampler = vi.spyOn(store, 'invalidateSampler');
+  const cubemap = vi.spyOn(store, 'adoptCubemapChange');
+  const fail = (error: RhiError) => {
+    throw error;
+  };
+  try {
+    assets.update(material, { values: { roughness: 0.5 } }).unwrap();
+    const batch = observer.read().unwrap();
+    const change = batch.changes.find((row) => row.handle === material);
+    assert(change);
+    store.adoptAssetChange(scope, change, fail);
+    for (const probe of [read, mesh, texture, sampler, cubemap])
+      expect(probe).not.toHaveBeenCalled();
+    batch.accept();
+    assets.release(material).unwrap();
+    const retired = observer.read().unwrap().changes[0];
+    assert(retired?.removed);
+    store.adoptAssetChange(scope, retired, fail);
+    expect(read).not.toHaveBeenCalled();
+    for (const probe of [mesh, texture, sampler, cubemap]) expect(probe).toHaveBeenCalledOnce();
+  } finally {
+    read.mockRestore();
+    observer.dispose();
+    store.destroyAll();
+    assets.dispose();
+  }
+});
+
 it('uploads one vertex range without allocating or uploading the complete mesh, even with queued work', async () => {
   const f = await fixture();
   let finish!: () => void;

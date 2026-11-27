@@ -1,5 +1,6 @@
 import type { RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import type { GlobalSdfCompositionInputs, GlobalSdfGrid } from './global-sdf';
+import { prepareComputePipeline } from './prepare-pipeline';
 
 /** Derived sampling projection of the region's authoritative voxel buffer.
  * A texture keeps live-field consumers within WebGPU's eight storage-buffer limit.
@@ -17,7 +18,7 @@ struct Grid { originSpacing: vec4f, dimensionsCount: vec4u, ranges: vec4f }
  textureStore(output,vec3i(vec3u(i%dims.x,(i/dims.x)%dims.y,i/(dims.x*dims.y))),vec4f(v.distance,f32(v.status),0,0));
 }`;
 
-export function createGlobalSdfTexture(
+export async function createGlobalSdfTexture(
   device: RhiDevice,
   module: ShaderModule,
   region: { readonly grid: GlobalSdfGrid; readonly input: GlobalSdfCompositionInputs },
@@ -47,13 +48,13 @@ export function createGlobalSdfTexture(
         ],
       })
       .unwrap();
-    const pipeline = device
-      .createComputePipeline({
+    const pipeline = (
+      await prepareComputePipeline(device, {
         label: 'irradiance-field.visibility',
         layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }).unwrap(),
         compute: { module, entryPoint: 'projectGlobalSdf' },
       })
-      .unwrap();
+    ).unwrap();
     const group = device
       .createBindGroup({
         layout,

@@ -163,6 +163,9 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {
 }`;
 
 const PARTICLE_CODE_DATA_INTERFACE_MODULES: Readonly<Record<string, string>> = {
+  'forgeax_vfx::data': `#define_import_path forgeax_vfx::data
+@group(0) @binding(26) var<storage, read> structured_input: array<vec4<u32>>;
+`,
   'forgeax_vfx::data::gpu_events': '#define_import_path forgeax_vfx::data::gpu_events\n',
   'forgeax_vfx::data::water_displacement':
     '#define_import_path forgeax_vfx::data::water_displacement\n',
@@ -2130,7 +2133,8 @@ async function compileEmitterV3(
           name.endsWith('water_displacement') ||
           name.endsWith('water_hull') ||
           name.endsWith('water_config') ||
-          name.endsWith('gpu_events'),
+          name.endsWith('gpu_events') ||
+          name === 'forgeax_vfx::data',
       ),
     ),
   };
@@ -2218,31 +2222,59 @@ async function compileEmitterV3(
       ),
     );
   }
-  const validateForceFieldBindings = () => {
-    if (emitter.forceFields !== undefined) {
-      const storageBindings = compiled.value.bindings
-        .flatMap((group) => group.entries)
-        .filter(
-          (entry) =>
-            (entry.visibility & 4) !== 0 &&
-            (entry.buffer?.type === 'storage' || entry.buffer?.type === 'read-only-storage'),
-        ).length;
+  const validatePortableStorageBindings = () => {
+    if (
+      emitter.forceFields !== undefined ||
+      dataInterfaces.some((entry) => entry.kind === 'structured-input')
+    ) {
+      const storageEntries = compiled.value.bindings.flatMap((group) =>
+        group.entries
+          .filter(
+            (entry) =>
+              (entry.visibility & 4) !== 0 &&
+              (entry.buffer?.type === 'storage' || entry.buffer?.type === 'read-only-storage'),
+          )
+          .map((entry) => `${group.label}:${entry.binding}`),
+      );
+      const storageKeys = new Set(storageEntries);
+      const entryPoints = compiled.value.reflection.entryPoints;
+      const storageBindings =
+        entryPoints === undefined ||
+        !dataInterfaces.some((entry) => entry.kind === 'structured-input')
+          ? storageEntries.length
+          : Math.max(
+              0,
+              ...entryPoints.map(
+                (entry) =>
+                  entry.bindings.filter((binding) =>
+                    storageKeys.has(`@group(${binding.group}):${binding.binding}`),
+                  ).length,
+              ),
+            );
       if (storageBindings > 8)
         return err(
           compileError(
             'vfx-shader-invalid',
             emitter.id,
-            'at most eight compute storage bindings on the portable managed field path',
+            'at most eight compute storage bindings on the portable managed storage path',
             'split custom/event work into another emitter rather than exceeding the guaranteed WebGPU limit',
-            { module: moduleId, cause: { storageBindings } },
+            {
+              module: moduleId,
+              cause: {
+                storageBindings,
+                bindings: storageEntries,
+                entryPoints: compiled.value.reflection.entryPoints,
+              },
+            },
           ),
         );
     }
 
     return undefined;
   };
-  const validateForceFieldBindingsFailure = validateForceFieldBindings();
-  if (validateForceFieldBindingsFailure !== undefined) return validateForceFieldBindingsFailure;
+  const validatePortableStorageBindingsFailure = validatePortableStorageBindings();
+  if (validatePortableStorageBindingsFailure !== undefined)
+    return validatePortableStorageBindingsFailure;
 
   const resources = [
     'particles',
@@ -2314,6 +2346,11 @@ async function compileEmitterV3(
               ]),
           ...stagePlan.value.stages.map((stage) => stage.entryPoint),
         ],
+        ...(compiled.value.reflection.entryPoints === undefined
+          ? {}
+          : {
+              entryPointBindings: compiled.value.reflection.entryPoints,
+            }),
         bindings: compiled.value.bindings,
         layout: layout.value,
         dataInterfaces,

@@ -169,6 +169,38 @@ it.each([
     expect(tinted.renderables.at(0)?.material.snapshot.paramSnapshot?.tintColor).toEqual([
       0, 1, 0, 1,
     ]);
+    world.set(label, GlyphText, { text: 'AAA' }).unwrap();
+    const unique = draw().renderables.at(0);
+    assert(unique?.generatedMesh);
+    const originalInk = unique.material;
+    for (let frame = 1; frame <= 60; frame++) {
+      world.set(label, GlyphText, { fontSize: frame + 1, color: [0, frame / 61, 1, 1] }).unwrap();
+      const active = draw().renderables;
+      expect(active.at(1)?.generatedMesh).toBe(mesh);
+      expect(active.at(0)?.generatedMesh).not.toBe(unique.generatedMesh);
+    }
+    world.set(label, GlyphText, { fontSize: 1, color: [0, 1, 0, 1] }).unwrap();
+    const restored = draw().renderables.at(0);
+    assert(restored?.generatedMesh);
+    // The last consumer released those values. An older frame still owns its exact draw.
+    expect(restored.generatedMesh).not.toBe(unique.generatedMesh);
+    expect(restored.generatedMesh.vertices).toEqual(unique.generatedMesh.vertices);
+    expect(restored.material).not.toBe(originalInk);
+    expect(originalInk.snapshot.paramSnapshot?.tintColor).toEqual([0, 1, 0, 1]);
+    world.despawn(label).unwrap();
+    draw();
+    const replacement = world
+      .spawn(
+        { component: Transform, data: {} },
+        {
+          component: GlyphText,
+          data: { fontHandle: font, text: 'AAA', fontSize: 1, color: [0, 1, 0, 1] },
+        },
+      )
+      .unwrap();
+    const recreated = draw().renderables.find((row) => row.entityKey === replacement);
+    expect(recreated?.generatedMesh).toBeDefined();
+    expect(recreated?.generatedMesh).not.toBe(restored.generatedMesh);
     const observer = runtimeAssets(assets).observe().unwrap();
     const current = observer.read().unwrap();
     current.accept();

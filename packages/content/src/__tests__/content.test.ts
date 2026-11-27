@@ -1,102 +1,41 @@
-import { prepareRuntimeTexture } from '@forgeax/engine-image';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { type MeshAsset, sha256Bytes, type TextureAsset } from '@forgeax/engine-types';
+import {
+  linearChannelToSrgb,
+  type MeshAsset,
+  sha256Bytes,
+  srgbChannelToLinear,
+  type TextureAsset,
+} from '@forgeax/engine-types';
 import { beforeAll, describe, expect, it } from 'vitest';
 import checkerPack, {
   CHECKER_LINEAR,
   CHECKER_SIZE,
   checkerLinearLevels,
   checkerTextureBytes,
-  linearToSrgb,
-  srgbToLinear,
 } from '../../assets/checker.pack.ts';
 import materialsPack from '../../assets/materials.pack.ts';
 import meshesPack from '../../assets/meshes.pack.ts';
 import impulseNoisePack from '../../assets/water/impulse-noise.pack.ts';
 import waterMaterialsPack from '../../assets/water/materials.pack.ts';
+import surfaceTexturesPack from '../../assets/water/surface-textures.pack.ts';
 import volumeNoisePack from '../../assets/water/volume-noise.pack.ts';
-import {
-  CONTENT_MESH_NAMES,
-  CONTENT_WATER_TEXTURE_NAMES,
-  type ContentWaterTextureName,
-  EngineContent,
-} from '../index';
+import { CONTENT_MESH_NAMES, type ContentWaterTextureName, EngineContent } from '../index';
 
-interface TextureBaseline {
-  readonly guid: string;
-  readonly sha256: string;
-  readonly size: number;
-  readonly colorSpace: TextureAsset['colorSpace'];
-  readonly dimension: '2d' | '3d';
-  readonly mips: TextureAsset['mips'];
-}
+import { impulseNoiseReference } from './impulse-noise-reference';
 
-const WATER_TEXTURE_BASELINES: Readonly<Record<ContentWaterTextureName, TextureBaseline>> = {
-  normal: {
-    guid: '0c855c2a-7f29-5e28-b30f-c8669de0202e',
-    size: 1024,
-    colorSpace: 'linear',
-    dimension: '2d',
-    mips: { kind: 'generate' },
-    sha256: 'a7a028cb06b3bb9fafba4ea8fca669621e9b764b75f436222ac04897c1707c90',
-  },
-  'river-diffuse': {
-    guid: 'ef7f4ae3-f033-5d51-b756-18c8d4a6b40c',
-    size: 512,
-    colorSpace: 'srgb',
-    dimension: '2d',
-    mips: { kind: 'generate' },
-    sha256: '76ff99629b6273ee9f24b76c4d93fd3892c4a456ac95376e29402c01e5506996',
-  },
-  'river-normal': {
-    guid: 'b8287107-941e-5335-a055-34d704d458dd',
-    size: 512,
-    colorSpace: 'linear',
-    dimension: '2d',
-    mips: { kind: 'generate' },
-    sha256: 'dd9ed02b24f091e45f8a62c234815fd363ffb26aa4f0cf43ac187c69fac804ff',
-  },
-  foam: {
-    guid: '74a9fd75-4f63-5abd-bcc8-7ac02f2a1295',
-    size: 2048,
-    colorSpace: 'srgb',
-    dimension: '2d',
-    mips: { kind: 'generate' },
-    sha256: '3438f779eb5a202917fd2877c3acdcdc9c9072cde16495eb30e8ff233f7a0f35',
-  },
-  'foam-normal': {
-    guid: '30824247-9646-53fa-909f-77385db8e5cc',
-    size: 2048,
-    colorSpace: 'linear',
-    dimension: '2d',
-    mips: { kind: 'generate' },
-    sha256: '707dbb6bf8859a571a2fba9aa4ba683a1e197ab170a55c3d4ea54fe799c48aab',
-  },
-  noise: {
-    guid: 'ffe75b88-edb3-5dba-882f-4aa8d17aba3a',
-    size: 64,
-    colorSpace: 'linear',
-    dimension: '2d',
-    mips: { kind: 'generate' },
-    sha256: '2b385c873b217e368731dfea62cb843f8758d912ccff1325e9ab18c7c839cb70',
-  },
-  'impulse-noise': {
-    guid: '12734661-7b8e-5bb1-8ab4-8cad728c536f',
-    size: 256,
-    colorSpace: 'srgb',
-    dimension: '2d',
-    mips: { kind: 'packed', levelCount: 9 },
-    sha256: 'c07e949104fbd663c9d478519a9abaff15dca0b3d50049c1e0b1be87f2ebc928',
-  },
-  'volume-noise': {
-    guid: '8cfb3537-cbc8-5195-bc8c-c03f2513508f',
-    size: 128,
-    colorSpace: 'linear',
-    dimension: '3d',
-    mips: { kind: 'none' },
-    sha256: '7796f733c2ad110e4f274c3faada7408f43019363b733689478be46d36c1209d',
-  },
-};
+const WATER_SURFACE_TEXTURES = [
+  ['normal', 'f030e1fd-5b3c-57a1-a60c-018ceef83acd', 1024, 'linear'],
+  ['river-diffuse', 'f9c181e7-9b0a-5297-9799-f2bc20b5f43a', 512, 'srgb'],
+  ['river-normal', '7b9c681f-731b-5180-9de3-d01351fffb49', 512, 'linear'],
+  ['foam', '19dbdb35-7706-50d8-97c4-b60fdf45bff5', 2048, 'srgb'],
+  ['foam-normal', '987bf773-9f95-55ad-b4f4-cd6c9f0f4498', 2048, 'linear'],
+  ['noise', '1f8cd962-b062-5604-94b1-9b7e2137720c', 64, 'linear'],
+] as const satisfies readonly (readonly [
+  ContentWaterTextureName,
+  string,
+  number,
+  TextureAsset['colorSpace'],
+])[];
 
 async function outputs(pack: {
   readonly packageId: Uint8Array;
@@ -124,61 +63,77 @@ describe('Engine Content', () => {
   let textureOutputs: Map<string, Record<string, unknown>>;
   beforeAll(async () => {
     textureOutputs = await outputs(checkerPack);
-    for (const pack of [impulseNoisePack, volumeNoisePack])
+    for (const pack of [surfaceTexturesPack, impulseNoisePack, volumeNoisePack])
       for (const [guid, asset] of await outputs(pack)) textureOutputs.set(guid, asset);
   });
 
-  it('publishes every Water texture with stable pixels, GUIDs and native mip contracts', () => {
-    for (const name of CONTENT_WATER_TEXTURE_NAMES) {
-      const baseline = WATER_TEXTURE_BASELINES[name];
-      expect(EngineContent.water.textures[name], name).toBe(baseline.guid);
-      const texture = textureOutputs.get(baseline.guid) as unknown as TextureAsset;
-      expect(texture.kind, name).toBe('texture');
-      expect(texture.shape, name).toEqual({
-        viewDimension: baseline.dimension,
-        extent: {
-          width: baseline.size,
-          height: baseline.size,
-          ...(baseline.dimension === '3d' ? { depth: baseline.size } : {}),
-        },
+  it('keeps checker independent and publishes Water surfaces as byte-free GPU textures', async () => {
+    expect([...(await outputs(checkerPack)).keys()].sort()).toEqual(
+      [EngineContent.textures.checker, EngineContent.samplers.checker].sort(),
+    );
+    for (const [name, guid, size, colorSpace] of WATER_SURFACE_TEXTURES) {
+      expect(EngineContent.water.textures[name]).toBe(guid);
+      const texture = textureOutputs.get(guid);
+      const source = texture?.source as { generator: string };
+      expect(texture, name).toEqual({
+        kind: 'gpu-texture',
+        shape: { viewDimension: '2d', extent: { width: size, height: size } },
+        format: colorSpace === 'srgb' ? 'rgba8unorm-srgb' : 'rgba8unorm',
+        colorSpace,
+        mips: { kind: 'generate' },
+        source: { kind: 'generated', generator: expect.any(String), output: name },
       });
-      expect(texture.colorSpace, name).toBe(baseline.colorSpace);
-      expect(texture.format, name).toBe(
-        baseline.colorSpace === 'srgb' ? 'rgba8unorm-srgb' : 'rgba8unorm',
-      );
-      expect(texture.mips, name).toEqual(baseline.mips);
-      expect(sha256Bytes(texture.data), name).toBe(baseline.sha256);
-      expect(prepareRuntimeTexture(texture).ok, name).toBe(true);
-      if (name === 'river-normal' || name === 'foam-normal') {
-        let maximumLengthError = 0;
-        let maximumXyLength = 0;
-        for (let i = 0; i < texture.data.length; i += 4) {
-          const red = texture.data[i];
-          const green = texture.data[i + 1];
-          const blue = texture.data[i + 2];
-          if (red === undefined || green === undefined || blue === undefined)
-            throw new Error(`${name}: incomplete normal pixel at byte ${i}`);
-          const x = red / 127.5 - 1;
-          const y = green / 127.5 - 1;
-          const z = blue / 127.5 - 1;
-          maximumXyLength = Math.max(maximumXyLength, x * x + y * y);
-          maximumLengthError = Math.max(maximumLengthError, Math.abs(Math.hypot(x, y, z) - 1));
-        }
-        expect(maximumXyLength, name).toBeLessThanOrEqual(1);
-        expect(maximumLengthError, name).toBeLessThan(0.005);
-      }
+      const generator = textureOutputs.get(source.generator);
+      expect(generator, name).toMatchObject({
+        kind: 'texture-generator',
+        outputs: { [name]: { shape: texture?.shape, mips: { kind: 'generate' } } },
+      });
     }
   });
 
-  it('publishes all nine packed impulse-noise mips', () => {
-    const texture = textureOutputs.get(
-      EngineContent.water.textures['impulse-noise'],
-    ) as unknown as TextureAsset;
-    expect(texture.data.byteLength).toBe(349524);
+  it('publishes the Water volume at its stable GUID as a byte-free, single-channel GPU texture', () => {
+    const guid = '8cfb3537-cbc8-5195-bc8c-c03f2513508f';
+    expect(EngineContent.water.textures['volume-noise']).toBe(guid);
+    const texture = textureOutputs.get(guid);
+    expect(texture).toEqual({
+      kind: 'gpu-texture',
+      shape: { viewDimension: '3d', extent: { width: 128, height: 128, depth: 128 } },
+      format: 'r8unorm',
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+      source: { kind: 'generated', generator: expect.any(String), output: 'noise' },
+    });
+    const source = texture?.source as { generator: string };
+    expect(textureOutputs.get(source.generator)).toMatchObject({
+      kind: 'texture-generator',
+      passes: [{ kind: 'compute-volume', writes: ['noise'] }],
+    });
+  });
+
+  it('publishes nine custom GPU impulse-noise mips at the stable GUID', () => {
+    const guid = EngineContent.water.textures['impulse-noise'];
+    expect(guid).toBe('12734661-7b8e-5bb1-8ab4-8cad728c536f');
+    const texture = textureOutputs.get(guid);
+    expect(texture).toMatchObject({
+      kind: 'gpu-texture',
+      format: 'rgba8unorm-srgb',
+      colorSpace: 'srgb',
+      mips: { kind: 'custom', levelCount: 9 },
+    });
+    expect(texture).not.toHaveProperty('data');
+    const reference = impulseNoiseReference();
+    expect(reference.byteLength).toBe(349524);
+    expect(sha256Bytes(reference)).toBe(
+      'c07e949104fbd663c9d478519a9abaff15dca0b3d50049c1e0b1be87f2ebc928',
+    );
   });
 
   it('publishes exactly the EngineContent GUID set from its Pack sources', async () => {
-    const built = new Set(textureOutputs.keys());
+    const built = new Set(
+      [...textureOutputs]
+        .filter(([, value]) => value.kind !== 'texture-generator')
+        .map(([guid]) => guid),
+    );
     for (const pack of [meshesPack, materialsPack, waterMaterialsPack])
       for (const guid of (await outputs(pack)).keys()) built.add(guid);
     const declared = [
@@ -248,7 +203,7 @@ describe('Engine Content', () => {
         const r = bytes[offset] ?? 0;
         if (r !== bytes[offset + 1] || r !== bytes[offset + 2] || bytes[offset + 3] !== 255)
           nonGrayOpaqueTexels++;
-        sum += srgbToLinear(r / 255);
+        sum += srgbChannelToLinear(r / 255);
       }
       decodedMeans.push(sum / level.length);
     }
@@ -257,13 +212,13 @@ describe('Engine Content', () => {
     const [base = Number.NaN] = decodedMeans;
     for (const value of decodedMeans) expect(Math.abs(value - base)).toBeLessThan(0.004);
     const last = bytes.subarray(bytes.length - 4);
-    expect(last[0]).toBe(Math.round(linearToSrgb(expected) * 255));
+    expect(last[0]).toBe(Math.round(linearChannelToSrgb(expected) * 255));
   });
 
   it('round-trips the sRGB transfer function', () => {
     for (let index = 0; index <= 32; index++) {
       const value = index / 32;
-      expect(srgbToLinear(linearToSrgb(value))).toBeCloseTo(value, 6);
+      expect(srgbChannelToLinear(linearChannelToSrgb(value))).toBeCloseTo(value, 6);
     }
   });
 

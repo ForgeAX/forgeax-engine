@@ -93,6 +93,8 @@ export interface TaskKindRegistration {
   readonly load: () => TaskModule<any, any, any> | Promise<TaskModule<any, any, any>>;
   /** Upper bound on simultaneously running tasks of this kind. */
   readonly maxInFlight?: number;
+  /** Fail when the pool cannot execute this kind in a Worker. */
+  readonly workerOnly?: boolean;
 }
 
 export type TaskRegistry = Readonly<Record<string, TaskKindRegistration>>;

@@ -1,3 +1,4 @@
+import { useViewerTranslation } from '../i18n';
 // ErrorBanner.tsx - renders closed core errors without parsing display text.
 // The code is the branch coordinate; detail is structured evidence and hint is
 // the next executable recovery action. Preview errors stay in the viewer leaf.
@@ -10,6 +11,7 @@ export interface ErrorBannerProps {
 }
 
 export function ErrorBanner({ error }: ErrorBannerProps) {
+  const t = useViewerTranslation();
   const detail = error.detail === undefined ? undefined : JSON.stringify(error.detail);
   const detailLabel = (() => {
     switch (error.code) {
@@ -23,16 +25,19 @@ export function ErrorBanner({ error }: ErrorBannerProps) {
       case 'replay-position-invalid':
       case 'readback-failed':
       case 'readback-unsupported':
-        return 'operation detail';
+        return t('operationDetail');
       case 'tape-version-unsupported':
-        return `expected v${error.detail?.expectedVersion ?? 7}, found v${error.detail?.foundVersion ?? 0}`;
+        return t('versionMismatch', {
+          expected: error.detail?.expectedVersion ?? 7,
+          found: error.detail?.foundVersion ?? 0,
+        });
     }
   })();
 
   return (
     <div {...{ [loadStatusAnchor()]: 'parse-error' }} className="forgeax-error-banner space-y-fx-4">
       <p className="text-ui font-semibold text-danger">
-        Error: <code>{error.code}</code>
+        {t('error')}: <code>{error.code}</code>
       </p>
       <p className="text-caption">{error.hint}</p>
       <p className="text-caption">{detailLabel}</p>

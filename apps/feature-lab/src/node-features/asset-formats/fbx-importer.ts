@@ -4,7 +4,7 @@ import {
   initFbxWasm,
   sourceKeyForFbxOutput,
 } from '@forgeax/engine/fbx';
-import { ImporterRegistry, runImport } from '@forgeax/engine/import';
+import { ImporterRegistry, projectImportPack, runImport } from '@forgeax/engine/import';
 import { TRIANGLE_FBX_BYTES } from '../../features/asset-formats/fixtures/fbx-source';
 import { errorCode, guid } from '../../features/asset-formats/fixtures/memory-pack';
 import { defineFeature } from '../../lab/feature';
@@ -38,10 +38,10 @@ export async function importTriangleFbx(): Promise<
     } as never,
   );
   if (!result.ok) return { ok: false, code: errorCode(result.error) };
-  const pack = (
-    result.value as { readonly pack?: { readonly assets: readonly ImportedPackAsset[] } }
-  ).pack;
-  return { ok: true, assets: pack?.assets ?? [] };
+  return {
+    ok: true,
+    assets: 'skipped' in result.value ? [] : projectImportPack(result.value.product).assets,
+  };
 }
 
 const refGuid = (ref: string | { readonly guid?: string }): string | undefined =>

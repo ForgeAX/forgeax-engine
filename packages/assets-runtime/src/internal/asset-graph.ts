@@ -38,6 +38,12 @@ export interface AssetGraphSnapshot {
 type GraphResult<P> = Result<P, AssetLoadError>;
 type GraphListener = (snapshot: AssetGraphSnapshot) => void;
 
+interface ClosureRead {
+  readonly root: string;
+  readonly guids: Set<string>;
+  holders: number;
+}
+
 function disposed(scopeId = 'asset-runtime'): AssetLoadError {
   return {
     code: 'asset-runtime-disposed',
@@ -82,6 +88,9 @@ export class AssetGraph<
   private readonly openScope: () => S;
   private readonly limit: number;
   private readonly ready = new Map<string, P>();
+  private readonly pendingDiscards = new Set<string>();
+  private readonly closures = new Map<string, ClosureRead>();
+  private readonly borrowers = new Map<string, number>();
   private readonly forward = new Map<string, Set<string>>();
   private readonly generations = new Map<string, number>();
   private readonly reads = new Map<string, Promise<GraphResult<P>>>();
@@ -138,12 +147,12 @@ export class AssetGraph<
     this.counters = { ...this.counters, loads: this.counters.loads + 1 };
     const ticketEpoch = this.epoch;
     const current = () => this.requests.get(canonicalGuid) === request;
+    const closure = this.retainClosure(canonicalGuid);
     const request = Promise.resolve()
-      .then(() =>
-        this.loadClosure(canonicalGuid, this.lifetime.signal, ticketEpoch, current, scope),
-      )
+      .then(() => this.loadClosure(closure, this.lifetime.signal, ticketEpoch, current, scope))
       .finally(() => {
         if (this.requests.get(canonicalGuid) === request) this.requests.delete(canonicalGuid);
+        this.releaseClosure(closure);
         this.publish();
       });
     this.requests.set(canonicalGuid, request);
@@ -151,14 +160,25 @@ export class AssetGraph<
     return waitForAsset(request, signal, canonicalGuid);
   }
 
+  /** Read one output without populating the Ready cache or loading its dependencies. */
+  readOutput(
+    guid: string,
+    signal: AbortSignal,
+    acceptsReady: (entry: P) => boolean,
+  ): Promise<GraphResult<P>> {
+    const key = guid.toLowerCase();
+    if (this.disposed) return Promise.resolve(err(disposed()));
+    if (signal.aborted) return Promise.resolve(err(cancelled(key)));
+    const ready = this.ready.get(key);
+    if (ready !== undefined && acceptsReady(ready)) return Promise.resolve(ok(ready));
+    return waitForAsset(this.readOnce(key, this.lifetime.signal, this.openScope()), signal, key);
+  }
+
   /** A verified publication may prepare values before its Catalog notification. */
   prepare(entries: ReadonlyMap<string, P>): void {
     if (this.disposed) throw new TypeError('asset source is disposed');
     this.drop(new Set(entries.keys()));
-    for (const [guid, entry] of entries) {
-      this.promote(guid, entry);
-      this.link(guid, entry.refs);
-    }
+    for (const [guid, entry] of entries) this.promote(guid, entry);
     this.epoch += 1;
     this.publish();
   }
@@ -204,6 +224,46 @@ export class AssetGraph<
     return this.ready.get(guid.toLowerCase());
   }
 
+  /** Keep the decoded closure through the caller's adoption after load settles. */
+  async withDecodedClosure<T>(guid: string, read: () => Promise<T>): Promise<T> {
+    const closure = this.retainClosure(guid.toLowerCase());
+    try {
+      return await read();
+    } finally {
+      if (this.releaseClosure(closure)) this.publish();
+    }
+  }
+
+  /** Drop decoded content without superseding the publication or a pending load. */
+  discardReady(guid: string, entry: P): void {
+    if (this.ready.get(guid) !== entry) return;
+    if (this.borrowers.has(guid)) {
+      this.pendingDiscards.add(guid);
+      return;
+    }
+    this.evictDecoded(guid);
+    this.publish();
+  }
+
+  /** A completed closure may take an output when it is the sole borrower. */
+  canTakeReady(root: string, guid: string, entry: P): boolean {
+    const closure = this.closures.get(root);
+    return (
+      this.ready.get(guid) === entry &&
+      closure?.holders === 1 &&
+      closure.guids.has(guid) &&
+      this.borrowers.get(guid) === 1 &&
+      !this.reads.has(guid)
+    );
+  }
+
+  /** Remove an exclusively borrowed decoded value before returning control to another caller. */
+  takeReady(guid: string): void {
+    this.pendingDiscards.delete(guid);
+    this.evictDecoded(guid);
+    this.currentSnapshot = undefined;
+  }
+
   lookup(guid: string): P['value'] | undefined {
     return this.ready.get(guid.toLowerCase())?.value;
   }
@@ -214,6 +274,9 @@ export class AssetGraph<
     this.lifetime.abort();
     this.epoch += 1;
     this.ready.clear();
+    this.pendingDiscards.clear();
+    this.closures.clear();
+    this.borrowers.clear();
     this.forward.clear();
     this.generations.clear();
     this.reads.clear();
@@ -225,15 +288,17 @@ export class AssetGraph<
   }
 
   private async loadClosure(
-    root: string,
+    closure: ClosureRead,
     signal: AbortSignal,
     ticketEpoch: number,
     current: () => boolean,
     scope = this.openScope(),
   ): Promise<GraphResult<P>> {
+    if (this.disposed) return err(disposed());
+    const { root } = closure;
     const values = new Map<string, P>();
     const seen = new Map<string, number>();
-    const result = await this.visit(root, signal, seen, values, ticketEpoch, current, scope);
+    const result = await this.visit(root, signal, seen, values, current, scope, closure);
     if (this.disposed) return err(disposed());
     if (!current()) return err(superseded(root, ticketEpoch));
     if (!result.ok) return result;
@@ -241,11 +306,8 @@ export class AssetGraph<
     for (const [guid, generation] of seen)
       if ((this.generations.get(guid) ?? 0) !== generation)
         return err(superseded(guid, generation));
-    for (const [guid, value] of values) {
-      this.promote(guid, value);
-      this.link(guid, value.refs);
-    }
-    return ok(values.get(root) as P);
+    for (const [guid, value] of values) this.promote(guid, value);
+    return ok(this.ready.get(root) as P);
   }
 
   private async visit(
@@ -253,13 +315,14 @@ export class AssetGraph<
     signal: AbortSignal,
     seen: Map<string, number>,
     values: Map<string, P>,
-    ticketEpoch: number,
     current: () => boolean,
     scope: S,
+    closure: ClosureRead,
   ): Promise<GraphResult<void>> {
     if (seen.has(guid)) return ok(undefined);
     const generation = this.generations.get(guid) ?? 0;
     seen.set(guid, generation);
+    this.borrowDecoded(closure, guid);
     const cached = this.ready.get(guid);
     const read = cached === undefined ? await this.readOnce(guid, signal, scope) : ok(cached);
     if (!read.ok) return read;
@@ -270,7 +333,15 @@ export class AssetGraph<
     const references = (read.value as P & { readonly references?: 'eager' | 'deferred' })
       .references;
     for (const ref of references === 'deferred' ? [] : read.value.refs) {
-      const child = await this.visit(ref, signal, seen, values, ticketEpoch, current, scope);
+      const child = await this.visit(
+        ref.toLowerCase(),
+        signal,
+        seen,
+        values,
+        current,
+        scope,
+        closure,
+      );
       if (!child.ok) {
         seen.delete(guid);
         return err({
@@ -321,23 +392,62 @@ export class AssetGraph<
     }
   }
 
-  private link(guid: string, refs: readonly string[]): void {
-    this.forward.set(guid, new Set(refs.map((ref) => ref.toLowerCase())));
+  private retainClosure(root: string): ClosureRead {
+    let closure = this.closures.get(root);
+    if (closure === undefined) {
+      closure = { root, guids: new Set(), holders: 0 };
+      this.closures.set(root, closure);
+      this.borrowDecoded(closure, root);
+    }
+    closure.holders += 1;
+    return closure;
+  }
+
+  private borrowDecoded(closure: ClosureRead, guid: string): void {
+    if (closure.guids.has(guid)) return;
+    closure.guids.add(guid);
+    this.borrowers.set(guid, (this.borrowers.get(guid) ?? 0) + 1);
+  }
+
+  private releaseClosure(closure: ClosureRead): boolean {
+    // Shared load work can outlive a cancelled caller. Adoption can outlive the load.
+    closure.holders -= 1;
+    if (closure.holders !== 0 || this.closures.get(closure.root) !== closure) return false;
+    this.closures.delete(closure.root);
+    let discarded = false;
+    for (const guid of closure.guids) {
+      const readers = (this.borrowers.get(guid) ?? 1) - 1;
+      if (readers > 0) {
+        this.borrowers.set(guid, readers);
+        continue;
+      }
+      this.borrowers.delete(guid);
+      if (this.pendingDiscards.delete(guid)) {
+        this.evictDecoded(guid);
+        discarded = true;
+      }
+    }
+    return discarded;
+  }
+
+  private evictDecoded(guid: string): void {
+    this.ready.delete(guid);
+    this.forward.delete(guid);
   }
 
   private drop(affected: ReadonlySet<string>): void {
     for (const guid of affected) {
       this.generations.set(guid, (this.generations.get(guid) ?? 0) + 1);
-      this.ready.delete(guid);
+      this.evictDecoded(guid);
+      this.pendingDiscards.delete(guid);
       this.requests.delete(guid);
       this.reads.delete(guid);
-      this.forward.delete(guid);
     }
   }
 
   private promote(guid: string, value: P): void {
-    if (value === undefined) return;
-    if (this.ready.get(guid) === value) return;
+    // Concurrent closures share the first decoded entry of this generation.
+    if (this.ready.has(guid)) return;
     this.ready.set(
       guid,
       Object.freeze({
@@ -346,6 +456,7 @@ export class AssetGraph<
         refs: Object.freeze([...value.refs]),
       }) as P,
     );
+    this.forward.set(guid, new Set(value.refs.map((ref) => ref.toLowerCase())));
   }
 
   private recordScc(): void {

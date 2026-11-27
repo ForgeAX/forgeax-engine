@@ -567,7 +567,7 @@ async function main() {
       },
       {
         component: ScreenSpaceReflection,
-        data: { maxDistance: 180, thickness: 0.3, maxRoughness: 0.65, waterTemporal: 1 },
+        data: { maxDistance: 180, thickness: 0.3, maxRoughness: 0.65 },
       },
     )
     .unwrap();
@@ -713,7 +713,6 @@ async function main() {
         quat: quat.fromLookAt(quat.create(), eye, target, [0, 1, 0]),
       })
       .unwrap();
-    world.set(camera, Camera, { projectionOffset: [0, 0] }).unwrap();
   };
   const setView = (next: View) => {
     view = next;
@@ -1424,7 +1423,7 @@ async function main() {
         world
           .addComponent(camera, {
             component: ScreenSpaceReflection,
-            data: { maxDistance: 180, thickness: 0.3, maxRoughness: 0.65, waterTemporal: 1 },
+            data: { maxDistance: 180, thickness: 0.3, maxRoughness: 0.65 },
           })
           .unwrap();
       buoyancy().asyncEnabled = mode === 'R5';
@@ -2994,17 +2993,34 @@ async function main() {
   manualInput.type = 'checkbox';
   manualInput.id = 'manual-driving';
   manualLabel.append(manualInput, '人工驾驶 · WASD / 方向键 · Space 加速');
-  manualInput.addEventListener('change', () => {
-    manualDriving = manualInput.checked;
+  let cameraBeforeDriving: { follow: boolean; eye: Vector; target: Vector } | undefined;
+  const setManualDriving = (enabled: boolean) => {
+    if (manualDriving === enabled) return;
+    manualDriving = enabled;
+    manualInput.checked = enabled;
     helm.throttle = 0;
     helm.rudder = 0;
-    shipNavigation.running = false;
-    shipNavigation.braking = false;
     if (manualDriving) {
+      shipNavigation.running = false;
+      shipNavigation.braking = false;
+      cameraBeforeDriving = {
+        follow: element<HTMLInputElement>('follow').checked,
+        eye: [...eye],
+        target: [...target],
+      };
       element<HTMLInputElement>('follow').checked = true;
       canvas.focus();
+    } else if (cameraBeforeDriving) {
+      element<HTMLInputElement>('follow').checked = cameraBeforeDriving.follow;
+      if (!cameraBeforeDriving.follow) {
+        eye = cameraBeforeDriving.eye;
+        target = cameraBeforeDriving.target;
+        applyCamera();
+      }
+      cameraBeforeDriving = undefined;
     }
-  });
+  };
+  manualInput.addEventListener('change', () => setManualDriving(manualInput.checked));
   parameterPanel.append(manualLabel);
   const hint = document.createElement('p');
   hint.textContent =
@@ -3391,7 +3407,6 @@ async function main() {
         .unwrap();
       markCustom();
     },
-    { waterTemporal: ['0', '1', '2'] },
   );
   const readSsrFields = ssrFields.readFields;
   ssrFields.readFields = () =>
@@ -3985,13 +4000,11 @@ async function main() {
   element('controls-panel').addEventListener('focusin', releaseHelm);
   element('quality').addEventListener('change', releaseHelm);
   element('ship-go').addEventListener('click', () => {
-    manualDriving = false;
-    manualInput.checked = false;
+    setManualDriving(false);
     releaseHelm();
   });
   element('ship-stop').addEventListener('click', () => {
-    manualDriving = false;
-    manualInput.checked = false;
+    setManualDriving(false);
     releaseHelm();
   });
   window.addEventListener('resize', applyCamera);

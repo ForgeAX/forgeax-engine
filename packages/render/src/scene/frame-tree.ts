@@ -83,6 +83,43 @@ function node<T>(
   return new kind(value, queue, key, weight, left, right);
 }
 
+// Keep writable construction fields on a separate node class. Ordinary persistent
+// trees initialize their links and subtree counts only in the constructor.
+const ORDERED_PAGE_KIND = treeKind();
+
+// Only new, unpublished nodes can be linked by the ordered builder.
+type BuildingNode<T> = { -readonly [K in keyof Node<T>]: Node<T>[K] };
+
+/** Linear construction for ascending page keys. The unfinished right spine
+ * links back to its parents until their actual right subtree is complete. */
+export class OrderedPageTree<T> {
+  private top: BuildingNode<T> | undefined;
+
+  append(key: number, value: T, weight: number): void {
+    const next: BuildingNode<T> = node(ORDERED_PAGE_KIND, value, 0, key, weight);
+    let left: Node<T> | undefined;
+    while (this.top !== undefined && this.top.priority > next.priority)
+      left = this.close(this.top, left);
+    next.left = left;
+    next.right = this.top;
+    this.top = next;
+  }
+
+  finish(): Node<T> | undefined {
+    let root: Node<T> | undefined;
+    while (this.top !== undefined) root = this.close(this.top, root);
+    return root;
+  }
+
+  private close(top: BuildingNode<T>, right: Node<T> | undefined): Node<T> {
+    this.top = top.right;
+    top.right = right;
+    top.count = top.weight + (top.left?.count ?? 0) + (right?.count ?? 0);
+    top.size = 1 + (top.left?.size ?? 0) + (right?.size ?? 0);
+    return top;
+  }
+}
+
 function rebuild<T>(root: Node<T>, left: Node<T> | undefined, right: Node<T> | undefined): Node<T> {
   return node(kindOf(root), root.value, root.queue, root.key, root.weight, left, right);
 }
@@ -182,6 +219,27 @@ class NodeIterator<T> implements IterableIterator<Node<T>> {
 export function nodes<T>(root: Node<T> | undefined): IterableIterator<Node<T>> {
   return new NodeIterator(root);
 }
+/** Membership has no sort order. Visiting the smaller branch recursively bounds
+ * the call stack by log2(size), including for a skewed tree, without a heap cursor. */
+export function visitUnorderedValues<T>(
+  root: Node<T> | undefined,
+  visit: (value: T) => void,
+): void {
+  while (root !== undefined) {
+    visit(root.value);
+    const { left, right } = root;
+    if (left === undefined) root = right;
+    else if (right === undefined) root = left;
+    else if (left.size < right.size) {
+      visitUnorderedValues(left, visit);
+      root = right;
+    } else {
+      visitUnorderedValues(right, visit);
+      root = left;
+    }
+  }
+}
+
 export function prefix<T>(
   root: Node<T> | undefined,
   queue: number,
@@ -228,44 +286,94 @@ export function at<T>(
   return undefined;
 }
 
-function split<T>(
-  root: Node<T> | undefined,
-  queue: number,
+type ChangeVisitor<T> = (
+  before: T | undefined,
+  after: T | undefined,
   key: number,
-): readonly [Node<T> | undefined, T | undefined, Node<T> | undefined] {
-  if (root === undefined) return [undefined, undefined, undefined];
-  if (root.queue === queue && root.key === key) return [root.left, root.value, root.right];
-  if (before(queue, key, root)) {
-    const [left, found, right] = split(root.left, queue, key);
-    return [left, found, rebuild(root, right, root.right)];
+  queue: number,
+) => void;
+
+function order(a: Node<unknown>, b: Node<unknown>): number {
+  return a.queue - b.queue || a.key - b.key;
+}
+
+/** Root of the open interval. Only its two boundary paths may still extend outside. */
+function bounded<T>(root: Node<T> | undefined, low?: Node<T>, high?: Node<T>): Node<T> | undefined {
+  while (root !== undefined) {
+    if (low !== undefined && order(root, low) <= 0) root = root.right;
+    else if (high !== undefined && order(root, high) >= 0) root = root.left;
+    else break;
   }
-  const [left, found, right] = split(root.right, queue, key);
-  return [rebuild(root, root.left, left), found, right];
+  return root;
+}
+
+function valueAt<T>(root: Node<T> | undefined, pivot: Node<T>): T | undefined {
+  while (root !== undefined) {
+    const direction = order(pivot, root);
+    if (direction === 0) return root.value;
+    root = direction < 0 ? root.left : root.right;
+  }
+  return undefined;
+}
+
+function changedRange<T>(
+  previous: Node<T> | undefined,
+  current: Node<T> | undefined,
+  visit: ChangeVisitor<T>,
+  low?: Node<T>,
+  high?: Node<T>,
+): void {
+  while (previous !== current) {
+    if (low !== undefined || high !== undefined) {
+      previous = bounded(previous, low, high);
+      current = bounded(current, low, high);
+      if (previous === current) return;
+    }
+    if (previous === undefined) {
+      if (current === undefined) return;
+      changedRange(undefined, current.left, visit, low);
+      visit(undefined, current.value, current.key, current.queue);
+      current = current.right;
+    } else if (current === undefined) {
+      changedRange(previous.left, undefined, visit, low);
+      visit(previous.value, undefined, previous.key, previous.queue);
+      previous = previous.right;
+    } else if (previous.queue === current.queue && previous.key === current.key) {
+      changedRange(previous.left, current.left, visit, low);
+      if (previous.value !== current.value)
+        visit(previous.value, current.value, current.key, current.queue);
+      previous = previous.right;
+      current = current.right;
+    } else if (previous.priority < current.priority) {
+      // The other root has larger priority, so its descendants cannot contain this pivot.
+      changedRange(previous.left, current, visit, low, previous);
+      visit(previous.value, undefined, previous.key, previous.queue);
+      low = previous;
+      previous = previous.right;
+      continue;
+    } else {
+      changedRange(previous, current.left, visit, low, current);
+      const prior = previous.priority === current.priority ? valueAt(previous, current) : undefined;
+      if (prior !== current.value) visit(prior, current.value, current.key, current.queue);
+      low = current;
+      current = current.right;
+      continue;
+    }
+    low = undefined;
+  }
 }
 
 export function changes<T>(
   before: Node<T> | undefined,
   after: Node<T> | undefined,
-  visit: (before: T | undefined, after: T | undefined, key: number, queue: number) => void,
+  visit: ChangeVisitor<T>,
 ): void {
   if (before === after) return;
   if (before === undefined) {
     for (const item of nodes(after)) visit(undefined, item.value, item.key, item.queue);
   } else if (after === undefined) {
     for (const item of nodes(before)) visit(item.value, undefined, item.key, item.queue);
-  } else if (before.queue === after.queue && before.key === after.key) {
-    changes(before.left, after.left, visit);
-    if (before.value !== after.value) visit(before.value, after.value, after.key, after.queue);
-    changes(before.right, after.right, visit);
-  } else if (before.priority < after.priority) {
-    const [left, found, right] = split(after, before.queue, before.key);
-    changes(before.left, left, visit);
-    if (before.value !== found) visit(before.value, found, before.key, before.queue);
-    changes(before.right, right, visit);
   } else {
-    const [left, found, right] = split(before, after.queue, after.key);
-    changes(left, after.left, visit);
-    if (found !== after.value) visit(found, after.value, after.key, after.queue);
-    changes(right, after.right, visit);
+    changedRange(before, after, visit);
   }
 }

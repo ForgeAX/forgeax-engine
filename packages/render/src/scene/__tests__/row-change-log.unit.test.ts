@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import type { RenderableSnapshot } from '../../render-system-extract';
 import type { RowChange } from '../row-change-log';
 import { type SceneSlotFrame, SceneSlots } from '../scene-slots';
@@ -75,4 +75,67 @@ it('declines cursors it cannot answer: other owners, a clear, or lapsed history'
   const recent = churn.capture();
   churn.writePose(0, new Float32Array(16));
   expect(changes(churn.capture(), recent)).toEqual(['update:0:1']);
+});
+
+it('walks occupied lanes across both words with independent captured row lifetimes', () => {
+  const slots = new SceneSlots();
+  const indices = [1, 31, 32, 63, 65, 127, 4_000_032, 4_000_063];
+  for (const index of indices) setSceneRow(slots, index, row(index));
+  const frame = slots.capture();
+  const a = frame[Symbol.iterator]();
+  const b = frame[Symbol.iterator]();
+  const result = a.next();
+  const first = result.value;
+  expect(first.slot).toBe(1);
+  setSceneRow(slots, 1, undefined);
+  setSceneRow(slots, 64, row(64));
+  expect(a.next()).toBe(result);
+  expect(result.value.slot).toBe(31);
+  expect(first.slot).toBe(1);
+  expect([...b].map((value) => value.slot)).toEqual(indices);
+  expect(a.return?.().done).toBe(true);
+  expect(a.next().done).toBe(true);
+  expect([...slots.capture()].map((value) => value.slot)).toEqual([
+    31, 32, 63, 64, 65, 127, 4_000_032, 4_000_063,
+  ]);
+});
+
+it('publishes final row versions in first-write order to independent consumers', () => {
+  const slots = populated(132);
+  const first = slots.capture();
+  setSceneRow(slots, 95, undefined);
+  slots.writePose(31, new Float32Array(16));
+  setSceneRow(slots, 95, row(210, 2));
+  slots.writePose(64, new Float32Array(16));
+  slots.writePose(31, new Float32Array(16));
+  setSceneRow(slots, 32, undefined);
+  const second = slots.capture();
+  const expected = [95, 31, 64, 32].map((slot) => [slot, second.versionAt(slot)]);
+  expect(expected[3]).toEqual([32, 0]);
+
+  setSceneRow(slots, 95, undefined);
+  const third = slots.capture();
+  const replay = vi.spyOn(slots.journal, 'visit');
+  const lookup = vi.spyOn(second, 'versionAt');
+  const collect = (after: SceneSlotFrame, before: SceneSlotFrame) => {
+    const values: number[][] = [];
+    return after.visitChangedVersions(before, (slot, version) => values.push([slot, version]))
+      ? values
+      : undefined;
+  };
+  for (let consumer = 0; consumer < 4; consumer++) expect(collect(second, first)).toEqual(expected);
+  expect(collect(third, second)).toEqual([[95, 0]]);
+  expect(collect(second, second)).toEqual([]);
+  expect(replay).not.toHaveBeenCalled();
+  expect(lookup).not.toHaveBeenCalled();
+
+  const gap = collect(third, first);
+  expect(new Map(gap?.map(([slot, version]) => [slot, version]))).toEqual(
+    new Map([95, 31, 64, 32].map((slot) => [slot, third.versionAt(slot)])),
+  );
+  expect(replay).toHaveBeenCalledOnce();
+  expect(collect(second, third)).toBeUndefined();
+  expect(collect(second, populated(132).capture())).toBeUndefined();
+  slots.clear();
+  expect(collect(slots.capture(), third)).toBeUndefined();
 });

@@ -1,17 +1,15 @@
-import {
-  type CompiledRenderGraph,
-  type GraphAccess,
-  RenderGraphBuilder,
-} from '@forgeax/engine-render-graph';
+import { allocateRenderPassGeneration, encodeNativeRenderPass } from '@forgeax/engine-render-graph';
 import type {
   BindGroup,
   BindGroupLayout,
   RenderPipeline,
   RhiCommandEncoder,
   RhiDevice,
+  RhiRenderPassEncoder,
   ShaderModule,
   Texture,
   TextureFormat,
+  TextureView,
 } from '@forgeax/engine-rhi';
 import { RendererContractFailureError } from '../errors/render';
 import { type OutputColorSpace, renderOutputGamutWgsl } from '../output-color-space';
@@ -83,10 +81,11 @@ export async function createUiCompositor(options: {
   let pixels: Uint8Array | undefined;
   let uploaded = false;
   const pipelines = new Map<OutputColorSpace, RenderPipeline>();
-  type Frame = { encoder: RhiCommandEncoder; output: Texture; clear: boolean };
-  let graph: CompiledRenderGraph<Frame> | undefined;
-  let graphKey = '';
-  let output: Texture | undefined;
+  let color: OutputColorSpace | undefined;
+  let layerPipeline: RenderPipeline | undefined;
+  let preparedFrame: number | undefined;
+  let generation = 0;
+  let output: { texture: Texture; view: TextureView; binding: BindGroup } | undefined;
   let presentPipeline: RenderPipeline | undefined;
   let disposed = false;
 
@@ -103,19 +102,19 @@ export async function createUiCompositor(options: {
     }
   }
 
-  function discardGraph(): void {
-    void graph?.retire();
-    graph = undefined;
-    graphKey = '';
+  function retireOutput(): void {
     const retired = output;
     const owner = device;
     output = undefined;
-    if (retired !== undefined) {
-      const release = () => {
-        value(owner.destroyTexture(retired));
-      };
-      options.retire(owner, release);
-    }
+    if (retired !== undefined)
+      options.retire(owner, () => value(owner.destroyTexture(retired.texture)));
+  }
+
+  function resize(nextWidth: number, nextHeight: number): void {
+    retireOutput();
+    width = nextWidth;
+    height = nextHeight;
+    generation = 0;
   }
 
   type Painted = boolean | SurfaceUiFailed;
@@ -150,12 +149,11 @@ export async function createUiCompositor(options: {
       }
     }
     const nextTexture = raster.texture;
-    if (width !== nextWidth || height !== nextHeight || texture !== nextTexture) {
-      discardGraph();
+    if (width !== nextWidth || height !== nextHeight) resize(nextWidth, nextHeight);
+    if (texture !== nextTexture) {
       binding = undefined;
-      width = nextWidth;
-      height = nextHeight;
       texture = nextTexture;
+      generation = 0;
     }
     return changed !== null;
   }
@@ -180,17 +178,16 @@ export async function createUiCompositor(options: {
     }
     try {
       if (width !== nextWidth || height !== nextHeight) {
-        discardGraph();
         retireTexture();
-        width = nextWidth;
-        height = nextHeight;
+        resize(nextWidth, nextHeight);
         pixels = undefined;
         uploaded = false;
       }
       if (changed !== null) {
         // The source may recycle its WASM buffer after this call. Retain one
         // owned image so device recovery can reupload an otherwise clean UI.
-        pixels = changed.slice();
+        pixels ??= new Uint8Array(changed.byteLength);
+        pixels.set(changed);
         uploaded = false;
       }
       if (pixels !== undefined && !uploaded) {
@@ -221,223 +218,124 @@ export async function createUiCompositor(options: {
     return changed !== null;
   }
 
-  function prepareGraph(colorSpace: OutputColorSpace, capture: boolean): void {
-    const nextKey = `${width}:${height}:${colorSpace}:${texture !== undefined}:${capture}`;
-    if (graph === undefined || graphKey !== nextKey) {
-      discardGraph();
-      const builder = new RenderGraphBuilder<Frame>();
-      const display = value(
-        builder.importTexture(
-          'display',
-          {
-            format: options.format,
-            size: 'surface',
-            usage: 0x10,
-          },
-          (frame) => frame.output,
-        ),
-      );
-      if (capture) {
-        output = value(
-          device.createTexture({
-            label: 'screen-ui-output',
-            format: options.format,
-            size: { width, height, depthOrArrayLayers: 1 },
-            usage: 0x10 | 0x04 | 0x01,
-            textureBindingViewDimension: '2d',
-          }),
-        );
-      }
-      const presentationOutput = output;
-      const target =
-        presentationOutput !== undefined
-          ? value(
-              builder.importTexture(
-                'screen-ui-output',
-                {
-                  format: options.format,
-                  size: 'surface',
-                  usage: 0x10 | 0x04 | 0x01,
-                  domain: 'display-encoded',
-                },
-                () => presentationOutput,
-              ),
-            )
-          : display;
-      const targetView = value(builder.view(target, { format: options.format }));
-      let pipeline = pipelines.get(colorSpace);
-      const reads: GraphAccess[] = [];
-      if (texture !== undefined) {
-        layout ??= value(
-          device.createBindGroupLayout({
-            entries: [
-              {
-                binding: 0,
-                visibility: 2,
-                texture: { sampleType: 'float', viewDimension: '2d' },
-              },
-            ],
-          }),
-        );
-        if (pipeline === undefined) {
-          pipeline = value(
-            device.createRenderPipeline({
-              label: 'screen-ui-composite',
-              layout: value(device.createPipelineLayout({ bindGroupLayouts: [layout] })),
-              vertex: { module, entryPoint: 'vertex', buffers: [] },
-              fragment: {
-                module,
-                entryPoint: colorSpace === 'srgb' ? 'srgb' : 'display_p3',
-                targets: [
-                  {
-                    format: options.format,
-                    blend: {
-                      color: {
-                        operation: 'add',
-                        srcFactor: 'one',
-                        dstFactor: 'one-minus-src-alpha',
-                      },
-                      alpha: {
-                        operation: 'add',
-                        srcFactor: 'one',
-                        dstFactor: 'one-minus-src-alpha',
-                      },
-                    },
-                  },
-                ],
-              },
-              primitive: { topology: 'triangle-list', cullMode: 'none' },
-            }),
-          );
-          pipelines.set(colorSpace, pipeline);
-        }
-        const sourceTexture = texture;
-        const source = value(
-          builder.importTexture(
-            'ui',
+  function pictureLayout(): BindGroupLayout {
+    layout ??= value(
+      device.createBindGroupLayout({
+        entries: [
+          { binding: 0, visibility: 2, texture: { sampleType: 'float', viewDimension: '2d' } },
+        ],
+      }),
+    );
+    return layout;
+  }
+
+  function pictureBinding(view: TextureView): BindGroup {
+    return value(
+      device.createBindGroup({
+        layout: pictureLayout(),
+        entries: [{ binding: 0, resource: { kind: 'textureView', value: view } }],
+      }),
+    );
+  }
+
+  function createPipeline(colorSpace: OutputColorSpace, blend: boolean): RenderPipeline {
+    const factor = {
+      operation: 'add',
+      srcFactor: 'one',
+      dstFactor: 'one-minus-src-alpha',
+    } as const;
+    return value(
+      device.createRenderPipeline({
+        label: blend ? 'screen-ui-composite' : 'screen-ui-present',
+        layout: value(device.createPipelineLayout({ bindGroupLayouts: [pictureLayout()] })),
+        vertex: { module, entryPoint: 'vertex', buffers: [] },
+        fragment: {
+          module,
+          entryPoint: colorSpace === 'srgb' ? 'srgb' : 'display_p3',
+          targets: [
             {
-              format: 'rgba8unorm',
-              size: { width, height },
-              usage: 0x04,
-            },
-            () => sourceTexture,
-          ),
-        );
-        const view = value(builder.view(source, { format: 'rgba8unorm' }));
-        binding ??= value(
-          device.createBindGroup({
-            layout,
-            entries: [
-              {
-                binding: 0,
-                resource: {
-                  kind: 'textureView',
-                  value: value(device.createTextureView(texture, { format: 'rgba8unorm' })),
-                },
-              },
-            ],
-          }),
-        );
-        reads.push({ resource: view, usage: 'sampled-read' });
-      }
-      const acceptedPipeline = pipeline;
-      const acceptedBinding = binding;
-      value(
-        builder.addRasterPass('screen-ui-composite', {
-          accesses: [...reads, { resource: targetView, usage: 'color-attachment' }],
-          colorAttachments: [
-            {
-              view: targetView,
-              loadOp: (frame) => (frame.clear ? 'clear' : 'load'),
-              storeOp: 'store',
-              clearValue: { r: 0, g: 0, b: 0, a: 1 },
+              format: options.format,
+              ...(blend ? { blend: { color: factor, alpha: factor } } : {}),
             },
           ],
-          encodeDirect: (pass, _graphframe, _graphresources) => {
-            if (acceptedPipeline === undefined || acceptedBinding === undefined) return;
-            pass.setPipeline(acceptedPipeline);
-            pass.setBindGroup(0, acceptedBinding);
-            pass.draw(3);
-          },
+        },
+        primitive: { topology: 'triangle-list', cullMode: 'none' },
+      }),
+    );
+  }
+
+  function prepareCommands(colorSpace: OutputColorSpace, capture: boolean): void {
+    if (texture !== undefined) {
+      layerPipeline = pipelines.get(colorSpace);
+      if (layerPipeline === undefined) {
+        layerPipeline = createPipeline(colorSpace, true);
+        pipelines.set(colorSpace, layerPipeline);
+      }
+      binding ??= pictureBinding(
+        value(device.createTextureView(texture, { format: 'rgba8unorm' })),
+      );
+    } else {
+      layerPipeline = undefined;
+    }
+    const changeOutput = capture !== (output !== undefined);
+    if (capture && output === undefined) {
+      presentPipeline ??= createPipeline('srgb', false);
+      const allocated = value(
+        device.createTexture({
+          label: 'screen-ui-output',
+          format: options.format,
+          size: { width, height, depthOrArrayLayers: 1 },
+          usage: 0x10 | 0x04 | 0x01,
+          textureBindingViewDimension: '2d',
         }),
       );
-      if (capture) {
-        layout ??= value(
-          device.createBindGroupLayout({
-            entries: [
-              { binding: 0, visibility: 2, texture: { sampleType: 'float', viewDimension: '2d' } },
-            ],
-          }),
-        );
-        presentPipeline ??= value(
-          device.createRenderPipeline({
-            label: 'screen-ui-present',
-            layout: value(device.createPipelineLayout({ bindGroupLayouts: [layout] })),
-            vertex: { module, entryPoint: 'vertex', buffers: [] },
-            fragment: { module, entryPoint: 'srgb', targets: [{ format: options.format }] },
-            primitive: { topology: 'triangle-list', cullMode: 'none' },
-          }),
-        );
-        const pipeline = presentPipeline;
-        const presentLayout = layout;
-        const displayView = value(builder.view(display, { format: options.format }));
-        let presentBinding: BindGroup | undefined;
-        value(
-          builder.addRasterPass('screen-ui-present', {
-            accesses: [
-              { resource: targetView, usage: 'sampled-read' },
-              { resource: displayView, usage: 'color-attachment' },
-            ],
-            colorAttachments: [
-              {
-                view: displayView,
-                loadOp: 'clear',
-                storeOp: 'store',
-                clearValue: { r: 0, g: 0, b: 0, a: 1 },
-              },
-            ],
-            encodeDirect: (pass, _graphframe, resources) => {
-              presentBinding ??= value(
-                device.createBindGroup({
-                  layout: presentLayout,
-                  entries: [
-                    {
-                      binding: 0,
-                      resource: {
-                        kind: 'textureView',
-                        value: value(resources.textureView(targetView)),
-                      },
-                    },
-                  ],
-                }),
-              );
-              pass.setPipeline(pipeline);
-              pass.setBindGroup(0, presentBinding);
-              pass.draw(3);
-            },
-          }),
-        );
+      try {
+        const view = value(device.createTextureView(allocated, { format: options.format }));
+        output = { texture: allocated, view, binding: pictureBinding(view) };
+      } catch (cause) {
+        device.destroyTexture(allocated);
+        throw cause;
       }
-      graph = value(builder.compile({ device, surfaceSize: { width, height } }));
-      graphKey = nextKey;
+    } else if (!capture && output !== undefined) {
+      retireOutput();
     }
+    if (generation === 0 || color !== colorSpace || changeOutput)
+      generation = allocateRenderPassGeneration();
+    color = colorSpace;
+  }
+
+  function drawLayer(pass: RhiRenderPassEncoder): void {
+    if (binding === undefined || layerPipeline === undefined) return;
+    pass.setPipeline(layerPipeline);
+    pass.setBindGroup(0, binding);
+    pass.draw(3);
+  }
+  function present(pass: RhiRenderPassEncoder): void {
+    if (output === undefined || presentPipeline === undefined)
+      throw new Error('Missing prepared UI output');
+    pass.setPipeline(presentPipeline);
+    pass.setBindGroup(0, output.binding);
+    pass.draw(3);
   }
 
   return {
     get output() {
-      return output;
+      return output?.texture;
     },
     get generation(): number {
-      return graph?.inspect().generation ?? 0;
+      return generation;
     },
     async recover(nextDevice: RhiDevice): Promise<void> {
       const nextModule = await options.createShaderModule(nextDevice, SOURCE);
       if (disposed) return;
-      discardGraph();
+      preparedFrame = undefined;
+      generation = 0;
+      retireOutput();
       retireTexture();
       device = nextDevice;
       module = nextModule;
       layout = undefined;
+      layerPipeline = undefined;
       pipelines.clear();
       presentPipeline = undefined;
       uploaded = false;
@@ -451,6 +349,7 @@ export async function createUiCompositor(options: {
       colorSpace: OutputColorSpace,
       capture: boolean,
     ): SurfaceUiOutcome {
+      preparedFrame = undefined;
       if (disposed) return fail(frame, 'ui-device-operation-failed', 'UI compositor is disposed');
       const source = options.source;
       const painted =
@@ -459,11 +358,11 @@ export async function createUiCompositor(options: {
           : paintRgba(source, frame, timeMs, nextWidth, nextHeight);
       if (typeof painted !== 'boolean') return painted;
       try {
-        prepareGraph(colorSpace, capture);
+        prepareCommands(colorSpace, capture);
       } catch (cause) {
         return fail(frame, 'ui-device-operation-failed', failureDetail(cause));
       }
-      const generation = graph?.inspect().generation ?? 0;
+      preparedFrame = frame;
       return { kind: painted ? 'painted' : 'retained', frame, generation };
     },
     encode(
@@ -471,18 +370,63 @@ export async function createUiCompositor(options: {
       encoder: RhiCommandEncoder,
       surface: Texture,
       clear: boolean,
+      nativePassNames?: string[],
     ): SurfaceUiEncodeOutcome {
-      if (graph === undefined)
+      if (preparedFrame !== frame)
         return {
           kind: 'failed',
           frame,
           code: 'ui-raster-failed',
-          detail: 'prepare the UI before encoding',
+          detail: 'prepare the UI for this frame before encoding',
         };
+      const first = nativePassNames?.length ?? 0;
       try {
         raster?.encode(encoder);
-        value(graph.execute({ encoder, output: surface, clear }));
+        const surfaceView = value(device.createTextureView(surface, { format: options.format }));
+        const context = { encoder, nativePassNames };
+        encodeNativeRenderPass(
+          context,
+          {
+            name: 'screen-ui-composite',
+            kind: 'raster',
+            descriptor: {
+              label: 'screen-ui-composite',
+              colorAttachments: [
+                {
+                  view: output?.view ?? surfaceView,
+                  loadOp: clear ? 'clear' : 'load',
+                  storeOp: 'store',
+                  clearValue: { r: 0, g: 0, b: 0, a: 1 },
+                },
+              ],
+            },
+            encode: drawLayer,
+          },
+          0,
+        );
+        if (output !== undefined)
+          encodeNativeRenderPass(
+            context,
+            {
+              name: 'screen-ui-present',
+              kind: 'raster',
+              descriptor: {
+                label: 'screen-ui-present',
+                colorAttachments: [
+                  {
+                    view: surfaceView,
+                    loadOp: 'clear',
+                    storeOp: 'store',
+                    clearValue: { r: 0, g: 0, b: 0, a: 1 },
+                  },
+                ],
+              },
+              encode: present,
+            },
+            1,
+          );
       } catch (cause) {
+        if (nativePassNames !== undefined) nativePassNames.length = first;
         return { kind: 'failed', frame, code: 'ui-raster-failed', detail: failureDetail(cause) };
       }
       return { kind: 'encoded' };
@@ -490,9 +434,14 @@ export async function createUiCompositor(options: {
     dispose(): void {
       if (disposed) return;
       disposed = true;
-      discardGraph();
+      preparedFrame = undefined;
+      generation = 0;
+      retireOutput();
       retireTexture();
       pixels = undefined;
+      presentPipeline = undefined;
+      layerPipeline = undefined;
+      layout = undefined;
       raster?.dispose();
       pipelines.clear();
     },

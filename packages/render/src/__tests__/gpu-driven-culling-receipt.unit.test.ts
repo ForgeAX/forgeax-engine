@@ -86,7 +86,7 @@ async function fixture(cullingCountsOnly = false) {
   }).unwrap();
   updateGpuView(
     view,
-    topology.query(topology.sourcePlan(), undefined),
+    topology.query(topology.sourcePlan(), undefined).active,
     available.scene,
     planes,
   ).unwrap();
@@ -237,10 +237,11 @@ describe('existing shadow culling readback producer receipt', () => {
     expect(result?.observation).toMatchObject({
       producer: receipt(),
       resourceGeneration: f.view.computeResourceGeneration,
-      planRevision: f.topology.query(f.topology.sourcePlan(), undefined).revision,
+      planRevision: f.topology.query(f.topology.sourcePlan(), undefined).active.revision,
       candidateCount: 2,
       batchCount: 2,
-      visible: f.topology.query(f.topology.sourcePlan(), undefined).batches.at(0)?.visibleCapacity,
+      visible: f.topology.query(f.topology.sourcePlan(), undefined).active.batches.at(0)
+        ?.visibleCapacity,
       overflow: true,
       texelCulled: 6,
       cameraCulled: 8,
@@ -268,7 +269,7 @@ describe('existing shadow culling readback producer receipt', () => {
     expect((await second)?.observation?.producer.frameId).toBe(18);
     updateGpuView(
       f.view,
-      f.topology.query(f.topology.sourcePlan(), undefined),
+      f.topology.query(f.topology.sourcePlan(), undefined).active,
       f.scene,
       f.planes,
     ).unwrap();
@@ -303,7 +304,7 @@ describe('existing shadow culling readback producer receipt', () => {
     const identity = { kind: 'directional' as const, index: 0 };
     const input = {
       identity,
-      sourcePlan: f.topology.query(f.topology.sourcePlan(), undefined),
+      sourcePlan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       scene: f.scene,
       planes: f.planes,
       matrix: mat4.identity(mat4.create()),

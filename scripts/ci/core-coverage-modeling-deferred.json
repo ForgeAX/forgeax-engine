@@ -1,0 +1,72 @@
+[
+  {
+    "file": "packages/modeling/examples/mech-gt/__tests__/s6c.unit.test.ts",
+    "retained": "packages/modeling/examples/mech-gt/__tests__/s6.unit.test.ts",
+    "reason": "The complete car detailing plan validates its own hosts, clearances and variants. Nominal S6 still builds the full hull, checks S6c part coverage and publishes baked outputs."
+  },
+  {
+    "file": "packages/modeling/examples/mech-gt/__tests__/s5.unit.test.ts",
+    "retained": "packages/modeling/examples/mech-gt/__tests__/s6.unit.test.ts",
+    "reason": "Repeated full-body builds check intermediate mechanism counts and placement. Engine core keeps nominal S6 and the kernel joint and mechanism oracles."
+  },
+  {
+    "file": "packages/modeling/examples/mech-gt/__tests__/s6b.unit.test.ts",
+    "retained": "packages/modeling/examples/mech-gt/__tests__/s6b-paint.unit.test.ts",
+    "reason": "Standing and folded S6b assemblies check authored member geometry. Engine core keeps material and host checks, nominal S6, and independent joint and rig operators."
+  },
+  {
+    "file": "packages/modeling/examples/mech-gt/__tests__/s7-motion.engine.integration.test.ts",
+    "retained": "packages/modeling/examples/transforming-limb/__tests__/limb.engine.integration.test.ts",
+    "reason": "The large car animation repeats Engine clip playback across many authored joints. Core keeps a representative articulated Engine playback integration."
+  },
+  {
+    "file": "packages/modeling/examples/mech-gt/__tests__/proportions.tools.integration.test.ts",
+    "retained": "packages/modeling/examples/mech-gt/__tests__/proportions.unit.test.ts",
+    "reason": "The tools route builds and compares car proportion variants. Core retains the proportion rules and other authored tools-route oracles."
+  },
+  {
+    "file": "packages/modeling/examples/mech-gt/__tests__/car-form.unit.test.ts",
+    "retained": "packages/modeling/examples/mech-gt/__tests__/s6.unit.test.ts",
+    "reason": "The authored car envelope is checked independently at multiple stages. Nominal S6 keeps the complete exterior assembly and its coverage over the complete part list."
+  },
+  {
+    "file": "packages/modeling/examples/mech-gt/__tests__/reference.unit.test.ts",
+    "retained": "packages/modeling/examples/mech-gt/__tests__/s6.unit.test.ts",
+    "reason": "Authored reference comparisons evaluate the shape of intermediate masses. Nominal S6 retains complete exterior geometry, material and export checks."
+  },
+  {
+    "file": "packages/modeling/examples/mech-gt/__tests__/s6b.tools.integration.test.ts",
+    "retained": "packages/modeling/examples/mech-gt/__tests__/s6b-paint.unit.test.ts",
+    "reason": "The full robot tools journey exports the S6b example repeatedly. Core retains S6b paint and the smaller transforming-limb tools integration."
+  },
+  {
+    "file": "packages/modeling/examples/mech-gt/__tests__/s3-rough.unit.test.ts",
+    "retained": "packages/modeling/examples/mech-gt/__tests__/s6.unit.test.ts",
+    "reason": "The intermediate rough-body rebuild checks example-specific limits already exercised during nominal full-body generation."
+  },
+  {
+    "file": "packages/modeling/examples/maid-whale/__tests__/g7-face.import.integration.test.ts",
+    "retained": "packages/modeling/examples/maid-whale/__tests__/g7-materials.unit.test.ts",
+    "reason": "The complete character import verifies its authored decals and materials. Core keeps the direct material and decal oracles and independent Import publication contracts."
+  },
+  {
+    "file": "packages/modeling/examples/maid-whale/__tests__/g6-faceted.import.integration.test.ts",
+    "retained": "packages/modeling/examples/joint-boot/__tests__/boot.import.integration.test.ts",
+    "reason": "The full character faceting fixture repeats deferred modeling mesh job publication. The boot import retains the real publication and missing-cooker failure path."
+  },
+  {
+    "file": "packages/modeling/examples/wheel-rim/__tests__/wheel-rim.robustness.unit.test.ts",
+    "retained": "packages/modeling/examples/wheel-rim/__tests__/wheel-rim.unit.test.ts",
+    "reason": "The wide spoke and diameter sweep repeats authored wheel generation. Core retains nominal wheel geometry and tool export."
+  },
+  {
+    "file": "packages/modeling/examples/joint-boot/__tests__/boot.pack.integration.test.ts",
+    "retained": "packages/modeling/examples/joint-boot/__tests__/boot.import.integration.test.ts",
+    "reason": "Parameter extremes and byte equality with the in-place example are expanded authoring checks. Core retains real deferred mesh job publication and the nominal boot generator."
+  },
+  {
+    "file": "packages/modeling/examples/scifi-mech/__tests__/scifi-mech.watertight.unit.test.ts",
+    "retained": "packages/modeling/examples/scifi-mech/__tests__/scifi-mech.unit.test.ts",
+    "reason": "Reference-volume sweeps and falsifiers validate the authored shape. Core retains nominal mech topology and the package mesh-quality oracles."
+  }
+]

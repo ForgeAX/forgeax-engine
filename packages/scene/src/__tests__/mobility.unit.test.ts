@@ -1,6 +1,7 @@
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  ChildOf,
   Mobility,
   type MobilityDiagnostic,
   MobilityKindValue,
@@ -9,6 +10,7 @@ import {
   subscribeMobilityDiagnostics,
   Transform,
 } from '../index';
+import { readInheritedMobility } from '../internal';
 
 describe('Mobility', () => {
   let received: MobilityDiagnostic[];
@@ -36,6 +38,55 @@ describe('Mobility', () => {
     const entity = world.spawn({ component: Mobility, data: {} }).unwrap();
     expect(mobilityKindFromU32(world.get(entity, Mobility).unwrap().kind)).toBe('movable');
     expect(Mobility.fields.kind.labels).toEqual({ static: 0, stationary: 1, movable: 2 });
+  });
+
+  it('reads the current hierarchy up to 64 ancestors and rejects a retired handle', () => {
+    const world = new World();
+    const root = world
+      .spawn({ component: Mobility, data: { kind: MobilityKindValue.static } })
+      .unwrap();
+    const other = world
+      .spawn({ component: Mobility, data: { kind: MobilityKindValue.stationary } })
+      .unwrap();
+    const branch = world.spawn({ component: ChildOf, data: { parent: root } }).unwrap();
+    let leaf = branch;
+    for (let depth = 1; depth < 64; depth++)
+      leaf = world.spawn({ component: ChildOf, data: { parent: leaf } }).unwrap();
+    const beyond = world.spawn({ component: ChildOf, data: { parent: leaf } }).unwrap();
+    expect(readInheritedMobility(world, leaf)).toBe('static');
+    expect(readInheritedMobility(world, beyond)).toBe('movable');
+    world.set(branch, ChildOf, { parent: other }).unwrap();
+    expect(readInheritedMobility(world, leaf)).toBe('stationary');
+    world.despawn(beyond).unwrap();
+    const replacement = world
+      .spawn({ component: Mobility, data: { kind: MobilityKindValue.static } })
+      .unwrap();
+    expect(readInheritedMobility(world, replacement)).toBe('static');
+    expect(readInheritedMobility(world, beyond)).toBe('movable');
+  });
+
+  it('sees the first declaration, its removal and a later declaration on another ancestor immediately', () => {
+    const world = new World();
+    const root = world.spawn().unwrap();
+    const branch = world.spawn({ component: ChildOf, data: { parent: root } }).unwrap();
+    const leaf = world.spawn({ component: ChildOf, data: { parent: branch } }).unwrap();
+    expect(readInheritedMobility(world, leaf)).toBe('movable');
+    world
+      .addComponent(root, { component: Mobility, data: { kind: MobilityKindValue.static } })
+      .unwrap();
+    expect(readInheritedMobility(world, leaf)).toBe('static');
+    world.removeComponent(root, Mobility).unwrap();
+    expect(readInheritedMobility(world, leaf)).toBe('movable');
+    world
+      .addComponent(branch, { component: Mobility, data: { kind: MobilityKindValue.stationary } })
+      .unwrap();
+    expect(readInheritedMobility(world, leaf)).toBe('stationary');
+    world
+      .addComponent(root, { component: Mobility, data: { kind: MobilityKindValue.static } })
+      .unwrap();
+    expect(readInheritedMobility(world, leaf)).toBe('stationary');
+    world.removeComponent(branch, Mobility).unwrap();
+    expect(readInheritedMobility(world, leaf)).toBe('static');
   });
 
   it('accepts initial placement of a static entity without a diagnostic', async () => {

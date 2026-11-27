@@ -12,6 +12,7 @@ import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -137,6 +138,7 @@ const constructed = await constructRuntimeRendererHost(
   { shaderManifestUrl: processShaderManifestUrl(resolve(distRoot, 'shaders/manifest.json')) },
 );
 if (!constructed.ok) throw constructed.error;
+(await constructed.value.initialization).unwrap();
 const renderer = constructed.value.renderer;
 // Observe the real prepared-resource path, not a CPU particle approximation.
 const persistentBuffers = new Map();
@@ -175,7 +177,7 @@ assets.configurePackIndex('/pack-index.json');
 const attached = await host.attachWorld({ world, assets });
 if (!attached.ok) throw new Error(`VFX host attach failed: ${attached.error.hint}`);
 
-const materialGuid = assets.parseGuid('019e9c00-0000-7000-8000-000000000002');
+const materialGuid = assets.parseGuid('96b5ec1b-841a-5dc5-be0f-2171aacd75bc');
 const material = await assets.load(materialGuid, 'material');
 if (!material.ok) throw new Error(`strike material load failed: ${material.error.hint}`);
 const strikeMaterial = material.value;
@@ -194,7 +196,7 @@ world.spawn(
   { component: MeshRenderer, data: { materials: [strikeMaterial] } },
 ).unwrap();
 
-const loaded = await loadVfxGpuEffect(assets, '019e9c00-0000-7000-8000-000000000000');
+const loaded = await loadVfxGpuEffect(assets, 'c76202f1-8caa-5873-a899-a372ea0b5cfc');
 if (!loaded.ok) throw new Error(`particle effect load failed: ${loaded.error.code}: ${loaded.error.hint}`);
 let effectAsset = assets.read(loaded.value).unwrap();
 let benchmarkAllocatedCapacity = 0;
@@ -618,6 +620,11 @@ if (m35Mode) {
   );
 } else {
   const presentationDeadline = performance.now() + 120_000;
+  // Cold retries present the same simulation state after the exact GPU receipt settles.
+  const present = () =>
+    completeReadyFrame(() => recordDraw(renderer, mainLease).unwrap(), {
+      timeoutMs: Math.max(1, Math.ceil(presentationDeadline - performance.now())),
+    });
   for (let frame = 0; frame < frameLimit; frame += 1) {
     const frameStart = performance.now();
     currentFrame = frame;
@@ -631,21 +638,10 @@ if (m35Mode) {
       });
       eventSubmitted = true;
     }
-    let drawn = recordDraw(renderer, mainLease);
-    // A pending receipt waited on pipeline preparation and presented nothing;
-    // redraw the same simulated frame (render-only) until it is presented.
-    while (drawn.ok && drawn.value.presentation !== 'ready' && performance.now() < presentationDeadline) {
-      await new Promise((resolve) => setImmediate(resolve));
-      drawn = recordDraw(renderer, mainLease);
-    }
-    if (!drawn.ok) throw new Error(`Boss Lightning draw failed at frame ${frame}`);
-    if (!benchmarkMode && !m11Mode) {
-      const presentation = recordDraw(renderer, mainLease);
-      if (!presentation.ok) throw new Error(`Render-only Boss Lightning frame failed at ${frame}`);
-    }
+    await present();
+    if (!benchmarkMode && !m11Mode) await present();
     await new Promise((resolve) => setImmediate(resolve));
     if (benchmarkMode) {
-      await shim.sharedDevice?.queue.onSubmittedWorkDone();
       if (frame === benchmarkBeamEvidenceFrame) {
         device = shim.sharedDevice;
         target = shim.renderTarget;

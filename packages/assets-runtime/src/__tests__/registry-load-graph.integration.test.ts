@@ -1,9 +1,9 @@
 import { defineComponent } from '@forgeax/engine-ecs';
 import { materialAssetOutputProducer } from '@forgeax/engine-import';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { sceneAssetContribution } from '@forgeax/engine-scene';
 import { type AssetDecoderInput, type AssetEnvelopeV2, ok } from '@forgeax/engine-types';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import {
   materialContribution,
   renderPipelineContribution,
@@ -13,6 +13,7 @@ import { AssetRegistry } from '../asset-registry';
 import { createCatalogSource } from '../catalog-source';
 import { runtimeAssetReference } from '../internal/runtime-assets';
 import * as sceneHandleFields from '../scene-handle-fields';
+import { catalogPack } from './fixtures/catalog-pack';
 
 const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -21,22 +22,10 @@ const D = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 
 function publish(registry: AssetRegistry, assets: readonly AssetEnvelopeV2<unknown>[]) {
   const packageUrl = 'https://graph.invalid/pack.json';
-  const publication = createRuntimePackPublication({
-    scopeId: 'asset-runtime',
-    packageUrl,
-    sourcePath: 'graph.pack',
-    sourceRevision: '1',
-    pack: { assets },
-  });
+  const publication = catalogPack(assets, { packageUrl, sourcePath: 'graph.pack' });
   registry.setCatalogSource(
     createCatalogSource({
-      entries: assets.map(({ guid, kind }) => ({
-        guid,
-        kind,
-        packageUrl,
-        sourcePath: 'graph.pack',
-        publication: publication.publication,
-      })),
+      entries: publication.rows,
       fetch: async () => new Response(JSON.stringify(publication.pack)),
     }),
   );
@@ -143,13 +132,10 @@ describe('registry load graph', () => {
         refs: child.refs.map((ref) => ref.guid),
       },
     ]);
-    try {
-      const material = registry.read((await registry.load(B, 'material')).unwrap()).unwrap();
-      expect(material).toMatchObject({ kind: 'material', values });
-      expect(material).not.toHaveProperty('parent');
-    } finally {
-      registry.dispose();
-    }
+    onTestFinished(() => registry.dispose());
+    const material = registry.read((await registry.load(B, 'material')).unwrap()).unwrap();
+    expect(material).toMatchObject({ kind: 'material', values });
+    expect(material).not.toHaveProperty('parent');
   });
 
   it('restores descriptor payloads through the verified Pack path', async () => {
@@ -168,54 +154,39 @@ describe('registry load graph', () => {
         },
       },
     ]);
-    try {
-      expect(
-        registry.read((await registry.load(C, 'render-pipeline')).unwrap()).unwrap(),
-      ).toMatchObject({
-        kind: 'render-pipeline',
-        pipelineId: 'forgeax::standard',
-        renderPath: 'forward',
-      });
-    } finally {
-      registry.dispose();
-    }
+    onTestFinished(() => registry.dispose());
+    expect(
+      registry.read((await registry.load(C, 'render-pipeline')).unwrap()).unwrap(),
+    ).toMatchObject({
+      kind: 'render-pipeline',
+      pipelineId: 'forgeax::standard',
+      renderPath: 'forward',
+    });
   });
 
   it('keeps a parent unadopted while its declared dependency is unavailable', async () => {
     const registry = graph();
     publish(registry, [node(A, [B])]);
-    try {
-      expect(await registry.load(A, nodeKind)).toMatchObject({ ok: false });
-      expect(runtimeAssetReference(registry, A)).toBeUndefined();
-    } finally {
-      registry.dispose();
-    }
+    onTestFinished(() => registry.dispose());
+    expect(await registry.load(A, nodeKind)).toMatchObject({ ok: false });
+    expect(runtimeAssetReference(registry, A)).toBeUndefined();
   });
 
   it('rejects eager cycles without exposing provisional handles', async () => {
     const registry = graph();
     publish(registry, [node(A, [B]), node(B, [A])]);
-    try {
-      expect(await registry.load(A, nodeKind)).toMatchObject({
-        ok: false,
-        error: { code: 'asset-reference-invalid' },
-      });
-      expect(runtimeAssetReference(registry, A)).toBeUndefined();
-      expect(runtimeAssetReference(registry, B)).toBeUndefined();
-    } finally {
-      registry.dispose();
-    }
+    onTestFinished(() => registry.dispose());
+    expect(await registry.load(A, nodeKind)).toMatchObject({
+      ok: false,
+      error: { code: 'asset-reference-invalid' },
+    });
+    expect(runtimeAssetReference(registry, A)).toBeUndefined();
+    expect(runtimeAssetReference(registry, B)).toBeUndefined();
   });
 
   it('keeps concurrent callers pending until the complete dependency closure is decoded', async () => {
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let entered!: () => void;
-    const started = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
+    const { promise: gate, resolve: release } = testGate();
+    const { promise: started, resolve: entered } = testGate();
     const decode = vi.fn(async (input: AssetDecoderInput<{ name: string }>) => {
       if (input.envelope.guid === B) {
         entered();
@@ -254,17 +225,15 @@ describe('registry load graph', () => {
     );
     const registry = graph(decode);
     publish(registry, [node(A, [B, C]), node(B, [D]), node(C, [D]), node(D)]);
-    try {
-      expect((await registry.load(A, nodeKind)).ok).toBe(true);
-      expect(decode).toHaveBeenCalledTimes(4);
-      for (const guid of [A, B, C, D]) {
-        const handle = (await registry.load(guid, nodeKind)).unwrap();
-        expect(handle).toBe(runtimeAssetReference(registry, guid));
-        expect(registry.read(handle).unwrap()).toMatchObject({ name: guid });
-      }
-      expect(decode).toHaveBeenCalledTimes(4);
-    } finally {
-      registry.dispose();
+    onTestFinished(() => registry.dispose());
+    expect((await registry.load(A, nodeKind)).ok).toBe(true);
+    expect(decode).toHaveBeenCalledTimes(4);
+    for (const guid of [A, B, C, D]) {
+      const handle = (await registry.load(guid, nodeKind)).unwrap();
+      expect(handle).toBe(runtimeAssetReference(registry, guid));
+      expect(registry.read(handle).unwrap()).toMatchObject({ name: guid });
+      expect(registry.read(handle, ['name']).unwrap()).toEqual({ name: guid });
     }
+    expect(decode).toHaveBeenCalledTimes(4);
   });
 });

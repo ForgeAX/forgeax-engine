@@ -2,29 +2,17 @@ import { defineComponent, defineSystem, type EntityHandle, type World } from '@f
 import { isTemporalAntialias } from '../components/camera';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import type { RenderSystemInternals } from '../record/render-context';
-import { reportSsrHistoryFailure } from '../record/ssr-history-frame';
 import type { CameraSnapshot, VolumetricFogFrameContext } from '../render-contract';
 import type { ExtractedVolumetricFog } from '../render-system-extract';
-import type { SsrSpatialAdmission } from '../ssr/admission';
-import { createSsrHistoryOwner, type SsrHistoryResetReason } from '../ssr/history';
-import { estimateSsrSpatialMemory } from '../ssr/resources';
-import { waterSsrTemporalEnabled } from '../ssr/water-profile';
 import { RenderHistoryAdmissionOrder, RenderSsrAdmissionOrder } from '../system-order';
 import { volumetricFogSamplingLane } from '../volume/component';
 import { resolveVolumeTemporalReset, type VolumeTemporalSignature } from '../volume/temporal';
-import { viewDiffuseGiOf } from './gi-systems';
-import {
-  type PassPlanInput,
-  readViewPassPlan,
-  type ViewPassPlanQueue,
-  ViewPassPlans,
-} from './pass-plan-systems';
+import { type PassPlanInput, type ViewPassPlanQueue, ViewPassPlans } from './pass-plan-systems';
 import { type ViewLights, viewLightsOf } from './render-lights';
 import { ViewRecorder } from './render-views';
 import { RenderQueue, renderSubmission, renderWorldFor } from './render-world';
 import { viewSsrAdmissionOf } from './ssr-admission-systems';
-import { readViewField, requireViewField } from './view-field';
-import { stagedViewInputs, ViewFrame, type ViewFrameState } from './view-frame-systems';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import { recordContext } from './view-record-context';
 import { ownerOf } from './view-settlement';
 import { viewTopologyOf } from './view-topology-systems';
@@ -38,7 +26,7 @@ import { viewTopologyOf } from './view-topology-systems';
  * History itself advances only in RenderCommit for an accepted submission.
  */
 
-/** RenderQueue: the view's volumetric fog and SSR history admission. */
+/** RenderQueue: the view's volumetric fog history admission. */
 export const RENDER_HISTORY_ADMISSION_SYSTEM = 'render-history-admission';
 
 /** Whether a view's volume history continues, decided before its graph compiles. */
@@ -58,15 +46,14 @@ export type HistoryAdmissionFailureCode =
 
 /**
  * One view's `render-history-admission` outcome. `admitted`: the fog history
- * decision (undefined without an available graph volume) and the camera-owned
- * SSR reset. `unavailable`: an input system planned nothing for the view.
+ * decision (undefined without an available graph volume). `unavailable`: an
+ * input system planned nothing for the view.
  * `failed`: the fog signature could not be computed; recording rethrows `cause`.
  */
 export type ViewHistoryAdmissionOutcome =
   | {
       readonly kind: 'admitted';
       readonly fog: VolumeHistoryAdmission | undefined;
-      readonly ssrReset: SsrHistoryResetReason | undefined;
     }
   | {
       readonly kind: 'unavailable';
@@ -89,12 +76,8 @@ export function viewHistoryAdmissionOf(
   world: World,
   entity: EntityHandle | undefined,
 ): ViewHistoryAdmissionOutcome | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewHistoryAdmission)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewHistoryAdmissionState>(
-      requireViewField(world, entity, ViewHistoryAdmission, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<ViewHistoryAdmissionState>(world, entity, ViewHistoryAdmission);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.outcome : undefined;
 }
 
@@ -103,8 +86,7 @@ export function consumeViewHistoryAdmission(
   internals: RenderSystemInternals,
 ): Extract<ViewHistoryAdmissionOutcome, { kind: 'admitted' }> {
   // A direct recorder (no view entity) has no history to admit: no fog volume, no SSR reset.
-  if (internals.viewEntity === undefined)
-    return { kind: 'admitted', fog: undefined, ssrReset: undefined };
+  if (internals.viewEntity === undefined) return { kind: 'admitted', fog: undefined };
   const outcome = viewHistoryAdmissionOf(renderWorldFor(internals), internals.viewEntity);
   if (outcome === undefined)
     throw new Error(`${RENDER_HISTORY_ADMISSION_SYSTEM} did not admit the recorded view`);
@@ -298,67 +280,6 @@ export function admitVolumeHistory(
   };
 }
 
-/** The camera-owned SSR reset against the last accepted scene submission's camera. */
-function ssrCameraReset(
-  frameState: RenderFrameState,
-  camera: CameraSnapshot,
-): SsrHistoryResetReason | undefined {
-  if (
-    frameState.ssrLastCameraEntity !== undefined &&
-    frameState.ssrLastCameraEntity !== camera.entityKey
-  )
-    return 'camera-cut';
-  if (
-    frameState.ssrLastHistoryVersion !== undefined &&
-    frameState.ssrLastHistoryVersion !== camera.historyVersion
-  )
-    return 'history-version';
-  return undefined;
-}
-
-/**
- * RenderCommit half of the SSR history admission, run for an accepted scene
- * submission: the recorded camera becomes the reset baseline, and a view
- * whose SSR is no longer admitted retires its history owner. A rejected
- * attempt never reaches this, so it leaves both untouched.
- */
-export function commitSsrHistoryBaseline(
-  world: World,
-  entity: EntityHandle,
-  frameState: RenderFrameState,
-  internals: RenderSystemInternals,
-  camera: CameraSnapshot | undefined,
-): void {
-  const ssr = viewSsrAdmissionOf(world, entity);
-  if (ssr?.kind !== 'resolved') return;
-  frameState.ssrLastCameraEntity = camera?.entityKey;
-  frameState.ssrLastHistoryVersion = camera?.historyVersion;
-  if (ssr.admission.status === 'admitted') {
-    const plan = readViewPassPlan(world, entity);
-    if (
-      plan.ok &&
-      (plan.value.transmission.water !== true ||
-        camera === undefined ||
-        !waterSsrTemporalEnabled(camera.antialias, ssr.admission.config.waterTemporal))
-    ) {
-      frameState.waterSsrHistoryOwner?.reset('disable');
-      frameState.waterSsrHistoryOwner?.retireAfterFence(internals.device.queue, (cause) =>
-        reportSsrHistoryFailure(internals, 'submit', cause),
-      );
-      frameState.waterSsrHistoryOwner = undefined;
-    }
-    return;
-  }
-  for (const owner of [frameState.ssrHistoryOwner, frameState.waterSsrHistoryOwner]) {
-    owner?.reset('disable');
-    owner?.retireAfterFence(internals.device.queue, (cause) =>
-      reportSsrHistoryFailure(internals, 'submit', cause),
-    );
-  }
-  frameState.ssrHistoryOwner = undefined;
-  frameState.waterSsrHistoryOwner = undefined;
-}
-
 /** Admit one staged view's histories; never throws. */
 function admitViewHistory(
   world: World,
@@ -390,14 +311,13 @@ function admitViewHistory(
       return { kind: 'failed', code: 'fog-signature-failed', cause };
     }
   }
-  return { kind: 'admitted', fog, ssrReset: ssrCameraReset(frameState, camera) };
+  return { kind: 'admitted', fog };
 }
 
 /**
  * Register `render-history-admission` (RenderQueue, after
- * `render-ssr-admission`): each staged view admits its volumetric fog and
- * SSR history from committed state and stores a frame-stamped outcome. A
- * failure is stored, never thrown.
+ * `render-ssr-admission`): each staged view admits its volumetric fog history
+ * from committed state and stores a frame-stamped outcome. Failures are stored.
  */
 export function registerHistoryAdmissionSystem(world: World): void {
   const systemToken1 = defineSystem({
@@ -448,260 +368,4 @@ export function registerHistoryAdmissionSystem(world: World): void {
     },
   });
   world.addSystem(RenderQueue, systemToken1).unwrap();
-  registerSsrHistoryStageSystem(world);
-}
-
-/** RenderQueue: the view's SSR history owner provisioning (allocation, resize, camera reset). */
-export const RENDER_SSR_HISTORY_STAGE_SYSTEM = 'render-ssr-history-stage';
-
-/** Closed reasons a view has no SSR history stage. */
-export type SsrHistoryStageFailureCode =
-  | 'history-admission-unavailable'
-  | 'render-extent-unavailable'
-  | 'owner-create-failed'
-  | 'owner-resize-failed'
-  | 'owner-threw';
-
-/**
- * One view's `render-ssr-history-stage` outcome. `idle`: SSR is not admitted,
- * so no owner is staged (a not-admitted owner retires in RenderCommit).
- * `staged`: `frameState.ssrHistoryOwner` is allocated at the render extent and
- * `cameraReset` was applied to it; recording begins the candidate once its
- * temporal view exists. `unavailable`: an input system planned nothing.
- * `failed`: the owner could not be allocated or resized; `owner-create-failed`
- * and `owner-resize-failed` were reported on the error registry and the frame
- * records nothing, `owner-threw` carries an unexpected `cause` for recording
- * to rethrow.
- */
-export type ViewSsrHistoryStageOutcome =
-  | { readonly kind: 'idle' }
-  | { readonly kind: 'staged'; readonly cameraReset: SsrHistoryResetReason | undefined }
-  | {
-      readonly kind: 'unavailable';
-      readonly code: Extract<
-        SsrHistoryStageFailureCode,
-        'history-admission-unavailable' | 'render-extent-unavailable'
-      >;
-    }
-  | {
-      readonly kind: 'failed';
-      readonly code: Extract<
-        SsrHistoryStageFailureCode,
-        'owner-create-failed' | 'owner-resize-failed' | 'owner-threw'
-      >;
-      readonly cause: unknown;
-    };
-
-const IDLE_STAGE = Object.freeze({ kind: 'idle' } as const);
-
-interface ViewSsrHistoryStageState {
-  frame: number;
-  outcome: ViewSsrHistoryStageOutcome;
-}
-
-/** A recording view's SSR history stage; written only by `render-ssr-history-stage`. */
-export const ViewSsrHistoryStage = defineComponent('ViewSsrHistoryStage', {
-  state: 'unique<ViewSsrHistoryStage>',
-});
-
-/** The view's stage written this renderer frame; undefined when the system did not run for it. */
-export function viewSsrHistoryStageOf(
-  world: World,
-  entity: EntityHandle | undefined,
-): ViewSsrHistoryStageOutcome | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewSsrHistoryStage)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewSsrHistoryStageState>(
-      requireViewField(world, entity, ViewSsrHistoryStage, 'state'),
-    )
-    .unwrap();
-  return state.frame === renderSubmission(world).frame ? state.outcome : undefined;
-}
-
-/**
- * The stage this recording continues from. A direct recorder outside a Render
- * World view never admits SSR, so it has nothing staged; a missing or
- * unavailable stage of an admitted view and an unexpected failure rethrow
- * inside the record recovery.
- */
-export function consumeViewSsrHistoryStage(
-  internals: RenderSystemInternals,
-  admission: SsrSpatialAdmission,
-): ViewSsrHistoryStageOutcome {
-  if (admission.status !== 'admitted') return IDLE_STAGE;
-  const outcome = viewSsrHistoryStageOf(renderWorldFor(internals), internals.viewEntity);
-  if (outcome === undefined)
-    throw new Error(`${RENDER_SSR_HISTORY_STAGE_SYSTEM} did not stage the recorded view`);
-  if (outcome.kind === 'unavailable')
-    throw new Error(`${RENDER_SSR_HISTORY_STAGE_SYSTEM}: ${outcome.code}`);
-  if (outcome.kind === 'failed' && outcome.code === 'owner-threw') throw outcome.cause;
-  return outcome;
-}
-
-/** SSR history is sized to the internal render extent, else the canvas. */
-function ssrHistoryExtent(
-  internals: RenderSystemInternals,
-  renderExtent: { readonly internalWidth: number; readonly internalHeight: number } | undefined,
-): { readonly width: number; readonly height: number } {
-  return {
-    width: renderExtent?.internalWidth ?? Math.max(1, recordContext(internals).canvas.width),
-    height: renderExtent?.internalHeight ?? Math.max(1, recordContext(internals).canvas.height),
-  };
-}
-
-/** Allocate or resize the SSR history owner and apply the camera-owned reset; never throws. */
-function stageSsrHistoryOwner(
-  frameState: RenderFrameState,
-  internals: RenderSystemInternals,
-  cameraReset: SsrHistoryResetReason | undefined,
-  width: number,
-  height: number,
-  water = false,
-): ViewSsrHistoryStageOutcome {
-  try {
-    let owner = water ? frameState.waterSsrHistoryOwner : frameState.ssrHistoryOwner;
-    if (owner === undefined) {
-      const created = createSsrHistoryOwner({
-        device: internals.device,
-        scope: recordContext(internals).deviceScope,
-        width,
-        height,
-        profile: water ? 'single-layer-water' : 'opaque',
-      });
-      if (!created.ok) {
-        reportSsrHistoryFailure(internals, 'build', created.error);
-        return { kind: 'failed', code: 'owner-create-failed', cause: created.error };
-      }
-      owner = created.value;
-      if (water) frameState.waterSsrHistoryOwner = owner;
-      else frameState.ssrHistoryOwner = owner;
-    } else if (owner.resources.width !== width || owner.resources.height !== height) {
-      const resized = owner.resize(width, height);
-      if (!resized.ok) {
-        reportSsrHistoryFailure(internals, 'build', resized.error);
-        return { kind: 'failed', code: 'owner-resize-failed', cause: resized.error };
-      }
-      owner.retireReplacedAfterFence(internals.device.queue, (cause) => {
-        reportSsrHistoryFailure(internals, 'submit', cause);
-      });
-    }
-    if (cameraReset !== undefined) owner.reset(cameraReset);
-    return { kind: 'staged', cameraReset };
-  } catch (cause) {
-    return { kind: 'failed', code: 'owner-threw', cause };
-  }
-}
-
-/** Stage one view's SSR history owner; never throws. */
-function stageViewSsrHistory(
-  world: World,
-  entity: EntityHandle,
-  frameState: RenderFrameState,
-  internals: RenderSystemInternals,
-): ViewSsrHistoryStageOutcome {
-  const ssr = viewSsrAdmissionOf(world, entity);
-  const history = viewHistoryAdmissionOf(world, entity);
-  if (ssr?.kind !== 'resolved' || history?.kind !== 'admitted')
-    return { kind: 'unavailable', code: 'history-admission-unavailable' };
-  frameState.ssrSpatialAdmission = ssr.admission;
-  if (ssr.admission.status !== 'admitted') return IDLE_STAGE;
-  const gi = viewDiffuseGiOf(world, entity);
-  if (gi?.ok !== true) return { kind: 'unavailable', code: 'render-extent-unavailable' };
-  const { width, height } = ssrHistoryExtent(internals, gi.value.renderExtent);
-  try {
-    const memory = estimateSsrSpatialMemory(
-      { width, height },
-      {
-        resolutionScale: internals.standardProfile?.quality?.ssr.resolutionScale,
-        execution:
-          internals.device.caps.compute && internals.device.caps.storageTexture
-            ? 'compute'
-            : 'fragment',
-        forward: ssr.admission.lane === 'forward' || ssr.admission.lane === 'cpu-webgl2',
-      },
-    );
-    if (!memory.withinBudget) {
-      const cause = new RangeError(
-        `SSR descriptor bytes ${memory.ssrOwnedBytes} exceed ${memory.budgetBytes}; reduce the internal render extent`,
-      );
-      reportSsrHistoryFailure(internals, 'build', cause);
-      return { kind: 'failed', code: 'owner-create-failed', cause };
-    }
-  } catch (cause) {
-    return { kind: 'failed', code: 'owner-threw', cause };
-  }
-  const staged = stageSsrHistoryOwner(frameState, internals, history.ssrReset, width, height);
-  if (staged.kind !== 'staged') return staged;
-  const plan = readViewPassPlan(world, entity);
-  const viewFrame = world
-    .resolveUniqueRef<ViewFrameState>(requireViewField(world, entity, ViewFrame, 'state'))
-    .unwrap();
-  const camera = stagedViewInputs(world, viewFrame).cameras[0];
-  if (
-    plan.ok &&
-    plan.value.transmission.water === true &&
-    camera !== undefined &&
-    waterSsrTemporalEnabled(camera.antialias, ssr.admission.config.waterTemporal)
-  )
-    return stageSsrHistoryOwner(frameState, internals, history.ssrReset, width, height, true);
-  return staged;
-}
-
-/**
- * Register `render-ssr-history-stage` (RenderQueue, after
- * `render-history-admission`): each staged view with an admitted SSR
- * allocates or resizes its history owner at the hoisted render extent and
- * applies the camera-owned reset. A failure is stored with its closed code,
- * never thrown. Recording begins the frame candidate from the temporal view;
- * `render-post-commit` commits it for an accepted view and `render-post-cleanup`
- * aborts it otherwise.
- */
-export function registerSsrHistoryStageSystem(world: World): void {
-  const systemToken2 = defineSystem({
-    commands: 'none',
-    name: RENDER_SSR_HISTORY_STAGE_SYSTEM,
-    after: [RenderHistoryAdmissionOrder],
-    queries: [{ read: [ViewRecorder, ViewPassPlans], optional: [ViewSsrHistoryStage] }],
-    fn: (world, [views]) => {
-      const frame = renderSubmission(world).frame;
-      const first: { entity: EntityHandle; state: ViewSsrHistoryStageState }[] = [];
-
-      views.forEach((row) => {
-        const entity = row.entity;
-
-        const input = world
-          .resolveUniqueRef<ViewPassPlanQueue>(
-            requireViewField(world, entity, ViewPassPlans, 'state'),
-          )
-          .unwrap().staged;
-        if (input === undefined) return;
-        const stored = readViewField(world, entity, ViewSsrHistoryStage, 'state');
-        const previous =
-          stored === undefined
-            ? undefined
-            : world.resolveUniqueRef<ViewSsrHistoryStageState>(stored).unwrap();
-        if (previous?.frame === frame) return;
-        const { frameState, internals } = ownerOf(
-          world,
-          requireViewField(world, entity, ViewRecorder, 'state'),
-        );
-        const outcome = stageViewSsrHistory(world, entity, frameState, internals);
-        if (previous === undefined) {
-          first.push({ entity: entity, state: { frame, outcome } });
-          return;
-        }
-        previous.frame = frame;
-        previous.outcome = outcome;
-      });
-      // A view's first stage attaches its component after the iteration.
-      for (const { entity, state } of first)
-        world
-          .addComponent(entity, {
-            component: ViewSsrHistoryStage,
-            data: { state: world.allocUniqueRef('ViewSsrHistoryStage', state) },
-          })
-          .unwrap();
-    },
-  });
-  world.addSystem(RenderQueue, systemToken2).unwrap();
 }

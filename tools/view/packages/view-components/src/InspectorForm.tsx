@@ -43,7 +43,7 @@ export type InspectorAssetActionResolver = (value: unknown) => { onOpen?: () => 
 
 const READ_ONLY = { readOnly: true, tabIndex: -1 as const };
 
-function ColorField({ value }: { value: unknown }) {
+function ColorField({ value, locale }: { value: unknown; locale: 'en' | 'zh' }) {
   const [mode, setMode] = useState<'hex' | 'rgba' | 'hsla' | 'linear'>('hex');
   const hex = inspectorColorHex(value);
   const match = /^#([0-9A-F]{6})([0-9A-F]{2})?$/i.exec(hex);
@@ -68,9 +68,9 @@ function ColorField({ value }: { value: unknown }) {
   return <span className="fx-inspector-form__color" title={hex || undefined}>
     <span className="fx-inspector-form__swatch" aria-hidden style={{ backgroundColor: hex || undefined }} />
     <span className="fx-inspector-form__color-value"><span className="fx-inspector-form__color-hex" title={display}>{display}</span>
-      <Select className="fx-inspector-form__color-mode" aria-label="Color display mode" value={mode} onChange={event => setMode(event.target.value as typeof mode)}>
+      <Select className="fx-inspector-form__color-mode" aria-label={locale === 'zh' ? '颜色显示模式' : 'Color display mode'} value={mode} onChange={event => setMode(event.target.value as typeof mode)}>
         <option value="hex">sRGB HEX</option><option value="rgba">RGBA</option><option value="hsla">HSLA</option>
-        {numeric ? <option value="linear">Linear RGBA</option> : null}
+        {numeric ? <option value="linear">{locale === 'zh' ? '线性 RGBA' : 'Linear RGBA'}</option> : null}
       </Select>
     </span>
   </span>;
@@ -109,7 +109,7 @@ function VectorField({
   );
 }
 
-export function InspectorFieldControl({ field, assetLabels, assetActions }: { field: InspectorFormField; assetLabels?: Partial<AssetReferenceLabels>; assetActions?: InspectorAssetActionResolver }) {
+export function InspectorFieldControl({ field, assetLabels, assetActions, locale = 'en' }: { field: InspectorFormField; assetLabels?: Partial<AssetReferenceLabels>; assetActions?: InspectorAssetActionResolver; locale?: 'en' | 'zh' }) {
   if (field.kind === 'angle3' && typeof field.value === 'object' && field.value !== null) {
     const vector = field.value as Record<'x' | 'y' | 'z', number>;
     return <VectorField axes={['x', 'y', 'z']} vector={{ ...vector, w: 0 }} degrees />;
@@ -148,10 +148,10 @@ export function InspectorFieldControl({ field, assetLabels, assetActions }: { fi
     );
   }
   if (field.kind === 'color') {
-    return <ColorField value={field.value} />;
+    return <ColorField value={field.value} locale={locale} />;
   }
   if (field.kind === 'asset') {
-    return <AssetReferenceField value={field.value} {...(assetLabels ? { labels: assetLabels } : {})} {...assetActions?.(field.value)} />;
+    return <AssetReferenceField value={field.value} locale={locale} {...(assetLabels ? { labels: assetLabels } : {})} {...assetActions?.(field.value)} />;
   }
   return (
     <span className={field.kind === 'number' ? 'fx-inspector-form__numfield fx-inspector-form__numfield--solo' : undefined}>
@@ -169,10 +169,12 @@ function FormGroup({
   group,
   nested = false,
   assetActions,
+  locale,
 }: {
   group: InspectorFormGroup;
   nested?: boolean;
   assetActions?: InspectorAssetActionResolver;
+  locale: 'en' | 'zh';
 }) {
   const [open, setOpen] = useState(true);
   const category = group.category === 'all' ? 'all' : group.category === 'capability' ? 'cap' : 'type';
@@ -192,12 +194,12 @@ function FormGroup({
           {group.fields.map((field) => (
             <div className={`fx-inspector-form__row${field.kind === 'angle3' ? ' fx-inspector-form__row--angle' : ''}`} key={field.key} data-testid={`inspector-form-field-${group.key}-${field.key}`}>
               <PropertyRow className={`fx-inspector-form__property${field.kind === 'angle3' ? ' fx-inspector-form__property--angle' : ''}`} label={<span title={field.key}>{field.label}</span>}>
-                <InspectorFieldControl field={field} {...(assetActions ? { assetActions } : {})} />
+                <InspectorFieldControl field={field} locale={locale} {...(assetActions ? { assetActions } : {})} />
               </PropertyRow>
             </div>
           ))}
           {(group.groups ?? []).map((child) => (
-            <FormGroup group={child} key={child.key} nested {...(assetActions ? { assetActions } : {})} />
+            <FormGroup group={child} key={child.key} locale={locale} nested {...(assetActions ? { assetActions } : {})} />
           ))}
         </div>
       </CollapsibleSection>
@@ -212,6 +214,7 @@ export function InspectorForm({
   className,
   empty,
   assetActions,
+  locale = 'en',
 }: {
   groups?: readonly InspectorFormGroup[];
   inspection?: unknown;
@@ -219,6 +222,7 @@ export function InspectorForm({
   className?: string;
   empty?: ReactNode;
   assetActions?: InspectorAssetActionResolver;
+  locale?: 'en' | 'zh';
 }) {
   const resolved = groups ?? inspectorFormGroupsFromInspection(
     inspection,
@@ -228,7 +232,7 @@ export function InspectorForm({
   return (
     <div className={['fx-inspector-form', className].filter(Boolean).join(' ')} data-view-readonly="true">
       {resolved.map((group) => (
-        <FormGroup group={group} key={group.key} {...(assetActions ? { assetActions } : {})} />
+        <FormGroup group={group} key={group.key} locale={locale} {...(assetActions ? { assetActions } : {})} />
       ))}
     </div>
   );

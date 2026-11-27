@@ -44,13 +44,14 @@ it('recycles retired windows through churn without moving a surviving command', 
         source,
         batches.map((source) => ({
           source,
+          origin: source,
           lod: undefined,
           fact: undefined,
           mesh: undefined,
           meshContentEpoch: undefined,
         })),
       ),
-    );
+    ).active;
   };
   const old = update(all);
   const last = all[63];

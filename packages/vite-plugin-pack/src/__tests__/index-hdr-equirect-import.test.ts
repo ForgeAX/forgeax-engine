@@ -7,6 +7,7 @@ import { decodeCatalogWire } from '@forgeax/engine-pack';
 import type { PackIndexEntry } from '@forgeax/engine-types';
 import { build as viteBuild } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { metaFixture } from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { pluginPack } from '../index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -37,19 +38,17 @@ beforeAll(async () => {
   await writeFile(join(assetsDir, 'newport_loft.hdr'), await readFile(fixtureHdr));
   await writeFile(
     join(assetsDir, 'newport_loft.hdr.meta.json'),
-    JSON.stringify({
-      schemaVersion: '1.0.0',
-      kind: 'external-asset-package',
-      importer: 'image',
-      source: 'newport_loft.hdr',
-      importSettings: {
+    metaFixture(
+      'newport_loft.hdr',
+      'image',
+      [{ guid: hdrGuid, sourceIndex: 0, kind: 'equirect' }],
+      {
         colorSpace: 'linear',
         mipmap: 'auto',
         addressMode: 'clamp-to-edge',
         filterMode: 'linear',
       },
-      subAssets: [{ guid: hdrGuid, sourceIndex: 0, kind: 'equirect' }],
-    }),
+    ),
   );
   await viteBuild({
     root: tmpRoot,
@@ -98,6 +97,6 @@ describe('production imported-output identity', () => {
   it('keeps source and package locators on the published row', () => {
     const row = importedRow();
     expect(row.sourcePath).toMatch(/assets\/newport_loft\.hdr$/);
-    expect(row.packageUrl).toMatch(/\.pack(?:-[^/]+)?\.json$/);
+    expect(row.packageUrl).toMatch(/\.runtime-pack\.json$/);
   });
 });

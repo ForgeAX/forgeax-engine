@@ -1,10 +1,149 @@
+import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { err, type MaterialAsset, ok } from '@forgeax/engine-types';
-import { describe, expect, test } from 'vitest';
-import { AssetRecords } from '../internal/asset-records';
+import { describe, expect, test, vi } from 'vitest';
+import { assetDataBytes } from '../internal/asset-data';
+import { AssetRecords, type MeshPresentation } from '../internal/asset-records';
 
 const material = (roughness = 1): MaterialAsset => ({ kind: 'material', values: { roughness } });
 
 describe('owned runtime asset content', () => {
+  test('captures changed fields once and refuses oversized binary storage before copying it', () => {
+    const records = new AssetRecords({ maxBytes: 512 });
+    const handle = records.create('material', material()).unwrap();
+    const observer = records.observe().unwrap();
+    const rgb = [0, 1, 0];
+    let reads = 0;
+    const input = new Proxy(
+      { rgb },
+      {
+        getOwnPropertyDescriptor(target, key) {
+          const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+          if (key === 'rgb' && descriptor) descriptor.value = ++reads === 1 ? rgb : [1, 0, 0];
+          return descriptor;
+        },
+      },
+    );
+    records.update(handle, input, { field: 'values' }).unwrap();
+    rgb.fill(9);
+    expect(reads).toBe(1);
+    const accepted = { kind: 'material', values: { roughness: 1, rgb: [0, 1, 0] } };
+    expect(records.read(handle).unwrap()).toEqual(accepted);
+    expect(records.inspect().bytes).toBe(assetDataBytes(accepted));
+    observer.read().unwrap().accept();
+    const before = records.inspect();
+    const buffer = new ArrayBuffer(512);
+    const copy = vi.spyOn(buffer, 'slice');
+    expect(records.update(handle, { blob: buffer }, { field: 'values' })).toMatchObject({
+      ok: false,
+      error: { code: 'asset-budget-exceeded' },
+    });
+    expect(copy).not.toHaveBeenCalled();
+    expect(records.inspect()).toEqual(before);
+    expect(observer.read().unwrap().changes).toHaveLength(0);
+    observer.dispose();
+    records.dispose();
+  });
+
+  test('value edits transfer the existing graph holds through commit and discard', () => {
+    const records = new AssetRecords();
+    const shared = records.create('texture', {}).unwrap();
+    const owners = Array.from({ length: 24 }, () =>
+      records.create('material', material(), [shared]).unwrap(),
+    );
+    const first = owners[0];
+    if (first === undefined) throw new Error('fixture requires a material');
+    records.release(shared).unwrap();
+    const edit = () => {
+      for (const owner of owners)
+        records.update(owner, { roughness: 0.25 }, { field: 'values' }).unwrap();
+      expect(records.refcount(shared)).toBe(owners.length);
+    };
+    const observer = records.observe().unwrap();
+    const before = records.inspect();
+    const aborted = records.adoptClosure(() => {
+      edit();
+      // This rewired texture would create a cycle through a value-only material.
+      return records.adopt('texture', {}, [first], undefined, shared);
+    });
+    expect(aborted).toMatchObject({ ok: false, error: { code: 'asset-reference-invalid' } });
+    expect(records.inspect()).toEqual(before);
+    expect(observer.read().unwrap().changes).toHaveLength(0);
+    expect(records.read(first).unwrap()).toEqual(material());
+    records
+      .adoptClosure(() => {
+        edit();
+        return ok(undefined);
+      })
+      .unwrap();
+    expect(observer.read().unwrap().changes).toHaveLength(owners.length);
+    for (const owner of owners) {
+      expect(records.read(owner).unwrap()).toEqual(material(0.25));
+      records.release(owner).unwrap();
+    }
+    expect(records.inspect().assets).toBe(0);
+    observer.dispose();
+  });
+
+  test('shares the draw description until the same Mesh identity adopts another revision', () => {
+    const records = new AssetRecords();
+    const first = createBoxGeometry(2, 1, 1).unwrap();
+    const handle = records.create('mesh', first).unwrap();
+    const description = records.meshDraw(handle).unwrap();
+    expect(records.meshDraw(handle).unwrap()).toBe(description);
+    const replacement = createBoxGeometry(4, 1, 1).unwrap();
+    expect(records.adopt('mesh', replacement, [], undefined, handle).unwrap()).toBe(handle);
+    const current = records.meshDraw(handle).unwrap();
+    expect(current).not.toBe(description);
+    expect(current.aabb).toEqual(replacement.aabb);
+    expect(description.aabb).toEqual(first.aabb);
+    expect(records.read(handle).unwrap()).toEqual(replacement);
+    records.dispose();
+  });
+
+  test('preserves Render recovery after a failed CPU admission and rejects a later stale restore', () => {
+    const first = createBoxGeometry(2, 1, 1).unwrap();
+    const maxBytes = 2 * assetDataBytes(first);
+    const records = new AssetRecords({ maxBytes });
+    records.bindMeshPresenter(async () => err('render-preparation-failed'));
+    const handle = records.create('mesh', first).unwrap();
+    const revision = records.version(handle).unwrap();
+    const retired = vi.fn();
+    const presented: MeshPresentation = {
+      bytes: 1,
+      storage: 'publication',
+      async read() {
+        return first;
+      },
+      lease: { isCurrent: () => true, release: retired },
+      release() {
+        this.lease.release();
+      },
+    };
+    expect(records.retainMeshPresentation(handle, revision, presented)).toBe(true);
+    const occupied = records
+      .create('texture', new Uint8Array(maxBytes - records.inspect().bytes))
+      .unwrap();
+    expect(records.requireMeshCpu(handle)).toBe(presented);
+    expect(records.restoreMeshCpu(handle, presented, first)).toMatchObject({
+      ok: false,
+      error: { code: 'asset-budget-exceeded' },
+    });
+    const nextLease = { isCurrent: () => true, release: vi.fn() };
+    expect(records.rebindMeshPresentation(handle, presented, nextLease)).toBe(true);
+    expect(retired).toHaveBeenCalledTimes(1);
+    expect(records.version(handle).unwrap()).toBe(revision);
+    records.release(occupied).unwrap();
+    const replacement = createBoxGeometry(4, 1, 1).unwrap();
+    records.adopt('mesh', replacement, [], undefined, handle).unwrap();
+    expect(records.restoreMeshCpu(handle, presented, first)).toMatchObject({
+      ok: false,
+      error: { code: 'asset-write-conflict' },
+    });
+    expect(records.read(handle).unwrap()).toEqual(replacement);
+    expect(nextLease.release).toHaveBeenCalledTimes(1);
+    records.dispose();
+  });
+
   test('checks fixed pin currentness against its full dependency closure', () => {
     const records = new AssetRecords({ maxSnapshots: 1 });
     const dependency = records.create('material', material(0.2)).unwrap();
@@ -146,6 +285,30 @@ describe('owned runtime asset content', () => {
     observer.dispose();
   });
 
+  test('commits only the patched field and discards an aborted field candidate', () => {
+    const records = new AssetRecords();
+    const initial = { kind: 'material', values: { rgb: [1, 1, 1] }, passes: ['forward'] };
+    const handle = records.create('material', initial).unwrap();
+    const observer = records.observe().unwrap();
+    const before = records.inspect();
+    expect(() =>
+      records.adoptClosure(() => {
+        records.update(handle, { rgb: [0, 1, 0] }, { field: 'values' }).unwrap();
+        expect(records.read(handle).unwrap()).toEqual({ ...initial, values: { rgb: [0, 1, 0] } });
+        throw new Error('abort candidate');
+      }),
+    ).toThrow('abort candidate');
+    expect(records.inspect()).toEqual(before);
+    expect(records.read(handle).unwrap()).toEqual(initial);
+    expect(observer.read().unwrap().changes).toHaveLength(0);
+    records
+      .adoptClosure(() => records.update(handle, { rgb: [0, 1, 0] }, { field: 'values' }))
+      .unwrap();
+    expect(records.read(handle).unwrap()).toEqual({ ...initial, values: { rgb: [0, 1, 0] } });
+    expect(observer.read().unwrap().changes[0]?.fields).toEqual(['values']);
+    observer.dispose();
+  });
+
   test('rejects partial, duplicate and reentrant updates during closure preparation', () => {
     const records = new AssetRecords();
     const root = records.create('material', material()).unwrap();
@@ -189,6 +352,101 @@ describe('owned runtime asset content', () => {
     records.adopt('custom', 'after', [], undefined, handle).unwrap();
     expect(records.read(handle).unwrap()).toBe('after');
     records.release(handle).unwrap();
+  });
+
+  test('acceptance reads and retains candidates but cannot mutate the already validated graph', () => {
+    const records = new AssetRecords();
+    const a = records.create('material', material()).unwrap();
+    const b = records.create('material', material()).unwrap();
+    const observer = records.observe().unwrap();
+    records
+      .adoptPreparedClosure(
+        (candidate) => candidate.adopt('material', material(0.2), [b], undefined, a),
+        () => {
+          expect(records.read(a).unwrap()).toEqual(material(0.2));
+          // Graph validation has finished. A second replacement here would
+          // introduce a cycle after that validation, before publication.
+          expect(records.adopt('material', material(0.3), [a], undefined, b)).toMatchObject({
+            ok: false,
+            error: { code: 'asset-write-conflict' },
+          });
+          expect(records.create('material', material())).toMatchObject({
+            ok: false,
+            error: { code: 'asset-write-conflict' },
+          });
+          expect(records.update(b, { ...material(0.4) }, { replace: true })).toMatchObject({
+            ok: false,
+            error: { code: 'asset-write-conflict' },
+          });
+          expect(observer.read()).toMatchObject({
+            ok: false,
+            error: { code: 'asset-write-conflict' },
+          });
+          records.retain(a).unwrap();
+          records.retain(b).unwrap();
+          records.release(b).unwrap();
+        },
+      )
+      .unwrap();
+    expect(records.read(b).unwrap()).toEqual(material());
+    expect(records.refcount(a)).toBe(2);
+    expect(records.refcount(b)).toBe(2);
+    expect(
+      observer
+        .read()
+        .unwrap()
+        .changes.map((change) => change.handle),
+    ).toEqual([a]);
+    records.release(a).unwrap();
+    records.release(a).unwrap();
+    records.release(b).unwrap();
+    expect(records.inspect().assets).toBe(0);
+    observer.dispose();
+  });
+
+  test('closes the acceptance mutation fence on rejection before caller consumer cleanup', () => {
+    const records = new AssetRecords();
+    const a = records.create('material', material()).unwrap();
+    const before = records.inspect();
+    const rejected = new Error('consumer rejected');
+    expect(() =>
+      records.adoptPreparedClosure(
+        (candidate) => candidate.adopt('material', material(0.2), [], undefined, a),
+        () => {
+          records.retain(a).unwrap();
+          throw rejected;
+        },
+      ),
+    ).toThrow(rejected);
+    expect(records.read(a).unwrap()).toEqual(material());
+    expect(records.refcount(a)).toBe(2);
+    records.release(a).unwrap(); // Caller-owned consumer cleanup after unwind.
+    expect(records.inspect()).toEqual(before);
+    records.update(a, { ...material(0.3) }).unwrap();
+    records.release(a).unwrap();
+    expect(records.inspect().assets).toBe(0);
+  });
+
+  test('retires a rejected prepared closure when its last provisional consumer releases', () => {
+    const records = new AssetRecords();
+    let staged = 0;
+    expect(() =>
+      records.adoptPreparedClosure(
+        (candidate) => {
+          const handle = candidate.adopt('texture', new Uint8Array([1]));
+          staged = handle.unwrap();
+          return handle;
+        },
+        () => {
+          records.retain(staged).unwrap();
+          throw new Error('consumer rejected');
+        },
+      ),
+    ).toThrow('consumer rejected');
+    expect(records.validate(staged).ok).toBe(false);
+    expect(records.inspect()).toMatchObject({ assets: 0, adoptionAssets: 1 });
+    records.release(staged).unwrap();
+    expect(records.inspect()).toMatchObject({ assets: 0, adoptionAssets: 0, adoptionBytes: 0 });
   });
 
   test('replaces existing source identities atomically, retaining fixed closures and dependency holds', () => {

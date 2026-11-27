@@ -43,7 +43,7 @@ async function host(renderPath) {
   const fixture = runInNewContext(
     `${javascript}\n({ createTransmissionHost, selectTransmissionProfile })`,
     {
-      DEFAULT_STANDARD_PROFILE: { renderPath: 'forward', ssao: true },
+      DEFAULT_STANDARD_PROFILE: { renderPath: 'forward', ambientOcclusion: { enabled: true } },
       navigator: { gpu },
       nativeDeviceRequests: 0,
       WIDTH: 32,

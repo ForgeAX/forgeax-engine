@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
-import { readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { createRequire, isBuiltin } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { PackProgramImport } from '@forgeax/engine-pack/runtime';
 import { resolve as resolveImport } from 'import-meta-resolve';
-import { readEngineBinding } from '../engine-binding.js';
+import { localEnginePackageRoot } from '../engine-binding.js';
 import { nativeModuleIdentity, resolveNativeModuleKey } from './native-module-identity.js';
 
 export const PACK_PROGRAM_ENGINE_IMPORTS = [
@@ -69,20 +69,21 @@ export async function createNodePackProgramImports(
 }
 
 async function selectProgramEngine(root: string, projectManifest: string) {
-  const binding = await readEngineBinding(root);
-  if (!binding.ok) {
-    throw Object.assign(new Error(`${binding.error.code}: ${binding.error.hint}`), binding.error);
-  }
-  const manifest = binding.value
-    ? await realpath(resolve(binding.value.path, 'packages/engine/package.json'))
-    : createRequire(projectManifest).resolve('@forgeax/engine/package.json');
+  const packageRoot = await localEnginePackageRoot(root);
+  const manifest =
+    packageRoot === undefined
+      ? createRequire(projectManifest).resolve('@forgeax/engine/package.json')
+      : resolve(packageRoot, 'package.json');
   const parent = pathToFileURL(manifest).href;
-  if (binding.value && resolveImport('@forgeax/engine/package.json', parent) !== parent) {
+  if (
+    packageRoot !== undefined &&
+    resolveImport('@forgeax/engine/package.json', parent) !== parent
+  ) {
     throw new TypeError(`engine-local-package-invalid: ${manifest}`);
   }
   return {
     parent,
-    local: binding.value !== null,
+    local: packageRoot !== undefined,
     identity: await runtimeProgramIdentity(manifest),
   };
 }
@@ -110,20 +111,16 @@ async function resolveProgramImport(
   specifier: string,
   selectEngine: () => ReturnType<typeof selectProgramEngine>,
 ): Promise<PackProgramImport> {
-  if (isBuiltin(specifier)) {
-    const url = specifier.startsWith('node:') ? specifier : `node:${specifier}`;
-    return { url, identity: await nativeModuleIdentity(url) };
-  }
-  if (specifier.startsWith('npm:')) {
-    const url = await resolveNativeModuleKey(root, specifier);
-    return { url, identity: await nativeModuleIdentity(url) };
-  }
-  if (specifier === '@deepseek-ai/cordis') {
-    const url = pathToFileURL(
+  let nativeUrl: string | undefined;
+  if (isBuiltin(specifier))
+    nativeUrl = specifier.startsWith('node:') ? specifier : `node:${specifier}`;
+  else if (specifier.startsWith('npm:')) nativeUrl = await resolveNativeModuleKey(root, specifier);
+  else if (specifier === '@deepseek-ai/cordis')
+    nativeUrl = pathToFileURL(
       createRequire(import.meta.resolve('@forgeax/engine-plugin')).resolve(specifier),
     ).href;
-    return { url, identity: await nativeModuleIdentity(url) };
-  }
+  if (nativeUrl !== undefined)
+    return { url: nativeUrl, identity: await nativeModuleIdentity(nativeUrl) };
   if (
     specifier === '@forgeax/engine' ||
     specifier.startsWith('@forgeax/engine/') ||

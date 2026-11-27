@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { resolveReflectionProbeBinding } from '../record/frame-lighting';
 import { referencedReflectionProbeIndices } from '../record/reflection-probe-material';
 import { buildReflectionProbeTable } from '../reflection/gpu-table';
 
@@ -27,20 +26,22 @@ describe('Standard scene reflection probe binding', () => {
     selections.clear();
     expect([...referencedReflectionProbeIndices({ table, selections })]).toEqual([]);
   });
-  it('maps a selected scene probe to both Standard lanes', () => {
-    const selection = {
-      kind: 'probe' as const,
-      entityKey: 7,
-      normalizedDistance: 0.25,
-    };
-    expect(resolveReflectionProbeBinding(selection)).toEqual({ probeIndex: 7, useSkylight: false });
-  });
-
-  it('uses Skylight without a per-material probe identity', () => {
-    const selection = { kind: 'skylight' as const };
-    expect(resolveReflectionProbeBinding(selection)).toEqual({
-      probeIndex: undefined,
-      useSkylight: true,
-    });
+  it('uses the default environment when the selected capture has no published row', () => {
+    const table = buildReflectionProbeTable([
+      {
+        index: 7,
+        entityKey: 107,
+        primitiveKey: '107',
+        center: [0, 0, 0],
+        halfExtents: [1, 1, 1],
+        intensity: 1,
+        generation: 1,
+      },
+    ]);
+    const selections = new Map([
+      ['receiver-a', { kind: 'probe' as const, entityKey: 7, normalizedDistance: 0 }],
+      ['receiver-b', { kind: 'skylight' as const }],
+    ]);
+    expect([...referencedReflectionProbeIndices({ table, selections })]).toEqual([]);
   });
 });

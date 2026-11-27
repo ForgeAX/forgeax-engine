@@ -1,7 +1,7 @@
 import { shaderManifestUrl as createShaderManifestUrl } from '../../../../../../packages/runtime/src/__tests__/shader-manifest-url.fixture';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { readbackTexturePixels } from '../../../../../../packages/rhi-debug/src/readback';
 import { describe, expect, it } from 'vitest';
@@ -13,7 +13,7 @@ import { createDawnSurface, makeWorld } from '../gpu-capture';
 const dawnReady = typeof navigator !== 'undefined' && navigator.gpu !== undefined;
 const requiredParityRun = process.env.FORGEAX_PARITY_REQUIRED === '1';
 const cases = [ldrCase, hdrCase] as unknown as readonly SceneCase[];
-const manifest = await buildEngineShaderManifest();
+const manifest = await buildEngineShaderTemplateManifest();
 const manifestUrl = createShaderManifestUrl(manifest);
 
 function hashBytes(bytes: Uint8Array): string {

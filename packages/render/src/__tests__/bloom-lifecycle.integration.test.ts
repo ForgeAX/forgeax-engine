@@ -26,7 +26,7 @@ function build(bloom: 'off' | 'on', tonemap: 'none' | 'aces-filmic' = 'aces-film
   const topology: RenderPipelineTopology = {
     pipelineId: STANDARD_PIPELINE_ID,
     standardProfile: DEFAULT_STANDARD_PROFILE,
-    config: { ssao: { enabled: false } },
+    config: { ambientOcclusion: { enabled: false } },
     surface: {
       width: 320,
       height: 180,
@@ -109,7 +109,7 @@ describe('Standard Bloom lifecycle contract', () => {
     const on = bloomSummary(build('on'));
     const off = bloomSummary(build('off'));
     const recovered = bloomSummary(build('on'));
-    expect(on.passes).toHaveLength(11);
+    expect(on.passes).toHaveLength(15);
     expect(on.resources.length).toBeGreaterThan(0);
     expect(off).toEqual({ passes: [], resources: [] });
     expect(recovered).toEqual(on);
@@ -119,16 +119,20 @@ describe('Standard Bloom lifecycle contract', () => {
     const names = build('on').passes.map((pass) => pass.name);
     const order = [
       'forward',
-      'bloom-horizontal-0',
-      'bloom-vertical-0',
-      'bloom-horizontal-1',
-      'bloom-vertical-1',
-      'bloom-horizontal-2',
-      'bloom-vertical-2',
-      'bloom-horizontal-3',
-      'bloom-vertical-3',
+      'bloom-downsample-1',
+      'bloom-downsample-2',
+      'bloom-downsample-3',
+      'bloom-downsample-4',
       'bloom-horizontal-4',
       'bloom-vertical-4',
+      'bloom-horizontal-3',
+      'bloom-vertical-3',
+      'bloom-horizontal-2',
+      'bloom-vertical-2',
+      'bloom-horizontal-1',
+      'bloom-vertical-1',
+      'bloom-horizontal-0',
+      'bloom-vertical-0',
       'bloom-composite',
       'output-transform',
       'fxaa',
@@ -143,7 +147,7 @@ describe('Standard Bloom lifecycle contract', () => {
 
   it('creates HDR and Bloom independently of tone mapping', () => {
     const info = build('on', 'none');
-    expect(bloomSummary(info).passes).toHaveLength(11);
+    expect(bloomSummary(info).passes).toHaveLength(15);
     expect(
       info.resources.some(
         (resource) =>

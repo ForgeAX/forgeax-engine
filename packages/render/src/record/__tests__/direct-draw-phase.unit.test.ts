@@ -2,6 +2,7 @@ import { mat4, vec3 } from '@forgeax/engine-math';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { assert, expect, it, vi } from 'vitest';
 import type { MeshGpuHandles } from '../../device/gpu-residency';
+import { MeshChanges } from '../../device/mesh-changes';
 import type { BatchExecution } from '../../gpu-driven/batch-execution';
 import { BatchTopology, type GpuDrivenBatchBinding } from '../../gpu-driven/batch-topology';
 import type { BatchExecutions } from '../../gpu-driven/material-artifacts';
@@ -103,7 +104,7 @@ function directDrawRows(
     mesh: MeshGpuHandles,
     material: import('../../render-system-extract').MaterialSnapshot,
   ) => MeshGpuHandles,
-): readonly ValidatedRenderable[] {
+): FrameList<ValidatedRenderable> {
   return drawn(new DirectDrawPhase(), {
     scene,
     selection: [],
@@ -132,7 +133,7 @@ function setup(sources: FrameList<RenderableSnapshot>) {
   topology.rebuild(scene.slotsSnapshot());
   const executions = new Map<GpuDrivenBatchBinding, BatchExecutions>();
   const meshes = new Map<GpuDrivenBatchBinding, MeshGpuHandles>();
-  for (const batch of topology.query(topology.sourcePlan(), undefined).batches) {
+  for (const batch of topology.query(topology.sourcePlan(), undefined).active.batches) {
     assert(batch.binding);
     executions.set(batch.binding, { forward: direct, shadow: direct });
     meshes.set(batch.binding, mesh);
@@ -145,12 +146,62 @@ function setup(sources: FrameList<RenderableSnapshot>) {
   return { scene, topology, executions, meshes, select };
 }
 
+it('joins each fixed shadow candidate once and projects only participating rows', () => {
+  const f = setup([
+    source(10),
+    { ...source(11), shadowCaster: false },
+    { ...source(12), authorVisible: false },
+  ]);
+  const fixed = f.scene.drawFrame(new MaterialFrame(undefined).with(material));
+  const locate = vi.fn(fixed.locate);
+  const project = vi.fn(fixed.project);
+  const indexed = vi.fn(fixed);
+  const hidden = f.scene.slotsSnapshot().lookup(12);
+  assert(hidden);
+  const scene = {
+    plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
+    slotAt: locate,
+    drawSnapshotAt: Object.assign(indexed, { locate, project }),
+    unbatchedSlots: new Set([...f.topology.unbatchedSlots, hidden.slot]),
+  };
+  const input: DirectDrawInput = {
+    scene,
+    selection: [],
+    select: f.select,
+    meshes: f.meshes,
+    sourceScope,
+    shadow: true,
+    materials: undefined,
+    prepareUnbatched: () => [],
+    viewDraws: [],
+  };
+  const ordinary = drawn(new DirectDrawPhase(), input);
+  expect([...ordinary.rows].map((row) => row.source.entityKey)).toEqual([10]);
+  expect(project.mock.calls.map(([row]) => row.entityKey)).toEqual([10]);
+  expect(indexed).not.toHaveBeenCalled();
+  expect(locate).toHaveBeenCalledTimes(3);
+  const seen: number[] = [];
+  drawn(new DirectDrawPhase(), {
+    ...input,
+    visible: (row) => {
+      seen.push(row.entityKey);
+      return true;
+    },
+  });
+  expect(seen.sort()).toEqual([10, 11, 12]);
+  project.mockClear();
+  const borrowed = { ...scene, slotAt: (slot: number) => locate(slot) };
+  drawn(new DirectDrawPhase(), { ...input, scene: borrowed });
+  expect(project).not.toHaveBeenCalled();
+  expect(indexed).toHaveBeenCalledTimes(3);
+});
+
 it.each([1, 10000, 50000])('visits only direct members beside %i GPU instances', (count) => {
   const f = setup([
     ...Array.from({ length: count }, (_, index) => source(index)),
     source(count, [2, 1]),
   ]);
-  const plan = f.topology.query(f.topology.sourcePlan(), undefined);
+  const plan = f.topology.query(f.topology.sourcePlan(), undefined).active;
   const batches = plan.batches.map((batch) => {
     assert(batch.binding);
     if (batch.binding.drawItemIndex === 0) {
@@ -183,24 +234,106 @@ it.each([1, 10000, 50000])('visits only direct members beside %i GPU instances',
     unbatched,
   );
   expect(rows).toHaveLength(1);
-  expect(rows[0]?.source.entityKey).toBe(count);
-  expect(rows[0]?.submeshIndices).toEqual([2, 1]);
+  expect(rows.at(0)?.source.entityKey).toBe(count);
+  expect(rows.at(0)?.submeshIndices).toEqual([2, 1]);
   expect(slotAt).toHaveBeenCalledTimes(1);
   expect(unbatched).not.toHaveBeenCalled();
+});
+
+it('keeps the ordered submesh roster with its live bindings while every pose moves', () => {
+  const sources = [source(7, [2, 1]), source(9, [1])];
+  const f = setup(sources);
+  const phase = new DirectDrawPhase();
+  const plan = f.topology.query(f.topology.sourcePlan(), undefined).active;
+  for (const batch of plan.batches) {
+    assert(batch.binding);
+    f.meshes.set(batch.binding, mesh);
+  }
+  const excluded = new Set<number>();
+  let selection = 0;
+  const input = (): DirectDrawInput => ({
+    scene: {
+      plan,
+      slotAt: f.scene.slotAt,
+      drawSnapshotAt: f.scene.drawSnapshotAt,
+      unbatchedSlots: f.topology.unbatchedSlots,
+    },
+    selection: [selection],
+    select: (binding) =>
+      excluded.has(binding.drawItemIndex) ? undefined : binding.material.snapshot,
+    meshes: f.meshes,
+    sourceScope,
+    shadow: false,
+    materials: undefined,
+    prepareUnbatched: () => [],
+    viewDraws: [],
+  });
+  const rows = (output: ReturnType<DirectDrawPhase['emit']>) =>
+    new Map(Array.from(output.rows, (row) => [row.source.entityKey, row] as const));
+  const held = rows(drawn(phase, input()));
+  const firstMeshDomain = phase.issuedMeshDomain();
+  expect(held.get(7)?.submeshIndices).toEqual([2, 1]);
+  for (let frame = 1; frame <= 18; frame++) {
+    const world = mat4.identity(mat4.create());
+    world[12] = frame;
+    f.scene.apply(
+      [],
+      [
+        {
+          entities: Uint32Array.of(7, 9),
+          worlds: Float32Array.of(...world, ...world),
+        },
+      ],
+    );
+    const current = rows(drawn(phase, input()));
+    expect(phase.issuedMeshDomain()).toBe(firstMeshDomain);
+    for (const value of sources) {
+      const draw = current.get(value.entityKey);
+      expect(draw?.source.transform.world[12]).toBe(frame);
+      expect(draw?.submeshIndices).toBe(held.get(value.entityKey)?.submeshIndices);
+    }
+  }
+  excluded.add(2);
+  selection++;
+  const shrunk = rows(drawn(phase, input()));
+  expect(shrunk.get(9)?.submeshIndices).toBe(held.get(9)?.submeshIndices);
+  expect(shrunk.get(7)?.submeshIndices).toEqual([1]);
+  expect(held.get(7)?.source.transform.world[12]).toBe(0);
+  expect(held.get(7)?.submeshIndices).toEqual([2, 1]);
+  excluded.clear();
+  selection++;
+  const restored = rows(drawn(phase, input()));
+  expect(restored.get(7)?.submeshIndices).toEqual([1, 2]);
+  expect(shrunk.get(7)?.submeshIndices).toEqual([1]);
+  const mixed = new Map(f.meshes);
+  for (const [binding, value] of mixed)
+    if (binding.drawItemIndex === 2) mixed.set(binding, { ...value });
+  expect(() => drawn(phase, { ...input(), meshes: mixed })).toThrow('one resident geometry');
+  const repaired = rows(drawn(phase, input()));
+  expect(repaired.get(7)?.submeshIndices).toEqual([1, 2]);
+  expect(repaired.get(7)?.mesh).toBe(mesh);
+  const beforeReplacement = phase.issuedMeshDomain();
+  const changeToken = new MeshChanges().create();
+  const updated = new Map(f.meshes);
+  const replacement = { ...mesh, changeToken };
+  for (const binding of updated.keys()) updated.set(binding, replacement);
+  const replaced = drawn(phase, { ...input(), meshes: updated });
+  expect(Array.from(replaced.rows, (row) => row.mesh.changeToken)).toContain(changeToken);
+  expect(phase.issuedMeshDomain()).not.toBe(beforeReplacement);
 });
 
 it('uses fixed executions, preserves source instances and rejects recycled slots', () => {
   const value = source(7);
   const f = setup([value]);
   const state = {
-    plan: f.topology.query(f.topology.sourcePlan(), undefined),
+    plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
     slotAt: f.scene.slotAt,
     drawSnapshotAt: f.scene.drawSnapshotAt,
     unbatchedSlots: f.topology.unbatchedSlots,
   };
   material.adopt({ ...material.snapshot, passes: [] });
   expect(
-    directDrawRows(state, f.select, f.meshes, sourceScope, 'shadow', () => [])[0]?.source,
+    directDrawRows(state, f.select, f.meshes, sourceScope, 'shadow', () => []).at(0)?.source,
   ).toBe(f.scene.slot(7)?.snapshot);
   f.scene.apply([
     { kind: 'remove', entityKey: 7 },
@@ -214,13 +347,13 @@ it('uses fixed executions, preserves source instances and rejects recycled slots
 it('publishes unbatched additions/removals even when GPU plan revision does not change', () => {
   const f = setup([]);
   const before = f.topology.unbatchedSlots;
-  const revision = f.topology.query(f.topology.sourcePlan(), undefined).revision;
+  const revision = f.topology.query(f.topology.sourcePlan(), undefined).active.revision;
   const value = { ...source(3), gpuDrivenDraws: [] };
   f.topology.apply(f.scene.apply([{ kind: 'update', entityKey: 3, snapshot: value }]));
   const added = f.topology.unbatchedSlots;
   expect([...before]).toEqual([]);
   expect([...added]).toEqual([f.scene.slot(3)?.slot]);
-  expect(f.topology.query(f.topology.sourcePlan(), undefined).revision).toBe(revision);
+  expect(f.topology.query(f.topology.sourcePlan(), undefined).active.revision).toBe(revision);
   expect(f.topology.unbatchedSlots).toBe(added);
   f.topology.apply(f.scene.apply([{ kind: 'remove', entityKey: 3 }]));
   expect([...f.topology.unbatchedSlots]).toEqual([]);
@@ -255,7 +388,7 @@ it('prepares only unbatched geometry and keeps Terrain sections distinct', () =>
   );
   const rows = directDrawRows(
     {
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       slotAt: f.scene.slotAt,
       drawSnapshotAt: f.scene.drawSnapshotAt,
       unbatchedSlots: f.topology.unbatchedSlots,
@@ -318,7 +451,7 @@ it.each([
   f.topology.apply(f.scene.apply([{ kind: 'update', entityKey: 7, snapshot: next }]));
   const shadow = directDrawRows(
     {
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       slotAt: f.scene.slotAt,
       drawSnapshotAt: f.scene.drawSnapshotAt,
       unbatchedSlots: f.topology.unbatchedSlots,
@@ -328,7 +461,7 @@ it.each([
     sourceScope,
     'shadow',
     () => [],
-  )[0];
+  ).at(0);
   assert(shadow);
   const mainSource = f.scene
     .materializeTemporal({ hits: 0, misses: 0 }, new MaterialFrame(undefined).with(first.material))
@@ -353,7 +486,7 @@ it('does not revive a source that the Scene drawable owner withheld', () => {
   const prepare = vi.fn(() => []);
   const rows = directDrawRows(
     {
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       slotAt: f.scene.slotAt,
       drawSnapshotAt: () => undefined,
       unbatchedSlots: f.topology.unbatchedSlots,
@@ -381,7 +514,7 @@ it('prepares nine-slice geometry once per shared direct binding from its fixed m
     passes: [{ name: 'Forward', program: { module: 'forgeax_material::sprite-lit' } }],
     paramSnapshot: { slicesAndMode: [0.1, 0.1, 0.1, 0.1] },
   };
-  for (const batch of f.topology.query(f.topology.sourcePlan(), undefined).batches) {
+  for (const batch of f.topology.query(f.topology.sourcePlan(), undefined).active.batches) {
     assert(batch.binding);
     f.executions.set(batch.binding, { forward: direct, shadow: { ...direct, material: fixed } });
     f.meshes.set(batch.binding, base);
@@ -389,7 +522,7 @@ it('prepares nine-slice geometry once per shared direct binding from its fixed m
   const prepare = vi.fn(() => sliced);
   const rows = directDrawRows(
     {
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       slotAt: f.scene.slotAt,
       drawSnapshotAt: f.scene.drawSnapshotAt,
       unbatchedSlots: f.topology.unbatchedSlots,
@@ -432,7 +565,7 @@ it('records native view geometry without re-admitting its non-drawing source roo
   );
   const rows = directDrawRows(
     {
-      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
       slotAt: f.scene.slotAt,
       drawSnapshotAt: f.scene.drawSnapshotAt,
       unbatchedSlots: f.topology.unbatchedSlots,
@@ -448,7 +581,10 @@ it('records native view geometry without re-admitting its non-drawing source roo
   expect(prepare).toHaveBeenCalledWith([draw]);
 });
 
-it('reprojects retained instance LOD runs when the camera moves without changing geometry bins', () => {
+it.each([
+  'external',
+  'native',
+] as const)('reprojects %s instance LOD runs as the camera changes', (mode) => {
   const snapshot = source(7);
   const transforms = new Float32Array(32);
   transforms.set(mat4.identity(mat4.create()));
@@ -471,13 +607,14 @@ it('reprojects retained instance LOD runs when the camera moves without changing
   for (const binding of f.meshes.keys()) f.meshes.set(binding, resident);
   const phase = new DirectDrawPhase();
   const state = {
-    plan: f.topology.query(f.topology.sourcePlan(), undefined),
+    plan: f.topology.query(f.topology.sourcePlan(), undefined).active,
     slotAt: f.scene.slotAt,
     drawSnapshotAt: f.scene.drawSnapshotAt,
     unbatchedSlots: f.topology.unbatchedSlots,
   };
-  const query = (z: number) =>
-    drawn(phase, {
+  const query = (z: number) => {
+    const camera = { ...makeZeroCameraFallbackSnapshot(), position: vec3.create(0, 0, z) };
+    return drawn(phase, {
       scene: state,
       selection: [],
       select: f.select,
@@ -488,19 +625,19 @@ it('reprojects retained instance LOD runs when the camera moves without changing
       prepareUnbatched: () => [],
       viewDraws: [],
       lodCamera: [z],
-      lod: (rows) =>
-        selectCpuLodRows(rows, {
-          ...makeZeroCameraFallbackSnapshot(),
-          position: vec3.create(0, 0, z),
-        }),
+      lod: mode === 'native' ? camera : (rows) => selectCpuLodRows(rows, camera),
     });
+  };
   const near = query(5);
-  expect(near.rows[0]?.cpuInstanceLods).toEqual([
+  expect(near.rows.at(0)?.cpuInstanceLods).toEqual([
     { first: 0, count: 1, level: 0 },
     { first: 1, count: 1, level: 1 },
   ]);
+  if (mode === 'native') {
+    for (let frame = 1; frame <= 60; frame++) expect(query(5 + frame / 1000)).toBe(near);
+  }
   const far = query(40);
-  expect(far.rows[0]?.cpuInstanceLods).toEqual([{ first: 0, count: 2, level: 1 }]);
-  expect(far.rows[0]?.mesh).toBe(near.rows[0]?.mesh);
-  expect(query(5).rows[0]?.cpuInstanceLods).toEqual(near.rows[0]?.cpuInstanceLods);
+  expect(far.rows.at(0)?.cpuInstanceLods).toEqual([{ first: 0, count: 2, level: 1 }]);
+  expect(far.rows.at(0)?.mesh).toBe(near.rows.at(0)?.mesh);
+  expect(query(5).rows.at(0)?.cpuInstanceLods).toEqual(near.rows.at(0)?.cpuInstanceLods);
 });

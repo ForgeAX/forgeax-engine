@@ -37,8 +37,15 @@ function multiply3(
   ];
 }
 
-function blackbodyWhitePoint(temperature: number): [number, number, number] {
-  if (temperature === 6504) return [...D65_XYZ];
+type Triple = [number, number, number];
+
+function blackbodyWhitePoint(temperature: number, out: Triple): Triple {
+  if (temperature === 6504) {
+    out[0] = D65_XYZ[0];
+    out[1] = D65_XYZ[1];
+    out[2] = D65_XYZ[2];
+    return out;
+  }
   const t = Math.min(40000, Math.max(1000, temperature));
   const x =
     t <= 4000
@@ -50,7 +57,56 @@ function blackbodyWhitePoint(temperature: number): [number, number, number] {
       : t <= 4000
         ? -0.9549476 * x ** 3 - 1.37418593 * x ** 2 + 2.09137015 * x - 0.16748867
         : 3.081758 * x ** 3 - 5.8733867 * x ** 2 + 3.75112997 * x - 0.37001483;
-  return [x / y, 1, (1 - x - y) / y];
+  out[0] = x / y;
+  out[1] = 1;
+  out[2] = (1 - x - y) / y;
+  return out;
+}
+
+// Bradford adaptation is linear in RGB. Fold both fixed transforms at module load.
+const d65Lms = multiply3(BRADFORD, D65_XYZ);
+const basis = [
+  [1, 0, 0],
+  [0, 1, 0],
+  [0, 0, 1],
+] as const;
+const axes = [0, 1, 2] as const;
+function basisColumns(
+  transform: (column: (typeof basis)[number]) => Triple,
+): readonly [Triple, Triple, Triple] {
+  return [transform(basis[0]), transform(basis[1]), transform(basis[2])];
+}
+const toLms = basisColumns((b) => multiply3(BRADFORD, multiply3(RGB_TO_XYZ_D65, b)));
+const fromLms = basisColumns((b) => multiply3(XYZ_TO_RGB_D65, multiply3(BRADFORD_INVERSE, b)));
+
+/** Overwrite three padded GPU rows, including when the camera animates every frame. */
+export function createWhiteBalanceMatrixWriter() {
+  const white: Triple = [0, 0, 0];
+  const scale: Triple = [0, 0, 0];
+  return (rows: Float32Array, offset: number, temperature: number, tint: number): void => {
+    if (temperature !== 6504) {
+      blackbodyWhitePoint(temperature, white);
+      for (const i of axes) {
+        const transform = BRADFORD[i];
+        scale[i] =
+          (transform[0] * white[0] + transform[1] * white[1] + transform[2] * white[2]) / d65Lms[i];
+      }
+    }
+    for (const r of axes) {
+      const gain = Math.max(0, r === 1 ? 1 - tint : 1 + tint);
+      for (const c of axes) {
+        const column = toLms[c];
+        const coefficient =
+          temperature === 6504
+            ? Number(r === c)
+            : fromLms[0][r] * scale[0] * column[0] +
+              fromLms[1][r] * scale[1] * column[1] +
+              fromLms[2][r] * scale[2] * column[2];
+        rows[offset + r * 4 + c] = coefficient * gain;
+      }
+      rows[offset + r * 4 + 3] = 0;
+    }
+  };
 }
 
 /**
@@ -169,7 +225,7 @@ export function bradfordAdaptD65(
 ): [number, number, number] {
   if (temperature === 6504) return [rgb[0], rgb[1], rgb[2]];
   const source = multiply3(BRADFORD, D65_XYZ);
-  const target = multiply3(BRADFORD, blackbodyWhitePoint(temperature));
+  const target = multiply3(BRADFORD, blackbodyWhitePoint(temperature, [0, 0, 0]));
   const scale: [number, number, number] = [
     target[0] / source[0],
     target[1] / source[1],

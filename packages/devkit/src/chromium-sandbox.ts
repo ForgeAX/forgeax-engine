@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { access, chmod, chown, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
-import type { LaunchOptions } from 'playwright';
+import type { Browser, BrowserServer, LaunchOptions } from 'playwright';
 
 export function needsChromiumPrivilegeDrop(): boolean {
   return process.platform === 'linux' && process.geteuid?.() === 0;
@@ -55,6 +55,8 @@ cd "$FORGEAX_BROWSER_STATE" || exit 1
 exec "$FORGEAX_BROWSER_SETPRIV" --reuid="$FORGEAX_BROWSER_UID" --regid="$FORGEAX_BROWSER_GID" --clear-groups --no-new-privs -- "$FORGEAX_BROWSER_PROGRAM" "$@"
 `;
 
+class ChromiumSandboxUnavailable extends Error {}
+
 async function systemSetprivPath(): Promise<string> {
   for (const path of ['/usr/bin/setpriv', '/bin/setpriv']) {
     if (
@@ -65,23 +67,34 @@ async function systemSetprivPath(): Promise<string> {
     )
       return path;
   }
-  throw new Error('The Linux host does not provide an executable setpriv.');
+  throw new ChromiumSandboxUnavailable('The Linux host has no executable setpriv.');
 }
 
-export async function prepareUnprivilegedChromium(launch: LaunchOptions) {
+async function prepareUnprivilegedChromium(launch: LaunchOptions) {
   const executable = launch.executablePath;
   if (executable === undefined || !isAbsolute(executable))
     throw new Error('No absolute Chromium executable is available to the browser subprocess.');
   const setpriv = await systemSetprivPath();
   const identity = browserIdentity(await readFile('/etc/passwd', 'utf8'), process.env.SUDO_UID);
-  if (identity === undefined) throw new Error('No local unprivileged browser account was found.');
+  if (identity === undefined)
+    throw new ChromiumSandboxUnavailable('No local unprivileged Chromium identity is available.');
   const root = await mkdtemp('/tmp/forgeax-chromium-');
   const release = () => rm(root, { recursive: true, force: true });
   try {
     const state = join(root, 'state');
     const executablePath = join(root, 'launch');
     await mkdir(state, { mode: 0o700 });
-    await chown(state, Number(identity.uid), Number(identity.gid));
+    try {
+      await chown(state, Number(identity.uid), Number(identity.gid));
+    } catch (cause) {
+      if (!(cause instanceof Error)) throw cause;
+      const code = (cause as NodeJS.ErrnoException).code;
+      if (code !== 'EINVAL' && code !== 'EPERM' && code !== 'EACCES') throw cause;
+      throw new ChromiumSandboxUnavailable(
+        `Cannot assign the Chromium profile to UID ${identity.uid}, GID ${identity.gid} (${code}).`,
+        { cause },
+      );
+    }
     await writeFile(executablePath, launcher, { mode: 0o700, flag: 'wx' });
     await chmod(root, 0o711);
     const env: Record<string, string> = {
@@ -104,4 +117,98 @@ export async function prepareUnprivilegedChromium(launch: LaunchOptions) {
     await release();
     throw cause;
   }
+}
+
+export function chromiumEnvironment(software: boolean, display?: string): Record<string, string> {
+  return {
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    ),
+    ...(software ? { LIBGL_ALWAYS_SOFTWARE: '1' } : {}),
+    ...(display === undefined ? {} : { DISPLAY: display }),
+  };
+}
+
+function isSandboxFailure(cause: unknown): boolean {
+  return (
+    cause instanceof ChromiumSandboxUnavailable ||
+    (cause instanceof Error &&
+      /Chromium sandboxing failed!|No usable sandbox!|Failed to move to new namespace:/i.test(
+        cause.message,
+      ))
+  );
+}
+
+function recoveryEnvironment(launch: LaunchOptions): NonNullable<LaunchOptions['env']> {
+  const environment = launch.env ?? process.env;
+  const result: NonNullable<LaunchOptions['env']> = {};
+  for (const key of [
+    'PATH',
+    'HOME',
+    'USERPROFILE',
+    'SystemRoot',
+    'TMPDIR',
+    'TEMP',
+    'TMP',
+    'DISPLAY',
+    'WAYLAND_DISPLAY',
+    'XAUTHORITY',
+    'LANG',
+    'LIBGL_ALWAYS_SOFTWARE',
+    'XDG_RUNTIME_DIR',
+    'XDG_CACHE_HOME',
+  ]) {
+    const value = environment[key];
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
+}
+
+async function launchChromium<T>(
+  launch: LaunchOptions,
+  start: (options: LaunchOptions) => Promise<T>,
+  onExit: (owner: T, release: () => void) => void,
+): Promise<T> {
+  let prepared: Awaited<ReturnType<typeof prepareUnprivilegedChromium>> | undefined;
+  try {
+    if (needsChromiumPrivilegeDrop() && launch.executablePath !== undefined) {
+      prepared = await prepareUnprivilegedChromium(launch);
+    }
+    const owner = await start({ ...(prepared?.options ?? launch), chromiumSandbox: true });
+    const release = prepared?.release;
+    if (release !== undefined) onExit(owner, () => void release().catch(() => undefined));
+    return owner;
+  } catch (cause) {
+    await prepared?.release().catch(() => undefined);
+    if (!isSandboxFailure(cause)) throw cause;
+    process.stderr.write(
+      '[forgeax] Chromium sandbox unavailable. Retrying the same browser with sandboxing disabled.\n',
+    );
+    try {
+      return await start({ ...launch, env: recoveryEnvironment(launch), chromiumSandbox: false });
+    } catch (retry) {
+      throw new AggregateError(
+        [cause, retry],
+        `Chromium recovery failed. ${String(cause)} ${String(retry)}`,
+      );
+    }
+  }
+}
+
+export function launchChromiumBrowser(options: LaunchOptions): Promise<Browser> {
+  return launchChromium(
+    options,
+    async (launch) => (await import('playwright')).chromium.launch(launch),
+    (browser, release) => browser.once('disconnected', release),
+  );
+}
+
+export function launchChromiumBrowserServer(options: LaunchOptions): Promise<BrowserServer> {
+  return launchChromium(
+    options,
+    async (launch) => (await import('playwright')).chromium.launchServer(launch),
+    (server, release) => server.once('close', release),
+  );
 }

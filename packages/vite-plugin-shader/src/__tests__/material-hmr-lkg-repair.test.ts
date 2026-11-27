@@ -29,11 +29,11 @@ interface PluginContext {
 
 const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
 const sourcePath = normalizePath(
-  resolve(repoRoot, 'apps/hello/custom-shader/src/pulse-material.wgsl'),
+  resolve(repoRoot, 'apps/hello/m8-integrated-capstone/src/pulse-material.wgsl'),
 );
 const packagePath = resolve(
   repoRoot,
-  'apps/hello/custom-shader/src/pulse-material.shader.pack.json',
+  'apps/hello/m8-integrated-capstone/src/pulse-material.pack.json',
 );
 
 function createContext(): PluginContext {
@@ -57,7 +57,7 @@ async function latestManifest(context: PluginContext): Promise<Manifest> {
 
 function materialEntry(manifest: Manifest): Manifest['materialShaders'][number] {
   const entry = manifest.materialShaders.find(
-    (candidate) => candidate.identifier === 'my-game::pulse-material',
+    (candidate) => candidate.identifier === 'my_game::pulse_material',
   );
   if (entry === undefined) throw new Error('pulse material manifest row was not emitted');
   return entry;
@@ -167,9 +167,9 @@ describe('authored material shader HMR LKG transaction', () => {
       code: 'shader-compile-failed',
       hint: expect.stringContaining('WGSL'),
       expected: 'WGSL source parses + validates against naga IR',
-      lineNum: 48,
+      lineNum: 42,
       linePos: 22,
-      loc: { line: 48, column: expect.any(Number) },
+      loc: { line: 42, column: expect.any(Number) },
       meta: {
         expected: 'WGSL source parses + validates against naga IR',
         hint: expect.stringContaining('WGSL'),

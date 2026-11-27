@@ -1,0 +1,18 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "allowJs": true,
+    "checkJs": false,
+    "exactOptionalPropertyTypes": false,
+    "emitDeclarationOnly": false,
+    "noEmit": true,
+    "noImplicitAny": false,
+    "noImplicitReturns": false,
+    "noUnusedLocals": false,
+    "strict": false,
+    "strictNullChecks": false,
+    "types": ["@webgpu/types", "node"]
+  },
+  "include": ["scripts/native-sponza.mjs", "scripts/native-sponza-capture.mjs"]
+}

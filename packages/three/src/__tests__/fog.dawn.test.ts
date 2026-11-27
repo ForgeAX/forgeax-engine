@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import * as THREE from '@forgeax/engine/three';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { compactTape } from '../../../runtime/src/__tests__/compact-tape.fixture';
 import { offscreenCanvas } from '../../../runtime/src/__tests__/hdr-evidence.fixture';
@@ -15,7 +15,9 @@ for (const law of ['linear', 'exp2'] as const)
     const renderer = new THREE.WebGPURenderer({
       canvas: target.canvas as unknown as OffscreenCanvas,
       forgeax: {
-        bundler: { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()) },
+        bundler: {
+          shaderManifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()),
+        },
       },
     });
     const scene = new THREE.Scene();

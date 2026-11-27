@@ -17,6 +17,9 @@ import type { DynamicGeometryCandidate } from '../dynamic-geometry';
 import { createDynamicGeometryLifecycle } from '../dynamic-geometry';
 import { worldRenderResources } from '../publication/resource-scope';
 
+// Set up the real WASM backend before timing the fault-injection case.
+const rapier = await loadRapier3D();
+
 function interceptLease(
   store: GpuResidencyCache,
   change: (
@@ -456,10 +459,9 @@ describe('dynamic geometry host fault ownership', () => {
   });
 
   it('latches the real World when cancellation throws inside real Rapier admission', async () => {
-    const RAPIER = await loadRapier3D();
-    if ('code' in RAPIER) throw RAPIER;
+    if ('code' in rapier) throw rapier;
     const f = await fixture();
-    const physics = createRapier3DPhysicsWorld(RAPIER);
+    const physics = createRapier3DPhysicsWorld(rapier);
     physics.setGravity(vec3.create(0, 0, 0));
     physics.setMoveContext(f.world, Transform);
     f.world.insertResource(PhysicsWorldResource, physics);

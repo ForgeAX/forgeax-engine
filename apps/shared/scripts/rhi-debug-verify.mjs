@@ -510,7 +510,7 @@ export function waitForReadyAppFrame({ canvas = document.querySelector('#app'), 
  * @property {string} [urlSuffix]   query/hash suffix appended to the dev URL
  */
 
-export { selectCaptureWorkIndex };
+export { buildFrameModel, selectCaptureWorkIndex };
 
 /**
  * Vite can publish its Local URL before the Pack watcher has accepted its first

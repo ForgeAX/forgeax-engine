@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  mkdir,
   mkdtemp,
   readFile,
   realpath,
@@ -26,6 +27,31 @@ test('native transforms reuse bytes while same-size source edits invalidate the 
   try {
     assert.equal(native.config.experimental.fsModuleCache, true);
     assert.equal(native.projects[0].config.experimental.fsModuleCache, true);
+    const owned = resolve('node_modules/.vite/vitest-module-processes', String(process.pid));
+    assert.equal(native.config.experimental.fsModuleCachePath, owned);
+    assert.equal(native.projects[0].config.experimental.fsModuleCachePath, owned);
+    await mkdir(owned, { recursive: true });
+    const active = await mkdtemp(join(owned, 'active-transform-'));
+    try {
+      const transform = join(active, 'module');
+      await writeFile(transform, 'active coordinator');
+      const neighbor = spawnSync(
+        process.execPath,
+        [
+          resolve('node_modules/vitest/vitest.mjs'),
+          '--config',
+          DAWN_VITEST_CONFIG,
+          '--project',
+          'dawn',
+          '--clearCache',
+        ],
+        { encoding: 'utf8', timeout: 60_000 },
+      );
+      assert.equal(neighbor.status, 0, neighbor.stdout + neighbor.stderr);
+      assert.equal(await readFile(transform, 'utf8'), 'active coordinator');
+    } finally {
+      await rm(active, { recursive: true, force: true });
+    }
   } finally {
     await native.close();
   }

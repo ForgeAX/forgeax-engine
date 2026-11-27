@@ -18,7 +18,16 @@ describe('scene temporal varyings', () => {
     expect(source).toContain('out.clip = view.worldViewProj * currentWorld;');
     expect(source).toContain('out.currentClip = view.temporalCurrentViewProj * currentWorld;');
     expect(source).not.toContain('out.clip = out.currentClip;');
-    expect(source.match(/@builtin\(position\) @invariant clip/g)).toHaveLength(2);
+    const hasPositionOnlyDepth = file === 'default-standard-pbr.wgsl';
+    expect(source.match(/@builtin\(position\) @invariant clip/g)).toHaveLength(
+      hasPositionOnlyDepth ? 3 : 2,
+    );
+    if (hasPositionOnlyDepth) {
+      expect(source).toContain('out.clip = standardRasterClip(world);');
+      expect(source).toContain(
+        'out.clip = standardRasterClip(standardWorldPosition(localToWorld, localPosition));',
+      );
+    }
   });
   it('defines the temporal-v1 accessor ABI in one owner module', () => {
     const source = readFileSync(resolve(import.meta.dirname, '..', 'scene-temporal.wgsl'), 'utf8');
@@ -62,9 +71,10 @@ describe('scene temporal varyings', () => {
     );
   });
 
-  it('keeps PBR UV selection and fragment projection in one module', () => {
+  it('projects the material coverage without binding textures in the temporal helper', () => {
     const source = readFileSync(resolve(import.meta.dirname, '..', 'pbr-temporal.wgsl'), 'utf8');
-    expect(source).toContain('fn transformedPbrTemporalUv');
+    expect(source).not.toMatch(/textureSample|texture_2d/);
+    expect(source).toContain('sampledAlpha : f32');
     expect(source).toContain('fn projectPbrSceneTemporal');
   });
 
@@ -72,7 +82,9 @@ describe('scene temporal varyings', () => {
     const source = readFileSync(resolve(import.meta.dirname, '..', file), 'utf8');
     // View Z comes from the fragment position (UE Common.ush:1530-1542), not a varying.
     expect(source).toMatch(/#import forgeax_scene_temporal::\{[^}]*\bsceneFragmentViewZ\b/);
-    expect(source).toMatch(/#import forgeax_pbr::temporal::\{[^}]*\bprojectPbrSceneTemporal\b/);
+    expect(source).toMatch(
+      /#import forgeax_pbr::temporal::\{[^}]*\bpackStandardTemporalCoverage\b/,
+    );
     expect(source).toMatch(/@interpolate\(perspective\) currentClip : vec4<f32>/);
     expect(source).toMatch(/@interpolate\(perspective\) previousClip : vec4<f32>/);
     expect(source).not.toMatch(

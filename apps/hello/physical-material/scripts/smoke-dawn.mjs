@@ -20,7 +20,7 @@ import { buildFrameModel, decodeTape, readbackTexturePixels } from '@forgeax/eng
 
 import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { physicalMaterialChild, physicalMaterialRoots, withPhysicalMaterialModule } from '../src/material-contract.ts';
-import { readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
+import { readCookedShaderManifestPublication, readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const caseInputPath = resolve(here, '..', 'evidence', 'case-input.json');
@@ -165,9 +165,8 @@ const { Camera, DirectionalLight, Materials, MeshFilter, MeshRenderer, perspecti
 const { Transform } = await import('@forgeax/engine-scene');
 const { resolveMaterialAsset } = await import('@forgeax/engine-types');
 const { Skin } = await import('@forgeax/engine-skinning');
-const { readShaderManifestPublication } = await import('@forgeax/engine-shader');
 const productManifestBytes = readShaderManifestText(manifestPath);
-const productManifest = await readShaderManifestPublication(JSON.parse(productManifestBytes));
+const productManifest = await readCookedShaderManifestPublication(JSON.parse(productManifestBytes));
 const shaderManifest = structuredClone(productManifest);
 const PHYSICAL_MATERIAL_MODULES = {
   scalar: 'physical-material::standard-clearcoat',
@@ -283,7 +282,7 @@ const packIndexPath = resolve(here, '..', 'dist', 'pack-index.json');
 const packIndexWire = JSON.parse(readFileSync(packIndexPath, 'utf8'));
 const packIndex = decodeCatalogWire(packIndexWire).unwrap();
 const hdrGuid = '019e4a26-3c29-7420-af5d-20f2724a16b0';
-const fullPhysicalMaterialGuid = '8a5a0001-0000-4000-8000-000000000008';
+const fullPhysicalMaterialGuid = '57fdfe2f-0978-56de-a112-883c404b18ed';
 const hdrEntry = packIndex.find((entry) => entry.guid === hdrGuid);
 const fullPhysicalMaterialEntry = packIndex.find((entry) => entry.guid === fullPhysicalMaterialGuid);
 let hdrPod;

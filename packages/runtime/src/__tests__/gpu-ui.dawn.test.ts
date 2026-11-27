@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { World } from '@forgeax/engine-ecs';
 import { propagateTransforms } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { beforeAll, expect, it } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
@@ -38,7 +38,7 @@ const createUi = () =>
   });
 let manifestUrl = '';
 beforeAll(async () => {
-  manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+  manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 }, 300_000);
 
 async function save(name: string, result: unknown) {

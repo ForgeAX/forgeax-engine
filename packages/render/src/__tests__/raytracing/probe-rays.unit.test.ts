@@ -27,9 +27,8 @@ async function deviceForAdmission() {
 
 it('rejects nonexact ranges, aliases and overflowing square budgets without encoding', async () => {
   const device = await deviceForAdmission();
-  const recorder = createProbeRayRecorder(
-    device,
-    (await createShaderModule(device, { code: '' })).unwrap(),
+  const recorder = (
+    await createProbeRayRecorder(device, (await createShaderModule(device, { code: '' })).unwrap())
   ).unwrap();
   const buffer = (size: number) => device.createBuffer({ size: size + 512, usage: 0xcc }).unwrap();
   const input: ProbeRayInputs = {
@@ -116,10 +115,10 @@ it('admits the exact maximum and respects per-device dispatch and storage limits
     { maxBufferSize: 65536 * 48 - 4 },
   ])
     expect(
-      createProbeRayRecorder(limited(limits), module).unwrap().record(pass, input, 1, 256),
+      (await createProbeRayRecorder(limited(limits), module)).unwrap().record(pass, input, 1, 256),
     ).toMatchObject({ ok: false, error: { code: 'limit-exceeded' } });
   expect(device.totalDispatchCount).toBe(0);
-  createProbeRayRecorder(device, module).unwrap().record(pass, input, 1, 256).unwrap();
+  (await createProbeRayRecorder(device, module)).unwrap().record(pass, input, 1, 256).unwrap();
   expect(device.totalDispatchCount).toBe(1);
   pass.end();
 });
@@ -131,7 +130,7 @@ it('rejects unsupported capabilities before creating pipeline resources', async 
   for (const name of ['compute', 'storageBuffer'] as const) {
     const value = Object.create(device) as RhiDevice;
     Object.defineProperty(value, 'caps', { value: { ...device.caps, [name]: false } });
-    expect(createProbeRayRecorder(value, module)).toMatchObject({
+    expect(await createProbeRayRecorder(value, module)).toMatchObject({
       ok: false,
       error: { code: 'rhi-not-available' },
     });
@@ -147,7 +146,7 @@ it('rejects unsupported capabilities before creating pipeline resources', async 
   ] as const) {
     const value = Object.create(device) as RhiDevice;
     Object.defineProperty(value, 'limits', { value: { ...device.limits, [name]: minimum - 1 } });
-    expect(createProbeRayRecorder(value, module)).toMatchObject({
+    expect(await createProbeRayRecorder(value, module)).toMatchObject({
       ok: false,
       error: { code: 'limit-exceeded' },
     });

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
+import { parse } from 'yaml';
 import { main } from '../ci/prepare-ci-inputs.mjs';
 
 const roots: string[] = [];
@@ -72,13 +73,17 @@ function recoveryFixture({ staleShared = false, failShard = false, corruptCore =
       case 'scripts/ci/unpack-shared-app-inputs.mjs':
         shared(option(args, '--root'), staleShared ? 'stale' : 'current');
         break;
-      case 'scripts/ci/verify-build-artifact-input.mjs':
-        if (corruptCore && option(args, '--root') !== root)
+      case 'scripts/ci/verify-build-artifact-input.mjs': {
+        const inputRoot = option(args, '--root');
+        const transfer = args.includes('--transfer-artifact')
+          ? option(args, '--transfer-artifact')
+          : undefined;
+        if (corruptCore && inputRoot !== root && transfer !== 'shared-app-inputs')
           return { status: 1, failure: 'corrupt core artifact' };
-        expect(existsSync(join(option(args, '--root'), 'shared-app-inputs/manifest.json'))).toBe(
-          true,
-        );
+        if (transfer !== 'core-build')
+          expect(existsSync(join(inputRoot, 'shared-app-inputs/manifest.json'))).toBe(true);
         break;
+      }
       case 'scripts/ci/build-shared-app-inputs.mjs':
         shared(root);
         break;
@@ -191,7 +196,7 @@ test.each([
 test.each([
   { staleShared: true },
   { corruptCore: true },
-])('invalid shared/core admission rebuilds before app recovery: %j', async (scenario) => {
+])('app recovery rebuilds only the rejected input family: %j', async (scenario) => {
   const { root, calls, run } = recoveryFixture(scenario);
   await run();
   expect(existsSync(join(root, 'packages/core/dist/index.js'))).toBe(!scenario.corruptCore);
@@ -204,11 +209,19 @@ test.each([
       option(args, '--transfer-artifact') === 'core-build',
   );
   const base = calls.findIndex(([script]) => script === 'scripts/build.mjs');
-  expect(coreAdmission).toBeGreaterThan(-1);
-  expect(base).toBeGreaterThan(coreAdmission);
+  const shared = calls.findIndex(([script]) => script === 'scripts/ci/build-shared-app-inputs.mjs');
   const app = calls.findIndex(([script]) => script === 'scripts/ci/build-app-shard.mjs');
-  expect(base).toBeGreaterThan(-1);
-  expect(app).toBeGreaterThan(base);
+  expect(coreAdmission).toBeGreaterThan(-1);
+  if (scenario.staleShared) {
+    expect(base).toBe(-1);
+    expect(calls.filter(([script]) => script.endsWith('/ensure-wasm.mjs'))).toHaveLength(0);
+    expect(shared).toBeGreaterThan(coreAdmission);
+    expect(app).toBeGreaterThan(shared);
+  } else {
+    expect(shared).toBe(-1);
+    expect(base).toBeGreaterThan(coreAdmission);
+    expect(app).toBeGreaterThan(base);
+  }
   expect(
     calls.some(([script]) => script === 'scripts/ci/materialize-app-shader-manifests.mjs'),
   ).toBe(false);
@@ -294,7 +307,7 @@ test.each([
 ])('scoped shard recovery builds and compacts only selected apps without changing ownership (core=%s)', (profile) => {
   vi.stubEnv('FORGEAX_CI_CORE_VALIDATION', profile);
   const root = fixture();
-  for (const app of ['alpha', 'beta', 'gamma', 'omega']) {
+  for (const app of ['hello/alpha', 'hello/beta', 'hello/gamma', 'hello/omega']) {
     write(join(root, 'apps', app, 'package.json'), { scripts: { build: 'fixture' } });
     write(join(root, 'apps', app, 'dist/shaders/manifest.json'), { entries: [] });
     write(join(root, 'apps', app, 'dist/sentinel'), 'full bundle');
@@ -318,9 +331,9 @@ test.each([
         '--output-dir',
         join(root, `shard-${index}`),
         '--app',
-        'alpha',
+        'hello/alpha',
         '--app',
-        'gamma',
+        'hello/gamma',
         '--retain-artifact-only',
       ],
       { encoding: 'utf8' },
@@ -328,21 +341,21 @@ test.each([
     expect(result.status, result.stderr || result.stdout).toBe(0);
     reports.push(JSON.parse(result.stdout));
   }
-  expect(reports.map((report) => report.apps)).toEqual([['alpha'], [], ['gamma']]);
+  expect(reports.map((report) => report.apps)).toEqual([['hello/alpha'], [], ['hello/gamma']]);
   expect(
     readFileSync(join(root, 'builds.jsonl'), 'utf8')
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line)),
   ).toEqual([
-    ['--app-shard-shader-delta', ...(profile === '1' ? ['--consumer-inputs'] : []), 'alpha'],
-    ['--app-shard-shader-delta', ...(profile === '1' ? ['--consumer-inputs'] : []), 'gamma'],
+    ['--app-shard-shader-delta', ...(profile === '1' ? ['--consumer-inputs'] : []), 'hello/alpha'],
+    ['--app-shard-shader-delta', ...(profile === '1' ? ['--consumer-inputs'] : []), 'hello/gamma'],
   ]);
-  for (const app of ['alpha', 'gamma']) {
+  for (const app of ['hello/alpha', 'hello/gamma']) {
     expect(existsSync(join(root, 'apps', app, 'dist/sentinel'))).toBe(false);
     expect(existsSync(join(root, 'apps', app, 'dist/shaders/manifest.json'))).toBe(true);
   }
-  for (const app of ['beta', 'omega']) {
+  for (const app of ['hello/beta', 'hello/omega']) {
     expect(readFileSync(join(root, 'apps', app, 'dist/sentinel'), 'utf8')).toBe('full bundle');
   }
 });
@@ -383,23 +396,21 @@ test('optional uploads get the in-place retry and app consumers receive base art
   }
   const exhausted = upload.slice(upload.indexOf('- name: Fail after exhausted artifact transfer'));
   expect(exhausted).toContain("inputs.required == 'true'");
-  const workflow = readFileSync(join(repo, '.github/workflows/ci.yml'), 'utf8');
+  const workflow = parse(readFileSync(join(repo, '.github/workflows/ci.yml'), 'utf8'));
   for (const consumer of ['smoke-fleet', 'shared-inputs-browser']) {
-    const start = workflow.indexOf(`          consumer: ${consumer}\n`);
-    expect(start).toBeGreaterThanOrEqual(0);
-    const step = workflow.slice(start).split('\n      - ')[0];
+    const inputs = workflow.jobs[consumer].steps.find(
+      (step: { with?: { consumer?: string } }) => step.with?.consumer === consumer,
+    )?.with;
+    expect(inputs?.['shared-artifact-id']).toContain('needs.shared-app-inputs.outputs.');
+    expect(inputs?.['input-fingerprint']).toContain('needs.shared-app-inputs.outputs.');
+    expect(inputs?.['artifact-ids']).toContain('needs.core-build.outputs.core_artifact_id');
     if (consumer === 'smoke-fleet') {
-      expect(step).toMatch(
-        /core-artifact-ids: \$\{\{ needs\.build-artifacts\.outputs\.core_artifact_ids \}\}/,
-      );
-    } else {
-      expect(step).toMatch(
-        /artifact-ids: \$\{\{ needs\.core-build\.outputs\.core_artifact_id \}\}/,
-      );
-      expect(step).toMatch(
-        /shared-artifact-id: \$\{\{ needs\.shared-app-inputs\.outputs\.shared_artifact_id \}\}/,
-      );
-      expect(step).not.toContain('needs.build-artifacts');
+      expect(inputs?.['core-artifact-ids']).toContain('needs.core-build.outputs.core_artifact_id');
+      for (const shard of [0, 1, 2]) {
+        expect(inputs?.['artifact-ids']).toContain(
+          `needs.app-shard-${shard}.outputs.app_dist_artifact_id`,
+        );
+      }
     }
   }
 });

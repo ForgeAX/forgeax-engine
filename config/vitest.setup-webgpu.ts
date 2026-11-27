@@ -29,9 +29,6 @@
 //   globalThis.navigator.gpu = create([])     (empty flags array)
 //
 // research §1 Finding 1.4 critical pitfalls:
-//   - macOS Gatekeeper `com.apple.quarantine`: when first require fails, manually run
-//     `xattr -d com.apple.quarantine packages/dawn-node/dist/native/*.dawn.node`
-//     (cannot install with --ignore-scripts).
 //   - chromium issue 387965810 — `globalThis.navigator.gpu` global pollution prevents
 //     the node process from exiting; R10 mitigation: explicitly delete the reference in `afterAll`.
 //   - dawn.node lacks `HTMLCanvasElement` / `VideoFrame` / `HTMLImageElement`;
@@ -109,7 +106,7 @@ if (process.env.FORGEAX_WEBGPU_NODE === 'wgpu-native') {
   await installWgpuNative();
 } else
   try {
-    // dawn.node binding entry; create / globals are provided by require dist/<platform>.dawn.node.
+    // The workspace lockfile supplies the upstream Dawn Node prebuild.
     const { create, globals } = await import('@forgeax/engine-dawn-node');
     // Inject spec global constants (GPUBufferUsage / GPUTextureUsage / GPUMapMode, etc.).
     Object.assign(globalThis as Record<string, unknown>, globals);
@@ -126,7 +123,17 @@ if (process.env.FORGEAX_WEBGPU_NODE === 'wgpu-native') {
         writable: true,
       });
     }
-    const gpu = create([]);
+    // Match DevKit's replay provider. Quantization can round a short pass's
+    // begin and end to the same tick, hiding the pass from the timing test.
+    const options = ['disable-dawn-features=timestamp_quantization'];
+    if (process.env.FORGEAX_DAWN_WARP === '1') {
+      options.push(
+        'backend=d3d12',
+        'adapter=Microsoft Basic Render Driver',
+        'enable-dawn-features=d3d_skip_shader_optimizations',
+      );
+    }
+    const gpu = create(options);
     // M2 t-010: shim requestAdapter -> requestDevice to collect every created GPUDevice.
     // Wrapping at gpu.requestAdapter is the single chokepoint covering all *.dawn.test.ts
     // entry paths (research §F-1/§F-2 — every test calls navigator.gpu.requestAdapter()).
@@ -198,10 +205,7 @@ if (process.env.FORGEAX_WEBGPU_NODE === 'wgpu-native') {
     // explicit failure).
     const rawMessage = err instanceof Error ? err.message : String(err);
     const platform = `${process.platform}-${process.arch}`;
-    const hint =
-      process.platform === 'darwin' || process.platform === 'win32'
-        ? 'Dawn GPU tests are opt-in; prepare the native carrier with `pnpm --filter @forgeax/engine-dawn-node build:native`, then rerun `pnpm test:dawn`. Basic tests use `pnpm test`.'
-        : `check whether the webgpu npm package has a ${platform} prebuild; basic tests use pnpm test`;
+    const hint = `install the locked upstream webgpu prebuild for ${platform} with pnpm install --frozen-lockfile, then rerun pnpm test:dawn`;
     // structured throw — single-line `throw new Error(...code: ...)` shape matches the
     // plan-tasks w10 acceptanceCheck grep gate `throw\s+(new\s+)?Error\(.*code\s*:`.
     // Embedding code: and hint: inside the error message literal (vitest reporter prints it

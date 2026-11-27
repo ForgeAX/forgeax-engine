@@ -61,6 +61,25 @@ const result = await withCombinedSignal([request.signal, lifetime.signal], (sign
 > body reads. The signal's subscription lease ends when that callback settles; this
 > helper does not race or force-cancel an operation that ignores cancellation.
 
+## Storage
+
+Hosts open a project-scoped space and pass its storage capability to the consumer.
+
+| Capability | Operations | First consumers |
+|:--|:--|:--|
+| `RecordStore` | Read, atomically replace, or remove one complete byte value by key | Game saves and Runtime Pack cache |
+| `FileStore` | Write an immutable version in chunks, reopen it, and read a byte range into a caller-owned buffer | Terrain height blocks via `GameHost.files` or a host-provided store |
+
+Use the returned `FileRef` to publish a logical version in the consumer's index.
+Close readers before retiring the corresponding version. Keep input and target
+buffers available until the I/O promise settles.
+
+> [!IMPORTANT]
+> On `commit-unknown`, read the record again before retrying a replacement.
+> Publish a file reference only after `commit` returns success.
+
+The storage interfaces and error codes are in [storage.ts](src/storage.ts).
+
 ## Cross-platform verification
 
 The implementation verification record identifies the tested
@@ -77,8 +96,10 @@ idle first; one Worker is kept from background tasks while the pool has more
 than one; `maxInFlight` caps a kind. `cancel()` withdraws a queued task, or
 discards a running task's value; `dispose()` rejects everything unfinished. A
 crashed Worker rejects its running task and is replaced on demand; a kind that
-crashes Workers `crashLimit` times in a row runs inline from then on. A kind's
-`shared()` value is produced once by the pool and handed to each Worker's
+crashes Workers `crashLimit` times in a row runs inline from then on.
+Register a kind with `workerOnly: true` when running it in the submitting realm
+would violate its contract. The pool rejects queued and future work for that
+kind when no Worker can run it. A kind's `shared()` value is produced once by the pool and handed to each Worker's
 `init`. `serveTaskWorker` is the Worker side; `createTaskClient` and
 `serveTaskClient` let another realm submit through the pool with values
 returned on a per-task port directly from the executing Worker.

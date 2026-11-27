@@ -55,7 +55,7 @@ interface VolumetricFogPassInputs {
   readonly params: GraphBuffer;
   readonly view: GraphBuffer;
   readonly directionalShadow?: GraphTextureView;
-  readonly spotShadow: GraphTextureView;
+  readonly spotShadow: GraphTextureView | undefined;
   /** The single Standard Cluster light payload consumed by all volume stages. */
   readonly lightData: GraphBuffer;
   /** The Cluster uniform carries the admitted light count for slot guards. */
@@ -125,7 +125,7 @@ function importVolumeInputs(
   linearHdr: RenderPipelineTarget,
   sceneDepth: GraphTextureView,
   directionalShadow: GraphTextureView | undefined,
-  spotShadow: GraphTextureView,
+  spotShadow: GraphTextureView | undefined,
   selectedLightKind: VolumetricFogLightKind | undefined,
   clusterBuffers: StandardClusterGraphBuffers | null,
   cloudShadow: GraphTextureView | undefined,
@@ -280,7 +280,7 @@ export function addAuthoredVolumetricFogPasses(
   linearHdr: RenderPipelineTarget,
   sceneDepth: GraphTextureView,
   directionalShadow: GraphTextureView | undefined,
-  spotShadow: GraphTextureView,
+  spotShadow: GraphTextureView | undefined,
   clusterBuffers: StandardClusterGraphBuffers | null,
   cloudShadow?: GraphTextureView,
   atmosphereTransmittance?: GraphTextureView,
@@ -329,12 +329,6 @@ function addVolumetricFogPasses(
   const packedLayers = Math.ceil(inputs.resources.extent.depth / VOLUME_PACKING_Z);
   const resolvedDispatchX = Math.ceil(inputs.resources.resolvedExtent.width / 8);
   const resolvedDispatchY = Math.ceil(inputs.resources.resolvedExtent.height / 8);
-  // Point-light volume injection has no cube-array shadow sampler. It keeps
-  // the directional cascade count at zero and therefore needs only a valid
-  // 2D depth binding; use the always-present spot target as the inert binding
-  // when directional shadows are disabled. Directional selection still uses
-  // its own target whenever one exists, and spot selection uses spotShadow.
-  const shadowResource = inputs.directionalShadow ?? inputs.spotShadow;
   let inject: ComputeState | undefined;
   let integrate: ComputeState | undefined;
   let temporal: ComputeState | undefined;
@@ -348,17 +342,18 @@ function addVolumetricFogPasses(
     accesses: [
       { resource: inputs.params, usage: 'uniform-read' },
       { resource: inputs.view, usage: 'uniform-read' },
-      {
-        resource: shadowResource,
-        usage: 'sampled-read',
-      },
+      ...(inputs.directionalShadow === undefined
+        ? []
+        : [{ resource: inputs.directionalShadow, usage: 'sampled-read' as const }]),
       { resource: inputs.lightData, usage: 'storage-read' },
       { resource: inputs.clusterUniform, usage: 'uniform-read' },
       ...(inputs.projector === undefined
         ? []
         : [{ resource: inputs.projector, usage: 'sampled-read' as const }]),
       { resource: inputs.resources.froxelView, usage: 'storage-write' },
-      { resource: inputs.spotShadow, usage: 'sampled-read' },
+      ...(inputs.spotShadow === undefined
+        ? []
+        : [{ resource: inputs.spotShadow, usage: 'sampled-read' as const }]),
     ],
     encodeDirect: (pass, frame, resources) => {
       inject ??= volumeComputeState(
@@ -366,15 +361,22 @@ function addVolumetricFogPasses(
         shaderSource(frame, 'inject'),
         'volume_inject',
       );
-      const shadow = resources.textureView(shadowResource);
-      const spotShadow = resources.textureView(inputs.spotShadow);
-      if (!spotShadow.ok) throw spotShadow.error;
+      // An unshadowed receiver still binds the device's initialized depth array.
+      const fallback = (frame as _InternalRenderPipelineContext).pipelineState
+        .shadowArrayFallbackTextureView;
+      const spotShadow =
+        inputs.spotShadow === undefined
+          ? fallback
+          : resources.textureView(inputs.spotShadow).unwrap();
+      const shadow =
+        inputs.directionalShadow === undefined
+          ? spotShadow
+          : resources.textureView(inputs.directionalShadow).unwrap();
       const params = resources.buffer(inputs.params);
       const view = resources.buffer(inputs.view);
       const lightData = resources.buffer(inputs.lightData);
       const clusterUniform = resources.buffer(inputs.clusterUniform);
       const froxel = resources.textureView(inputs.resources.froxelView);
-      if (!shadow.ok) throw shadow.error;
       if (!params.ok) throw params.error;
       if (!view.ok) throw view.error;
       if (!lightData.ok) throw lightData.error;
@@ -386,13 +388,13 @@ function addVolumetricFogPasses(
           binding: 0,
           resource: { kind: 'buffer', value: { buffer: view.value, size: VIEW_UNIFORM_BYTES } },
         },
-        { binding: 3, resource: { kind: 'textureView', value: shadow.value as never } },
+        { binding: 3, resource: { kind: 'textureView', value: shadow } },
         { binding: 4, resource: { kind: 'sampler', value: shadowSampler } },
         { binding: 5, resource: { kind: 'buffer', value: { buffer: params.value } } },
         { binding: 6, resource: { kind: 'textureView', value: froxel.value as never } },
         { binding: 7, resource: { kind: 'buffer', value: { buffer: lightData.value } } },
         { binding: 8, resource: { kind: 'buffer', value: { buffer: clusterUniform.value } } },
-        { binding: 9, resource: { kind: 'textureView', value: spotShadow.value as never } },
+        { binding: 9, resource: { kind: 'textureView', value: spotShadow } },
       ]);
       pass.setPipeline(inject.pipeline);
       pass.setBindGroup(0, bindings);

@@ -22,6 +22,7 @@ import {
   postProcessShaderPipelineLabel,
 } from './fullscreen-post-process-pass';
 import type { LodOcclusionInspection } from './inspection-types';
+import { disposeGtaoHistory } from './pipeline/gtao-history';
 import { StandardClusterMembershipOwner } from './pipeline/standard-lighting/membership-owner';
 import { createStandardLutState } from './pipeline/standard-output/lut-state';
 import {
@@ -31,6 +32,7 @@ import {
 import { worldRenderResources } from './publication/resource-scope';
 import { MaterialBgAssemblyCache } from './record/material-bg-assembly-cache';
 import { RecordingSkinTasks } from './record/recording-skin-tasks';
+import { REFLECTION_PROBE_FILTER_PHASES } from './record/reflection-probe-pmrem';
 import type { SkinTaskBinding } from './record/skin-tasks';
 import { disposeTargetCaptures } from './record/target-capture-lighting';
 import { prepareRenderSystemRecoveryRoots } from './recovery/render-system-roots';
@@ -40,8 +42,10 @@ import type {
   RecoveryRootRuntime,
 } from './recovery/types';
 import { ReflectionProbeRecordOwner } from './reflection/record-owner';
+import { MeshSourceResourceError, MeshSourceResources } from './scene/mesh-source-resources';
 import { TerrainLayers } from './terrain/layers';
 import { inspectVolumetricFog } from './volume/inspection';
+import { retireAfterSubmission } from './world/submission-systems';
 import { recordContext } from './world/view-record-context';
 
 export type { RenderSceneInspection } from './inspection-types';
@@ -62,11 +66,7 @@ import {
   graphExecutionProfilePhases,
 } from './record/frame-targets';
 import type { GpuPassTimingError } from './record/gpu-pass-timing/errors';
-import type {
-  GpuPassTimingCapture,
-  GpuPassTimingFrameIdentity,
-  GpuPassTimingSession,
-} from './record/gpu-pass-timing/session';
+import type { GpuPassTimingCapture, GpuPassTimingSession } from './record/gpu-pass-timing/session';
 import { LodInspectionOwner } from './record/lod-inspection';
 import {
   clearPreparedMaterialBindings,
@@ -125,6 +125,7 @@ import { registerTemporalStageSystems } from './world/temporal-systems';
 import { recoverViewTransmission, registerTransmissionSystem } from './world/transmission-systems';
 import { type ViewDrawReceipt, viewDrawReceipt } from './world/view-draw-receipt';
 import { registerViewFrameSystem } from './world/view-frame-systems';
+import type { ViewRecorderState } from './world/view-output-systems';
 import { viewPointsLines } from './world/view-points-lines';
 import {
   ownerOf,
@@ -137,7 +138,7 @@ import { registerViewTopologySystem } from './world/view-topology-systems';
 type TimingSessionHost = RenderSystemInternals & {
   gpuPassTimingSession?: GpuPassTimingSession | undefined;
   gpuPassTimingCapture?: GpuPassTimingCapture | undefined;
-  gpuPassTimingFrameIdentity?: GpuPassTimingFrameIdentity | undefined;
+  gpuPassTimingDeviceGeneration?: number | undefined;
   gpuPassTimingBeginReason?: GpuPassTimingError | undefined;
 };
 
@@ -225,6 +226,21 @@ export function createRendererState(internals: RenderSystemInternals): RendererS
   return createRenderOwner(internals, 'renderer');
 }
 
+/** Shared rows follow the live view owners, not one view's last Field choice. */
+function visibleSurfaceDemand(internals: RenderSystemInternals): boolean {
+  if (internals.standardProfile?.visibleSurface === true) return true;
+  const world = renderWorldFor(internals);
+  const views = world.query({ read: [ViewRecorder] });
+  if (!views.ok) return false;
+  for (const row of views.value) {
+    const state = world.get(row.entity, ViewRecorder);
+    if (!state.ok) continue;
+    const view = world.resolveUniqueRef<ViewRecorderState>(state.value.state).unwrap();
+    if (!view.retired && view.owner.internals.standardProfile?.visibleSurface === true) return true;
+  }
+  return false;
+}
+
 /** Capture admission includes the exact live graph pass identities of every view. */
 function renderProfilePhaseCatalog(world: World): readonly string[] {
   const phases = new Set(renderSchedulePhaseCatalog(world));
@@ -241,6 +257,8 @@ function renderProfilePhaseCatalog(world: World): readonly string[] {
           viewScopes.add(renderFeatureViewIdentity(owner.recorded.camera));
         const graph = owner.frameState.compiledFrameGraph?.graph;
         const viewOwner = graphExecutionProfileOwner(owner.internals);
+        for (const pass of Object.values(REFLECTION_PROBE_FILTER_PHASES))
+          phases.add(graphExecutionProfilePhase({ owner: viewOwner, pass }));
         if (graph !== undefined)
           for (const phase of graphExecutionProfilePhases(graph, viewOwner)) phases.add(phase);
         if (featureOutcome?.kind === 'sealed' && owner.recorded.camera !== undefined) {
@@ -434,6 +452,7 @@ function createRenderOwner(
   const cubeCaptureState: CubeCaptureGraphState = { work: [] };
   /** This system's last record-attempt outcome, rewritten in place per attempt. */
 
+  const reportResidencyError = (error: RhiError) => internals.errorRegistry.fire(error);
   const sceneComposition =
     internals.sceneComposition ??
     new SceneComposition({
@@ -445,26 +464,46 @@ function createRenderOwner(
       assets: internals.assets,
       shaderRegistry: internals.assets.shaderRegistry,
       getDevice: () => internals.device,
+      prepareSourceResources: (input) => {
+        const store = internals.gpuStore,
+          device = internals.device,
+          scope = internals.deviceScope;
+        return new MeshSourceResources(input, {
+          store,
+          device,
+          scope,
+          prepareBindings: internals.prepareSceneInputBindings,
+          prepareAddressCapacity: internals.prepareSceneAddressCapacity,
+          prepareCapacity: function* (rows, capture, current, meshes) {
+            const scene =
+              internals.sceneComposition?.gpuSceneResident ??
+              internals.sceneComposition?.gpuSceneTextureResident;
+            if (scene === undefined) throw new MeshSourceResourceError({ reason: 'source' });
+            const task = yield* scene.prepareSourceRows(
+              rows,
+              capture,
+              () =>
+                current() &&
+                (internals.sceneComposition?.gpuSceneResident === scene ||
+                  internals.sceneComposition?.gpuSceneTextureResident === scene),
+              meshes,
+            );
+            return { scene, task };
+          },
+
+          current: () =>
+            internals.gpuStore === store &&
+            internals.device === device &&
+            internals.deviceScope === scope,
+        });
+      },
       onGpuError: (error) => internals.errorRegistry.fire(error),
       retainMaterialSource: (scope, source) =>
         internals.gpuStore.retainMaterialScope(materialSourceScope(scope, source)),
       onAssetChange: (scope, change) => {
         // Published GPU residency is adopted once by the outer view assembly.
         if (scope.world === undefined) return;
-        const content = change.removed
-          ? undefined
-          : scope.resolveAsset<import('@forgeax/engine-types').Asset>(change.handle);
-        const mesh = content?.ok && content.value.kind === 'mesh' ? content.value : undefined;
-        const adopted = internals.gpuStore.adoptMeshChange(change, mesh, scope);
-        if (!adopted.ok) internals.errorRegistry.fire(adopted.error);
-        const texture =
-          content?.ok && (content.value.kind === 'texture' || content.value.kind === 'gpu-texture')
-            ? content.value
-            : undefined;
-        const adoptedTexture = internals.gpuStore.adoptTextureChange(change, texture, scope);
-        if (!adoptedTexture.ok) internals.errorRegistry.fire(adoptedTexture.error);
-        internals.gpuStore.invalidateSampler(change.handle, scope);
-        internals.gpuStore.adoptCubemapChange(change, scope);
+        internals.gpuStore.adoptAssetChange(scope, change, reportResidencyError);
       },
       instanceCollections,
     });
@@ -479,7 +518,7 @@ function createRenderOwner(
     registerLightSystems(renderWorldFor(internals));
     registerShadowCasterSystem(renderWorldFor(internals));
     registerVisibleSurfaceSystem(renderWorldFor(internals), {
-      enabled: () => internals.standardProfile?.visibleSurface === true,
+      enabled: () => visibleSurfaceDemand(internals),
       retained: () => sceneComposition.compositionRetainedScene(),
       maxRecords: () =>
         Math.min(1048576, Math.floor(internals.device.limits.maxStorageBufferBindingSize / 64)),
@@ -505,10 +544,17 @@ function createRenderOwner(
   const terrainLayers = sceneComposition.terrainLayers;
   if (terrainLayers === undefined)
     throw new Error('The Renderer composition owns its terrain layers');
-  Object.assign(internals, { preparedMaterialTexture: terrainLayers.texture.bind(terrainLayers) });
+  Object.assign(internals, {
+    preparedMaterialTexture: Object.assign(terrainLayers.texture.bind(terrainLayers), {
+      parameters: TerrainLayers.textureParameters,
+    }),
+  });
   const persistentRenderScene = new PersistentRenderScene(
     {
-      getTemporalConsumerDemand: () => internals.standardProfile?.visibleSurface === true,
+      getTemporalConsumerDemand: () =>
+        ownsSceneComposition
+          ? visibleSurfaceDemand(internals)
+          : internals.standardProfile?.visibleSurface === true,
       // Each view adopts its own GI dependencies once per shared change, even when held.
       onViewAssetChange: (scope, change) => {
         frameState.irradianceField?.adoptAsset(scope, change);
@@ -589,12 +635,13 @@ function createRenderOwner(
             ),
         } satisfies import('./pipeline-builder').PipelineBuilderShaderModuleFactory),
     });
-  let featureGpuWork =
-    recordContext(internals).sharedFeatureGpuWork ?? createFeatureGpuWorkOwner(internals);
+  let ownedFeatureGpuWork =
+    recordContext(internals).sharedFeatureGpuWork === undefined
+      ? createFeatureGpuWorkOwner(internals)
+      : undefined;
   const disposeFeatureGpuWork = (): void => {
-    if (recordContext(internals).sharedFeatureGpuWork !== undefined) return;
-    const disposed = featureGpuWork.dispose();
-    if (!disposed.ok) internals.errorRegistry.fire(disposed.error);
+    const disposed = ownedFeatureGpuWork?.dispose();
+    if (disposed?.ok === false) internals.errorRegistry.fire(disposed.error);
   };
   // Per-RendererState frame state: closure-internal frameNumber + the
   // per-entity instance GPU buffer cache (feat-20260514 M3 / w15: the
@@ -609,14 +656,10 @@ function createRenderOwner(
   // Entity handles and generated fold keys belong to this Renderer's source.
   const frameState: RenderFrameState = {
     frameNumber: 0,
-    renderBundleCounters: { hits: 0, misses: 0 },
+    renderBundleCounters: { hits: 0, misses: 0, visitedDraws: 0 },
     surfaceSubmissionObservation: undefined,
     ssrRequested: false,
     ssrSpatialAdmission: undefined,
-    ssrHistoryOwner: undefined,
-    ssrTemporalParamsPayload: new Uint8Array(32),
-    ssrLastCameraEntity: undefined,
-    ssrLastHistoryVersion: undefined,
     graphResourceOwner: Object.freeze({}),
     graphGeneration: 0,
     lastSuccessfulBloom: 'off',
@@ -704,8 +747,6 @@ function createRenderOwner(
     materialBgPerEntity: new Map(),
     instancesBgPerEntity: new Map(),
     instancesBgShared: new WeakMap(),
-    // cross-entity shared material cache (outer Map<shaderId, WeakMap>).
-    materialBgShared: new Map(),
     // cross-frame material assembly cache; entries are only retained when all
     // explicit texture/sampler handles resolved to resident GPU resources.
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
@@ -744,10 +785,19 @@ function createRenderOwner(
     spotShadowSnapshots: [],
     darkShadowViews: { point: new Set(), spot: new Set() },
   };
-  const postProcessOwner = createPostProcessParamsOwner(internals, (id, moduleLabel) => {
-    clearPostProcessPipelineCache(id);
-    if (moduleLabel !== undefined) recordContext(internals).invalidateShaderModule?.(moduleLabel);
-  });
+  const postProcessOwner = createPostProcessParamsOwner(
+    internals,
+    (id, moduleLabel) => {
+      clearPostProcessPipelineCache(id);
+      if (moduleLabel !== undefined) recordContext(internals).invalidateShaderModule?.(moduleLabel);
+    },
+    (device, release) =>
+      retireAfterSubmission(renderWorldFor(internals), {
+        generation: device === internals.device ? internals.deviceScope.generation : -1,
+        queue: device.queue,
+        release,
+      }),
+  );
   const lookupPostProcess = postProcessOwner.lookup;
   const invalidatePostProcessModule = (id: string): void => {
     const entry = lookupPostProcess(id);
@@ -767,16 +817,27 @@ function createRenderOwner(
     bgl: BindGroupLayout,
     colorFormats: readonly GPUTextureFormat[],
     entryOverride?: PostProcessShaderEntry,
+    fragmentEntryPoint?: string,
   ): RenderPipeline | null => {
     const entry = entryOverride ?? lookupPostProcess(id);
     if (entry === undefined) return null;
     const signature = postProcessShaderEntrySignature(entry);
-    const key = `${id}|${colorFormats.join(',')}|${signature}`;
+    const fragment = fragmentEntryPoint ?? entry.fragmentEntryPoint;
+    const key = `${id}|${colorFormats.join(',')}|${fragment ?? ''}|${signature}`;
     const cached = postProcessPipelineCache.get(key);
     if (cached !== undefined) return cached;
     const factory = internals.buildPostProcessPipeline;
     if (factory === undefined) return null;
-    const built = factory(entry, bgl, colorFormats, postProcessShaderPipelineLabel(id, entry));
+    const declaration =
+      fragment === undefined || fragment === entry.fragmentEntryPoint
+        ? entry
+        : { ...entry, fragmentEntryPoint: fragment };
+    const built = factory(
+      declaration,
+      bgl,
+      colorFormats,
+      postProcessShaderPipelineLabel(id, entry),
+    );
     if (built === null) return null;
     postProcessPipelineCache.set(key, built);
     return built;
@@ -822,7 +883,10 @@ function createRenderOwner(
     preparedResolver: {
       runtime: internals,
       get gpuWork() {
-        return featureGpuWork;
+        const gpuWork = ownedFeatureGpuWork ?? recordContext(internals).sharedFeatureGpuWork;
+        if (gpuWork === undefined)
+          throw new Error('View recording requires its renderer-owned Feature GPU work');
+        return gpuWork;
       },
       caches: activePreparedResolverCaches,
       builtinPostProcessEntries: postProcessOwner.builtinEntries,
@@ -853,8 +917,6 @@ function createRenderOwner(
         gpuDrivenProduction.dispose();
         disposeFeatureGpuWork();
         reflectionProbeOwner.dispose();
-        frameState.ssrHistoryOwner?.dispose();
-        frameState.waterSsrHistoryOwner?.dispose();
         frameState.probePlacement?.dispose();
         frameState.probePlacement = undefined;
         frameState.probePlacementFrame = undefined;
@@ -866,8 +928,6 @@ function createRenderOwner(
         frameState.screenProbe = undefined;
         frameState.bakedField?.dispose();
         frameState.bakedField = undefined;
-        frameState.ssrHistoryOwner = undefined;
-        frameState.waterSsrHistoryOwner = undefined;
         frameState.ssrSpatialAdmission = undefined;
         // Bloom generations are renderer-owned rather than graph-owned. Drain
         // candidate, active, and fence-retiring bundles before the rest of the
@@ -883,7 +943,6 @@ function createRenderOwner(
         resetSsaoResources(internals);
         resetHdrpBuffers(internals);
         // Retire graph-owned resources and dispose instance-buffer caches.
-        frameState.renderBundleCaches?.passes.clear();
         // Both calls are idempotent + tolerate per-handle errors silently;
         // the Renderer.dispose() cascade owns the surrounding try/catch
         // (D-3 method A: void signature, sub-errors fan out via
@@ -902,6 +961,7 @@ function createRenderOwner(
         delete frameState.pendingCloudHistoryFormat;
         disposeStandardOutput(frameState);
         releaseTemporalGpuStates(frameState);
+        disposeGtaoHistory(frameState);
         for (const buffer of frameState.volumetricFogParams.buffers) {
           if (buffer === null) continue;
           const destroyed = internals.device.destroyBuffer(buffer);
@@ -938,6 +998,11 @@ function createRenderOwner(
           }
           delete frameState.probeBlendRecordBuffer;
         }
+        if (frameState.probeBlendRecordTransfer !== undefined) {
+          const result = frameState.probeBlendRecordTransfer.buffer.destroy();
+          if (!result.ok) internals.errorRegistry.fire(result.error);
+          delete frameState.probeBlendRecordTransfer;
+        }
         frameState.probeBlendRecordBufferCapacity = 0;
         frameState.probeBlendBuffers.clear();
         delete frameState.probeBlendRecordProjection;
@@ -946,6 +1011,15 @@ function createRenderOwner(
         // is per-RendererState (= per Renderer) and is shared transparently
         // between URP and HDRP pipelines.
         // Idempotent: dispose() on a null / already-disposed atlas is a no-op.
+        frameState.viewTargetTextures = undefined;
+        frameState.currentOcclusionDepth?.release();
+        frameState.currentOcclusionDepth = undefined;
+        frameState.currentTransmissionTargets?.release();
+        frameState.currentTransmissionTargets = undefined;
+        frameState.weightedTransparencyTargets?.release();
+        frameState.weightedTransparencyTargets = undefined;
+        frameState.ordinaryMaterialDepth?.release();
+        frameState.ordinaryMaterialDepth = undefined;
         frameState.shadowDepthLayers?.dispose();
         frameState.shadowDepthLayers = undefined;
         if (frameState.pointShadowAtlas !== null) {
@@ -987,6 +1061,15 @@ function createRenderOwner(
     resetForRecover(retiringPipelineState?: PipelineState, replacementDevice?: RhiDevice): void {
       clearPreparedMaterialBindings(activePreparedResolverCaches.materialBindings);
       frameState.gtaoCandidatePreparationFailureGeneration = undefined;
+      frameState.viewTargetTextures = undefined;
+      frameState.currentOcclusionDepth?.release();
+      frameState.currentOcclusionDepth = undefined;
+      frameState.currentTransmissionTargets?.release();
+      frameState.currentTransmissionTargets = undefined;
+      frameState.weightedTransparencyTargets?.release();
+      frameState.weightedTransparencyTargets = undefined;
+      frameState.ordinaryMaterialDepth?.release();
+      frameState.ordinaryMaterialDepth = undefined;
       frameState.shadowDepthLayers?.dispose();
       frameState.shadowDepthLayers = undefined;
       disposeTargetCaptures(cubeCaptureState);
@@ -1024,10 +1107,9 @@ function createRenderOwner(
           frameNumber: internals.rendererFrameNumber ?? frameState.frameNumber,
         })
         .unwrap();
-      featureGpuWork = createFeatureGpuWorkOwner(internals);
+      if (ownedFeatureGpuWork !== undefined)
+        ownedFeatureGpuWork = createFeatureGpuWorkOwner(internals);
       reflectionProbeOwner.dispose();
-      frameState.ssrHistoryOwner?.dispose();
-      frameState.waterSsrHistoryOwner?.dispose();
       frameState.probePlacement?.dispose();
       frameState.probePlacement = undefined;
       frameState.probePlacementFrame = undefined;
@@ -1039,12 +1121,8 @@ function createRenderOwner(
       frameState.screenProbe = undefined;
       frameState.bakedField?.dispose();
       frameState.bakedField = undefined;
-      frameState.ssrHistoryOwner = undefined;
-      frameState.waterSsrHistoryOwner = undefined;
       frameState.ssrSpatialAdmission = undefined;
       frameState.ssrRequested = false;
-      frameState.ssrLastCameraEntity = undefined;
-      frameState.ssrLastHistoryVersion = undefined;
       // A recovered device cannot retain handles from the lost device. The
       // Bloom owner abandons candidates and retires every committed generation
       // before the new PipelineState is rebuilt.
@@ -1086,10 +1164,12 @@ function createRenderOwner(
       delete frameState.pendingCloudHistoryFormat;
       resetTemporalHistory(frameState, 'device-recovery');
       releaseTemporalGpuStates(frameState);
+      disposeGtaoHistory(frameState);
       frameState.hdrpClusterMembership = null;
       frameState.instanceBuffers.clear();
       frameState.instanceBufferChunks?.clear();
       instanceCollections._resetResidency();
+      delete frameState.probeBlendRecordTransfer;
       delete frameState.probeBlendRecordBuffer;
       frameState.probeBlendRecordBufferCapacity = 0;
       frameState.probeBlendBuffers.clear();
@@ -1104,9 +1184,7 @@ function createRenderOwner(
       frameState.meshBindGroupCache = new WeakMap();
       frameState.materialBgPerEntity.clear();
       frameState.instancesBgPerEntity.clear();
-      frameState.materialBgShared.clear();
       frameState.materialBgAssemblyCache.clear();
-      frameState.renderBundleCaches?.passes.clear();
       frameState.shadowMaterialBindGroups = new WeakMap();
       frameState.postProcessBgCache = new WeakMap();
       // Fullscreen PSOs are cached outside frameState because the normal

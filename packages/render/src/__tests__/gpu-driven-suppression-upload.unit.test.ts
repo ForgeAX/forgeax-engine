@@ -65,10 +65,10 @@ it('uploads a patched suppression bitmap by visiting only its changed words, at 
     slots.remove(count - 1);
     const inactive = new SlotIdentityKeys(slots.capture());
     const patched = patchSuppressedPrimitiveWords(
-      { slots: before, activeEntityKeys: active, words: base },
+      { slots: before, activeEntityKeys: active, words: base, addressRevision: 0 },
       before,
       inactive,
-      count,
+      identityAddresses(count),
     );
     expect(patched).toBeDefined();
     const visits = { count: 0 };
@@ -89,3 +89,7 @@ it('uploads a patched suppression bitmap by visiting only its changed words, at 
   expect(visited[0]).toBe(visited[1]);
   expect(visited[0]).toBeLessThan(16);
 });
+
+function identityAddresses(rowAddressExtent: number) {
+  return { rowAddressExtent, allocationRevision: 0, primitiveIndexForSlot: (slot: number) => slot };
+}

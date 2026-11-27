@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import {
-  cp,
   lstat,
   mkdir,
   mkdtemp,
@@ -20,22 +19,28 @@ import {
 } from '@forgeax/engine-pack/build';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { declarationPackageId, scanInventory } from '@forgeax/engine-pack/scanner';
-import { build } from 'vite';
-import { parseAllDocuments, stringify } from 'yaml';
+import { stringify } from 'yaml';
 import {
   assertPluginSourceInputs,
   discoverPluginAssets,
   pluginAssetClosure,
 } from './build/plugin-assets.js';
-import { pluginProgramSource, pluginRuntimeProjection } from './build/plugin-programs.js';
+import {
+  compilePluginAuthoringCandidate,
+  copyProjectSourceCandidate,
+  pluginProgramSource,
+} from './build/plugin-programs.js';
 import { execFileCommand } from './child-process.js';
+import { projectEngineSourceOptions } from './engine-binding.js';
 import {
   filesystemPathRelative,
   filesystemPathSegments,
   isFilesystemPathWithin,
 } from './filesystem-path.js';
 import { commandError, readProjectFacts } from './project.js';
+import { parsePnpmLockDocuments } from './sdk-bootstrap.js';
 import type { CommandResult, ProjectCommandOptions } from './types.js';
+import { completeCommand } from './types.js';
 
 export interface SourceTransferOptions extends ProjectCommandOptions {
   readonly sourceRoot: string;
@@ -89,7 +94,7 @@ async function importedFiles(root: string, directory = root): Promise<string[]> 
     else if (entry.isFile()) files.push(relative(root, path).replaceAll('\\', '/'));
     else conflict(path, 'import contains a non-file resource');
   }
-  return files.sort();
+  return files;
 }
 
 interface LockEntry {
@@ -109,20 +114,22 @@ interface Lockfile {
   >;
   [key: string]: unknown;
 }
-async function optionalText(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, 'utf8');
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-    throw cause;
-  }
+function ignoreMissing(cause: unknown): undefined {
+  if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
+}
+
+function optionalText(path: string): Promise<string | undefined> {
+  return readFile(path, 'utf8').catch(ignoreMissing);
 }
 
 /** pnpm's project lockfile is the last YAML document; earlier documents hold environment dependencies. */
 function parseProjectLockfile(text: string, root: string) {
-  const documents = parseAllDocuments(text);
-  if (documents.some((document) => document.errors.length > 0))
+  let documents: ReturnType<typeof parsePnpmLockDocuments>;
+  try {
+    documents = parsePnpmLockDocuments(text);
+  } catch {
     conflict(root, 'pnpm lockfile contains invalid YAML');
+  }
   const document = documents.at(-1);
   const value = document?.toJSON();
   if (
@@ -136,19 +143,30 @@ function parseProjectLockfile(text: string, root: string) {
   return { documents, value: value as Lockfile };
 }
 
+function mergedProjectLockText(
+  locked: Lockfile,
+  previous?: ReturnType<typeof parseProjectLockfile>,
+) {
+  const project = stringify(locked);
+  if (previous === undefined) return project;
+  const prefix = previous.documents.slice(0, -1).map(String).join('');
+  return `${prefix}${prefix && !prefix.endsWith('\n') ? '\n' : ''}---\n${project}`;
+}
+
 /** Merge exact resolved nodes, then let pnpm verify the frozen candidate without choosing new versions. */
 async function dependencyCandidate(
   closure: AuthorPackClosure,
   target: string,
   candidate: string,
+  sourceText: string | undefined,
+  targetText: string | undefined,
+  targetManifest: string,
 ): Promise<boolean> {
   if (!Object.keys(closure.dependencies).length) return false;
-  const sourceText = await optionalText(resolve(closure.root, 'pnpm-lock.yaml'));
   if (!sourceText) conflict(closure.root, 'source dependencies require a project pnpm-lock.yaml');
   const source = parseProjectLockfile(sourceText, closure.root).value;
   if (String(source.lockfileVersion) !== '9.0')
     conflict(closure.root, 'expected the supported pnpm lockfile format 9.0');
-  const targetText = await optionalText(resolve(target, 'pnpm-lock.yaml'));
   const targetProject = targetText ? parseProjectLockfile(targetText, target) : undefined;
   const locked = targetProject
     ? targetProject.value
@@ -156,24 +174,21 @@ async function dependencyCandidate(
         lockfileVersion: '9.0',
         settings: source.settings,
         importers: { '.': {} },
-        packages: {},
-        snapshots: {},
       };
   if (String(locked.lockfileVersion) !== '9.0')
     conflict(target, 'incompatible target lockfile format');
-  const manifest = JSON.parse(await readFile(resolve(candidate, 'package.json'), 'utf8'));
+  const manifest = JSON.parse(targetManifest);
   manifest.dependencies ??= {};
   locked.importers['.'] ??= {};
   const imports = locked.importers['.'];
   imports.dependencies ??= {};
   const pending: string[] = [];
   let changed = false;
-  for (const [name] of Object.entries(closure.dependencies)) {
+  for (const [name, specifier] of Object.entries(closure.dependencies)) {
     const entry =
       source.importers['.']?.dependencies?.[name] ?? source.importers['.']?.devDependencies?.[name];
     if (!entry) conflict(name, 'source dependency must have locked resolution evidence');
-    if (entry.specifier !== closure.dependencies[name])
-      conflict(name, 'source manifest and lock specifier differ');
+    if (entry.specifier !== specifier) conflict(name, 'source manifest and lock specifier differ');
     const declared = manifest.dependencies[name] ?? manifest.devDependencies?.[name];
     const current = imports.dependencies[name] ?? imports.devDependencies?.[name];
     if (declared !== undefined && (!current || current.specifier !== declared))
@@ -240,19 +255,10 @@ async function dependencyCandidate(
   }
   if (changed) {
     await writeFile(resolve(candidate, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-    if (targetProject) {
-      const prefix = targetProject.documents
-        .slice(0, -1)
-        .map((document) => document.toString())
-        .join('');
-      const separator = prefix && !prefix.endsWith('\n') ? '\n' : '';
-      await writeFile(
-        resolve(candidate, 'pnpm-lock.yaml'),
-        `${prefix}${separator}---\n${stringify(locked)}`,
-      );
-    } else {
-      await writeFile(resolve(candidate, 'pnpm-lock.yaml'), stringify(locked));
-    }
+    await writeFile(
+      resolve(candidate, 'pnpm-lock.yaml'),
+      mergedProjectLockText(locked, targetProject),
+    );
     await execFileCommand(
       'pnpm',
       ['install', '--frozen-lockfile', '--ignore-scripts', '--ignore-workspace'],
@@ -267,7 +273,14 @@ async function dependencyCandidate(
   return changed;
 }
 
-async function cloneMap(closure: AuthorPackClosure): Promise<Map<string, string>> {
+function discoverTransferPlugins(
+  facts: Parameters<typeof discoverPluginAssets>[0],
+  engine: Awaited<ReturnType<typeof projectEngineSourceOptions>>,
+) {
+  return discoverPluginAssets(facts, undefined, undefined, undefined, engine);
+}
+
+function cloneMap(closure: AuthorPackClosure): Map<string, string> {
   const map = new Map<string, string>();
   for (const declaration of closure.declarations) {
     const oldNamespace = declarationPackageId(declaration);
@@ -293,7 +306,6 @@ export async function assetSourceImportCommand(
 ): Promise<CommandResult<unknown>> {
   let candidate: string | undefined;
   let lock: string | undefined;
-  const committed: { path: string; backup?: string }[] = [];
   try {
     const facts = await readProjectFacts(options.root);
     if (!facts.ok) return facts;
@@ -317,10 +329,12 @@ export async function assetSourceImportCommand(
     lock = lockPath;
     const sourceFacts = await readProjectFacts(options.sourceRoot);
     if (!sourceFacts.ok) return sourceFacts;
+    const sourceEngineOptions = await projectEngineSourceOptions(sourceFacts.value.root);
     const closure = await collectAuthorPackClosure(
-      options.sourceRoot,
+      sourceFacts.value.root,
       options.sourcePath,
       sourceFacts.value.assetRoots,
+      sourceEngineOptions,
     );
     const sourceLock = await optionalText(resolve(closure.root, 'pnpm-lock.yaml'));
     if (
@@ -329,45 +343,33 @@ export async function assetSourceImportCommand(
         options.expectedRevision
     )
       conflict(options.sourcePath, 'source revision changed');
-    let reused = false;
-    try {
-      await lstat(target);
+    const reused = (await lstat(target).catch(ignoreMissing)) !== undefined;
+    if (reused) {
       if (options.cloneIdentities) conflict(target, 'clone target already exists');
+      const paths = closure.files.map((file) => file.path).sort();
       for (const file of closure.files) {
-        const existing = await readFile(resolve(target, file.path));
+        const existing = await readFile(resolve(target, file.path)).catch(ignoreMissing);
+        if (existing === undefined) conflict(target, 'existing import is incomplete');
         if (!existing.equals(file.bytes)) conflict(target, 'existing import differs from source');
       }
-      if (
-        JSON.stringify(await importedFiles(target)) !==
-        JSON.stringify(closure.files.map((file) => file.path).sort())
-      )
+      if (JSON.stringify((await importedFiles(target)).sort()) !== JSON.stringify(paths))
         conflict(target, 'existing import has extra or missing source files');
-      reused = true;
-    } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
     }
-    // An existing partial directory is a conflict, never a repair-by-overwrite.
-    try {
-      if (!reused) {
-        await lstat(target);
-        conflict(target, 'existing import is incomplete');
-      }
-    } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
-    }
-    const targetInventory = await discoverPluginAssets(facts.value);
-    const targetSources = await scanInventory(
-      facts.value.assetRoots.map((directory) => resolve(root, directory)),
-    );
-    if (!targetSources.ok) throw targetSources.error;
-    const targetRevisions = JSON.stringify(
-      [...targetSources.value.declarations]
-        .map(([path, source]) => [path, source.sourceRevision])
-        .sort(),
-    );
-    const identities = options.cloneIdentities
-      ? await cloneMap(closure)
-      : new Map<string, string>();
+    const engineOptions = await projectEngineSourceOptions(root);
+    const engineScanOptions = { scriptablePack: engineOptions };
+    const targetInventory = await discoverTransferPlugins(facts.value, engineOptions);
+    const assetRoots = facts.value.assetRoots.map((directory) => resolve(root, directory));
+    const sourceRevisions = async () => {
+      const sources = await scanInventory(assetRoots, engineScanOptions);
+      if (!sources.ok) throw sources.error;
+      return JSON.stringify(
+        [...sources.value.declarations]
+          .map(([path, source]) => [path, source.sourceRevision])
+          .sort(),
+      );
+    };
+    const targetRevisions = await sourceRevisions();
+    const identities = options.cloneIdentities ? cloneMap(closure) : new Map<string, string>();
     const shaderModules = new Map<string, string>();
     if (options.cloneIdentities) {
       const prefix = `clone_${randomUUID().replaceAll('-', '')}`;
@@ -381,17 +383,13 @@ export async function assetSourceImportCommand(
     }
     const originalManifest = await readFile(resolve(root, 'package.json'), 'utf8');
     const originalLock = await optionalText(resolve(root, 'pnpm-lock.yaml'));
-    const candidateRoot = await mkdtemp(resolve(dirname(root), '.forgeax-transfer-'));
-    candidate = candidateRoot;
-    await cp(root, candidate, {
-      recursive: true,
-      filter: (path) =>
-        !relative(root, path)
-          .split(/[\\/]/)
-          .some((part) =>
-            ['node_modules', '.git', '.forgeax', '.worktrees', 'dist'].includes(part),
-          ),
-    });
+    candidate = await mkdtemp(resolve(dirname(root), '.forgeax-transfer-'));
+    await copyProjectSourceCandidate(root, candidate);
+    const dependenciesMatch = async (directory: string) =>
+      (await optionalText(resolve(directory, 'package.json'))) === originalManifest &&
+      (await optionalText(resolve(directory, 'pnpm-lock.yaml'))) === originalLock;
+    if (!(await dependenciesMatch(candidate)))
+      conflict(root, 'target dependencies changed during transfer');
     const destination = resolve(candidate, relative(root, target));
     for (const file of closure.files) {
       const path = resolve(destination, file.path);
@@ -417,7 +415,14 @@ export async function assetSourceImportCommand(
       }
       await writeFile(path, bytes);
     }
-    const installed = await dependencyCandidate(closure, root, candidate);
+    const installed = await dependencyCandidate(
+      closure,
+      root,
+      candidate,
+      sourceLock,
+      originalLock,
+      originalManifest,
+    );
     if (!installed) {
       try {
         await lstat(resolve(root, 'node_modules'));
@@ -429,14 +434,11 @@ export async function assetSourceImportCommand(
     // Source discovery evaluates Pack declarations. Its locked dependencies
     // must exist in the isolated candidate before that first evaluation.
     // Duplicate identities still fail before any target files are published.
-    const scanned = await scanInventory(
-      facts.value.assetRoots.map((directory) => resolve(candidateRoot, directory)),
-    );
-    if (!scanned.ok) throw scanned.error;
     const candidateClosure = await collectAuthorPackClosure(
       candidate,
       relative(candidate, resolve(destination, closure.sourcePath)),
       facts.value.assetRoots,
+      engineOptions,
     );
     const destinationPrefix = `${relative(candidate, destination).replaceAll('\\', '/')}/`;
     if (
@@ -444,11 +446,11 @@ export async function assetSourceImportCommand(
       candidateClosure.files.some((file) => !file.path.startsWith(destinationPrefix))
     )
       conflict(destination, 'computed references must resolve inside the cloned source closure');
-    const inventory = await discoverPluginAssets({
-      root: candidate,
-      assetRoots: facts.value.assetRoots,
-    });
-    const sourceInventory = await discoverPluginAssets(sourceFacts.value);
+    const inventory = await discoverTransferPlugins(
+      { root: candidate, assetRoots: facts.value.assetRoots },
+      engineOptions,
+    );
+    const sourceInventory = await discoverTransferPlugins(sourceFacts.value, sourceEngineOptions);
     const buildGuids = new Set([
       ...pluginAssetClosure(sourceInventory, sourceFacts.value.roots.build).map(
         (record) => identities.get(record.definition.guid) ?? record.definition.guid,
@@ -463,63 +465,43 @@ export async function assetSourceImportCommand(
       );
       if (!records.length) continue;
       const input = resolve(candidate, '.forgeax', `transfer-${target}.ts`);
-      await mkdir(dirname(input), { recursive: true });
-      await writeFile(
-        input,
-        pluginProgramSource(records, target, []) +
-          '\nexport const validation = createPrograms("transfer", "candidate", 1);',
-      );
-      await build({
+      await compilePluginAuthoringCandidate({
         root: candidate,
-        configFile: false,
-        logLevel: 'silent',
-        plugins: [
-          pluginRuntimeProjection(candidate),
-          {
-            name: 'forgeax:transfer-target-check',
-            generateBundle(_options, bundle) {
-              if (target === 'build') return;
-              for (const output of Object.values(bundle)) {
-                if (output.type !== 'chunk') continue;
-                if (
-                  Object.keys(output.modules).some((id) => id.includes('__vite-browser-external'))
-                )
-                  conflict(input, 'Node dependencies cannot enter a browser plugin closure');
-              }
-            },
+        input,
+        source:
+          pluginProgramSource(records, target, []) +
+          '\nexport const validation = createPrograms("transfer", "candidate", 1);',
+        target,
+        browserFileName: 'validation',
+        plugin: {
+          name: 'forgeax:transfer-target-check',
+          generateBundle(_options, bundle) {
+            if (target === 'build') return;
+            for (const output of Object.values(bundle)) {
+              if (output.type !== 'chunk') continue;
+              if (Object.keys(output.modules).some((id) => id.includes('__vite-browser-external')))
+                conflict(input, 'Node dependencies cannot enter a browser plugin closure');
+            }
           },
-        ],
-        build: {
-          write: false,
-          target: 'esnext',
-          minify: false,
-          ...(target === 'build'
-            ? { ssr: input }
-            : { lib: { entry: input, formats: ['es'] as 'es'[], fileName: 'validation' } }),
         },
       });
     }
     await assertAuthorPackUnchanged(closure);
     if ((await optionalText(resolve(closure.root, 'pnpm-lock.yaml'))) !== sourceLock)
       conflict(closure.root, 'source lock changed during transfer');
-    if (
-      (await readFile(resolve(root, 'package.json'), 'utf8')) !== originalManifest ||
-      (await optionalText(resolve(root, 'pnpm-lock.yaml'))) !== originalLock
-    )
-      conflict(root, 'target dependencies changed during transfer');
     await assertPluginSourceInputs(targetInventory, root);
-    const currentSources = await scanInventory(
-      facts.value.assetRoots.map((directory) => resolve(root, directory)),
-    );
-    if (!currentSources.ok) throw currentSources.error;
-    if (
-      JSON.stringify(
-        [...currentSources.value.declarations]
-          .map(([path, source]) => [path, source.sourceRevision])
-          .sort(),
-      ) !== targetRevisions
-    )
+    if ((await sourceRevisions()) !== targetRevisions)
       conflict(root, 'target sources changed during transfer');
+    for (const [project, selected] of [
+      [closure.root, sourceEngineOptions],
+      [root, engineOptions],
+    ] as const) {
+      const current = await projectEngineSourceOptions(project);
+      if (current.packageBinding?.root !== selected.packageBinding?.root)
+        conflict(project, 'Engine selection changed during transfer');
+    }
+    if (!(await dependenciesMatch(root)))
+      conflict(root, 'target dependencies changed during transfer');
     await assertWritablePath(root, target);
     if (reused) {
       if (installed)
@@ -527,14 +509,11 @@ export async function assetSourceImportCommand(
           target,
           'existing import dependencies changed; restore its locked dependencies first',
         );
-      return {
-        ok: true,
-        value: {
-          sourcePath: resolve(target, closure.sourcePath),
-          files: closure.files.length,
-          reused: true,
-        },
-      };
+      return completeCommand({
+        sourcePath: resolve(target, closure.sourcePath),
+        files: closure.files.length,
+        reused: true,
+      });
     }
     // Reserve the new destination without overwriting a concurrently created directory.
     await mkdir(dirname(target), { recursive: true });
@@ -545,20 +524,15 @@ export async function assetSourceImportCommand(
     ];
     const rollback = resolve(candidate, '.rollback');
     await mkdir(rollback);
+    const committed: { path: string; backup?: string }[] = [];
     try {
       for (const [index, path] of changes.entries()) {
         const current = resolve(root, path),
           next = resolve(candidate, path);
         await mkdir(dirname(current), { recursive: true });
-        let backup: string | undefined;
-        try {
-          await lstat(current);
-          backup = resolve(rollback, String(index));
-          await rename(current, backup);
-        } catch (cause) {
-          if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
-        }
-        committed.push({ path: current, ...(backup ? { backup } : {}) });
+        const backup = resolve(rollback, String(index));
+        const saved = await rename(current, backup).then(() => backup, ignoreMissing);
+        committed.push(saved === undefined ? { path: current } : { path: current, backup: saved });
         await rename(next, current);
       }
     } catch (cause) {
@@ -566,7 +540,7 @@ export async function assetSourceImportCommand(
       for (const change of committed.reverse()) {
         try {
           await rm(change.path, { recursive: true, force: true });
-          if (change.backup) await rename(change.backup, change.path);
+          if (change.backup !== undefined) await rename(change.backup, change.path);
         } catch (error) {
           failures.push(error);
         }
@@ -581,15 +555,12 @@ export async function assetSourceImportCommand(
       }
       throw cause;
     }
-    return {
-      ok: true,
-      value: {
-        sourcePath: resolve(target, closure.sourcePath),
-        files: closure.files.length,
-        identities: Object.fromEntries(identities),
-        dependencies: closure.dependencies,
-      },
-    };
+    return completeCommand({
+      sourcePath: resolve(target, closure.sourcePath),
+      files: closure.files.length,
+      identities: Object.fromEntries(identities),
+      dependencies: closure.dependencies,
+    });
   } catch (cause) {
     return { ok: false, error: commandError(cause, 'asset-source-transfer-failed') };
   } finally {

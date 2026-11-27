@@ -8,9 +8,18 @@ description: >-
 
 # forgeax-engine-performance
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 Identify the expensive owner, remove redundant work at its actual change
 frequency, and verify the requested workload. Follow the checkout's
 [delivery and rendering gates](../../AGENTS.md).
+
+For moving CPU WaterMesh views, reuse `WaterMeshViewBuilder` only for identical
+immutable geometry inputs. Keep LOD, visibility, morph and observer-relative
+packing current on every view; generation/domain changes replace preparation.
+Publication equality must retain exact packed bytes and source identity, rather
+than relying only on short layout hashes. Camera-follow controls must release
+their temporary ownership on every exit path.
 
 Separate compressed publication size from decoded and per-owner transport copies.
 The native LOD carrier shares one owned URL for original plain/zstd bytes across
@@ -421,6 +430,181 @@ A GPU-bound frame is attributed from a capture first; see
   lower resolution and disabled work as diagnostic ablations. When removing a
   pass isolates the cost, test alternate native recording of the same draws
   with the feature enabled before changing the quality settings.
+
+## Audit shader and pipeline work
+
+Take separate snapshots after Renderer Ready, the first scene draw, and each
+material or view change. Repeat the unchanged final step as a warm control. Use
+the same workload, backend, quality and library configuration across runs.
+
+| Question | Read from the owner |
+| --- | --- |
+| Which built-in source-template options were actually selected? | Explicitly select `shaderTemplates` on the actual Renderer. It returns cached selections, requests, hits, cumulative compiler milliseconds and the `identifier` / `definesKey` list. Count legal combinations separately with the [publication roster test](../../packages/vite-plugin-shader/src/__tests__/variant-row-counts.unit.test.ts). |
+| What native work is outstanding right now? | Inspect `pipelineLibrary.pending` with `renderer.inspect({ fields: ['pipelineLibrary'] })` or the corresponding `execution.inspectRenderer` call on a split Render Worker. Keep `unidentified` with the pending recipes. |
+| What native work did the Renderer recently demand? | Use `runtimeRequests: true` to read bounded demand history in place of the full pending snapshot. Group recipes by semantic `pipeline.identity` when present, or by `pipeline.localIdentity` within one `runtimeRequests.libraryId`. Compare stage constants, entry points, layouts, attachment formats and sample count when attributing new recipes. |
+| What did a submitted draw actually bind? | Open a real frame with [RHI Debug](../forgeax-engine-rhi-debug/SKILL.md#game-cli-entry). Use `rhi summary --passes` to locate the pass and `rhi inspect --work-index` for pipeline and bindings. |
+
+For atmosphere, request `environment` with `rasterPassRequests`.
+`environment.transport` reports the installed View's solar mode, AP quality,
+carrier and opaque application. In the same frame, inspect Group 0 bindings
+`18/19/20/21/23` at the actual Forward, GBuffer and Deferred Lighting draws.
+Record physical layout slots separately from shader entry-point reads. On
+WebGL2 the packed AP volume shares the Cluster texture. Use a cold capture to
+count its production work and a warm capture to verify reuse. Compare the
+`atmosphere-aerial-perspective` and atmosphere composition passes with RHI
+timing under the same camera and output profile. Report mean and P95 using
+the original samples.
+
+For direct lighting, compare Group 0 texture-view slots `3/5/8` (directional,
+point and spot depth), `24` (variance moments), `11/12` (IES and cookies),
+`13/14` (LTC), and `16` (cloud shadow). Slot 12 can instead be a sampler
+on a low-limit profile. Check the resource kind before counting. Collected
+Standard raster requests expose `viewTextures` as binding numbers and stage
+visibility for the selected layout. Use the
+captured draw's vertex and fragment entry names to read their binding
+footprints from the selected WGSL. Some statically reachable reads run only
+for particular lights. Inspect the matching shadow-producing passes in the
+same tape. Compare a steady PCF draw, a variance draw, and GBuffer geometry
+separately. Use timings to establish changes in GPU work.
+
+For the opt-in Forward screen shadow receiver, set
+`forwardDirectionalShadowReceiver: "screen"` on the Standard profile. After a
+ready frame, request `frame`, `capabilities`, and `directionalShadow` in the
+same Renderer inspection. `directionalShadow.forwardReceiver` reports the
+mask extent and format, projected light count, AO coexistence, local channel
+assignments (`punctual.lights`), or the reason the View used the raw path.
+The mask is at Group 2 binding 7 for shadows alone. With lighting AO, binding
+2:7 holds AO and 0:25 holds the shadow mask. Check the device's
+`maxSampledTexturesPerShaderStage` when this combination falls back.
+
+Inspect the receiver prefill (`standard-scene-surface-data` and its late
+segment), `forward-directional-shadow`, and `main` (sometimes merged with
+`skybox`) in the same RHI capture. Follow each texture view back to its
+attachment producer. R8 holds the sun in sun-only views. RGBA8 gives the sun
+R and the local lights GBA when a projected sun exists, and gives all four
+channels to local lights otherwise. The first instance of each `fs_point`,
+`fs_spot`, or `fs_spot_compact` draw identifies the Cluster row. Its color
+write mask has bit `1 << channel`, and `lightingChannels.w` in the light row
+stores `channel + 1`. Zero means unassigned. Disjoint light ranges can share
+a channel. Compare the raw path when channel allocation overflows or the
+receiver coverage requests a fallback.
+
+Run the 1080p Dawn A/B with 60 warm frames and 240 observed frames per arm.
+The opt-in fixture alternates three raw/screen pairs and saves complete GPU
+timestamp receipts. Compute the union of the selected pass intervals on
+each frame, then report mean and P95 for those intervals and the whole GPU
+frame. Keep the workload and native adapter matched. Pair timing with the
+raw and projected linear-HDR readback checks.
+
+```bash
+FORGEAX_DAWN_ISOLATED=1 \
+FORGEAX_FORWARD_SHADOW_BENCHMARK=/tmp/forgeax-forward-shadow-1080p \
+pnpm exec vitest run --config config/vitest.dawn.config.ts \
+  packages/runtime/src/__tests__/forward-directional-screen-shadow.dawn.test.ts \
+  -t 'measures 1080p'
+```
+
+For a larger caster workload use `@forgeax/perf-shadow-stress`. Build the app
+first. Run both `shadowProjection=raw` and `shadowProjection=screen` with
+`characters=0&gpuTiming=1&warmupFrames=60&sampleFrames=240`, a distinct
+`PERF_DAWN_OUTPUT` per run and `PERF_DAWN_SIZE=1920x1080`. Both A/B arms use
+three shadowed Spots plus the sun, with the fourth Spot still lighting the
+scene. The stock workload retains all four shadowed Spots and skinned
+characters. The receipt exposes admission and GPU timings under
+`evidence.shadowProjection`. Preserve incomplete records and compare only
+matching complete timing windows for GPU conclusions.
+
+At `@forgeax/perf-10k-cubes-lights`, build the app and run the same pair
+with `PERF_DAWN_FRAMES=305`, `PERF_DAWN_SIZE=1920x1080`, and
+`PERF_QUERY="shadowProjection=raw&shadowedSun=0&profile=0"`. Change
+`shadowProjection` to `screen` for the other arm. Repeat with
+`shadowedSun=1` for a mixed roster. These diagnostic workloads keep the
+10,000 cubes and 32 punctual lights and cast shadows from three of the
+existing Spots. Compare timings by matching `progress` values in both JSON
+files with `node scripts/test/compare-forward-shadow-timings.mjs RAW.json SCREEN.json`.
+The command reports paired counts, missing samples, and both timing unions. The ordinary 60-frame
+workload retains its original light configuration and no-light comparison.
+`benchmark:physical` qualifies submitted reports using the app's existing
+physical benchmark manifest.
+
+Outside the game, get the live owner's revision with `dev status --json`. Run
+the following from the game root to save a diagnostic snapshot.
+
+```bash
+forgeax_revision='paste revision from dev status here'
+pnpm exec forgeax dev eval --revision "$forgeax_revision" --json --detail --code '
+  const options = { fields: ["frame", "profile", "capabilities", "pipelineLibrary", "shaderTemplates", "rasterPassRequests", "directionalShadow"], runtimeRequests: true };
+  if (typeof execution !== "undefined" && typeof execution.inspectRenderer === "function") {
+    const result = await execution.inspectRenderer(options);
+    if (!result.ok || typeof renderer !== "undefined" || typeof assets === "undefined") return result;
+    return { ok: true, value: {
+      ...result.value,
+      engineShaderTemplates: assets.shaderRegistry.programTemplateInspection(),
+    } };
+  }
+  return { ok: true, value: renderer.inspect(options) };
+' > pipeline-inspection.json
+```
+
+An App host can use the same Worker query through `app.remoteEval`. Capture the
+pre-scene Renderer Ready sample in the host or a fixture before the first scene
+draw. Live `dev eval` requires the project owner to be ready. Check the Result
+and confirm that `pipelineLibrary` and `runtimeRequests` are present before
+interpreting numbers. The Renderer projects `shaderTemplates` from its own
+Registry, including when it runs in a separate Render Worker. The
+`sourceMaterialCompiles` rows count addressed MaterialAsset selections
+separately from built-in programs. On a split host the CLI example also
+reads the Engine Worker's Registry because it can compile a material before
+publishing the selected program to Render. Keep the two realms separate.
+
+Set `pipelineLibraryCollection: true` in a separate inspection before the
+diagnostic window to retain the bounded `rasterPassRequests` list. It reports
+the incoming variant, selected shader and layout, specialization constants,
+attachments, and the registered/fallback/unavailable decision. When a native
+pipeline is available, `nativeRecipe.localIdentity` joins the row to device
+demand history. Use the current device generation in that join. A label can
+be shared. Match descriptor fields for tape attribution and use native
+recipe identity for unique counts. Read the final snapshot before disabling
+collection with `pipelineLibraryCollection: false`.
+
+Save an earlier and a later snapshot, then run the [offline comparison tool](scripts/pipeline_audit.mjs).
+
+```bash
+node /path/to/skills/forgeax-engine-performance/scripts/pipeline_audit.mjs before.json after.json
+```
+
+The comparison retains request recipes and layout descriptors. For raw Render
+Inspection inputs, select snapshots from the same recorded session and device.
+From a built Engine checkout, `pipeline_audit.mjs --roster <shader-manifest.json>`
+counts legal material selections from a source-template manifest using the
+Engine's publication rules, including the subset for Coverage.
+
+The maintained Dawn fixture saves the empty renderer, first draw, roughness,
+Base Color map, cutout and Outline windows. From a checkout with the normal
+Dawn test dependencies, capture them outside the source tree.
+
+```bash
+forgeax_audit_dir=$(mktemp -d)
+FORGEAX_PIPELINE_AUDIT_DIR="$forgeax_audit_dir" pnpm exec vitest run \
+  --config config/vitest.dawn.config.ts --project dawn \
+  packages/runtime/src/__tests__/raster-pipeline-audit.dawn.test.ts
+node skills/forgeax-engine-performance/scripts/pipeline_audit.mjs \
+  "$forgeax_audit_dir/roughness-only.json" "$forgeax_audit_dir/add-base-color-map.json"
+```
+
+For two observations from one device library, filter history by `sequence`
+greater than the earlier `latestSequence`. Keep `overwritten`, the sequence
+range and missing recipe fields. A changed `libraryId` starts a new series.
+Report incomplete windows and missing backend support explicitly. Use
+`preloadAtDemand` to distinguish startup or background membership from
+`absent`, `indexing` and `unavailable` at demand time.
+
+Report template selections, registered Shader Module and pipeline records,
+creation attempts, hits and native asynchronous completions as separate counts.
+A synchronous request's `returned` outcome confirms handle return. Use
+library-local timestamps for queue and compile durations. Read snapshots at
+milestones outside ordinary frame timing. Full recipe export has a separate
+[explicit collection and export contract](../../packages/app/README.md#renderer-inspection-through-public-app-eval).
 
 ## Optimize GPU frames from a capture
 
@@ -1148,6 +1332,19 @@ node <skill>/scripts/gpu.mjs serve /outside/source/gpu-view
 node <skill>/scripts/gpu.mjs images /outside/source/gpu-view
 node <skill>/scripts/gpu.mjs timing capture.json --pointer /gpu/samples/0/observation/frame --out-dir /outside/source/gpu-time
 ```
+
+For a binding audit:
+
+1. Use `forgeax rhi inspect --artifact frame.rhitape --work-index <index> --json`.
+   Record the selected shader entries, group slots, buffer ranges, and dynamic
+   offsets. Read stage visibility from the bind group layout descriptor.
+2. Count distinct buffer handles by owner label. Use cold captures for creation
+   and steady captures for live requested bytes and `writeBuffer` counts.
+3. Enable `renderer.inspect({ pipelineLibraryCollection: true })` on a supported
+   backend before the diagnostic frame. Read
+   `renderer.inspect({ fields: ['shaderTemplates', 'pipelineLibrary', 'rasterPassRequests'], runtimeRequests: true })`
+   to compare program selection, native layouts, and pipeline reuse. Record
+   completed-frame timings with route collection and RHI capture disabled.
 
 `report` uses the built RHI Debug module at `packages/rhi-debug/dist/index.mjs`
 under the current directory; supply `--rhi-module` for another installation.

@@ -4,6 +4,7 @@ import { halfFloat } from '@forgeax/engine-math';
 import {
   ANTIALIAS_MSAA,
   ANTIALIAS_NONE,
+  ANTIALIAS_TAA,
   Camera,
   DirectionalLight,
   Materials,
@@ -14,10 +15,12 @@ import {
 } from '@forgeax/engine-render';
 import {
   attachRecorder,
+  bindingReadRequest,
   buildFrameModel,
   decodeTape,
   openReplay,
   type RecorderAttachment,
+  summarizePasses,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -40,8 +43,8 @@ const CLEAR_USAGE = 0x10 | 0x01;
 const MAP_READ = 0x0001;
 const COPY_DST = 0x0008;
 const ENGINE_MANIFEST = await (async () => {
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-  return buildEngineShaderManifest();
+  const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  return buildEngineShaderTemplateManifest();
 })();
 const ENGINE_MANIFEST_URL = shaderManifestUrl(ENGINE_MANIFEST);
 
@@ -162,7 +165,7 @@ function spawnReceiver(world: World, assets: Assets): void {
 }
 
 function antialiasOf(scene: Scene): number {
-  if (scene.temporal === true) return 3;
+  if (scene.temporal === true) return ANTIALIAS_TAA;
   return scene.alphaToCoverage === true ? ANTIALIAS_MSAA : ANTIALIAS_NONE;
 }
 
@@ -204,10 +207,21 @@ interface SceneHost {
 
 let pixelHost: Promise<SceneHost> | undefined;
 let pixelDeviceRequests = 0;
+let temporalHost: Promise<SceneHost> | undefined;
+let temporalRecorder: RecorderAttachment | undefined;
+
+function temporalCapture() {
+  temporalRecorder ??= attachRecorder(webgpu).unwrap();
+  return temporalRecorder;
+}
 
 afterAll(async () => {
-  if (pixelHost !== undefined) await disposeSceneHost(await pixelHost);
-  // Ordinary pixel scenes share assembly; temporal captures retain fresh devices.
+  try {
+    if (pixelHost !== undefined) await disposeSceneHost(await pixelHost);
+    if (temporalHost !== undefined) await disposeSceneHost(await temporalHost);
+  } finally {
+    if (temporalRecorder !== undefined) (await temporalRecorder.dispose()).unwrap();
+  }
   expect(pixelDeviceRequests).toBeLessThanOrEqual(1);
 });
 
@@ -281,13 +295,13 @@ async function createSceneHost(recorder?: RecorderAttachment): Promise<SceneHost
 }
 
 async function withScene<T>(scene: Scene, probe: Probe<T>): Promise<T> {
-  const shared = probe.recorder === undefined;
   let host: SceneHost;
-  if (shared) {
+  if (probe.recorder === undefined) {
     pixelHost ??= createSceneHost();
     host = await pixelHost;
   } else {
-    host = await createSceneHost(probe.recorder);
+    temporalHost ??= createSceneHost(probe.recorder);
+    host = await temporalHost;
   }
   const { renderer, device } = host;
   let attachment: RenderWorldLease | undefined;
@@ -301,7 +315,11 @@ async function withScene<T>(scene: Scene, probe: Probe<T>): Promise<T> {
     propagateTransforms(world).unwrap();
     if (scene.temporal === true) {
       const profile = renderer.inspect().profile;
-      const set = renderer.setProfile({ ...profile, renderPath: 'forward', ssao: false });
+      const set = renderer.setProfile({
+        ...profile,
+        renderPath: 'forward',
+        ambientOcclusion: { enabled: false },
+      });
       if (!set.ok) throw set.error;
     }
     let capture: ReturnType<RecorderAttachment['captureFrame']> | undefined;
@@ -326,7 +344,6 @@ async function withScene<T>(scene: Scene, probe: Probe<T>): Promise<T> {
     return await probe.finish({ device, target, recorder: probe.recorder, capture });
   } finally {
     attachment?.dispose();
-    if (!shared) await disposeSceneHost(host);
   }
 }
 
@@ -353,60 +370,92 @@ async function readColor(device: GPUDevice, target: GPUTexture): Promise<Uint8Ar
 const render = (scene: Scene): Promise<Uint8Array> =>
   withScene(scene, { frames: 1, finish: ({ device, target }) => readColor(device, target) });
 
-/** Fraction of the central region the scene-temporal target marks as uncovered (z < 0). */
+/** Check the resolved metadata against its input coverage, then measure raw discard. */
 async function uncoveredTemporalFraction(scene: Scene): Promise<number> {
-  const recorder = attachRecorder(webgpu).unwrap();
-  try {
-    return await withScene(
-      { ...scene, temporal: true },
-      {
-        recorder,
-        frames: 4,
-        async finish({ capture }) {
-          if (capture === undefined) throw new Error('missing frame capture');
-          const tape = decodeTape((await capture).unwrap().bytes).unwrap();
-          const model = buildFrameModel(tape);
-          const producer = model.works.find((work) =>
-            work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_temporal'),
-          );
-          if (producer?.attachments === undefined) throw new Error('missing fs_temporal work');
-          const id = producer.attachments.colorViewHandleIds[0];
-          if (id === undefined) throw new Error('missing temporal attachment');
-          const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
-          const device = (await adapter.requestDevice(deviceOptionsForAdapter(adapter))).unwrap();
-          const replay = (
-            await openReplay(tape, { device, createShaderModule: webgpu.createShaderModule })
+  const recorder = temporalCapture();
+  return withScene(
+    { ...scene, temporal: true },
+    {
+      recorder,
+      frames: 4,
+      async finish({ capture }) {
+        if (capture === undefined) throw new Error('missing frame capture');
+        const tape = decodeTape((await capture).unwrap().bytes).unwrap();
+        const model = buildFrameModel(tape);
+        const projection = summarizePasses(model).find((pass) => pass.label === 'taa-resolve');
+        const producer = model.works.find((work) => work.passIndex === projection?.passIndex);
+        if (!producer?.attachments) throw new Error('missing Forward TAA metadata producer');
+        const id = producer.attachments.colorViewHandleIds[1];
+        if (id === undefined) throw new Error('missing temporal attachment');
+        const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
+        const device = (await adapter.requestDevice(deviceOptionsForAdapter(adapter))).unwrap();
+        const replay = (
+          await openReplay(tape, { device, createShaderModule: webgpu.createShaderModule })
+        ).unwrap();
+        try {
+          const [depthRead, paramsRead, temporalRead] = (
+            await replay.readAtWorks([
+              bindingReadRequest(producer, 1, 14).unwrap(),
+              bindingReadRequest(producer, 1, 8).unwrap(),
+              { resourceId: id, workIndex: producer.workIndex },
+            ])
           ).unwrap();
-          try {
-            const temporal = (await replay.readResourceAtWork(id, producer.workIndex)).unwrap();
-            expect(temporal.format).toBe('rgba16float');
-            const view = new DataView(
-              temporal.bytes.buffer,
-              temporal.bytes.byteOffset,
-              temporal.bytes.byteLength,
-            );
-            const width = temporal.width ?? SIZE;
-            const height = temporal.height ?? SIZE;
-            let uncovered = 0;
-            let total = 0;
-            for (let y = Math.floor(height * 0.375); y < Math.floor(height * 0.625); y++)
-              for (let x = Math.floor(width * 0.375); x < Math.floor(width * 0.625); x++) {
-                total++;
-                if (halfFloat.f16ToF32(view.getUint16((y * width + x) * 8 + 4, true)) < 0)
-                  uncovered++;
-              }
-            return uncovered / total;
-          } finally {
-            (await replay.dispose()).unwrap();
-            webgpu.disposeDevice(device);
-            expect((await device.lost).reason).toBe('destroyed');
+          const depth = depthRead?.unwrap();
+          const params = paramsRead?.unwrap();
+          const temporal = temporalRead?.unwrap();
+          if (!depth || !params || !temporal) throw new Error('missing TAA replay readback');
+          expect(['depth32float', 'depth32float-stencil8']).toContain(depth.format);
+          expect(temporal.format).toBe('rgba16float');
+          expect([depth.width, depth.height]).toEqual([SIZE, SIZE]);
+          expect([temporal.width, temporal.height]).toEqual([SIZE, SIZE]);
+          const input = new DataView(
+            depth.bytes.buffer,
+            depth.bytes.byteOffset,
+            depth.bytes.byteLength,
+          );
+          const uniform = new DataView(
+            params.bytes.buffer,
+            params.bytes.byteOffset,
+            params.bytes.byteLength,
+          );
+          const output = new DataView(
+            temporal.bytes.buffer,
+            temporal.bytes.byteOffset,
+            temporal.bytes.byteLength,
+          );
+          const jitterX = uniform.getFloat32(0, true) * SIZE;
+          const jitterY = uniform.getFloat32(4, true) * SIZE;
+          expect(uniform.getUint32(20, true)).toBe(0); // Native-scale TAA has no output-domain geometry.
+          const covered = (x: number, y: number) => input.getFloat32((y * SIZE + x) * 4, true) > 0;
+          let uncovered = 0;
+          let total = 0;
+          let mismatched = 0;
+          for (let y = 24; y < 40; y++) {
+            for (let x = 24; x < 40; x++) {
+              total++;
+              const cx = Math.floor(x + 0.5 + jitterX);
+              const cy = Math.floor(y + 0.5 + jitterY);
+              if (!covered(cx, cy)) uncovered++;
+              // A legitimate stochastic survivor supplies velocity to the full 3x3 TAA footprint.
+              let expected = false;
+              for (let dy = -1; dy <= 1; dy++)
+                for (let dx = -1; dx <= 1; dx++) expected ||= covered(cx + dx, cy + dy);
+              const resolved = halfFloat.f16ToF32(output.getUint16((y * SIZE + x) * 8 + 4, true));
+              if (resolved >= 0 !== expected) mismatched++;
+            }
           }
-        },
+          expect(mismatched, 'TAA metadata coverage must match the jittered depth footprint').toBe(
+            0,
+          );
+          return uncovered / total;
+        } finally {
+          (await replay.dispose()).unwrap();
+          webgpu.disposeDevice(device);
+          expect((await device.lost).reason).toBe('destroyed');
+        }
       },
-    );
-  } finally {
-    (await recorder.dispose()).unwrap();
-  }
+    },
+  );
 }
 
 const near = (a: Uint8Array, ai: number, b: Uint8Array, bi: number, tolerance = 3): boolean =>

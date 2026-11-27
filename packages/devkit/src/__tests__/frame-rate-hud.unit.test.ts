@@ -6,7 +6,7 @@ import { hostStartupDocument, hostStartupScript } from '../host/startup-source.j
 function fixture(native = true, search = '') {
   document.open();
   document.write(
-    hostStartupDocument('FPS game', undefined, { game: '1.2.3', engine: 'abcdef123456' }),
+    hostStartupDocument('Render FPS game', undefined, { game: '1.2.3', engine: 'abcdef123456' }),
   );
   document.close();
   let visible = true;
@@ -55,6 +55,7 @@ function fixture(native = true, search = '') {
     receive,
     hud: () => document.querySelector<HTMLElement>('#forgeax-fps'),
     status: () => document.querySelector<HTMLElement>('#forgeax-status'),
+    gap: () => document.querySelector<HTMLElement>('#forgeax-frame-gap'),
     visibility(next: boolean) {
       visible = next;
       startup.visibilityChanged();
@@ -79,13 +80,90 @@ describe('ordinary game FPS HUD', () => {
       page.receive(32, 1, 'pending');
       page.receive(33, 1, 'ready', 'retired-world');
       await vi.advanceTimersByTimeAsync(850);
-      expect(page.hud()?.textContent).toBe('FPS 30.0');
-      expect(page.status()?.textContent).toBe('Game 1.2.3 | Engine abcdef123456 | FPS 30.0');
+      expect(page.hud()?.textContent).toBe('Render FPS 30.0');
+      expect(page.status()?.textContent).toBe(
+        'Game 1.2.3 | Engine abcdef123456 | Render FPS 30.0 850 ms max gap',
+      );
       expect(page.status()?.style.display).toBe('block');
       await vi.advanceTimersByTimeAsync(1000);
-      expect(page.hud()?.textContent).toBe('FPS 0.0');
+      expect(page.hud()?.textContent).toBe('Render FPS 0.0');
     } finally {
       page.startup.destroy();
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('shows completed-frame cadence even when the same number of receipts arrive in a burst', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const page = fixture(false);
+    try {
+      page.receive(1);
+      await vi.advanceTimersByTimeAsync(150);
+      page.receive(2);
+      await vi.advanceTimersByTimeAsync(250);
+      page.receive(3);
+      await vi.advanceTimersByTimeAsync(400);
+      page.receive(4);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(page.hud()?.textContent).toBe('Render FPS 3.0');
+      expect(page.gap()?.textContent).toBe('400 ms max gap');
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(page.hud()?.textContent).toBe('Render FPS 0.0');
+      expect(page.gap()?.textContent).toBe('1200 ms max gap');
+
+      page.receive(1, 2);
+      await vi.advanceTimersByTimeAsync(50);
+      page.receive(2, 2);
+      await vi.advanceTimersByTimeAsync(950);
+      expect(page.gap()?.textContent).toBe('950 ms max gap');
+    } finally {
+      page.startup.destroy();
+    }
+  });
+
+  it('charts the same completed-receipt samples and drops history on device replacement', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const drawing = {
+      arc: vi.fn(),
+      beginPath: vi.fn(),
+      clearRect: vi.fn(),
+      fill: vi.fn(),
+      fillText: vi.fn(),
+      lineTo: vi.fn(),
+      moveTo: vi.fn(),
+      stroke: vi.fn(),
+    };
+    const canvasPrototype: {
+      getContext(kind: '2d'): CanvasRenderingContext2D | null;
+    } = HTMLCanvasElement.prototype;
+    const getContext = vi
+      .spyOn(canvasPrototype, 'getContext')
+      .mockReturnValue(drawing as unknown as CanvasRenderingContext2D);
+    const page = fixture(false, '?forgeax-fps-chart=1');
+    const graph = document.querySelector<HTMLCanvasElement>('#forgeax-fps-history');
+    try {
+      expect(graph?.hidden).toBe(true);
+      page.receive(1);
+      await vi.advanceTimersByTimeAsync(200);
+      page.receive(2);
+      page.receive(3);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(page.hud()?.textContent).toBe('Render FPS 4.0');
+      expect(page.gap()?.textContent).toBe('300 ms max gap');
+      expect(graph?.hidden).toBe(false);
+      expect(drawing.fillText).toHaveBeenCalledWith('Render FPS · 20 s', 10, 15);
+
+      drawing.lineTo.mockClear();
+      page.receive(1, 2);
+      expect(graph?.hidden).toBe(true);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(page.hud()?.textContent).toBe('Render FPS 0.0');
+      expect(graph?.hidden).toBe(false);
+      expect(drawing.lineTo).toHaveBeenCalledTimes(4); // Three grid lines and one new sample.
+    } finally {
+      page.startup.destroy();
+      getContext.mockRestore();
     }
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -99,7 +177,7 @@ describe('ordinary game FPS HUD', () => {
       for (let i = 2; i <= 31; i++) page.receive(i);
       await vi.advanceTimersByTimeAsync(2000);
       expect(page.status()?.style.display).not.toBe('block');
-      expect(page.hud()?.textContent).toBe('FPS --');
+      expect(page.hud()?.textContent).toBe('Render FPS --');
     } finally {
       page.startup.destroy();
     }
@@ -120,12 +198,12 @@ describe('ordinary game FPS HUD', () => {
       page.receive(60);
       page.receive(61);
       await vi.advanceTimersByTimeAsync(1000);
-      expect(page.hud()?.textContent).toBe('FPS 1.0');
+      expect(page.hud()?.textContent).toBe('Render FPS 1.0');
       page.receive(1, 2);
       page.receive(62, 1); // Old device completion cannot replace the new baseline.
       page.receive(2, 2);
       await vi.advanceTimersByTimeAsync(1000);
-      expect(page.hud()?.textContent).toBe('FPS 1.0');
+      expect(page.hud()?.textContent).toBe('Render FPS 1.0');
       page.startup.fail(new Error('device lost'), { fault: { code: 'device-lost' } });
       expect(page.status()?.style.display).toBe('none');
       await vi.advanceTimersByTimeAsync(0); // jsdom queues the focused Reload control's event.
@@ -143,7 +221,7 @@ describe('ordinary game FPS HUD', () => {
       await vi.advanceTimersByTimeAsync(150);
       page.receive(51, 2);
       await vi.advanceTimersByTimeAsync(850);
-      expect(page.hud()?.textContent).toBe('FPS 1.0');
+      expect(page.hud()?.textContent).toBe('Render FPS 1.0');
 
       const retired = document.querySelector('#app');
       if (retired === null) throw new Error('Missing game canvas');
@@ -151,7 +229,7 @@ describe('ordinary game FPS HUD', () => {
       page.receive(1, 0);
       page.receive(2, 0);
       await vi.advanceTimersByTimeAsync(1000);
-      expect(page.hud()?.textContent).toBe('FPS 1.0');
+      expect(page.hud()?.textContent).toBe('Render FPS 1.0');
     } finally {
       page.startup.destroy();
     }
@@ -165,7 +243,7 @@ describe('ordinary game FPS HUD', () => {
       await vi.advanceTimersByTimeAsync(150);
       page.receive(2);
       await vi.advanceTimersByTimeAsync(850);
-      expect(page.hud()?.textContent).toBe('FPS 1.0');
+      expect(page.hud()?.textContent).toBe('Render FPS 1.0');
 
       window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
       expect(page.status()?.style.display).toBe('none');
@@ -174,7 +252,7 @@ describe('ordinary game FPS HUD', () => {
       page.receive(3);
       page.receive(4);
       await vi.advanceTimersByTimeAsync(1000);
-      expect(page.hud()?.textContent).toBe('FPS 1.0');
+      expect(page.hud()?.textContent).toBe('Render FPS 1.0');
       expect(page.status()?.style.display).toBe('block');
     } finally {
       page.startup.destroy();

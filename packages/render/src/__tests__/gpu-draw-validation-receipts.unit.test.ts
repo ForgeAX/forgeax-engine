@@ -191,3 +191,18 @@ it('keeps genuine visible resource failures in blocked lane evidence', () => {
     semanticDraws: 0,
   });
 });
+
+it('counts only CPU-admitted draws in an uncompacted retained frame', () => {
+  const owned = receiptRow().source;
+  const dormant = { ...owned, entityKey: 43, assetHandle: 11 };
+  const cpu = { ...dormant, entityKey: 44 };
+  const selection = receiptSelection([{ source: owned }], () => true);
+  const counts = summarizeGpuDrivenDraws([owned, dormant, cpu], selection, (row) => row === cpu);
+  expect(counts).toMatchObject({
+    gpuDraws: 2,
+    gpuEntities: 1,
+    cpuDraws: 2,
+    totalDraws: 4,
+    mixedEntities: 0,
+  });
+});

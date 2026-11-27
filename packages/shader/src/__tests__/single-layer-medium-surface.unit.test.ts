@@ -68,13 +68,13 @@ describe('single-layer medium shader model', () => {
     expect(template).toContain('mediumOneMinusExpNeg');
     expect(template).toContain('if (extinction <= 0.0)');
     expect(template).toContain(
-      '#import forgeax_pbr::standard_lighting::{SkylightUniforms, sampleSkylightDiffuse, sampleSkylightRadiance}',
+      '#import forgeax_pbr::standard_lighting::{SkylightUniforms, sampleSkylightDiffuse, sampleStandardReflectionRadiance}',
     );
     expect(template.replace(/\s+/g, ' ')).toContain(
-      'sampleSkylightDiffuse( mediumSkylight, normal, mediumIrradianceMap, mediumIrradianceSampler, )',
+      'sampleSkylightDiffuse( mediumSkylight, normal, mediumSkySh, )',
     );
     expect(source('standard-lighting.wgsl')).toContain(
-      'return sampleIblDiffuse(normal, rotation, irradianceMap, irradianceSampler)',
+      'return evaluateSkyPolynomial(skySh, inverseRotateEnvironment(normal, rotation))',
     );
     expect(template).toContain('evaluateProbeDiffuse');
     expect(template).toContain('u32(probeHeader.x) + 1u == probeIdentity.x');
@@ -83,7 +83,7 @@ describe('single-layer medium shader model', () => {
     expect(template).toContain('requestedProbeBase + 9u < arrayLength(&probeBlendRecords)');
     expect(template).toContain('let probeBase = select(0u, requestedProbeBase, probeInBounds)');
     expect(template).toContain('evalDirectionalShadowFactor');
-    expect(template).toContain('@group(2) @binding(7) var ssaoBlurredTexture');
+    expect(template).toContain('forgeax_view::common::{forwardScreenSurface}');
     expect(template).toContain('get_ssao_intensity()');
     expect(template).toContain('acceptedBackground = centerBackground');
     expect(template).not.toContain('input.clipPosition.z / max(abs(input.clipPosition.w)');

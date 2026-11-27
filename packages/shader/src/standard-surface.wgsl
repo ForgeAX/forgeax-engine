@@ -1,12 +1,18 @@
 #define_import_path forgeax_material::standard_surface
+#import forgeax_view::common::{forwardScreenSurface}
+#import forgeax_cloud::layer::{viewLinearSampler}
+
+#import forgeax_pbr::sky_sh_polynomial::{SkyShPolynomial}
 #import forgeax_material::texture_coordinates::{materialUvLinear}
 #import forgeax_view::common::{view, sampleMaterialTexture}
 #import forgeax_view::fog::{forward_fog_transmission}
 #import forgeax_pbr::brdf::{f_schlick}
 #import forgeax_pbr::ibl_shared::{standardSpecularOcclusion}
 #import forgeax_pbr::specular_aa::{geometricNormalSpread, shadingNormalSpread, specularAntiAliasedRoughness}
-#import forgeax_pbr::ibl_sampling::{decodeSpecularEnvironmentScale, sampleIblDiffuse, sampleIblSpecular, sampleReflectionProbeSpecular}
-#import forgeax_pbr::standard_lighting::{SkylightUniforms, evaluateStandardEnvironment}
+#import forgeax_pbr::standard_lighting::{SkylightUniforms, evaluateStandardClearcoatReflection, sampleStandardDiffuseIrradiance, evaluateStandardEnvironment}
+#ifdef PROBE_BLEND_AVAILABLE
+#import forgeax_pbr::lighting_probe::{applyStandardProbeIrradiance}
+#endif
 #import forgeax_pbr::tbn::{decodeTangentSpaceNormalRg, scaleTangentSpaceNormal, applyTBN}
 #import forgeax_pbr::lighting_directional::{evalDirectionalNoShadow, evalDirectionalShadowFactorAtPixel}
 #import forgeax_view::atmosphere::{view_apply_direct_solar}
@@ -105,12 +111,9 @@ struct Material {
 fn materialTextureFilteringWitness() {
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   let directDfgWitness = textureSample(directDfgLut, irradianceSampler, vec2<f32>(0.0));
-  // The same filtering sampler also serves these shared IBL textures.
-  let irradianceWitness = textureSample(irradianceMap, irradianceSampler, vec3<f32>(0.0, 0.0, 1.0));
-  let brdfWitness = textureSample(brdfLut, irradianceSampler, vec2<f32>(0.0));
 #endif
-#ifdef ENV_BRDF_FIT
-  // The analytic environment BRDF never samples brdfLut; keep its filtering contract.
+
+#ifdef ENV_BRDF_LUT
   let envBrdfWitness = textureSample(brdfLut, irradianceSampler, vec2<f32>(0.0));
 #endif
   let base = baseColorTexture;
@@ -144,17 +147,18 @@ fn materialTextureFilteringWitness() {
 // produce ambient = 0; with a real Skylight, ibl_sampling helpers project
 // the IBL irradiance + split-sum specular into `ambient` below.
 
-@group(1) @binding(17) var irradianceMap        : texture_cube<f32>;
+@group(1) @binding(17) var<uniform> skySh : SkyShPolynomial;
 @group(1) @binding(18) var irradianceSampler    : sampler;
 #ifdef DIRECT_DFG_LUT_AVAILABLE
 @group(1) @binding(72) var directDfgLut: texture_2d<f32>;
 #endif
 @group(1) @binding(19) var prefilterMap         : texture_2d<f32>;
 @group(1) @binding(20) var prefilterSampler     : sampler;
+#ifdef ENV_BRDF_LUT
 @group(1) @binding(21) var brdfLut              : texture_2d<f32>;
+#endif
 @group(1) @binding(22) var<uniform> skylight    : SkylightUniforms;
 // Global specular remains resident when the per-draw prefilter slot holds a probe.
-@group(1) @binding(47) var skylightPrefilterMap : texture_2d<f32>;
 
 #ifdef PROBE_BLEND_AVAILABLE
 // Optional consumer lane. The host must provide the retained 160B record
@@ -172,12 +176,6 @@ fn materialTextureFilteringWitness() {
 // fallback path. Disabled SSAO path binds 1x1 white at @binding(7) + the
 // host writes intensity=0 into the cluster pad lane, so the synthesis
 // collapses identically.
-#ifdef CLUSTER_FORWARD_AVAILABLE
-#if STORAGE_BUFFER_AVAILABLE == true
-@group(2) @binding(7) var ssaoBlurredTexture       : texture_2d<f32>;
-@group(2) @binding(8) var ssaoBlurredSampler       : sampler;
-#endif
-#endif
 
 
 struct VsOut {
@@ -501,58 +499,45 @@ fn evaluateStandardSurfaceWithNormalMode(
   // per-cascade light-space matrix in the fragment stage for shadow-map PCF
   // lookup (CSM, feat-20260613). Cluster owns punctual BRDF evaluation in the
   // clustered variant above.
+  let skyIrradiance = sampleStandardDiffuseIrradiance(skylight, n, vec3<f32>(0.0), skySh);
+#ifdef PROBE_BLEND_AVAILABLE
   var probeShPreblend : array<vec4<f32>, 9>;
   var probeLocalBlendFraction = 0.0;
-#ifdef PROBE_BLEND_AVAILABLE
   probeShPreblend = array<vec4<f32>, 9>(
     probeBlendRecords[1], probeBlendRecords[2], probeBlendRecords[3],
     probeBlendRecords[4], probeBlendRecords[5], probeBlendRecords[6],
     probeBlendRecords[7], probeBlendRecords[8], probeBlendRecords[9]);
   probeLocalBlendFraction = probeBlendRecords[0].z;
+  let irradiance = applyStandardProbeIrradiance(skyIrradiance, n, vec3<f32>(0.0), probeShPreblend, probeLocalBlendFraction);
+#else
+  let irradiance = skyIrradiance;
 #endif
   let environment = evaluateStandardEnvironment(in.worldPos, n, v,
     diffuseAlbedo, vec3<f32>(0.0), metallic, iblRoughness, f0,
     vec4<f32>(vec3<f32>(dielectricF0) * specularTint, 1.0), albedo,
-    skylight, irradianceMap, irradianceSampler, prefilterMap, prefilterSampler,
-    brdfLut, skylightPrefilterMap, probeShPreblend, probeLocalBlendFraction);
+    skylight, skylight.ambientIrradiance.xyz, irradiance, prefilterMap, prefilterSampler,
+#ifdef ENV_BRDF_LUT
+    brdfLut, irradianceSampler,
+#endif
+  );
   let occlusionUv = transformedMaterialUv(material.occlusionTextureCoordinatesTransform, material.occlusionTextureCoordinatesMetadata, material.occlusionTextureCoordinatesRotation, in);
   let aoSample = sampleMaterialTexture(occlusionTexture, occlusionTexture_sampler, occlusionUv, material.occlusionTextureCoordinatesMetadata.zw);
   let ao = mix(1.0, aoSample.r, material.occlusionStrength);
-  let specularEnvironmentScale = decodeSpecularEnvironmentScale(vec3<f32>(skylight.colorR, skylight.colorG, skylight.colorB), skylight.intensity);
   var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF);
   let ambientDiffuse = environment.diffuse * (vec3<f32>(1.0) - coatF);
-  if (factors.clearcoat != 0.0) {
-    // Keep the clearcoat lobe on the same selected environment as the base
-    // specular lobe. Probe mode reuses the packed center/extents lanes in the
-    // per-probe uniform; routing it through global Skylight IBL would make the
-    // fallback a mixed-source projection and break c=1 source equivalence.
-    var clearcoatIbl = vec3<f32>(0.0);
-    if (skylight.intensity < 0.0) {
-      clearcoatIbl = sampleReflectionProbeSpecular(
-        n, v, coatRoughness, vec3<f32>(0.04), in.worldPos,
-        vec3<f32>(skylight.colorR, skylight.colorG, skylight.colorB),
-        skylight.rotation.xyz, vec4<f32>(0.0, 0.0, 0.0, 1.0),
-        prefilterMap, prefilterSampler, brdfLut, irradianceSampler,
-      skylightPrefilterMap, skylight.diffuseRotation, skylight.diffuseScale.xyz,
-      max(-skylight.intensity - 1.0, 0.0), skylight.rotation.w > 0.5,
-      );
-    } else {
-      clearcoatIbl = sampleIblSpecular(
-        n, v, coatRoughness, vec3<f32>(0.04),
-        skylight.rotation,
-        prefilterMap, prefilterSampler, brdfLut, irradianceSampler,
-      );
-    }
-    let clearcoatContribution = clearcoatIbl * factors.clearcoat * specularEnvironmentScale;
+  if (factors.clearcoat != 0.0 && view.fogSky.w < 1048576.0) {
+    let clearcoatIbl = evaluateStandardClearcoatReflection(
+      skylight, in.worldPos, n, v, coatRoughness, prefilterMap, prefilterSampler,
+#ifdef ENV_BRDF_LUT
+      brdfLut, irradianceSampler,
+#endif
+    );
+    let clearcoatContribution = clearcoatIbl * factors.clearcoat;
     reflectionFallback = reflectionFallback + clearcoatContribution;
   }
 #ifdef CLUSTER_FORWARD_AVAILABLE
-#if STORAGE_BUFFER_AVAILABLE == true
   let screenAo = sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj,
-    ssaoBlurredTexture, ssaoBlurredSampler);
-#else
-  let screenAo = sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj);
-#endif
+    forwardScreenSurface, viewLinearSampler);
 #else
   let screenAo = 1.0;
 #endif

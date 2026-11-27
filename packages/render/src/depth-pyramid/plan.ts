@@ -1,6 +1,6 @@
 import type { GraphExtent } from '@forgeax/engine-render-graph';
 
-/** The one format of the shared closest-depth pyramid (linear view distance). */
+/** All depth pyramid reductions store linear view distance in this format. */
 export const DEPTH_PYRAMID_FORMAT = 'r32float' as const;
 
 export interface DepthPyramidExtent {

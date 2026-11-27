@@ -3,18 +3,13 @@ import { ok } from '@forgeax/engine-types';
 import type { PublishedWorld } from './gpu-particle-feature.js';
 
 export function vfxFrameAssetDependencies(source: PublishedWorld | undefined) {
-  return [
-    ...new Set(
-      source === undefined
-        ? []
-        : [
-            ...source.materials.keys(),
-            ...[...source.meshes.values()].filter(
-              (mesh): mesh is number => typeof mesh === 'number',
-            ),
-          ],
-    ),
-  ];
+  const dependencies = new Set<string | number>();
+  if (source !== undefined) {
+    for (const [key, material] of source.materials)
+      dependencies.add(material.reference?.handle ?? key);
+    for (const mesh of source.meshes.values()) if (typeof mesh === 'number') dependencies.add(mesh);
+  }
+  return [...dependencies];
 }
 export function vfxFrameRequiresPreparation(source: PublishedWorld | undefined): boolean {
   if (source !== undefined) {

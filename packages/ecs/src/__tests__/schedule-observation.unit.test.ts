@@ -169,6 +169,27 @@ describe('schedule work observation', () => {
     releaseSecond();
   });
 
+  it('pins nested work scopes to their own roster and ignores an expired release', () => {
+    const world = new World();
+    const events: string[] = [];
+    const first = {
+      onWorkStart: (work: string) => events.push(`start ${work}`),
+      onWorkEnd: (work: string) => events.push(`end ${work}`),
+    };
+    const release = world.observeScheduleRuns(first);
+    const duplicate = world.observeScheduleRuns(first);
+    const outer = beginScheduleWork(world, 'outer');
+    release();
+    const innerRelease = world.observeScheduleRuns(first);
+    duplicate();
+    const inner = beginScheduleWork(world, 'inner');
+    innerRelease();
+    inner?.end();
+    outer?.end();
+    expect(events).toEqual(['start outer', 'start inner', 'end inner', 'end outer']);
+    expect(beginScheduleWork(world, 'closed')).toBeUndefined();
+  });
+
   it('distinguishes condition skips, failures before invoke, and failed invokes', () => {
     const observe = (world: World) => {
       const events: string[] = [];

@@ -14,6 +14,7 @@ import {
   decodeTape,
   openReplay,
   replayDeviceRequest,
+  summarizePasses,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
@@ -21,6 +22,7 @@ import { Skin } from '@forgeax/engine-skinning';
 import { expect, it } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createBarrelRendererFixture } from './barrel-distortion-gpu-fixture';
+import { completedReadyFrame } from './helpers/completed-ready-frame';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 import { error, json, save } from './taa-maturity.fixture';
@@ -28,7 +30,7 @@ import { error, json, save } from './taa-maturity.fixture';
 it.each([
   false,
   true,
-])('rejects untracked mutable height motion and replays its temporal pixels (skin=%s)', {
+])('does not invent motion for untracked displacement and replays its temporal pixels (skin=%s)', {
   timeout: 240_000,
   retry: 0,
 }, async (skin) => {
@@ -156,14 +158,16 @@ it.each([
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const receipt = renderValue(
-      renderer.draw({
-        geometryLane: 'direct',
-        source: lease,
-      }),
+    return completedReadyFrame(
+      () =>
+        renderValue(
+          renderer.draw({
+            geometryLane: 'direct',
+            source: lease,
+          }),
+        ),
+      Date.now() + 90_000,
     );
-    renderValue(await receipt.completed);
-    return receipt;
   };
   const facts = [];
   try {
@@ -186,11 +190,12 @@ it.each([
       save(`${prefix}.rhitape`, capture.bytes);
       const tape = decodeTape(capture.bytes).unwrap();
       const model = buildFrameModel(tape);
-      const temporal = model.works.find((w) =>
-        w.pipeline.shaders.some((s) => s.stage === 'fragment' && s.entryPoint === 'fs_temporal'),
-      );
-      expect(temporal, 'capture must contain the actual temporal producer').toBeDefined();
-      if (!temporal) throw new Error('no temporal work');
+      const aa = summarizePasses(model).find((pass) => pass.label === 'taa-resolve');
+      const temporal = model.works.find((work) => work.passIndex === aa?.passIndex);
+      const temporalOutput = temporal?.attachments?.colorViewHandleIds[1];
+      expect(temporalOutput, 'capture must contain the TAA metadata output').toBeDefined();
+      if (temporal === undefined || temporalOutput === undefined)
+        throw new Error('no temporal work');
       const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
       const device = (
         await adapter.requestDevice(replayDeviceRequest(tape, adapter.features, adapter.limits))
@@ -199,11 +204,10 @@ it.each([
         await openReplay(tape, { device, createShaderModule: webgpu.createShaderModule })
       ).unwrap();
       try {
-        const result = (
-          await replay.inspectWork(temporal.workIndex, ['pipeline', 'bindings', 'pixels'])
+        const image = (
+          await replay.readResourceAtWork(temporalOutput, temporal.workIndex)
         ).unwrap();
-        const image = result.attachment;
-        if (!image) throw new Error('missing temporal replay readback');
+        expect(image.format).toBe('rgba16float');
         save(`${prefix}-temporal.rgba16f`, image.bytes);
         const values = new DataView(
           image.bytes.buffer,
@@ -228,7 +232,7 @@ it.each([
         const replayError = error(live.bytes, final.bytes);
         expect(
           replayError.maximum,
-          'motion invalidity and final display share one completed frame',
+          'packed velocity and final display share one completed frame',
         ).toBeLessThanOrEqual(0.05);
         facts.push({
           change,
@@ -240,15 +244,19 @@ it.each([
           analyticHeightMotionUv:
             change === 'mutable-height' ? (Math.sin(0.8) * (16 / 255) * 0.5) / 4 : null,
           motionContract:
-            'mutable height without retained prior shape must explicitly reject history and motion',
+            'unavailable previous displacement yields zero motion and rejects history',
           digest: capture.digest,
           unseeded: model.unseededResources,
         });
         json(`displacement-${skin ? 'skin' : 'rigid'}.json`, facts);
         expect(center[2], 'center has actual geometry').toBeGreaterThan(0);
+        // The static view has no camera motion. Packed velocity must preserve
+        // history rejection when the previous deformation is unavailable.
+        expect(center[0], 'no horizontal deformation motion').toBeCloseTo(0, 4);
+        expect(center[1], 'no vertical deformation motion').toBeCloseTo(0, 4);
         expect(
           center[3],
-          'no exact prior displacement: mark motion invalid, reject color history',
+          'missing previous displacement rejects color history',
         ).toBeGreaterThanOrEqual(2);
       } finally {
         (await replay.dispose()).unwrap();

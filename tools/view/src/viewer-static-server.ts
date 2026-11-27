@@ -1,7 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { createServer } from 'node:http';
 import { resolveViewerFile, viewerContentType } from '@forgeax/view-workspace-core/viewer-static';
-import { installedEngineRoot } from './engine-root.ts';
+import { installedEngineRoot, installedEngineVersion } from './engine-root.ts';
 
 export const VIEWER_BOOTSTRAP_PATH = '/__forgeax/view/bootstrap';
 
@@ -39,6 +39,11 @@ export async function startViewerStaticServer({ host = '127.0.0.1', port = 0, st
     throw new TypeError('viewer static server requires staticRoot');
   }
   const engineRoot = installedEngineRoot();
+  const engineVersion = installedEngineVersion();
+  const installationPayload = (payload: Record<string, unknown>) => engineVersion === undefined ? payload : {
+    ...payload,
+    frontendConfig: { ...(payload.frontendConfig as object | undefined), engineVersion },
+  };
   let bootstrapSource: URL | undefined;
   let bootstrapFailure: string | undefined;
   let preparing = waitForBootstrap;
@@ -81,13 +86,13 @@ export async function startViewerStaticServer({ host = '127.0.0.1', port = 0, st
           response.statusCode = upstream.status;
           response.setHeader('Content-Type', upstream.headers.get('Content-Type') ?? 'application/json; charset=utf-8');
           response.setHeader('Cache-Control', 'no-store');
-          response.end(JSON.stringify({ ...payload, ...(launcher ? { launcher: true } : {}) }));
+          response.end(JSON.stringify(installationPayload({ ...payload, ...(launcher ? { launcher: true } : {}) })));
         }).catch((error: unknown) => {
           response.statusCode = 503;
           response.setHeader('Content-Type', 'application/json; charset=utf-8');
           response.setHeader('Cache-Control', 'no-store');
           preparing = false;
-          response.end(JSON.stringify({ configured: false, phase: 'offline', ...(launcher ? { launcher: true } : {}), reason: error instanceof Error ? error.message : String(error) }));
+          response.end(JSON.stringify(installationPayload({ configured: false, phase: 'offline', ...(launcher ? { launcher: true } : {}), reason: error instanceof Error ? error.message : String(error) })));
         });
         return;
       }
@@ -95,13 +100,13 @@ export async function startViewerStaticServer({ host = '127.0.0.1', port = 0, st
         response.statusCode = preparing ? 503 : 200;
         response.setHeader('Content-Type', 'application/json; charset=utf-8');
         response.setHeader('Cache-Control', 'no-store');
-        response.end(JSON.stringify({ configured: false, phase: preparing ? 'preparing' : 'offline', ...(launcher ? { launcher: true } : {}), reason: bootstrapFailure ?? 'Waiting for the Engine Host to apply View and publish its authenticated browser connection.' }));
+        response.end(JSON.stringify(installationPayload({ configured: false, phase: preparing ? 'preparing' : 'offline', ...(launcher ? { launcher: true } : {}), reason: bootstrapFailure ?? 'Waiting for the Engine Host to apply View and publish its authenticated browser connection.' })));
         return;
       }
       response.statusCode = 200;
       response.setHeader('Content-Type', 'application/json; charset=utf-8');
       response.setHeader('Cache-Control', 'no-store');
-      response.end(JSON.stringify(createViewerBootstrapPayload(env)));
+      response.end(JSON.stringify(installationPayload(createViewerBootstrapPayload(env))));
       return;
     }
     const filePath = resolveViewerFile(staticRoot, url.pathname === '/' ? '/index.html' : url.pathname, engineRoot);

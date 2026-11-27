@@ -39,20 +39,24 @@ export type RunnerProvenanceResult =
       readonly runnerClass?: string;
     };
 
-export interface TemporalTargetDescriptor {
-  readonly format: 'rgba16float';
+interface DawnExtent {
   readonly width: number;
   readonly height: number;
+}
+interface DawnTextureObservation {
+  readonly label: string | null;
+  readonly format?: string;
+  readonly width?: number;
+  readonly height?: number;
+  readonly sampleCount: number;
+}
+export interface TemporalTargetObservation extends DawnExtent {
+  readonly label: 'scene-velocity';
+  readonly format: 'r32uint';
   readonly sampleCount: 1;
   readonly bytes: number;
 }
-export interface TemporalTargetObservation {
-  readonly identity: 'standard-scene-temporal';
-  readonly producerId: 'forgeax::standard::scene-data';
-  readonly schema: 'forgeax::scene-data::temporal-v1';
-  readonly targetCount: 1;
-  readonly descriptor: TemporalTargetDescriptor;
-}
+type TemporalInputRoute = 'depth-velocity' | 'scene-data' | null;
 export interface DawnTemporalState {
   readonly status: 'stable' | 'off' | 'first-frame' | 'reset' | 'aborted';
   readonly historyValid: boolean;
@@ -67,8 +71,10 @@ export interface DawnCreationObservation {
 export interface DawnSummary {
   readonly backend: 'webgpu';
   readonly framesObserved: number;
-  readonly temporal: DawnTemporalState;
-  readonly temporalTarget: TemporalTargetObservation;
+  readonly temporal: DawnTemporalState | null;
+  readonly temporalInputRoute: TemporalInputRoute;
+  readonly resolution: DawnExtent;
+  readonly resourceProbe?: { readonly velocityTargets?: readonly DawnTextureObservation[] };
   readonly creation: DawnCreationObservation;
   readonly passes: readonly string[];
 }
@@ -85,6 +91,12 @@ export interface CorrectnessEvidence {
   readonly status: 'pass';
   readonly acceptance: 'correctness-only';
   readonly timingAdmission: 'not-admitted';
+  readonly resourceEvidence: {
+    readonly basis: 'active-logical-descriptor';
+    readonly resolutionProjection: 'scaled-estimate';
+    readonly lifecyclePeak: 'not-observed';
+    readonly driverAllocation: 'unavailable';
+  };
   readonly testedRevision: string;
   readonly sourceRevision: string;
   readonly buildDigest: string;
@@ -96,12 +108,14 @@ export interface CorrectnessEvidence {
   readonly observed: {
     readonly frames: number;
     readonly backend: 'webgpu';
-    readonly temporal: DawnTemporalState;
+    readonly temporal: DawnTemporalState | null;
     readonly producerPassCount: number;
     readonly motionBlurPassCount: number;
     readonly rasterPassCount: number;
+    readonly temporalInputRoute: TemporalInputRoute;
     readonly temporalTargetCount: number;
-    readonly temporalTarget: TemporalTargetObservation;
+    readonly temporalTarget: TemporalTargetObservation | null;
+    readonly resolution: DawnExtent;
     readonly creation: DawnCreationObservation;
     readonly passes: readonly string[];
   };
@@ -109,7 +123,7 @@ export interface CorrectnessEvidence {
     readonly name: string;
     readonly width: number;
     readonly height: number;
-    readonly temporalTarget: { readonly format: 'rgba16float'; readonly sampleCount: 1; readonly bytes: number };
+    readonly temporalTarget: { readonly format: 'r32uint'; readonly sampleCount: 1; readonly bytes: number };
   }[];
 }
 export interface PerformanceAdmissionTiming {
@@ -291,9 +305,9 @@ export interface ValidationResult {
   readonly ok: boolean;
   readonly errors: string[];
 }
-export declare function temporalTargetBytes(width: number, height: number): number;
 export declare function activePassCountersFromInspection(
   inspection?: ActivePassInspection,
+  textures?: readonly DawnTextureObservation[],
 ): { readonly producer: number; readonly blur: number };
 export declare function runnerProvenanceFromEnv(
   environment?: Readonly<Record<string, string | undefined>>,

@@ -68,11 +68,21 @@ device identities stay separate; views import their own outputs and the fluid
 solver executes once per renderer frame. Reordering views cannot move retained
 WaterInfo history between graph owners.
 
-`configurationVersion: 1` selects the built-in kernels: Ripple, the four Shallow stages, the selected
-solver's normal pass and optional WaveFoam. The recipe owns their numeric
+`configurationVersion: 1` preserves the legacy kernels. Version `2` retains Ripple
+and uses signed Shallow divergence (bounded to prevent a nonpositive divisor),
+preserves the foam channel through that stage, and emits free-surface elevation
+(`depth + bed - gridCenterY`) as displacement. A flat water level therefore stays
+flat over a sloping bed, and compression can raise it. Dry cells contribute the
+base water level to visible height and normals, letting opaque Terrain occlude
+them without lifting the water mesh onto dry ground. Version `1` retains its
+expansion-only divergence, bed-to-foam copy and constant-depth displacement.
+Both versions select the four Shallow stages, the solver's normal pass and
+optional WaveFoam. The recipe owns their numeric
 parameters and target descriptors. `materialGuids` and `textureGuids` must be
 empty; nonempty overrides fail source admission. `impulseNoiseGuid` is the
-explicit, consumed texture input. The separate `water-advanced` recipe retains
+explicit 2D sampled texture input. It accepts a byte-backed texture or the
+accepted output of a GPU generator. Pending GPU noise defers the affected
+simulation without consuming its impulses. The separate `water-advanced` recipe retains
 its existing source contract.
 
 `waveFoam: { resolution, gridExtentM }` is a separate square capture domain.
@@ -149,7 +159,7 @@ block contains a count and `(quadsPerEdge + 1)^2` row-major f32 weights. The
 receipt hashes both payloads; uploads validate ranges/counts/finite weights and
 retain detached previous frames. Vertex and fragment consume the same original
 grid triangle weights. No binding or Surface/deformation ABI is added. The
-material producer identity is `material-pack-cooker/6`; durable `material-cook/5`
+material producer identity is `material-pack-cooker/7`; durable `material-cook/5`
 is unchanged and older composed material bytes must be recooked.
 
 The supported reference is the stock Gerstner/height-mapping path with shared
@@ -174,6 +184,16 @@ CPU mesh completion retains the exact Scene-owned candidate submitted by that
 frame. Camera movement may prepare another candidate before completion; it does
 not invalidate the submitted candidate. Completion still requires matching World,
 Zone and Body generations and never replaces a newer accepted publication.
+
+`WaterMeshViewBuilder` owns a detached immutable `WaterMeshBuildInput` and retains
+its quadtree, body/tile intersections and grid templates. Each `build(view)` still
+selects current LOD, frustum/occlusion visibility, morph and observer-relative
+coordinates, and owns fresh packed output bytes. Create a new builder when the
+geometry input changes. `buildWaterMeshView` remains the stateless convenience
+entry. `WaterSystem` ties preparation to the existing view publication lifetime
+and replaces it when accepted geometry, generations or the mesh domain change.
+Publication equality includes the complete packed instance/coverage bytes and
+source identities; layout hashes alone never admit reuse.
 
 One `WaterZoneViewWindow` supplies snapped mesh/capture coordinates to both
 paths. Static geometry comes from accepted, version-qualified visible meshes;
@@ -542,7 +562,7 @@ current/previous positions or fragment normals toward a mean plane. The existing
 four-bit adjacency metadata remains in the versioned tile payload; it does not
 authorize automatic flattening. Explicit saved no-Ocean levels remain authoritative.
 
-WaterMesh LOD selection uses nearest node AABB distance. `RawLOD = treeDepth - node.depth` denotes spatial tile size, `LogicalLOD` is the first eligible ancestor level at the distance threshold, and `DensityDelta = LogicalLOD - RawLOD` selects `max(2, NumQuadsLOD0 >> DensityDelta)` quads per edge. The density is capped at the available grid levels; morphing stops at `maxMorphLod`, the lesser of the spatial tree limit and that density limit. Height morph contributes only to the first selected level. Morphing continues through the remaining available levels when each preceding factor has reached one, so mixed-LOD edges remain continuous at the valid minimum `lodScale` of 0.5. This extension stores one maximum level per tile, needs no neighbor table, exits as soon as a stage is incomplete, and samples Gerstner waves only after the final morphed XZ is known.
+WaterMesh LOD selection uses nearest node AABB distance. `RawLOD = treeDepth - node.depth` denotes spatial tile size, `LogicalLOD` is the first eligible ancestor level at the distance threshold, and `DensityDelta = LogicalLOD - RawLOD` selects `max(2, NumQuadsLOD0 >> DensityDelta)` quads per edge. CPU and GPU selection and morphing share the terminal level `min(treeDepth, max(0, tessellationFactor - 1))`: even a partial leaf must support the same terminal lattice as a larger neighboring tile. Low tessellation budgets therefore retain more spatial tiles at distant views instead of exhausting leaf density and opening displaced seams. Height morph contributes only to the first selected level. Morphing continues through the remaining available levels when each preceding factor has reached one, so mixed-LOD edges remain continuous at the valid minimum `lodScale` of 0.5. This extension stores one maximum level per tile, needs no neighbor table, exits as soon as a stage is incomplete, and samples Gerstner waves only after the final morphed XZ is known.
 
 > [!IMPORTANT]
 > Rendered WaterInfo is published through versioned graph targets per view, device generation, and format. Extraction prepares generation-qualified rows against a candidate target; only the frame submission callback promotes it. When the source digest, format, dimensions, layer count, and slice assignments are unchanged, the submitted target and its content receipt are reused without rebuilding raster geometry or dispatching raster, merge, blur, finalize, or clear passes; only the graph retention edges remain. An aborted or rejected candidate leaves the prior publication and target mapping active, and the next extraction retries changed source data. Candidate writes use a distinct physical target, while previous target views remain sampled and keep the same storage/sample usage signature through graph replacement. The compiled graph retains matching allocations and retires replaced generations only after their queue fence. Previous rows, wave closures, and targets remain available exactly while the per-view committed WaterMesh proxy roster references their stable World/body/Zone generations; deletion, detach, or proxy retirement drops those references. Retained wave closures continue advancing Time/PrevTime until their proxy is replaced.

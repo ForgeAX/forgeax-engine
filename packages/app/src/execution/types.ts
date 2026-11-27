@@ -70,6 +70,8 @@ export interface ExecutionFault {
   readonly expected: string;
   readonly hint: string;
   readonly detail: unknown;
+  readonly systemName?: string;
+  readonly kernelName?: string;
   readonly partialWrite: boolean;
   readonly retryable: boolean;
 }
@@ -207,6 +209,8 @@ export interface ExecutionDiagnosticsOptions {
   readonly gbufferBatchOrderDiagnostic?: import('@forgeax/engine-render').RenderProfile['gbufferBatchOrderDiagnostic'];
   /** Allow one task turn before a successor draw while a real GPU receipt is pending. */
   readonly renderTaskYield?: 'none' | 'completion' | 'features';
+  /** Opt in to a page-owned Render Worker and native Canvas presentation turns. */
+  readonly browserRenderPresentation?: boolean;
   /**
    * Bound sealed publications across simulation, preparation and GPU completion.
    * Default 3: one per stage, so the GPU stays fed; 2 trades throughput for one

@@ -5,7 +5,7 @@ import { attachRecorder, buildFrameModel, decodeTape } from '@forgeax/engine-rhi
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
 import {
   createIrradianceFieldHarness,
@@ -15,7 +15,7 @@ import {
 } from './renderer-irradiance-field.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifest = shaderManifestUrl(await buildEngineShaderManifest());
+const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 const directory = 'artifacts/irradiance-field/dawn';
 mkdirSync(directory, { recursive: true });
 
@@ -124,17 +124,33 @@ it('splits one Renderer GI budget fairly between two CameraViews in different ro
       h.setGi(undefined);
       await h.draw();
       h.setGi(gi);
-      for (let frame = 0; ; frame++) {
-        await h.draw();
-        const states = viewGi();
-        if (
-          states.length === views &&
-          states.every((s) => s.state === 'ready' && s.submittedFrames > 0)
-        )
-          break;
-        if (states.some((s) => s.state === 'failed') || frame > 600)
-          throw new Error(JSON.stringify({ states, errors: h.errors }));
-        await new Promise((resolve) => setTimeout(resolve, 0));
+      // Cold Lavapipe material preparation took 403 seconds on the unchanged scene.
+      const coldOwnerBudgetMs = 480_000;
+      let preparationCompleted: NonNullable<
+        Parameters<typeof h.surfaceImage>[0]
+      >['preparationCompleted'];
+      const unsubscribe = h.renderer.subscribe((event) => {
+        if (event.kind === 'frame-submitted' && event.receipt.preparationCompleted !== undefined) {
+          preparationCompleted = event.receipt.preparationCompleted;
+        }
+      });
+      try {
+        for (let frame = 0; ; frame++) {
+          // GI can prepare behind a ready direct picture. Settle that receipt in
+          // the same cold-scene budget before counting GI frames.
+          await h.draw(undefined, { timeoutMs: coldOwnerBudgetMs, waitForReadyPreparation: true });
+          const states = viewGi();
+          if (
+            states.length === views &&
+            states.every((s) => s.state === 'ready' && s.submittedFrames > 0)
+          )
+            break;
+          if (states.some((s) => s.state === 'failed') || frame > 600)
+            throw new Error(JSON.stringify({ states, errors: h.errors }));
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      } finally {
+        unsubscribe();
       }
       const series: [number[], number[]] = [[], []];
       const shares: Share[][] = [];
@@ -159,7 +175,12 @@ it('splits one Renderer GI budget fairly between two CameraViews in different ro
         // fails later. No extra draw changes the sampled sequence or its deadline.
         const pending = frame === observations - 1 ? recorder.captureFrame() : undefined;
         if (pending) (await recorder.frameBoundary()).unwrap();
-        const image = await h.surfaceImage();
+        // The first observed draw can still compile its GPU work after the preparation receipt.
+        const image = await h.surfaceImage(
+          frame === 0 && preparationCompleted !== undefined
+            ? { timeoutMs: coldOwnerBudgetMs, preparationCompleted, waitForReadyPreparation: true }
+            : undefined,
+        );
         if (pending) {
           (await recorder.frameBoundary()).unwrap();
           const captured = (await pending).unwrap();

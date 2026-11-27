@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { DAWN_GATE_GROUPS } from '../dawn-gate-roster.mjs';
+import { DAWN_GATE_GROUPS, DAWN_GATE_SHARDS } from '../dawn-gate-roster.mjs';
 import {
   dawnGroupEnvironment,
   dawnNativeConcurrency,
   dawnNativeExecutionOrder,
+  dawnVitestArgs,
   executeDawnGroups,
 } from '../run-dawn-gate.mjs';
 
@@ -15,6 +16,44 @@ const deferred = () => {
   });
   return { promise, resolve };
 };
+
+test('lane four runs Default GBuffer GI in its dedicated locked graphics process', () => {
+  const file = 'packages/runtime/src/__tests__/default-gbuffer-gi.dawn.test.ts';
+  const owner = DAWN_GATE_GROUPS.find(({ id }) => id === 'default-gbuffer-gi');
+  assert.ok(DAWN_GATE_SHARDS[3].includes(owner.id));
+  assert.deepEqual(owner.files, [file]);
+  assert.equal(owner.lockedGraphics, true);
+  assert.equal(owner.nativeProcessSlots, 2);
+  const env = dawnGroupEnvironment(owner, {}, 2, 2);
+  assert.equal(env.LP_NUM_THREADS, '1');
+  assert.equal(env.FORGEAX_SHADER_COMPILE_WORKERS, '1');
+  assert.equal(env.GALLIVM_PERF, 'nopt');
+  const args = dawnVitestArgs(owner, { ordinaryWorkers: 2 });
+  assert.ok(args.includes(file));
+  assert.ok(args.includes('--maxWorkers=1'));
+  assert.ok(args.includes('--no-file-parallelism'));
+  assert.ok(args.includes('--isolate'));
+  assert.ok(!args.some((argument) => argument.startsWith('--shard=')));
+});
+
+test('runs World Card bounds in a serial native fork with bounded software compilation', () => {
+  const file = 'packages/render/src/__tests__/raytracing/world-card-bounds.dawn.test.ts';
+  const owner = DAWN_GATE_GROUPS.find(({ id }) => id === 'world-card-bounds');
+  assert.ok(owner);
+  assert.ok(DAWN_GATE_SHARDS[1].includes(owner.id));
+  assert.deepEqual(
+    DAWN_GATE_GROUPS.filter((group) => group.files.includes(file)),
+    [owner],
+  );
+  assert.equal(owner.nativeProcessSlots, 2);
+  const env = dawnGroupEnvironment(owner, {}, 2, 2);
+  assert.equal(env.LP_NUM_THREADS, '1');
+  assert.equal(env.GALLIVM_PERF, 'nopt');
+  const args = dawnVitestArgs(owner, { ordinaryWorkers: 2 });
+  assert.ok(args.includes(file));
+  assert.ok(args.includes('--maxWorkers=1'));
+  assert.ok(args.includes('--isolate'));
+});
 
 test('only admitted daily two-worker execution pairs measured native owners', () => {
   const core = { FORGEAX_CI_CORE_VALIDATION: '1', FORGEAX_DAWN_LIGHTWEIGHT: '1' };
@@ -34,20 +73,15 @@ test('only admitted daily two-worker execution pairs measured native owners', ()
     'direct-light',
     'feature-depth',
     'gi-1',
-    'gi-3',
-    'gi-4',
-    'gi-5',
     'gi-6',
     'heavy-1',
     'heavy-2',
     'heavy-3',
     'heavy-4',
     'modeling-s6',
-    'modeling-show',
     'nested-discard',
     'rect-source',
     'renderer',
-    'screen-probe',
     'shadow-fields',
     'specular-aa',
     'transmission',
@@ -64,11 +98,31 @@ test('only admitted daily two-worker execution pairs measured native owners', ()
     '8',
   );
   const uncapped = { LP_NUM_THREADS: '8', FORGEAX_SHADER_COMPILE_WORKERS: '7' };
-  for (const id of ['surface-pipelines', 'gi-2', 'path-tracer']) {
+  for (const id of ['modeling-show', 'surface-pipelines', 'gi-2', 'path-tracer']) {
     const group = DAWN_GATE_GROUPS.find((entry) => entry.id === id);
     assert.equal(group?.nativeProcessSlots, 2);
-    assert.equal(dawnGroupEnvironment(group, uncapped, 2, 2).LP_NUM_THREADS, '8');
+    assert.equal(
+      dawnGroupEnvironment(group, uncapped, 2, 2).LP_NUM_THREADS,
+      id === 'gi-2' ? '1' : '8',
+    );
     assert.equal(dawnGroupEnvironment(group, uncapped, 2, 2).FORGEAX_SHADER_COMPILE_WORKERS, '7');
+  }
+});
+
+test('memory-intensive GI owners keep exclusive admission and bounded workers in CI and Focus', () => {
+  const environment = { LP_NUM_THREADS: '8', FORGEAX_SHADER_COMPILE_WORKERS: '7' };
+  for (const id of ['gi-3', 'gi-4', 'gi-5', 'screen-probe']) {
+    const group = DAWN_GATE_GROUPS.find((entry) => entry.id === id);
+    assert.equal(group?.nativeProcessSlots, 2);
+    for (const concurrency of [1, 2]) {
+      const bounded = dawnGroupEnvironment(group, environment, 2, concurrency);
+      assert.equal(bounded.LP_NUM_THREADS, id === 'gi-5' ? '1' : '4');
+      assert.equal(bounded.FORGEAX_SHADER_COMPILE_WORKERS, '1');
+      assert.equal(
+        dawnGroupEnvironment(group, { LP_NUM_THREADS: '1' }, 2, concurrency).LP_NUM_THREADS,
+        '1',
+      );
+    }
   }
 });
 

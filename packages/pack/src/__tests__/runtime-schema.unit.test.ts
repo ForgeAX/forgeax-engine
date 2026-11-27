@@ -12,7 +12,7 @@ it('validates in a host that forbids runtime code generation', () => {
       `await import(${JSON.stringify(new URL('./native-source.fixture.mjs', import.meta.url).href)});
        for (const path of ['./src/schema-compiled.ts', './dist/schema.mjs']) {
          const module = await import(path);
-         if (module.validateMeta({}) || module.validatePack({})) throw new Error('invalid input accepted');
+         if (module.validateMeta({}) || module.validatePackV2({})) throw new Error('invalid input accepted');
        }`,
     ],
     { cwd: new URL('../..', import.meta.url), encoding: 'utf8' },

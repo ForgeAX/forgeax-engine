@@ -10,7 +10,7 @@ import {
   workOutputs,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, expect, it } from 'vitest';
 import { deviceOptionsForAdapter } from '../../../render/src/assembly/device-feature-admission';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -20,7 +20,7 @@ import { observeReplaySubmissions } from './native-replay-work.fixture';
 import { describeReplayWork } from './replay-inspections.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 // Coverage and oblique-depth statistics retain thousands of shadow samples;
 // the color lattice and every temporal frame keep their original dimensions.
 const SHADOW_MAP_SIZE = 128;
@@ -227,7 +227,9 @@ it.each([
             work.pipeline.shaders.some(
               (shader) =>
                 shader.stage === 'fragment' &&
-                (shader.entryPoint === 'fs_main' || shader.entryPoint === 'fs_opaque'),
+                (shader.entryPoint === 'fs_main' ||
+                  shader.entryPoint === 'fs_opaque' ||
+                  shader.entryPoint === 'fs_forward_sun_shadow'),
             ) && work.vertexBuffers.length > 0,
         );
         expect(geometry.length).toBeGreaterThan(0);

@@ -98,7 +98,7 @@ it.each([
     // Draw facts capture a new Mesh root; author records keep their physical address.
     expect(scene.shadowCasterProjection()?.renderables).not.toBe(before?.renderables);
     expect(scene.compositionSlot(original.entityKey)).toBe(originalSlot);
-    expect(before?.renderables.at(0)).toBe(original);
+    expect(before?.renderables.at(0)?.entityKey).toBe(original.entityKey);
     expect(original.localAabb?.[0]).toBeGreaterThan(-1);
     expect(scene.shadowCasterProjection()?.renderables.at(0)?.localAabb?.[0]).toBe(-100);
     expect(original && readBounds(before, original)?.min[0]).toBeGreaterThan(99);

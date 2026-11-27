@@ -386,6 +386,45 @@ pub struct BundleEncoderDesc {
 pub struct BlasGeometrySize {
     pub vertex_count: u32,
     pub index: Option<BlasIndexSize>,
+    #[serde(default = "opaque_by_default")]
+    pub opaque: bool,
+}
+
+fn opaque_by_default() -> bool {
+    true
+}
+
+impl BlasGeometrySize {
+    pub fn flags(&self) -> wgpu::AccelerationStructureGeometryFlags {
+        if self.opaque {
+            wgpu::AccelerationStructureGeometryFlags::OPAQUE
+        } else {
+            wgpu::AccelerationStructureGeometryFlags::empty()
+        }
+    }
+}
+
+#[cfg(test)]
+mod blas_opacity_tests {
+    use super::BlasGeometrySize;
+
+    #[test]
+    fn preserves_explicit_candidate_geometry_and_default_opaque() {
+        let candidate: BlasGeometrySize =
+            serde_json::from_str(r#"{"vertexCount":3,"opaque":false}"#).unwrap();
+        assert!(candidate.flags().is_empty());
+        let opaque: BlasGeometrySize = serde_json::from_str(r#"{"vertexCount":3}"#).unwrap();
+        assert_eq!(
+            opaque.flags(),
+            wgpu::AccelerationStructureGeometryFlags::OPAQUE
+        );
+        for value in ["null", "0", "\"false\""] {
+            assert!(serde_json::from_str::<BlasGeometrySize>(&format!(
+                r#"{{"vertexCount":3,"opaque":{value}}}"#
+            ))
+            .is_err());
+        }
+    }
 }
 
 #[derive(Deserialize)]

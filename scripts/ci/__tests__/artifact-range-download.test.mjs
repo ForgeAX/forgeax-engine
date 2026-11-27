@@ -105,6 +105,36 @@ test('four disjoint immutable ranges reconstruct exact bytes and the complete ar
   }
 });
 
+test('range transfer can replace a full response even when its cancellation never settles', {
+  timeout: 2_000,
+}, async (t) => {
+  const { options } = await fixture(t);
+  const { headers, url } = options.response;
+  let cancellationStarted = false;
+  options.response = {
+    headers,
+    url,
+    body: new ReadableStream({
+      cancel() {
+        cancellationStarted = true;
+        return new Promise(() => {});
+      },
+    }),
+  };
+  assert.equal(await tryDownloadArtifactRanges(options), bytes.length);
+  assert.equal(cancellationStarted, true);
+  assert.deepEqual(await readFile(options.destination), bytes);
+});
+
+test('range request deadline settles when the transport ignores the abort signal', {
+  timeout: 2_000,
+}, async (t) => {
+  const { options } = await fixture(t);
+  options.fetchFn = () => new Promise(() => {});
+  options.requestTimeoutMs = 25;
+  await assert.rejects(tryDownloadArtifactRanges(options), /artifact request timeout after 25ms/);
+});
+
 test('small transfers retain the original live stream', async (t) => {
   const { options, requests } = await fixture(t);
   options.minimumBytes = bytes.length + 1;

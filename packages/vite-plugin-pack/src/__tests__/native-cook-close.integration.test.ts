@@ -3,24 +3,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
-import { createServer } from 'vite';
 import { expect, it } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
+import { createPackTestServer } from './vite-fixtures.js';
 
 it.each([
   'complete',
   'close',
 ] as const)('retains complete production and drains cancelled production: %s', async (mode) => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-native-cook-close-'));
-  let server: Awaited<ReturnType<typeof createServer>> | undefined;
-  let release!: () => void;
-  const blocked = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  let observeStarted!: () => void;
-  const started = new Promise<void>((resolve) => {
-    observeStarted = resolve;
-  });
+  let server: Awaited<ReturnType<typeof createPackTestServer>> | undefined;
+  const { promise: blocked, resolve: release } = testGate();
+  const { promise: started, resolve: observeStarted } = testGate();
   const calls: string[] = [];
   class Cooker implements NativeCooker {
     readonly key = 'close-effect';
@@ -67,13 +62,7 @@ it.each([
       producerReadiness: 'before-consume',
       ddc: { projectDdcRoot: join(root, 'ddc') },
     });
-    server = await createServer({
-      root,
-      configFile: false,
-      logLevel: 'silent',
-      plugins: [plugin],
-      server: { host: '127.0.0.1', port: 0 },
-    });
+    server = await createPackTestServer(root, plugin);
     await server.listen();
     await started;
     if (mode === 'complete') {

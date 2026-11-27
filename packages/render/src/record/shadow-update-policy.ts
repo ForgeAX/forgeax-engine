@@ -30,13 +30,6 @@ export function shadowUpdatePolicy(
     (identity.kind === 'directional' ? effectiveShadowMapSize : effectiveSpotShadowMapSize) ?? 1;
   return {
     constantBias: policy.shadowBiasMode === 1,
-    blur: {
-      radius:
-        'shadowRadius' in policy
-          ? (policy.shadowRadius ?? 1)
-          : ((('pcfKernelSize' in policy ? policy.pcfKernelSize : 3) ?? 3) - 1) / 2,
-      samples: policy.shadowBlurSamples ?? 8,
-    },
     channels: policy.shadowCasterChannels ?? 0xffffffff,
     auto: policy.shadowAutoUpdate !== false,
     revision: {

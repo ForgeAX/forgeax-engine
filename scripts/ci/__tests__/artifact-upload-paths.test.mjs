@@ -1,20 +1,54 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 import { artifactUploadPaths } from '../artifact-upload-paths.mjs';
 import { resolvedUploadViolations } from '../check-no-reports.mjs';
 
-test('View failures upload Modeling pictures and journey without the generated project', async () => {
+const uploadPreload = '--import=./scripts/ci/finish-failed-artifact-upload.mjs';
+const uploadNodeOptions = `\${{ env.NODE_OPTIONS }} ${uploadPreload}`;
+
+test('failed upload processes release their open sockets before a retry', async () => {
+  const runNode = promisify(execFile);
+  const child = (source) =>
+    runNode(process.execPath, ['--input-type=module', '--eval', source], {
+      cwd: new URL('../../../', import.meta.url),
+      env: { ...process.env, NODE_OPTIONS: uploadPreload },
+      timeout: 20_000,
+    }).catch((error) => error);
+  const stalledUpload = `
+    import { createServer } from 'node:net';
+    createServer().listen(0, '127.0.0.1', () => {
+      process.exitCode = 1;
+      console.error('Upload progress stalled.');
+    });
+  `;
+  const [after, ordinaryFailure, slowSuccess] = await Promise.all([
+    child(stalledUpload),
+    child('process.exitCode = 1;'),
+    child("setTimeout(() => console.log('artifact-id=42'), 7_000);"),
+  ]);
+  assert.equal(after.code, 1);
+  assert.match(after.stderr, /Upload progress stalled.*Failed attempt still running/s);
+  assert.equal(ordinaryFailure.code, 1);
+  assert.equal(ordinaryFailure.stderr, '');
+  assert.equal(slowSuccess.stdout.trim(), 'artifact-id=42');
+});
+
+test('View failures retain actual browser evidence without retrying an empty report', async () => {
   const { parse } = await import('yaml');
   const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
   const upload = workflow.jobs['view-integration-shards'].steps.find((step) =>
     step.with?.name?.startsWith('failure-view-integration-evidence-'),
   );
   assert.ok(upload, 'the maintained View failure upload must exist');
-  const root = mkdtempSync(join(tmpdir(), 'forgeax-modeling-evidence-'));
+  assert.equal(upload.name, 'Preserve View failure evidence');
+  assert.equal(upload.uses, './.github/actions/upload-optional-artifact');
+  assert.equal(upload.with['if-no-files-found'], 'ignore');
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-view-failure-evidence-'));
   try {
     const files = ['failure.png', 'journey.json', 'failure.html', 'project/package.json'];
     for (const file of files) {
@@ -22,6 +56,9 @@ test('View failures upload Modeling pictures and journey without the generated p
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, 'evidence');
     }
+    const faultSnapshot = join(root, 'artifacts/host-runtime-fault/execution.json');
+    mkdirSync(join(root, 'artifacts/host-runtime-fault'), { recursive: true });
+    writeFileSync(faultSnapshot, '{}');
     const { create } = await import('@actions/glob');
     const selected = await (
       await create(
@@ -34,6 +71,7 @@ test('View failures upload Modeling pictures and journey without the generated p
     ).glob();
     for (const file of files.slice(0, 3))
       assert.ok(selected.includes(join(root, 'artifacts/modeling-view', file)), file);
+    assert.ok(selected.includes(faultSnapshot));
     assert.ok(!selected.includes(join(root, 'artifacts/modeling-view/project/package.json')));
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -135,9 +173,11 @@ test('optional artifact guards provision pinned Node even in aggregate jobs', as
   const steps = action.runs.steps;
   const setup = steps.findIndex((step) => step.uses === 'actions/setup-node@v5');
   const guard = steps.findIndex((step) => step.name === 'Resolve owned artifact paths');
+  const upload = steps.find((step) => step.uses === 'actions/upload-artifact@v6');
   assert.ok(setup >= 0 && setup < guard);
   assert.equal(steps[setup].with['node-version-file'], '.nvmrc');
   assert.equal(steps[setup].with['package-manager-cache'], false);
+  assert.equal(upload.env.NODE_OPTIONS, uploadNodeOptions);
 });
 
 test('required artifact transport has three same-name attempts with bounded staggered recovery', async () => {
@@ -156,6 +196,7 @@ test('required artifact transport has three same-name attempts with bounded stag
     assert.equal(step.with['include-hidden-files'], uploads[0].with['include-hidden-files']);
     assert.equal(step.with['compression-level'], uploads[0].with['compression-level']);
     assert.equal(step.env.ACTIONS_ARTIFACT_UPLOAD_TIMEOUT_MS, '60000');
+    assert.equal(step.env.NODE_OPTIONS, uploadNodeOptions);
     if (index > 0) assert.equal(step.with.overwrite, true);
   }
   assert.equal(uploads[2].if, "inputs.required == 'true' && steps.retry_1.outcome == 'failure'");

@@ -5,6 +5,7 @@ import { createBrowserProject } from './config/vitest-browser-project';
 import { playwrightWithBackgroundPages } from './config/vitest-browser-provider';
 import { dawnProject } from './config/vitest-dawn-project';
 import { REPOSITORY_ROOT, sharedVitestConfig } from './config/vitest-shared';
+import { prepareWaterImpulseNoise } from './packages/render/src/__tests__/texture-generators.commands';
 import { selectBrowserExecutable } from './scripts/ci/browser-executable.mjs';
 
 // Root vitest config - declares projects per K-3 split policy:
@@ -177,6 +178,7 @@ export default defineConfig({
           ],
           browser: {
             enabled: true,
+            commands: { prepareWaterImpulseNoise: () => prepareWaterImpulseNoise() },
             provider: playwrightWithBackgroundPages({
               launchOptions: {
                 ...selectBrowserExecutable({ channel: 'chrome-beta' }),

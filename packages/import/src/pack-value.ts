@@ -1,4 +1,5 @@
-import { isDeepFrozenJson } from '@forgeax/engine-types';
+import { type ImportProduct, isDeepFrozenJson } from '@forgeax/engine-types';
+import type { DdcPack, RunImportMeta } from './import-runner.js';
 
 /**
  * Shared digest and Pack projection: supported numeric views become arrays,
@@ -32,4 +33,42 @@ export function normaliseForPack(value: unknown): unknown {
       normaliseForPack(entry),
     ]),
   );
+}
+
+function declarationFields(
+  declaration: RunImportMeta['subAssets'][number] | undefined,
+): Pick<DdcPack['assets'][number], 'sourceKey' | 'sourceIndex' | 'relations'> {
+  if (declaration === undefined) return {};
+  return {
+    sourceIndex: declaration.sourceIndex,
+    ...(declaration.sourceKey !== undefined ? { sourceKey: declaration.sourceKey } : {}),
+    ...(declaration.relations !== undefined ? { relations: declaration.relations } : {}),
+  };
+}
+
+/** Project validated producer assets to the canonical logical Pack v2 document. */
+export function projectImportPack(
+  product: Pick<ImportProduct<unknown>, 'assets'>,
+  meta?: RunImportMeta,
+  payload: (asset: ImportProduct<unknown>['assets'][number]) => unknown = (asset) => asset.payload,
+): DdcPack {
+  const declarations =
+    meta === undefined ? undefined : new Map(meta.subAssets.map((asset) => [asset.guid, asset]));
+  return {
+    schemaVersion: '2.0.0',
+    kind: 'internal-text-package',
+    ...(meta?.packageId === undefined ? {} : { packageId: meta.packageId }),
+    ...(meta?.provenance === undefined ? {} : { provenance: meta.provenance }),
+    ...(meta?.revision === undefined ? {} : { revision: meta.revision }),
+    ...(meta?.diagnostics === undefined ? {} : { diagnostics: meta.diagnostics }),
+    assets: product.assets.map((asset) => ({
+      guid: asset.guid,
+      kind: asset.kind,
+      ...(declarations === undefined ? {} : declarationFields(declarations.get(asset.guid))),
+      ...(asset.name === undefined ? {} : { name: asset.name }),
+      payload: normaliseForPack(payload(asset)) as Record<string, unknown>,
+      refs: asset.refs.map((reference) => reference.guid),
+      artifacts: asset.artifacts,
+    })),
+  };
 }

@@ -6,8 +6,8 @@ import {
   createParticleCodeNativeCooker,
 } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
+import { createStandardAssetOutputProducerRegistry } from '../scriptable-pack-build';
 import { buildScriptablePack } from '../scriptable-pack-build-core';
-import { createStandardAssetOutputProducerRegistry } from '../standard-output-producers';
 
 const source = {
   effect: {

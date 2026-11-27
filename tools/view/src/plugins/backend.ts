@@ -23,7 +23,7 @@ import { createViewProductPlan, viewFrontendRoot, VIEW_FRONTEND_MODULE } from '@
 import { listPackSources } from '@forgeax/engine-pack/build';
 import { VIEW_PRODUCT_BACKEND_CATALOG } from '@forgeax/view-viewer/catalog/backend';
 import { startViewHostServer } from '@forgeax/view-workspace-core/resident';
-import { installedEngineRoot } from '../engine-root.ts';
+import { installedEngineRoot, installedEngineVersion } from '../engine-root.ts';
 
 export function createViewPlatformBinding(platform: ViewPlatform) {
   if (!platform || typeof platform.createPage !== 'function') {
@@ -74,8 +74,10 @@ export async function createViewBackend({ platform, capabilities, frontendConfig
     platformStarted = platform !== undefined;
     await platform?.start?.();
   const token = workspaceAccessToken ?? randomUUID();
+  const engineVersion = installedEngineVersion();
   const config = {
     ...(frontendConfig ?? {}),
+    ...(engineVersion === undefined ? {} : { engineVersion }),
     displayCarrier: platform !== undefined,
     workspace: {
       ...(frontendConfig?.workspace ?? {}),
@@ -144,7 +146,10 @@ export async function createViewBackend({ platform, capabilities, frontendConfig
         onClientDisconnect: (caller) => workspaceCore.revokeConnection(caller.connectionId),
         ...(workspacePath === undefined ? {} : { path: workspacePath }),
         ...(staticRoot === undefined ? {} : { staticRoot, engineRoot: installedEngineRoot() }),
-        ...(config.layout === undefined ? {} : { frontendConfig: { layout: config.layout } }),
+        frontendConfig: {
+          ...(config.layout === undefined ? {} : { layout: config.layout }),
+          ...(engineVersion === undefined ? {} : { engineVersion }),
+        },
       });
     }
     return Object.freeze({

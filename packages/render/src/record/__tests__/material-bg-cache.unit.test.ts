@@ -93,7 +93,8 @@ describe('material bind-group assembly cache', () => {
       paramSnapshot: { roughness: 0.5 },
     } as unknown as MaterialSnapshot;
     const cached: MaterialBgAssemblyCacheEntry = {
-      bindingEntries: [],
+      descriptor: { layout: {} as BindGroupLayout, entries: [] },
+      bindingsCurrent: () => true,
       skylightBindingStart: 0,
       material,
       materialBgl: {} as BindGroupLayout,
@@ -136,7 +137,7 @@ describe('material bind-group assembly cache', () => {
     const oldBuffer = {} as Buffer;
     const newBuffer = {} as Buffer;
     const skylightResources = {
-      irradianceView: {},
+      skySh: {},
       irradianceSampler: {},
       prefilterView: {},
       prefilterSampler: {},
@@ -144,7 +145,8 @@ describe('material bind-group assembly cache', () => {
       intensityBuffer: {},
     } as MaterialBgAssemblyCacheEntry['skylightResources'];
     const cached: MaterialBgAssemblyCacheEntry = {
-      bindingEntries: [],
+      descriptor: { layout: {} as BindGroupLayout, entries: [] },
+      bindingsCurrent: () => true,
       skylightBindingStart: 0,
       material,
       uniformResources: [],
@@ -182,7 +184,7 @@ describe('material bind-group assembly cache', () => {
         material,
         materialBgl,
         oldBuffer,
-        { ...skylightResources, skylightPrefilterView: {} as TextureView },
+        { ...skylightResources, prefilterView: {} as TextureView },
         true,
       ),
     ).toBe(false);

@@ -15,7 +15,7 @@ export interface ViewAbi {
   readonly moduleId: 'forgeax_view::common';
   readonly group: 0;
   readonly binding: 0;
-  readonly byteLength: 1312;
+  readonly byteLength: 1392;
   readonly fields: readonly ViewAbiField[];
 }
 
@@ -23,7 +23,7 @@ export const VIEW_ABI: ViewAbi = Object.freeze({
   moduleId: 'forgeax_view::common',
   group: 0,
   binding: 0,
-  byteLength: 1312,
+  byteLength: 1392,
   fields: Object.freeze([
     { name: 'worldViewProj', offsetBytes: 0, sizeBytes: 64 },
     { name: 'inverseViewProj', offsetBytes: 176, sizeBytes: 64 },
@@ -42,5 +42,7 @@ export const VIEW_ABI: ViewAbi = Object.freeze({
     { name: 'atmosphereControl', offsetBytes: 1264, sizeBytes: 16 },
     { name: 'fogSky', offsetBytes: 1280, sizeBytes: 16 },
     { name: 'ssrQuality', offsetBytes: 1296, sizeBytes: 16 },
+    { name: 'subsurfaceProfiles', offsetBytes: 1312, sizeBytes: 64 },
+    { name: 'groundSolar', offsetBytes: 1376, sizeBytes: 16 },
   ]),
 });

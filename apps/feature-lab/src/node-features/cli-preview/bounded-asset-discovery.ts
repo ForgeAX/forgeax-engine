@@ -64,7 +64,7 @@ export default defineFeature({
         '--root',
         fixture.root,
         '--subject',
-        '019fb7ce-1000-7000-8000-000000000001',
+        'ee7f6b3d-74ee-54e9-a62a-97d3fc58f125',
       ]);
       const text = JSON.stringify(inspect.value);
       checks.ok(

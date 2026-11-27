@@ -9,8 +9,8 @@ const commonWgslSrc = readFileSync(
 );
 
 describe('View UBO directional shadow ABI', () => {
-  it('keeps the 1312 B payload inside the 256-aligned 1536 B View slot', () => {
-    expect(viewUboSrc).toMatch(/VIEW_UNIFORM_BYTES\s*=\s*1312/);
+  it('keeps the 1392 B payload inside the 256-aligned 1536 B View slot', () => {
+    expect(viewUboSrc).toMatch(/VIEW_UNIFORM_BYTES\s*=\s*1392/);
     expect(viewUboSrc).toMatch(/VIEW_UNIFORM_SLOT_STRIDE\s*=\s*1536/);
     expect(viewUboSrc).toMatch(/VIEW_PAYLOAD_FLOATS\s*=\s*VIEW_UNIFORM_BYTES \/ 4/);
   });
@@ -37,13 +37,17 @@ describe('View UBO directional shadow ABI', () => {
     expect(viewStruct).toMatch(/ssrParams\s*:\s*vec4<f32>/);
     expect(viewStruct).toMatch(/cloudShadowProjection\s*:\s*vec4<f32>/);
     expect(viewStruct).toMatch(
-      /atmosphereControl\s*:\s*vec4<f32>,\s*\n(?:\s*\/\/.*\n)*\s*fogSky\s*:\s*vec4<f32>,\s*\n(?:\s*\/\/.*\n)*\s*ssrQuality\s*:\s*vec4<f32>,\s*\n\};/,
+      /atmosphereControl\s*:\s*vec4<f32>,\s*\n(?:\s*\/\/.*\n)*\s*fogSky\s*:\s*vec4<f32>,\s*\n(?:\s*\/\/.*\n)*\s*ssrQuality\s*:\s*vec4<f32>,\s*\n(?:\s*\/\/.*\n)*\s*subsurfaceProfiles\s*:\s*array<vec4<u32>, 4>,\s*\n(?:\s*\/\/.*\n)*\s*groundSolar\s*:\s*vec4<f32>,\s*\n\};/,
     );
     expect(viewUboSrc).toMatch(/viewPayload\[320\]\s*=\s*fog\.skyOpacity/);
+    expect(viewUboSrc).toMatch(/viewPayload\.set\(ground, 344\)/);
+    expect(viewUboSrc).toMatch(/viewPayload\[347\]\s*=\s*!atmosphere\.backgroundOnly/);
     expect(viewUboSrc).toMatch(/viewPayload\[236\]\s*=\s*ssr\.maxDistance/);
     expect(viewUboSrc).toMatch(/viewPayload\[237\]\s*=\s*ssr\.thickness/);
     expect(viewUboSrc).toMatch(/viewPayload\[238\]\s*=\s*ssr\.maxRoughness/);
-    expect(viewUboSrc).toMatch(/viewPayload\[239\]\s*=\s*1/);
+    expect(viewUboSrc).toMatch(
+      /viewPayload\[239\]\s*=\s*inlineSsr\s*\?\s*\(previousColorValid\s*\?\s*3\s*:\s*2\)\s*:\s*previousColorValid\s*\?\s*4\s*:\s*1/,
+    );
     expect(viewStruct).not.toMatch(/pcfKernelSize/);
     expect(commonWgslSrc.match(/@group\(0\) @binding\(0\) var<uniform> view/g)).toHaveLength(1);
   });

@@ -40,8 +40,8 @@ it('samples the production reflection pyramid at roughness squared LOD with conf
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const texture = device
     .createTexture({
-      size: { width: 4, height: 4, depthOrArrayLayers: 1 },
-      mipLevelCount: 3,
+      size: { width: 16, height: 16, depthOrArrayLayers: 1 },
+      mipLevelCount: 5,
       // Match the production HDR pyramid, including the filtering precision.
       format: 'rgba16float',
       textureBindingViewDimension: '2d',
@@ -57,13 +57,15 @@ it('samples the production reflection pyramid at roughness squared LOD with conf
   try {
     // Distinct levels falsify accidental mip-zero-only sampling. The middle
     // level has zero confidence and must not introduce its green radiance.
-    for (let level = 0; level < 3; level++) {
-      const size = 4 >> level;
+    for (let level = 0; level < 5; level++) {
+      const size = 16 >> level;
       const color = [
         [0x3c00, 0, 0, 0x3c00],
         // Zero-confidence presentation texels carry no RGB payload.
         [0, 0, 0, 0],
         [0, 0, 0x3c00, 0x3c00],
+        [0, 0x3c00, 0, 0x3c00],
+        [0x3c00, 0x3c00, 0x3c00, 0x3c00],
       ][level];
       if (color === undefined) throw new Error('Missing mip fixture color');
       const data = new Uint16Array(size * size * 4);
@@ -111,7 +113,6 @@ ${temporalSource.slice(temporalStart, temporalEnd)}
     if (phase >= 248u) { mass += thin.r * thin.a; }
   }
   result[9] = vec4<f32>(mass / 8.0);
-
 }`;
     const compiler = await import(
       /* @vite-ignore */ new URL('../../../shader-compiler/dist/index.mjs', import.meta.url).href

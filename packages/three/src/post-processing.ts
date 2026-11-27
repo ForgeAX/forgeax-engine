@@ -5,6 +5,7 @@ export const renderThreePostProcessing = Symbol('renderThreePostProcessing');
 export interface ThreePostProcessing {
   readonly ao?: Omit<Partial<AmbientOcclusionData>, 'quality'> & {
     readonly samples: number | undefined;
+    readonly downsample?: boolean;
   };
   readonly bloom?: {
     readonly intensity: number;

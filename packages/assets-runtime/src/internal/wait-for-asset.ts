@@ -1,11 +1,11 @@
 import { type AssetLoadError, err, type Result } from '@forgeax/engine-types';
 
 /** Cancel one wait without cancelling the owner's shared operation. */
-export function waitForAsset<T>(
-  request: Promise<Result<T, AssetLoadError>>,
+export function waitForAsset<T, E = AssetLoadError>(
+  request: Promise<Result<T, E>>,
   signal: AbortSignal,
   guid: string,
-): Promise<Result<T, AssetLoadError>> {
+): Promise<Result<T, E | AssetLoadError>> {
   if (signal.aborted) return Promise.resolve(err(assetLoadCancelled(guid)));
   return new Promise((resolve, reject) => {
     const abort = () => resolve(err(assetLoadCancelled(guid)));

@@ -31,65 +31,62 @@ import type { DevKitAppOptions, DevKitDeliveryOptions } from '../plugin-build.js
 import { decodeBuildMessage, encodeBuildMessage } from './build-process-wire.js';
 
 /** Only serializable requests and producer outputs cross this process boundary. */
-export type BuildProcessRequest =
-  | {
-      readonly id: number;
-      readonly operation: 'start';
-      readonly entry: string;
-      readonly root: string;
-      readonly definitions: readonly PluginAssetDefinition[];
-      readonly sessionId: string;
-      readonly startupTimeoutMs: number;
-      /** Project build DDC root backing each cooker's `context.cache`. */
-      readonly buildCacheRoot?: string;
-    }
-  | {
-      readonly id: number;
-      readonly operation: 'cook';
-      readonly key: string;
-      readonly input: unknown;
-    }
-  | {
-      readonly id: number;
-      readonly operation: 'import';
-      readonly key: string;
-      readonly context: Pick<
-        ImportContext,
-        'source' | 'subAssets' | 'importSettings' | 'sourceOverrides'
-      >;
-    }
-  | {
-      readonly id: number;
-      readonly operation: 'decodeImage';
-      readonly key: string;
-      readonly args: Parameters<ImportContext['decodeImage']>;
-    }
-  | {
-      readonly id: number;
-      readonly operation: 'publish';
-      readonly key: string;
-      readonly input: {
-        readonly importSettings: Readonly<Record<string, unknown>>;
-        readonly subAssets: ImportContext['subAssets'];
-      };
-    }
-  | {
-      readonly id: number;
-      readonly operation: 'finalize';
-      readonly key: string;
-      readonly product: ImportProduct<unknown>;
-      readonly urls: Readonly<Record<string, string>>;
-    }
-  | {
-      readonly id: number;
-      readonly operation: 'tool';
-      readonly tool: string;
-      readonly args: unknown;
-      readonly options: Omit<ToolRunOptions, 'signal' | 'capabilityResolver' | 'owner' | 'caller'>;
-    }
-  | { readonly id: number; readonly operation: 'cancelTool'; readonly run: number }
-  | { readonly id: number; readonly operation: 'cacheIdentity'; readonly key: string }
-  | { readonly id: number; readonly operation: 'dispose' };
+interface BuildArguments {
+  start: {
+    readonly entry: string;
+    readonly root: string;
+    readonly definitions: readonly PluginAssetDefinition[];
+    readonly sessionId: string;
+    readonly startupTimeoutMs: number;
+    /** Project build DDC root backing each cooker's `context.cache`. */
+    readonly buildCacheRoot?: string;
+  };
+  cook: { readonly key: string; readonly input: unknown };
+  import: {
+    readonly key: string;
+    readonly context: Pick<
+      ImportContext,
+      'source' | 'subAssets' | 'importSettings' | 'sourceOverrides'
+    >;
+  };
+  decodeImage: { readonly key: string; readonly args: Parameters<ImportContext['decodeImage']> };
+  publish: {
+    readonly key: string;
+    readonly input: {
+      readonly importSettings: Readonly<Record<string, unknown>>;
+      readonly subAssets: ImportContext['subAssets'];
+    };
+  };
+  finalize: {
+    readonly key: string;
+    readonly product: ImportProduct<unknown>;
+    readonly urls: Readonly<Record<string, string>>;
+  };
+  tool: {
+    readonly tool: string;
+    readonly args: unknown;
+    readonly options: Omit<ToolRunOptions, 'signal' | 'capabilityResolver' | 'owner' | 'caller'>;
+  };
+  cancelTool: { readonly run: number };
+  cacheIdentity: { readonly key: string };
+  dispose: Record<never, never>;
+}
+
+type BuildOperation = keyof BuildArguments;
+export type BuildRequest<Operation extends BuildOperation = BuildOperation> = {
+  [Key in Operation]: BuildArguments[Key] & { readonly operation: Key };
+}[Operation];
+type BuildPacket<Operation extends BuildOperation> = BuildRequest<Operation> & {
+  readonly id: number;
+};
+
+type BuildHandlers = {
+  [Operation in keyof BuildArguments]: (request: BuildPacket<Operation>) => Promise<unknown>;
+};
+
+export type BuildResult = {
+  [Operation in keyof BuildArguments]: Awaited<ReturnType<(typeof buildHandlers)[Operation]>>;
+};
 
 export interface BuildCookerDescriptor {
   readonly key: string;
@@ -105,35 +102,35 @@ export interface BuildImporterDescriptor {
   readonly publish: boolean;
   readonly finalize: boolean;
 }
-export interface BuildCallbackRequest {
-  readonly callback: number;
-  readonly request: number;
-  readonly operation: 'readSource' | 'readSibling' | 'decodeImage';
-  readonly args: readonly unknown[];
-}
-interface BuildCallbackResponse {
-  readonly callback: number;
-  readonly ok: boolean;
-  readonly value?: unknown;
-  readonly error?: unknown;
-}
+type ImportCallback = 'readSource' | 'readSibling' | 'decodeImage';
+export type BuildCallbackRequest = {
+  [Operation in ImportCallback]: {
+    readonly operation: Operation;
+    readonly args: Parameters<ImportContext[Operation]>;
+  };
+}[ImportCallback] & { readonly callback: number; readonly request: number };
+
+type BuildOutcome =
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false; readonly error: unknown };
+type BuildCallbackResponse = BuildOutcome & { readonly callback: number };
+export type BuildResponse = BuildOutcome & { readonly id: number };
+
 const callbacks = new Map<
   number,
   { resolve(value: unknown): void; reject(error: unknown): void }
 >();
 let callbackSequence = 0;
-function callParent(
+function callParent<Operation extends ImportCallback>(
   request: number,
-  operation: BuildCallbackRequest['operation'],
-  args: readonly unknown[],
-): Promise<unknown> {
+  operation: Operation,
+  args: Parameters<ImportContext[Operation]>,
+): ReturnType<ImportContext[Operation]> {
   return new Promise((resolve, reject) => {
     const callback = ++callbackSequence;
     callbacks.set(callback, { resolve, reject });
-    process.send?.(
-      encodeBuildMessage({ callback, request, operation, args } satisfies BuildCallbackRequest),
-    );
-  });
+    process.send?.(encodeBuildMessage({ callback, request, operation, args }));
+  }) as ReturnType<ImportContext[Operation]>;
 }
 
 const context = new Context();
@@ -147,28 +144,6 @@ let root: Fiber | undefined;
 let tail = Promise.resolve();
 let started = false;
 const runs = new Map<number, ToolRun<unknown>>();
-
-/** The closed set of public project App option keys. */
-const APP_OPTION_KEYS: ReadonlySet<string> = new Set([
-  'configuration',
-  'dynamicGeometryMeshBudgetBytes',
-  'textureMipSkip',
-  'assetBudgetBytes',
-  'canvasPixelRatio',
-  'standardProfile',
-  'pipelineLibrary',
-  'backgroundPipelineLibrary',
-  'backgroundPipelineLibraryConcurrency',
-  'time',
-  'renderPipelineCapacity',
-  'renderFeatures',
-  'vfxDependencies',
-  'renderTaskYield',
-  'loadingLabels',
-  'startupUi',
-  'wechat',
-  'execution',
-]);
 
 const LOADING_LABEL_KEYS = new Set(Object.keys(DEFAULT_LOAD_PROGRESS_LABELS));
 const HOST_LABEL_KEYS = new Set(Object.keys(DEFAULT_LOAD_PROGRESS_LABELS.host));
@@ -208,14 +183,6 @@ function validateLoadingLabels(value: unknown): void {
     throw new TypeError(
       'devkitAppOptions.loadingLabels must contain known text strings, a phases string map, and optional known host text strings',
     );
-}
-
-/** Byte budgets and the texture mip skip share Render's validators with App. */
-function validateResourceBudgetOptions(options: DevKitAppOptions): void {
-  if (options.dynamicGeometryMeshBudgetBytes !== undefined)
-    validateDynamicGeometryMeshBudget(options.dynamicGeometryMeshBudgetBytes);
-  if (options.textureMipSkip !== undefined) assertTextureMipSkip(options.textureMipSkip);
-  if (options.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
 }
 
 function validateWechatOptions(wechat: DevKitAppOptions['wechat']): void {
@@ -291,44 +258,64 @@ function validateEngineConfigurationOption(options: DevKitAppOptions): void {
   }
 }
 
-/** Admit a closed data-only projection; World and Render retain their policies. */
+type OptionChecks<T> = { [K in keyof T]-?: ((value: T[K]) => void) | null };
+
+/** Keys without a DevKit check still have to pass the data-only projection. */
+const appOptionChecks: OptionChecks<Required<DevKitAppOptions>> = {
+  configuration: null, // Resolved first so its cross-option conflicts take precedence.
+  canvasPixelRatio: validateCanvasPixelRatio,
+  execution: validateExecutionOptions,
+  renderPipelineCapacity(value) {
+    if (value !== 2 && value !== 3 && value !== 4)
+      throw new TypeError('devkitAppOptions.renderPipelineCapacity must be 2, 3 or 4');
+  },
+  renderTaskYield: validateRenderTaskYield,
+  renderFeatures: validateRenderFeatureContributions,
+  vfxDependencies(value) {
+    if (
+      !Array.isArray(value) ||
+      value.some((id) => typeof id !== 'string' || !id) ||
+      new Set(value).size !== value.length
+    )
+      throw new TypeError(
+        'devkitAppOptions.vfxDependencies requires unique selected feature identities',
+      );
+  },
+  backgroundPipelineLibraryConcurrency: validateBackgroundPipelineLibraryConcurrency,
+  wechat: validateWechatOptions,
+  time: validateTimeOptions,
+  loadingLabels: validateLoadingLabels,
+  startupUi: validateStartupUi,
+  dynamicGeometryMeshBudgetBytes: validateDynamicGeometryMeshBudget,
+  textureMipSkip: assertTextureMipSkip,
+  assetBudgetBytes: validateAssetBudgetBytes,
+  standardProfile(value) {
+    const invalid = validateRenderProfile(value);
+    if (invalid !== undefined) throw new TypeError(invalid);
+  },
+  pipelineLibrary: null,
+  backgroundPipelineLibrary: null,
+};
+
+function checkOptions<T>(options: Partial<T>, checks: OptionChecks<T>) {
+  for (const key of Object.keys(checks) as (keyof T)[]) {
+    const value = options[key];
+    if (value !== undefined) checks[key]?.(value);
+  }
+}
+
 function projectAppOptions(value: unknown): DevKitAppOptions {
   if (value === undefined) return {};
   if (
     typeof value !== 'object' ||
     value === null ||
     (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) ||
-    Reflect.ownKeys(value).some((key) => typeof key !== 'string' || !APP_OPTION_KEYS.has(key))
+    Reflect.ownKeys(value).some((key) => !Object.hasOwn(appOptionChecks, key))
   )
     throw new TypeError('devkitAppOptions must contain only public project App options');
   const options = copyPackData(value) as DevKitAppOptions;
   validateEngineConfigurationOption(options);
-  validateCanvasPixelRatio(options.canvasPixelRatio);
-  validateExecutionOptions(options.execution);
-  const capacity = options.renderPipelineCapacity;
-  if (capacity !== undefined && capacity !== 2 && capacity !== 3 && capacity !== 4)
-    throw new TypeError('devkitAppOptions.renderPipelineCapacity must be 2, 3 or 4');
-  validateRenderTaskYield(options.renderTaskYield);
-  validateRenderFeatureContributions(options.renderFeatures);
-  if (
-    options.vfxDependencies !== undefined &&
-    (!Array.isArray(options.vfxDependencies) ||
-      options.vfxDependencies.some((value) => typeof value !== 'string' || !value) ||
-      new Set(options.vfxDependencies).size !== options.vfxDependencies.length)
-  )
-    throw new TypeError(
-      'devkitAppOptions.vfxDependencies requires unique selected feature identities',
-    );
-  validateBackgroundPipelineLibraryConcurrency(options.backgroundPipelineLibraryConcurrency);
-  validateWechatOptions(options.wechat);
-  validateTimeOptions(options.time);
-  validateLoadingLabels(options.loadingLabels);
-  validateStartupUi(options.startupUi);
-  validateResourceBudgetOptions(options);
-  if (options.standardProfile !== undefined) {
-    const invalid = validateRenderProfile(options.standardProfile);
-    if (invalid !== undefined) throw new TypeError(invalid);
-  }
+  checkOptions(options, appOptionChecks);
   return options;
 }
 
@@ -374,155 +361,154 @@ function requireActiveBuildRoot(): void {
   if (!root || root.state !== 2) throw new Error('build root is not active');
 }
 
-async function execute(request: BuildProcessRequest): Promise<unknown> {
-  switch (request.operation) {
-    case 'start': {
-      if (started) throw new Error('build process already started');
-      started = true;
-      buildCacheRoot = request.buildCacheRoot;
-      const source = new Map(
-        request.definitions.map((definition) => [definition.guid, definition]),
-      );
-      const module = await import(pathToFileURL(request.entry).href);
-      const programs: PluginPrograms = module.createPrograms(request.sessionId, 'build', 1);
-      await context.plugin(createToolApiPlugin());
-      const foundation = context.plugin({
-        name: 'forgeax:build-foundation',
-        apply(ctx) {
-          ctx.provide('nativeCookers', cookers);
-          ctx.provide('importers', importers);
-          ctx.provide('assets', {
-            async readPluginDefinition(guid: string) {
-              const definition = source.get(guid);
-              return definition
-                ? ok(structuredClone(definition))
-                : err({
-                    code: 'plugin-bootstrap-read-blocked',
-                    expected: 'a source-discoverable plugin definition',
-                    hint: 'move build dependencies to source-only Packs',
-                    detail: { guid, root: request.root, operation: 'readPluginDefinition' },
-                  });
-            },
-            async load(guid: unknown) {
-              return err({
-                code: 'plugin-bootstrap-read-blocked',
-                expected: 'source-only build bootstrap',
-                hint: 'read cooked content during a producer operation after startup',
-                detail: { guid, root: request.root, operation: 'load' },
-              });
-            },
-          });
-          ctx.provide('pluginPrograms', programs);
-        },
-      });
-      await foundation.await();
-      const result = await startPluginAsset(context, request.root, {
-        timeoutMs: request.startupTimeoutMs,
-      });
-      if (!result.ok) throw result.error;
-      root = result.value;
-      return {
-        appOptions: projectAppOptions(context.get('devkitAppOptions')),
-        delivery: projectDelivery(context.get('devkitDelivery')),
-        cookers: cookers.registeredCookers().map((key): BuildCookerDescriptor => {
-          const cooker = cookers.get(key);
-          return {
-            key,
-            ...(cooker?.timeoutMs === undefined ? {} : { timeoutMs: cooker.timeoutMs }),
-            ...(cooker?.concurrency === 'parallel' ? { concurrency: 'parallel' as const } : {}),
-            ...(cooker?.cacheIdentity === undefined ? {} : { cacheIdentity: true as const }),
-          };
-        }),
-        importers: importers.registeredImporters().map((key): BuildImporterDescriptor => {
-          const value = importers.get(key);
-          if (!value) throw new Error(`importer disappeared during startup: ${key}`);
-          return {
-            key,
-            decodeImage: !!value.capabilities?.decodeImage,
-            publish: !!value.capabilities?.catalog?.publish,
-            finalize: !!value.finalize,
-          };
-        }),
-      };
+const buildHandlers = {
+  async start(request) {
+    if (started) throw new Error('build process already started');
+    started = true;
+    buildCacheRoot = request.buildCacheRoot;
+    const source = new Map(request.definitions.map((definition) => [definition.guid, definition]));
+    const module = await import(pathToFileURL(request.entry).href);
+    const programs: PluginPrograms = module.createPrograms(request.sessionId, 'build', 1);
+    await context.plugin(createToolApiPlugin());
+    const foundation = context.plugin({
+      name: 'forgeax:build-foundation',
+      apply(ctx) {
+        ctx.provide('nativeCookers', cookers);
+        ctx.provide('importers', importers);
+        ctx.provide('assets', {
+          async readPluginDefinition(guid: string) {
+            const definition = source.get(guid);
+            return definition
+              ? ok(structuredClone(definition))
+              : err({
+                  code: 'plugin-bootstrap-read-blocked',
+                  expected: 'a source-discoverable plugin definition',
+                  hint: 'move build dependencies to source-only Packs',
+                  detail: { guid, root: request.root, operation: 'readPluginDefinition' },
+                });
+          },
+          async load(guid: unknown) {
+            return err({
+              code: 'plugin-bootstrap-read-blocked',
+              expected: 'source-only build bootstrap',
+              hint: 'read cooked content during a producer operation after startup',
+              detail: { guid, root: request.root, operation: 'load' },
+            });
+          },
+        });
+        ctx.provide('pluginPrograms', programs);
+      },
+    });
+    await foundation.await();
+    const result = await startPluginAsset(context, request.root, {
+      timeoutMs: request.startupTimeoutMs,
+    });
+    if (!result.ok) throw result.error;
+    root = result.value;
+    return {
+      appOptions: projectAppOptions(context.get('devkitAppOptions')),
+      delivery: projectDelivery(context.get('devkitDelivery')),
+      cookers: cookers.registeredCookers().map((key): BuildCookerDescriptor => {
+        const cooker = cookers.get(key);
+        return {
+          key,
+          ...(cooker?.timeoutMs === undefined ? {} : { timeoutMs: cooker.timeoutMs }),
+          ...(cooker?.concurrency === 'parallel' ? { concurrency: 'parallel' as const } : {}),
+          ...(cooker?.cacheIdentity === undefined ? {} : { cacheIdentity: true as const }),
+        };
+      }),
+      importers: importers.registeredImporters().map((key): BuildImporterDescriptor => {
+        const value = importers.get(key);
+        if (!value) throw new Error(`importer disappeared during startup: ${key}`);
+        return {
+          key,
+          decodeImage: !!value.capabilities?.decodeImage,
+          publish: !!value.capabilities?.catalog?.publish,
+          finalize: !!value.finalize,
+        };
+      }),
+    };
+  },
+  async cacheIdentity(request) {
+    requireActiveBuildRoot();
+    const cooker = cookers.get(request.key);
+    if (cooker?.cacheIdentity === undefined)
+      throw new Error(`cooker has no cache identity: ${request.key}`);
+    return cooker.cacheIdentity();
+  },
+  async cook(request) {
+    requireActiveBuildRoot();
+    const result = await cookers.runDraft(request.key, request.input);
+    if (!result.ok) throw result.error;
+    return result.value;
+  },
+  async import(request) {
+    requireActiveBuildRoot();
+    const importer = importers.get(request.key);
+    if (!importer) throw new Error(`unregistered importer ${request.key}`);
+    const context: ImportContext = {
+      ...request.context,
+      readSource: () => callParent(request.id, 'readSource', []),
+      readSibling: (...args) => callParent(request.id, 'readSibling', args),
+      decodeImage: (...args) => callParent(request.id, 'decodeImage', args),
+    };
+    return importer.import(context);
+  },
+  async decodeImage(request) {
+    const decoder = importers.get(request.key)?.capabilities?.decodeImage;
+    if (!decoder) throw new Error(`unregistered decoder ${request.key}`);
+    return decoder(...request.args);
+  },
+  async publish(request) {
+    return importers.shouldPublishCatalog({ importer: request.key, ...request.input });
+  },
+  async finalize(request) {
+    const finalize = importers.get(request.key)?.finalize;
+    if (!finalize) throw new Error(`unregistered finalizer ${request.key}`);
+    return finalize(request.product, {
+      artifactUrl(artifact) {
+        const url = request.urls[artifact.path];
+        if (url === undefined)
+          throw new Error(`finalizer requested undeclared artifact ${artifact.path}`);
+        return url;
+      },
+    });
+  },
+  async tool(request) {
+    const api = context.toolApi;
+    if (!api || !root || root.state !== 2)
+      throw new Error('build tools require an active build root');
+    const run = api.run(request.tool, request.args, {
+      ...request.options,
+      capabilityResolver: createContextCapabilityResolver(context),
+    });
+    runs.set(request.id, run);
+    try {
+      return await run.terminal;
+    } finally {
+      runs.delete(request.id);
     }
-    case 'cacheIdentity': {
-      requireActiveBuildRoot();
-      const cooker = cookers.get(request.key);
-      if (cooker?.cacheIdentity === undefined)
-        throw new Error(`cooker has no cache identity: ${request.key}`);
-      return cooker.cacheIdentity();
-    }
-    case 'cook': {
-      requireActiveBuildRoot();
-      const result = await cookers.runDraft(request.key, request.input);
-      if (!result.ok) throw result.error;
-      return result.value;
-    }
-    case 'import': {
-      if (!root || root.state !== 2) throw new Error('build root is not active');
-      const importer = importers.get(request.key);
-      if (!importer) throw new Error(`unregistered importer ${request.key}`);
-      const context: ImportContext = {
-        ...request.context,
-        readSource: () =>
-          callParent(request.id, 'readSource', []) as ReturnType<ImportContext['readSource']>,
-        readSibling: (...args) =>
-          callParent(request.id, 'readSibling', args) as ReturnType<ImportContext['readSibling']>,
-        decodeImage: (...args) =>
-          callParent(request.id, 'decodeImage', args) as ReturnType<ImportContext['decodeImage']>,
-      };
-      return importer.import(context);
-    }
-    case 'decodeImage': {
-      const decoder = importers.get(request.key)?.capabilities?.decodeImage;
-      if (!decoder) throw new Error(`unregistered decoder ${request.key}`);
-      return decoder(...request.args);
-    }
-    case 'publish':
-      return importers.shouldPublishCatalog({ importer: request.key, ...request.input });
-    case 'finalize': {
-      const finalize = importers.get(request.key)?.finalize;
-      if (!finalize) throw new Error(`unregistered finalizer ${request.key}`);
-      return finalize(request.product, {
-        artifactUrl(artifact) {
-          const url = request.urls[artifact.path];
-          if (url === undefined)
-            throw new Error(`finalizer requested undeclared artifact ${artifact.path}`);
-          return url;
-        },
-      });
-    }
-    case 'tool': {
-      const api = context.toolApi;
-      if (!api || !root || root.state !== 2)
-        throw new Error('build tools require an active build root');
-      const run = api.run(request.tool, request.args, {
-        ...request.options,
-        capabilityResolver: createContextCapabilityResolver(context),
-      });
-      runs.set(request.id, run);
-      try {
-        return await run.terminal;
-      } finally {
-        runs.delete(request.id);
-      }
-    }
-    case 'cancelTool':
-      runs.get(request.run)?.cancel('caller cancelled');
-      return undefined;
-    case 'dispose': {
-      await context.fiber.dispose();
-      const remaining = cookers.registeredCookers();
-      if (remaining.length)
-        throw new Error(`build cleanup left registered cookers: ${remaining.join(', ')}`);
-      const remainingImporters = importers.registeredImporters();
-      if (remainingImporters.length)
-        throw new Error(
-          `build cleanup left registered importers: ${remainingImporters.join(', ')}`,
-        );
-      return undefined;
-    }
-  }
+  },
+  async cancelTool(request) {
+    runs.get(request.run)?.cancel('caller cancelled');
+  },
+  async dispose() {
+    await context.fiber.dispose();
+    const remaining = cookers.registeredCookers();
+    if (remaining.length)
+      throw new Error(`build cleanup left registered cookers: ${remaining.join(', ')}`);
+    const remainingImporters = importers.registeredImporters();
+    if (remainingImporters.length)
+      throw new Error(`build cleanup left registered importers: ${remainingImporters.join(', ')}`);
+  },
+} satisfies BuildHandlers;
+
+function execute<Operation extends keyof BuildArguments>(request: BuildPacket<Operation>) {
+  const handlers: BuildHandlers = buildHandlers;
+  const operation = request.operation;
+  if (typeof operation !== 'string' || !Object.hasOwn(handlers, operation))
+    return Promise.resolve();
+  return handlers[operation](request);
 }
 
 function serializableError(error: unknown): unknown {
@@ -536,7 +522,9 @@ function serializableError(error: unknown): unknown {
 }
 
 process.on('message', (packet: Uint8Array) => {
-  const request = decodeBuildMessage(packet) as BuildProcessRequest | BuildCallbackResponse;
+  const request = decodeBuildMessage(packet) as
+    | (BuildRequest & { readonly id: number })
+    | BuildCallbackResponse;
   if ('callback' in request) {
     const pending = callbacks.get(request.callback);
     callbacks.delete(request.callback);
@@ -547,11 +535,19 @@ process.on('message', (packet: Uint8Array) => {
   const respond = async () => {
     try {
       process.send?.(
-        encodeBuildMessage({ id: request.id, ok: true, value: await execute(request) }),
+        encodeBuildMessage({
+          id: request.id,
+          ok: true,
+          value: await execute(request),
+        } satisfies BuildResponse),
       );
     } catch (cause) {
       process.send?.(
-        encodeBuildMessage({ id: request.id, ok: false, error: serializableError(cause) }),
+        encodeBuildMessage({
+          id: request.id,
+          ok: false,
+          error: serializableError(cause),
+        } satisfies BuildResponse),
       );
     }
   };

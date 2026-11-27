@@ -39,8 +39,14 @@ export function rayMaterialFailure(
     detail: { material, source, requirement },
   });
 }
-export function rayMaterialContract(asset: MaterialAsset): string {
-  return JSON.stringify([asset.parameters, asset.passes, asset.surface, asset.colorSpace]);
+export function rayMaterialContract(
+  asset: MaterialAsset,
+  context: RaySurfaceProgram['context'] = 'ray-hit',
+): string {
+  const authored = [asset.parameters, asset.passes, asset.surface, asset.colorSpace];
+  return JSON.stringify(
+    context === 'card-capture' ? ['forgeax-material-card-v4', ...authored] : authored,
+  );
 }
 /** Custom Surface coverage remains conservative even when alphaCutoff is zero. */
 export function rayMaterialNeedsCoverage(asset: {
@@ -79,16 +85,8 @@ export function admitRayMaterial(
     !['forgeax_material::standard', 'forgeax::default-standard-pbr'].includes(module)
   )
     return rayMaterialFailure(material, module, 'Standard rigid Surface root');
-  const surface =
-    pass.program.moduleSlots?.surface ??
-    asset.surface?.module ??
-    'forgeax_material::default_standard_surface';
-  if (context === 'card-capture' && surface !== 'forgeax_material::default_standard_surface')
-    return rayMaterialFailure(
-      material,
-      surface,
-      'canonical Standard card capture; custom/view-dependent capture is not qualified',
-    );
+  // Context-input eligibility belongs to the compiled Surface closure. Module
+  // identity alone cannot distinguish static procedural color from a camera read.
   if (pass.renderState?.blend !== undefined || asset.surface?.model === 'single-layer-medium')
     return rayMaterialFailure(material, module, 'opaque coverage');
   for (const p of asset.parameters ?? []) {

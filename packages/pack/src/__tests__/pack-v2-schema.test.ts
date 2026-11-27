@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validatePack, validatePackV2 } from '../schema-compiled.js';
+import { validatePackV2 } from '../schema-compiled.js';
 import { SCRIPTABLE_PACK_ASSET_KINDS } from '../scriptable-pack.js';
 
 const GUID_A = '11111111-1111-4111-8111-111111111111';
@@ -55,8 +55,16 @@ describe('Pack v2 schema', () => {
   it('accepts a v2 envelope with asset-local artifacts and separated encoding facts', () => {
     const pack = validPack();
 
-    expect(validatePack(pack)).toBe(true);
     expect(validatePackV2(pack)).toBe(true);
+  });
+
+  it.each([
+    '1.0.0',
+    '3.0.0',
+  ])('rejects version %s on the Runtime Pack boundary', (schemaVersion) => {
+    expect(validatePackV2({ schemaVersion, kind: 'internal-text-package', assets: [] })).toBe(
+      false,
+    );
   });
 
   it('rejects a non-v2 schema version', () => {

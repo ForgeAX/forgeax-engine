@@ -2,10 +2,22 @@ import type { EcsError, World } from '@forgeax/engine-ecs';
 import { componentSchema, parseManagedArraySchema } from '@forgeax/engine-ecs/internal';
 import { AssetError, err, ok, type Result, type SceneAsset } from '@forgeax/engine-types';
 
+/** Transfer all existing source holds atomically before any Scene member is materialized.
+ * Failure leaves the input holds with Scene; success returns an O(1), once-only
+ * handoff callback. The custodian drains its owner references after that callback.
+ */
+export interface SceneSourceReferenceCustody {
+  readonly take: (
+    assets: readonly number[],
+    shared: readonly number[],
+  ) => Result<() => void, EcsError>;
+}
+
 /** Hold the instance's captured source values independently of later template edits. */
 export function retainSceneSourceReferences(
   world: World,
   asset: SceneAsset,
+  custody?: SceneSourceReferenceCustody,
 ): Result<() => void, EcsError> {
   const assets = new Set<number>();
   const shared = new Set<number>();
@@ -66,5 +78,16 @@ export function retainSceneSourceReferences(
     }
     retainedShared.push(handle);
   }
-  return ok(release);
+  if (custody === undefined) return ok(release);
+  const transferred = custody.take(retainedAssets, retainedShared);
+  if (!transferred.ok) {
+    release();
+    return transferred;
+  }
+  let released = false;
+  return ok(() => {
+    if (released) return;
+    released = true;
+    transferred.value();
+  });
 }

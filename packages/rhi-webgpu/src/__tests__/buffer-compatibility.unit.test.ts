@@ -50,6 +50,23 @@ describe('WebGPU native buffer compatibility', () => {
     expect(write).not.toHaveBeenCalled();
   });
 
+  it('preserves the mapped handle and its lifecycle across detached calls on a frozen buffer', async () => {
+    const { device } = await fixture();
+    const buffer = Object.freeze(device.createBuffer({ size: 16, usage: 2 }).unwrap());
+    const { mapAsync } = buffer;
+    const mapped = (await mapAsync(2)).unwrap();
+    expect(mapped).toBe(buffer);
+    const { getMappedRange, unmap } = mapped;
+    expect(getMappedRange(0, 8).unwrap().byteLength).toBe(8);
+    unmap();
+    expect(buffer.mapState).toBe('unmapped');
+    expect(device.destroyBuffer(buffer).ok).toBe(true);
+    expect(device.destroyBuffer(buffer)).toMatchObject({
+      ok: false,
+      error: { code: 'destroy-after-destroy' },
+    });
+  });
+
   it('keeps DataView ranges in bytes and preserves explicit zero', async () => {
     const { device, destination, write } = await fixture();
     const data = new DataView(new ArrayBuffer(24), 4, 16);

@@ -12,6 +12,10 @@
       "import": "./dist/index.mjs"
     },
     "./package.json": "./package.json",
+    "./internal": {
+      "types": "./dist/internal.d.ts",
+      "import": "./dist/internal.mjs"
+    },
     "./browser": {
       "types": "./dist/browser.d.ts",
       "import": "./dist/browser.mjs"

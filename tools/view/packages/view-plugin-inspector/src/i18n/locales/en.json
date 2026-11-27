@@ -1,5 +1,19 @@
 {
   "inspector": {
+    "clearSearch": "Clear search",
+    "dismissClipboardError": "Dismiss clipboard error",
+    "authoring": {
+      "sourceDraft": "Source draft",
+      "unsaved": "Unsaved source changes",
+      "saved": "Source saved",
+      "save": "Save",
+      "undo": "Undo",
+      "redo": "Redo",
+      "exposeHint": "Expose as a Pack parameter with Agent",
+      "exposeField": "Expose {{field}} with Agent",
+      "expose": "Expose",
+      "runtimeField": "Runtime {{field}}"
+    },
     "assetReferencesTruncated": "Asset reference list is incomplete",
     "assetReferencesUnavailable": "Asset reference query unavailable",
     "materialSource": { "component": "Instance override", "mesh-default": "Mesh default", "engine-default": "Engine default" },

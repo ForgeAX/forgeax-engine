@@ -1,6 +1,5 @@
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import type { RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { assert, expect, it, onTestFinished, vi } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
 import type { MeshGpuHandles } from '../../device/gpu-residency';
@@ -8,16 +7,24 @@ import { BatchTopology, type GpuDrivenBatchBinding } from '../../gpu-driven/batc
 import { MaterialResource } from '../../material-resource';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { CameraSnapshot } from '../../render-contract';
-import type { MaterialSnapshot, RenderableSnapshot } from '../../render-system-extract';
+import type {
+  ExtractedFrame,
+  MaterialSnapshot,
+  RenderableSnapshot,
+} from '../../render-system-extract';
 import type { DrawEvidence } from '../../scene/draw-evidence';
 import { FrameSet } from '../../scene/frame-set';
 import { MaterialDispatch, MaterialFrame } from '../../scene/material-dispatch';
+import { SceneDrawSlot } from '../../scene/mesh-draw';
+import { cullPersistentFrame } from '../../scene/persistent-cull';
 import type { ProbeBlendBufferProjection } from '../../scene/probe-blend';
 import { RenderScene } from '../../scene/render-scene';
 import { TRANSPARENT_SORT_MODE_DISTANCE } from '../../systems/transparent-sort-config';
 import { finalizeWaterMaterialAdmissionDraws } from '../../water/mesh-source-admission';
 import { type DirectDrawInput, DirectDrawPhase, ViewDrawPhases } from '../direct-draw-phase';
+import { addressDrawRows, issueDrawRows } from '../draw-row-pages';
 import type { ValidatedRenderable } from '../frame-snapshot';
+import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
 import { MaterialRelations } from '../material-binding-index';
 import { MemberMaterialPasses } from '../material-pass-groups';
 
@@ -148,6 +155,99 @@ function fixture(opaqueCount: number, glassCount: number) {
 const order = (output: ReturnType<DirectDrawPhase['emit']>) =>
   output.dispatch.map((entry) => entry.entityIndex as number);
 
+it('issues only camera-admitted draw snapshots while moving casters stay available to shadow passes', () => {
+  const f = fixture(12, 0);
+  const phase = new DirectDrawPhase();
+  const draw = vi.spyOn(SceneDrawSlot.prototype, 'draw');
+  onTestFinished(() => draw.mockRestore());
+  const camera = makeZeroCameraFallbackSnapshot();
+  const box = Float32Array.of(-0.1, -0.1, -0.1, 0.1, 0.1, 0.1);
+  f.write(
+    Array.from({ length: 12 }, (_, i) => ({
+      ...source(i, opaque, -8),
+      localAabb: box,
+      renderLayers: i % 2 ? 2 : 1,
+    })),
+  );
+  for (let tick = 0; tick < 6; tick++) {
+    const selected = tick * 2;
+    for (let i = 0; i < 12; i++) {
+      const world = mat4.identity(mat4.create());
+      world[14] = -8;
+      world[12] = i === selected || i === selected + 1 ? 0 : 100 + tick + i;
+      f.scene.apply([{ kind: 'update', entityKey: i, world }]);
+    }
+    const base = f.input();
+    assert(base.materials);
+    const read = f.scene.drawFrame(base.materials);
+    const scene = { ...base.scene, slotAt: read.locate, drawSnapshotAt: read };
+    const frame = cullPersistentFrame(
+      {
+        cameras: [camera],
+        renderables: f.scene.materialize(),
+        dispatch: [],
+      } as unknown as ExtractedFrame,
+      base.materials,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      f.scene,
+      tick,
+      undefined,
+      (row, out) => f.scene.writeCullingWorldBoundsAt(row, out),
+    ).frame;
+    assert(frame.cameraVisible && frame.cameraAdmission);
+    draw.mockClear();
+    const input = {
+      ...base,
+      scene,
+      cullMask: 1,
+      visible: frame.cameraVisible,
+      admission: frame.cameraAdmission,
+    };
+    expect(drawn(phase, input).rows.map((row) => row.source.entityKey)).toEqual([selected]);
+    expect(draw).toHaveBeenCalledTimes(1);
+    const custom = vi.fn(() => true);
+    expect(drawn(new DirectDrawPhase(), { ...input, visible: custom }).rows.length).toBe(6);
+    expect(custom).toHaveBeenCalledTimes(6);
+    expect(drawn(new DirectDrawPhase(), { ...base, scene, shadow: true }).rows.length).toBe(12);
+  }
+});
+
+it('publishes moving slot poses independently of their geometry and preserves sealed submissions', () => {
+  const f = fixture(0, 32);
+  const phase = new DirectDrawPhase();
+  const input = () => ({ ...f.input(), visible: (row: RenderableSnapshot) => row.entityKey < 16 });
+  const first = drawn(phase, input());
+  const previous = first.rows.map((row) => [row.source.entityKey, row.source.transform.world[14]]);
+  const before = phase.work.rebuilt;
+  f.scene.apply(
+    Array.from({ length: 32 }, (_, entityKey) => ({
+      kind: 'update' as const,
+      entityKey,
+      world: source(entityKey, glass, 80 - entityKey).transform.world,
+    })),
+  );
+  const moved = drawn(phase, input());
+  expect(phase.work.rebuilt - before).toBe(0);
+  expect(order(moved)).toEqual(order(drawn(new DirectDrawPhase(), input())));
+  expect(moved.rows.map((row) => row.source.transform.world[14])).toEqual(
+    moved.rows.map((row) => 80 - row.source.entityKey),
+  );
+  expect(first.rows.map((row) => [row.source.entityKey, row.source.transform.world[14]])).toEqual(
+    previous,
+  );
+  const next = input();
+  const replacement = { ...mesh };
+  const residents = new Map([...next.meshes].map(([binding]) => [binding, replacement] as const));
+  f.scene.apply([{ kind: 'update', entityKey: 8, world: source(8, glass, 42).transform.world }]);
+  const changed = drawn(phase, { ...input(), meshes: residents });
+  const changedRow = [...changed.rows].find((row) => row.source.entityKey === 8);
+  expect(changedRow?.mesh).toBe(replacement);
+  expect(changedRow?.source.transform.world[14]).toBe(42);
+});
+
 it('retains sealed published rows while readdressing only changed members', () => {
   const f = fixture(4, 0);
   const phase = new DirectDrawPhase();
@@ -167,26 +267,75 @@ it('retains sealed published rows while readdressing only changed members', () =
   // captures owned Water closures; it does not seal ordinary draw addresses.
   for (const row of first.rows) Object.freeze(row);
   expect(finalizeWaterMaterialAdmissionDraws(first.rows)).toBeUndefined();
-  expect(Object.getOwnPropertyDescriptor(first.rows[0], 'renderableIndex')?.writable).toBe(false);
+  expect(Object.getOwnPropertyDescriptor(first.rows.at(0), 'renderableIndex')?.writable).toBe(
+    false,
+  );
   const work = { ...phase.work };
   const bins = { ...phase.binWork };
   expect(drawn(phase, input())).toBe(first);
   f.write([source(1, opaque, 20)]);
   const moved = drawn(phase, input());
   expect(moved.dispatch).toBe(first.dispatch);
-  expect(moved.rows[0]).toBe(first.rows[0]);
-  expect(moved.rows[1]).not.toBe(first.rows[1]);
-  expect(first.rows[1]?.source.transform.world[14]).toBe(1);
+  expect(moved.rows.at(0)).toBe(first.rows.at(0));
+  expect(moved.rows.at(1)).not.toBe(first.rows.at(1));
+  expect(first.rows.at(1)?.source.transform.world[14]).toBe(1);
   finalizeWaterMaterialAdmissionDraws(moved.rows);
   const shifted = phase.emit(100);
   expect(shifted.rows.map((row) => row.renderableIndex)).toEqual([100, 101, 102, 103]);
   expect(moved.rows.map((row) => row.renderableIndex)).toEqual([0, 1, 2, 3]);
   expect(shifted.dispatch).not.toBe(moved.dispatch);
-  expect(shifted.entryRows.every((row) => shifted.rows.includes(row))).toBe(true);
+  expect(
+    shifted.dispatch.every(
+      (entry) =>
+        shifted.rows.at(entry.renderableIndex - 100)?.source.entityKey === entry.entityIndex,
+    ),
+  ).toBe(true);
   expect(phase.work.rebuilt - work.rebuilt).toBe(1);
   expect(phase.binWork.enqueued).toBe(bins.enqueued);
   expect(phase.binWork.dequeued).toBe(bins.dequeued);
   expect(phase.emit(100)).toBe(shifted);
+});
+
+it('issues moving native batch members at their current pass address without a second row', () => {
+  const f = fixture(64, 0);
+  const native = new DirectDrawPhase();
+  const borrowed = new DirectDrawPhase();
+  const raw = f.input();
+  assert(raw.materials);
+  const materials = raw.materials.with(opaque, undefined, {
+    ...opaque.snapshot,
+    immutableValues: true,
+  });
+  const enter = (phase: DirectDrawPhase, nativeLod: boolean) => {
+    const input = f.input();
+    phase.queue({
+      ...input,
+      materials,
+      lod: nativeLod ? undefined : input.lod,
+      select: (binding) => materials.get(binding.material)?.snapshot,
+    });
+    return phase.emit(100);
+  };
+  const pinned = enter(native, true);
+  enter(borrowed, false);
+  for (const row of pinned.rows) Object.freeze(row);
+  const firstCopies = [native.work.readdressed, borrowed.work.readdressed];
+  for (let frame = 1; frame <= 100; frame++) {
+    const entity = frame % 64;
+    f.write([source(entity, opaque, 100 + frame)]);
+    const a = enter(native, true);
+    const b = enter(borrowed, false);
+    expect(a.rows.at(entity)?.renderableIndex).toBe(100 + entity);
+    expect(a.rows.at(entity)?.source.transform.world[14]).toBe(100 + frame);
+    expect(a.rows.at(entity)?.renderState).toEqual(b.rows.at(entity)?.renderState);
+    expect(a.dispatch).toEqual(b.dispatch);
+  }
+  expect(native.work.readdressed - (firstCopies[0] as number)).toBe(0);
+  expect(borrowed.work.readdressed - (firstCopies[1] as number)).toBe(100);
+  expect(pinned.rows.at(33)?.source.transform.world[14]).toBe(33);
+  const shifted = native.emit(7);
+  expect(shifted.rows.at(33)?.renderableIndex).toBe(40);
+  expect(pinned.rows.at(33)?.renderableIndex).toBe(133);
 });
 
 it('reorders sealed publications without rewriting their original compact addresses', () => {
@@ -204,7 +353,9 @@ it('reorders sealed publications without rewriting their original compact addres
   expect(next.rows.find((row) => row.source.entityKey === 1)).toBe(firstByEntity.get(1));
   expect(next.rows.find((row) => row.source.entityKey === 0)).not.toBe(firstByEntity.get(0));
   expect(next.dispatch.map((entry) => entry.renderableIndex)).toEqual([0, 1, 2]);
-  expect(next.entryRows).toEqual(next.rows);
+  expect(
+    next.dispatch.map((entry) => next.rows.at(entry.renderableIndex)?.source.entityKey),
+  ).toEqual(next.dispatch.map((entry) => entry.entityIndex));
   expect(phase.work.rebuilt).toBe(work.rebuilt);
   expect(phase.binWork).toEqual(bins);
   expect(drawn(phase, f.input(eye(3)))).toBe(next);
@@ -228,7 +379,7 @@ it('projects readonly LOD rows without changing placement or quiet camera identi
   };
   const input = (camera: number): DirectDrawInput => ({ ...f.input(), lod, lodCamera: [camera] });
   const first = drawn(phase, input(0));
-  expect(first.rows[0]?.renderableIndex).toBe(0);
+  expect(first.rows.at(0)?.renderableIndex).toBe(0);
   expect(projected?.renderableIndex).toBe(91);
   const work = { ...phase.work };
   const bins = { ...phase.binWork };
@@ -236,9 +387,9 @@ it('projects readonly LOD rows without changing placement or quiet camera identi
   assert(projected);
   projected = Object.freeze({ ...projected, mesh: { ...mesh } });
   const next = drawn(phase, input(2));
-  expect(next.rows[0]?.mesh).toBe(projected.mesh);
-  expect(next.rows[0]).not.toBe(first.rows[0]);
-  expect(next.rows[0]?.renderableIndex).toBe(0);
+  expect(next.rows.at(0)?.mesh).toBe(projected.mesh);
+  expect(next.rows.at(0)).not.toBe(first.rows.at(0));
+  expect(next.rows.at(0)?.renderableIndex).toBe(0);
   expect(projected.renderableIndex).toBe(91);
   expect(phase.work.rebuilt).toBe(work.rebuilt);
   expect(phase.binWork).toEqual(bins);
@@ -257,9 +408,87 @@ it('refreshes retained rows even when no authored pass enters a bin', () => {
   expect(first.rows).toHaveLength(1);
   f.write([source(0, opaque, 9)]);
   const next = drawn(phase, input());
-  expect(next.rows[0]?.source.transform.world[14]).toBe(9);
+  expect(next.rows.at(0)?.source.transform.world[14]).toBe(9);
   expect(next).not.toBe(first);
   expect(drawn(phase, input())).toBe(next);
+});
+
+it('reads each sorted draw once across a simultaneous pose and source-view change, and retries failed observations', () => {
+  const f = fixture(40, 12);
+  const phase = new DirectDrawPhase();
+  const keys: number[] = [];
+  let failAt = -1;
+  const selection = () => ({
+    view: mat4.identity(mat4.create()),
+    readLocal(entity: number, out: import('../../systems/view-draw-order').ViewDrawOrderSource) {
+      keys.push(entity);
+      if (entity === failAt) throw new Error('incomplete order');
+      out.group = out.priority = out.x = out.y = out.z = 0;
+      out.tie = entity;
+      out.authoredWorld = undefined;
+      return true;
+    },
+  });
+  const input = (sourceOrder: ReturnType<typeof selection>) => {
+    const frame = f.input();
+    assert(frame.sort);
+    return { ...frame, sort: { ...frame.sort, sourceOrder } };
+  };
+  const run = (order: ReturnType<typeof selection>) => {
+    keys.length = 0;
+    const result = drawn(phase, input(order));
+    expect([...keys].sort((a, b) => a - b)).toEqual(Array.from({ length: 12 }, (_, i) => 40 + i));
+    return result;
+  };
+  run(selection());
+  f.write([source(42, glass, 90), source(47, glass, -12)]);
+  const next = selection();
+  failAt = 45;
+  expect(() => drawn(phase, input(next))).toThrow('incomplete order');
+  failAt = -1;
+  const result = run(next);
+  expect(order(result)).toEqual(order(drawn(new DirectDrawPhase(), input(next))));
+});
+
+it('sorts view-owned transparent draws sharing an entity as their rendered rows cross', () => {
+  const phase = new DirectDrawPhase();
+  const input = fixture(0, 0).input();
+  assert(input.sort);
+  const draw = (a: number, b: number) => {
+    const output = drawn(phase, {
+      ...input,
+      materials: new MaterialFrame(undefined).with(glass),
+      viewDraws: [source(91, glass, a), source(91, glass, b)],
+      prepareUnbatched: (sources) =>
+        sources.map((source, renderableIndex) => ({
+          source,
+          mesh,
+          renderableIndex,
+          meshSlot: 0,
+          renderState: undefined,
+          stencilReference: undefined,
+        })),
+      sort: {
+        ...sort,
+        sourceOrder: {
+          view: mat4.identity(mat4.create()),
+          readLocal: (entity, out) => {
+            out.group = out.priority = out.x = out.y = out.z = 0;
+            out.tie = entity;
+            out.authoredWorld = undefined;
+            return true;
+          },
+        },
+      },
+    });
+    const depths = output.dispatch.map(
+      (entry) => output.rows.at(entry.renderableIndex)?.source.transform.world[14],
+    );
+    expect([...new Set(depths)]).toEqual([Math.min(a, b), Math.max(a, b)]);
+  };
+  const sort = input.sort;
+  draw(-3, -8);
+  draw(-10, -2);
 });
 
 it('retires view rows without Pass bins before their material version is released', () => {
@@ -432,7 +661,8 @@ it('updates only the D changed rows of a steady frame (O(D) bin and sort operati
   expect(phase.binWork.dequeued - bins.dequeued).toBe(0);
   expect(phase.binWork.enqueued - bins.enqueued).toBe(0);
   expect(phase.binWork.bins).toBe(bins.bins);
-  expect(phase.sortWork.changed - sort.changed).toBe(8);
+  // Each of the four moved transparent entries updates its existing depth once.
+  expect(phase.sortWork.changed - sort.changed).toBe(4);
   expect(phase.work.cold).toBe(work.cold);
   // The retained order equals a fresh phase's order over the same frame.
   expect(order(output)).toEqual(order(drawn(new DirectDrawPhase(), f.input())));
@@ -477,6 +707,226 @@ it('keeps views independent: each view orders its own camera from its own diffs'
   expect(front.work.rebuilt - work.rebuilt).toBe(1);
 });
 
+it('samples a mutable predicate once per source and rebuilds only changed members', () => {
+  const f = fixture(64, 0);
+  const phase = new DirectDrawPhase();
+  let hidden = 7;
+  let samples = 0;
+  const visible = (row: RenderableSnapshot) => {
+    samples++;
+    return row.entityKey !== hidden;
+  };
+  expect(drawn(phase, { ...f.input(), visible }).rows).toHaveLength(63);
+  const before = phase.work.rebuilt;
+  hidden = 11;
+  f.write([source(5, opaque, 42)]);
+  samples = 0;
+  const output = drawn(phase, { ...f.input(), visible });
+  expect(samples).toBe(64);
+  expect(output.rows.map((row) => row.source.entityKey)).toContain(7);
+  expect(output.rows.map((row) => row.source.entityKey)).not.toContain(11);
+  expect(phase.work.rebuilt - before).toBe(3);
+  const unchanged = phase.work.rebuilt;
+  drawn(phase, { ...f.input(), visible: (row) => visible(row) });
+  expect(phase.work.rebuilt).toBe(unchanged);
+  expect(drawn(phase, f.input()).rows).toHaveLength(64);
+  expect(phase.work.rebuilt - unchanged).toBe(1);
+});
+
+it('publishes a replacement borrowed source with unchanged admission and Scene row', () => {
+  const f = fixture(12, 0);
+  const phase = new DirectDrawPhase();
+  const input = f.input();
+  const { draws: _evidence, ...scene } = input.scene;
+  const slot = f.scene.slot(5)?.slot;
+  assert(slot !== undefined && scene.drawSnapshotAt);
+  let changed = scene.drawSnapshotAt(slot);
+  const borrowed = {
+    ...input,
+    scene: {
+      ...scene,
+      drawSnapshotAt: (index: number) => (index === slot ? changed : scene.drawSnapshotAt?.(index)),
+    },
+    visible: () => true,
+  };
+  const before = drawn(phase, borrowed);
+  const count = phase.work.rebuilt;
+  changed = source(5, opaque, 42);
+  const after = drawn(phase, borrowed);
+  expect(phase.work.rebuilt - count).toBe(1);
+  expect(after.rows.find((row) => row.source.entityKey === 5)?.source).toBe(changed);
+  expect(before.rows.find((row) => row.source.entityKey === 5)?.source).not.toBe(changed);
+});
+
+it('addresses only moved native rows across several pages and preserves older pass submissions', () => {
+  const f = fixture(4096, 0);
+  const phase = new DirectDrawPhase();
+  const initial = f.input().materials;
+  assert(initial);
+  const materials = initial.with(opaque, undefined, { ...opaque.snapshot, immutableValues: true });
+  const issue = () => {
+    const frame = f.input();
+    return drawn(phase, {
+      ...frame,
+      lod: undefined,
+      materials,
+      select: (binding) => materials.get(binding.material)?.snapshot,
+      scene: { ...frame.scene, allocatedSourceAddress: f.scene.allocatedSourceAddress },
+    }).rows;
+  };
+  const first = issue();
+  const held = f.scene.addressOwnedMeshDrawRows(first);
+  expect(held.rows.length).toBe(4096);
+  const firstAddresses = held.rows.map((row) => row.meshSlot);
+  const address = vi.spyOn(f.scene, 'meshDrawSlot');
+  try {
+    for (let frame = 1; frame <= 4; frame++) {
+      f.write([source(5, opaque, frame), source(71, opaque, frame), source(4001, opaque, frame)]);
+      const rows = issue();
+      const current = f.scene.addressOwnedMeshDrawRows(rows);
+      expect(current.capacity).toBe(held.capacity);
+      for (const index of [5, 71, 4001]) {
+        expect(current.rows.at(index)?.source.transform.world[14]).toBe(frame);
+        expect(current.rows.at(index)?.meshSlot).toBe(firstAddresses[index]);
+        expect(held.rows.at(index)?.source.transform.world[14]).toBe(index);
+      }
+      expect(current.rows.at(1500)).toBe(held.rows.at(1500));
+    }
+    expect(address).not.toHaveBeenCalled();
+    expect(first.at(-1)?.source.entityKey).toBe(4095);
+    expect(first.slice(63, 66).map((row) => row.source.entityKey)).toEqual([63, 64, 65]);
+  } finally {
+    address.mockRestore();
+  }
+});
+
+it('shares physical slots with off-camera casters across sparse movement and retires their publication', () => {
+  const f = fixture(160, 0);
+  const phase = new DirectDrawPhase();
+  const primary: ValidatedRenderable[] = [];
+  const publish = () => {
+    const input = f.input();
+    const rows = drawn(phase, {
+      ...input,
+      scene: { ...input.scene, allocatedSourceAddress: f.scene.allocatedSourceAddress },
+    }).rows;
+    f.scene.beginOwnedMeshDrawFrame(primary, rows);
+    return f.scene.addressOwnedMeshDrawRows(primary, rows);
+  };
+  const first = publish();
+  const held = first.shadowRows?.at(91);
+  assert(held);
+  expect(first.capacity).toBe(160);
+  const address = vi.spyOn(f.scene, 'meshDrawSlot');
+  try {
+    f.write([source(91, opaque, 42)]);
+    const next = publish();
+    expect(next.shadowRows?.at(91)?.source.transform.world[14]).toBe(42);
+    expect(held.source.transform.world[14]).toBe(91);
+    expect(next.shadowRows?.at(91)?.meshSlot).toBe(held.meshSlot);
+    expect(next.shadowRows?.at(1)).toBe(first.shadowRows?.at(1));
+    expect(address.mock.calls.length).toBeLessThan(2);
+    expect(f.scene.addressOwnedMeshDrawRows(primary).shadowRows).toBeUndefined();
+  } finally {
+    address.mockRestore();
+  }
+});
+
+it('resolves sparse pose writes without visiting adjacent physical lanes of the same page', () => {
+  const f = fixture(128, 0);
+  const input = drawn(new DirectDrawPhase(), f.input()).rows;
+  let adjacentReads = 0;
+  const base = issueDrawRows(input.length, undefined, (write) => {
+    input.forEach((row, index) => {
+      const owned = { ...row, meshSlot: index };
+      if (index === 30)
+        Object.defineProperty(owned, 'meshSlot', {
+          get() {
+            adjacentReads++;
+            return index;
+          },
+        });
+      write(index, owned);
+    });
+  });
+  const old = base.at(31);
+  assert(old);
+  const changed = { ...old };
+  adjacentReads = 0;
+  const next = issueDrawRows(base.length, base, (write) => write(31, changed));
+  const resolve = vi.fn((row: ValidatedRenderable) => row);
+  const result = addressDrawRows(next, base, base, resolve);
+  expect(result.rows.at(31)).toBe(changed);
+  expect(base.at(31)).toBe(old);
+  expect(result.capacity).toBe(128);
+  expect(adjacentReads).toBe(0);
+  expect(resolve).not.toHaveBeenCalled();
+
+  // An unrelated predecessor with the same size can map a different native generation.
+  const neighbor = base.at(32);
+  assert(neighbor);
+  const divergent = issueDrawRows(base.length, base, (write) => write(31, neighbor));
+  const corrected = { ...changed, meshSlot: 145 };
+  resolve.mockImplementation((row) => (row === changed ? corrected : row));
+  const branched = addressDrawRows(next, divergent, divergent, resolve);
+  expect(branched.rows.at(31)).toBe(corrected);
+  expect(branched.capacity).toBe(146);
+});
+
+it('seals the physical extent of an entire moving native directory, including address replacements', () => {
+  const f = fixture(160, 0);
+  const rows = drawn(new DirectDrawPhase(), f.input()).rows;
+  const base = issueDrawRows(rows.length, undefined, (write) =>
+    rows.forEach((row, i) => {
+      write(i, { ...row, meshSlot: i });
+    }),
+  );
+  const moved = issueDrawRows(base.length, base, (write) =>
+    base.forEach((row, i) => {
+      write(i, { ...row });
+    }),
+  );
+  // Count directory walks after publication; the draw owner already validated every changed leaf.
+  const root = Reflect.get(moved, 'root');
+  const values = root.values;
+  const read = vi.fn(() => values);
+  Object.defineProperty(root, 'values', { configurable: true, get: read });
+  const resolve = vi.fn((row: ValidatedRenderable) => row);
+  const result = addressDrawRows(moved, base, base, resolve);
+  expect(result.rows).toBe(moved);
+  expect(result.capacity).toBe(160);
+  expect(read).not.toHaveBeenCalled();
+  Object.defineProperty(root, 'values', { configurable: true, value: values });
+  const previous = moved.at(73);
+  assert(previous);
+  const revised = issueDrawRows(moved.length, moved, (write) =>
+    write(73, { ...previous, meshSlot: 900 }),
+  );
+  const changed = addressDrawRows(revised, moved, moved, resolve);
+  expect(changed.capacity).toBe(901);
+  expect(resolve).toHaveBeenCalled();
+  expect(moved.at(73)?.meshSlot).toBe(73);
+});
+
+it('publishes dense pose edits with the current ordinary physical addresses', () => {
+  const f = fixture(128, 0);
+  const phase = new DirectDrawPhase();
+  const input = () => {
+    const frame = f.input();
+    return {
+      ...frame,
+      scene: { ...frame.scene, allocatedSourceAddress: f.scene.allocatedSourceAddress },
+    };
+  };
+  const cold = drawn(phase, input());
+  const placed = f.scene.addressOwnedMeshDrawRows(cold.rows);
+  expect(placed.rows).not.toBe(cold.rows);
+  f.write(Array.from({ length: 128 }, (_, index) => source(index, opaque, index + 1)));
+  const moved = drawn(phase, input());
+  expect(f.scene.addressOwnedMeshDrawRows(moved.rows).rows).toBe(moved.rows);
+  expect(moved.rows.map((row) => row.meshSlot)).toEqual(placed.rows.map((row) => row.meshSlot));
+});
+
 it('re-reads only flipped rows when camera admission evidence changes', () => {
   const f = fixture(1000, 0);
   const phase = new DirectDrawPhase();
@@ -500,6 +950,85 @@ it('re-reads only flipped rows when camera admission evidence changes', () => {
   expect(output.rows).toHaveLength(998);
 });
 
+it('shares completed camera admission while a visibility flip and an independent pose change together', () => {
+  const f = fixture(128, 0);
+  const phase = new DirectDrawPhase();
+  const sceneOwner = {};
+  let hidden = new FrameSet();
+  let reads = 0;
+  const input = () => ({
+    ...f.input(),
+    visible: (row: RenderableSnapshot) => {
+      reads++;
+      return !hidden.has(f.scene.slot(row.entityKey)?.slot ?? -1);
+    },
+    admission: { sceneOwner, hidden, residency: undefined },
+  });
+  expect(drawn(phase, input()).rows).toHaveLength(128);
+  hidden = hidden.with(f.scene.slot(31)?.slot ?? -1);
+  f.write([source(12, opaque, 4)]);
+  reads = 0;
+  const moved = drawn(phase, input());
+  expect(reads).toBe(2);
+  expect(order(moved)).toEqual(order(drawn(new DirectDrawPhase(), input())));
+  hidden = new FrameSet();
+  reads = 0;
+  expect(drawn(phase, input()).rows).toHaveLength(128);
+  expect(reads).toBe(1);
+});
+
+it('tests moving frusta once and requeues only changed draws and visibility transitions', () => {
+  const f = fixture(128, 0);
+  const phase = new DirectDrawPhase();
+  const residual = FrameSet.from(
+    Array.from({ length: 64 }, (_, entity) => f.scene.slot(entity)?.slot ?? -1),
+  );
+  const hidden = new FrameSet();
+  let concealed = 70;
+  let samples = 0;
+  const admitted = () => ({
+    ...f.input(),
+    visible: (row: RenderableSnapshot) => {
+      samples++;
+      return row.entityKey !== concealed;
+    },
+    admission: { hidden, residual, frusta: {} },
+  });
+  expect(drawn(phase, admitted()).rows).toHaveLength(127);
+  concealed = 71;
+  f.write([source(12, other), source(86, opaque, 5)]);
+  const before = phase.work.rebuilt;
+  samples = 0;
+  const moved = drawn(phase, admitted());
+  expect(phase.work.rebuilt - before).toBe(4);
+  expect(samples).toBe(65);
+  expect(order(moved)).toEqual(order(drawn(new DirectDrawPhase(), admitted())));
+});
+
+it('retries a moving camera after a visibility reader interrupts the roster', () => {
+  const f = fixture(32, 0);
+  const phase = new DirectDrawPhase();
+  const residual = new FrameSet();
+  const hidden = new FrameSet();
+  const base = f.input();
+  const first = { ...base, visible: () => true, admission: { residual, hidden, frusta: {} } };
+  expect(drawn(phase, first).rows).toHaveLength(32);
+  let interrupted = true;
+  const moved = {
+    ...first,
+    admission: { residual, hidden, frusta: {} },
+    visible: (row: RenderableSnapshot) => {
+      if (interrupted && row.entityKey === 12) throw new Error('interrupted visibility');
+      return row.entityKey !== 28;
+    },
+  };
+  expect(() => phase.queue(moved)).toThrow('interrupted visibility');
+  interrupted = false;
+  const retried = drawn(phase, moved);
+  expect(retried.rows).toHaveLength(31);
+  expect(order(retried)).toEqual(order(drawn(new DirectDrawPhase(), moved)));
+});
+
 it('re-judges residency only for batches of the current plan', () => {
   const f = fixture(10, 0);
   const phase = new DirectDrawPhase();
@@ -514,59 +1043,24 @@ it('re-judges residency only for batches of the current plan', () => {
   expect(order(output)).toEqual(order(drawn(new DirectDrawPhase(), { ...input, meshes: live })));
 });
 
-it('replays unchanged bins as retained bundles while rows enter another bin', async () => {
-  const { rhi } = await import('@forgeax/engine-rhi-null');
-  const { RenderBundleCache } = await import('../render-bundle-cache');
-  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  const pipelines = new Map(
-    [opaque, other, glass].map((resource) => [
-      resource.snapshot.materialHandle,
-      device.createRenderPipeline({} as never).unwrap(),
-    ]),
-  );
-  const group = device
-    .createBindGroup({
-      layout: device.createBindGroupLayout({ entries: [] }).unwrap(),
-      entries: [],
-    })
-    .unwrap();
-  // One draw per dispatch entry in phase order, addressed by its stable slot.
-  const record = (output: ReturnType<DirectDrawPhase['emit']>) => (pass: RhiRenderPassEncoder) => {
-    let pipeline: unknown;
-    for (const [index, entry] of output.dispatch.entries()) {
-      const next = pipelines.get(entry.materialHandle);
-      if (next !== pipeline) {
-        pipeline = next;
-        pass.setPipeline(next as never);
-      }
-      const row = output.entryRows[index];
-      pass.setBindGroup(2, group, [(row?.sceneSlot?.slot ?? 0) * 256]);
-      pass.draw(3);
-    }
-  };
+it('keeps surviving material rows in phase order at their Scene slots when another bin grows', () => {
   const f = fixture(600, 0);
   f.write(Array.from({ length: 300 }, (_, index) => source(600 + index, other)));
   const phase = new DirectDrawPhase();
-  const cache = new RenderBundleCache({ colorFormats: [] });
-  const frame = () => {
-    const counters = { hits: 0, misses: 0 };
-    const encoder = device.createCommandEncoder().unwrap();
-    cache.encode(
-      device,
-      encoder.beginRenderPass({ colorAttachments: [] }),
-      record(drawn(phase, f.input())),
-      counters,
-    );
-    return counters;
-  };
-  for (let warm = 0; warm < 3; warm++) frame();
-  expect(frame()).toEqual({ hits: 8, misses: 0 });
-  // 100 rows enter the opaque bin: it grows from five to six segments, moving
-  // every later segment ordinal, while the `other` bin is unchanged.
+  const rowsFor = (output: ReturnType<DirectDrawPhase['emit']>, material: number) =>
+    Array.from(output.dispatch)
+      .filter((entry) => entry.materialHandle === material)
+      .map((entry) => {
+        const row = output.rows.at(entry.renderableIndex);
+        return [row?.source.entityKey, row?.sceneSlot?.slot];
+      });
+  const before = drawn(phase, f.input());
+  const untouched = rowsFor(before, other.snapshot.materialHandle);
+  expect(untouched).toHaveLength(300);
   f.write(Array.from({ length: 100 }, (_, index) => source(1_000 + index, opaque)));
-  const entered = frame();
-  // Four leading opaque segments and all three `other` segments replay.
-  expect(entered.hits).toBe(7);
+  const after = drawn(phase, f.input());
+  expect(rowsFor(after, opaque.snapshot.materialHandle)).toHaveLength(700);
+  expect(rowsFor(after, other.snapshot.materialHandle)).toEqual(untouched);
 });
 
 it('re-resolves retained morph streams every sync and adopts a re-created stream', () => {
@@ -668,13 +1162,13 @@ it('keeps placements of moved rows exactly equal to a fresh phase (randomized mo
       row.source.layer ?? 0,
       row.renderState?.blend === undefined,
     ]),
-    dispatch: output.dispatch.map((entry, index) => [
+    dispatch: output.dispatch.map((entry) => [
       entry.entityIndex,
       entry.renderableIndex,
       entry.queue,
       entry.layer,
       entry.tags.LightMode,
-      output.entryRows[index]?.source.transform.world[14],
+      output.rows.at(entry.renderableIndex)?.source.transform.world[14],
     ]),
   });
   let retained = 0;
@@ -775,14 +1269,17 @@ it('retains fixed dispatch identity for row-only moves while publishing new row 
   const oldRow = first.rows.find((row) => row.source.entityKey === 31);
   assert(oldRow);
   const oldZ = oldRow.source.transform.world[14];
+  const write = vi.spyOn(MaterialRelations.prototype, 'write');
   const append = vi.spyOn(MemberMaterialPasses.prototype, 'append');
   const finish = vi.spyOn(MemberMaterialPasses.prototype, 'finish');
   onTestFinished(() => {
+    write.mockRestore();
     append.mockRestore();
     finish.mockRestore();
   });
   f.write([source(31, opaque, 200)]);
   const next = drawn(phase, input());
+  expect(write).not.toHaveBeenCalled();
   expect(next.materialRows).toBe(first.materialRows);
   expect(append.mock.calls.length).toBe(0);
   expect(finish.mock.calls.length).toBe(0);
@@ -823,15 +1320,31 @@ it('replaces the consumed dispatch key when compact indices move to a new offset
     immutableValues: true,
   });
   const phase = new DirectDrawPhase();
-  phase.queue({
-    ...raw,
+  const input = (): DirectDrawInput => ({
+    ...f.input(),
+    retainMaterialBindings: true,
     materials,
     select: (binding) => materials.get(binding.material)?.snapshot,
   });
+  phase.queue(input());
   const first = phase.emit(0);
+  const write = vi.spyOn(MaterialRelations.prototype, 'write');
+  const append = vi.spyOn(MemberMaterialPasses.prototype, 'append');
+  onTestFinished(() => {
+    write.mockRestore();
+    append.mockRestore();
+  });
+  f.write([source(2, opaque, 77)]);
+  phase.queue(input());
   const shifted = phase.emit(100);
+  expect(first.rows.at(2)?.source.transform.world[14]).toBe(2);
+  expect(shifted.rows.at(2)?.source.transform.world[14]).toBe(77);
+  expect(write).not.toHaveBeenCalled();
+  expect(append).not.toHaveBeenCalled();
+  expect(shifted.materialRows).toBe(first.materialRows);
   expect(shifted.dispatch).not.toBe(first.dispatch);
   expect(shifted.dispatch.map((entry) => entry.renderableIndex)).toEqual([100, 101, 102, 103]);
+  expect(first.dispatch.map((entry) => entry.renderableIndex)).toEqual([0, 1, 2, 3]);
   assert(first.materialPasses);
   assert(shifted.materialPasses);
   expect(shifted.materialPasses).not.toBe(first.materialPasses);
@@ -843,7 +1356,7 @@ it('replaces the consumed dispatch key when compact indices move to a new offset
 it('owns editable addresses and overlays when an LOD projection returns frozen rows', () => {
   const f = fixture(2, 0);
   const phase = new DirectDrawPhase();
-  const borrowed: ReturnType<DirectDrawInput['lod']>[number][] = [];
+  const borrowed: import('../frame-snapshot').ValidatedRenderable[] = [];
   const input: DirectDrawInput = {
     ...f.input(),
     lod: (rows) =>
@@ -869,12 +1382,12 @@ it('keeps ordinary phase publications detached after Water admission observes th
   expect(finalizeWaterMaterialAdmissionDraws(rows)).toBeUndefined();
   const shifted = phase.emit(20);
   expect(shifted.rows.map((row) => row.renderableIndex)).toEqual([20, 21]);
-  expect(shifted.rows[0]).not.toBe(rows[0]);
+  expect(shifted.rows.at(0)).not.toBe(rows.at(0));
   expect(rows.map((row) => row.renderableIndex)).toEqual([0, 1]);
-  expect(shifted.rows[0]?.source).toBe(rows[0]?.source);
+  expect(shifted.rows.at(0)?.source).toBe(rows.at(0)?.source);
   expect(phase.emit(20)).toBe(shifted);
-  expect(Object.getOwnPropertyDescriptor(rows[0], 'source')?.writable).toBe(true);
-  expect(Object.getOwnPropertyDescriptor(rows[0], 'renderableIndex')?.writable).toBe(true);
+  expect(Object.getOwnPropertyDescriptor(rows.at(0), 'source')?.writable).toBe(true);
+  expect(Object.getOwnPropertyDescriptor(rows.at(0), 'renderableIndex')?.writable).toBe(true);
   expect(Object.isFrozen(rows)).toBe(false);
 });
 
@@ -1038,6 +1551,37 @@ it('maintains material relations only while their recording owner admits reuse',
   expect(drawn(phase, { ...raw, retainMaterialBindings: true }).materialRows).toBeUndefined();
 });
 
+it('requeues changed members after their pose projection throws, preserving the previous frame', () => {
+  const f = fixture(32, 0);
+  const phase = new DirectDrawPhase();
+  const previous = drawn(phase, f.input());
+  f.write(
+    [7, 15, 23].map((id) => {
+      const moved = source(id, opaque);
+      moved.transform.world[12] = id + 100;
+      return moved;
+    }),
+  );
+  const current = f.input();
+  expect(() =>
+    phase.queue({
+      ...current,
+      lod: () => {
+        throw new Error('pose projection');
+      },
+    }),
+  ).toThrow('pose projection');
+  const retried = drawn(phase, current);
+  for (const id of [7, 15, 23]) {
+    expect(
+      retried.rows.find((row) => row.source.entityKey === id)?.source.transform.world[12],
+    ).toBe(id + 100);
+    expect(
+      previous.rows.find((row) => row.source.entityKey === id)?.source.transform.world[12],
+    ).not.toBe(id + 100);
+  }
+});
+
 it('retries an emitted material relationship failure instead of accepting the prior output', () => {
   const f = fixture(64, 0);
   const phase = new DirectDrawPhase();
@@ -1062,4 +1606,22 @@ it('retries an emitted material relationship failure instead of accepting the pr
   const retried = phase.emit();
   expect(retried.rows).toHaveLength(64);
   expect(retried.materialRows?.length).toBe(64);
+});
+
+it('publishes the local keyed-draw span across changing rows and relocated passes', () => {
+  const f = fixture(8, 0);
+  const phase = new DirectDrawPhase();
+  const onlyOrdinary = drawn(phase, f.input());
+  expect([onlyOrdinary.nativeStart, onlyOrdinary.nativeEnd]).toEqual([0, 0]);
+  f.write([2, 5].map((id) => ({ ...source(id, opaque), nativeDraw: { key: 'mesh-child' } })));
+  const mixed = drawn(phase, f.input());
+  const native = mixed.rows.filter((row) => row.source.nativeDraw !== undefined);
+  expect(native.map((row) => row.source.entityKey)).toEqual([2, 5]);
+  expect([mixed.nativeStart, mixed.nativeEnd]).toEqual([2, 6]);
+  const relocated = phase.emit(100);
+  expect([relocated.nativeStart, relocated.nativeEnd]).toEqual([2, 6]);
+  f.write([source(2, opaque), source(5, opaque)]);
+  const cleared = drawn(phase, f.input());
+  expect([cleared.nativeStart, cleared.nativeEnd]).toEqual([0, 0]);
+  expect([mixed.nativeStart, mixed.nativeEnd]).toEqual([2, 6]);
 });

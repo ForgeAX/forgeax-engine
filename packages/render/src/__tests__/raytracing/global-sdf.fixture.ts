@@ -23,7 +23,8 @@ export async function verifyGlobalSdf(fixture: SdfCardsFixture) {
     bricks: Uint32Array.from(fixture.sheet.field.bricks),
     values: Float32Array.from(fixture.sheet.field.values),
   };
-  assert(sheet.policy.kind !== 'sampled-visibility');
+  assert(field.policy.kind === 'signed-solid');
+  assert(sheet.policy.kind === 'two-sided');
   const cube: SdfMeshInstance = { ...sdfCubeInstance, field };
   const plane: SdfMeshInstance = { ...cube, instanceId: 2, field: sheet };
   const missing: SdfMeshInstance = { ...cube, field: { missing: true, bounds: field.bounds } };

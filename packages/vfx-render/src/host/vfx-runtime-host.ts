@@ -273,6 +273,8 @@ export function createVfxRuntimeHost(options: VfxRuntimeHostOptions): VfxRuntime
           const projection = readProjection.call(assets, material);
           if (readProjection !== stockMaterialProjection || projection === undefined)
             return projection;
+          // The local compiler recipe is bound to this template projection's identity.
+          if (projection.sourceTemplate !== undefined) return projection;
           // Ordinary raster variants are never selected by particleMaterialPass.
           const passes = projection.passes.filter(
             (pass) =>

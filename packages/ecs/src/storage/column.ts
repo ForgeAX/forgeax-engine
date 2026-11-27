@@ -212,6 +212,34 @@ export function columnArrayElement(
   return source[(column.view[base + 1] as number) / plan.element.byteSize + index];
 }
 
+export function columnArrayEquals(
+  store: ArrayStore,
+  column: Column,
+  row: number,
+  values: ArrayLike<number>,
+): boolean {
+  const plan = column.layout;
+  let view: FieldView;
+  let start: number;
+  if (plan.kind === 'array') {
+    const base = row * ARRAY_FIELD_ARITY;
+    if (values.length !== column.view[base + 2]) return false;
+    if (values.length === 0) return true;
+    view = store.view(column.view[base] as number, plan.element.viewCtor);
+    start = (column.view[base + 1] as number) / plan.element.byteSize;
+  } else if (plan.kind === 'fixed-array') {
+    if (values.length !== plan.arity) return false;
+    view = column.view;
+    start = row * plan.arity;
+  } else return false;
+  const round = plan.element.viewCtor === Float32Array;
+  for (let index = 0; index < values.length; index++) {
+    const input = values[index] as number;
+    if (!Object.is(view[start + index], round ? Math.fround(input) : input)) return false;
+  }
+  return true;
+}
+
 /** Borrow one physical row window until the column or cell is reused. */
 export function borrowColumnArray(
   store: ArrayStore,
@@ -260,7 +288,7 @@ export function copyColumnArray(
   } else {
     return undefined;
   }
-  if (target.buffer === source.buffer) {
+  if (!Array.isArray(target) && target.buffer === source.buffer) {
     // Native set handles a target that aliases the same backing.
     target.set(source.subarray(start, start + count));
   } else {

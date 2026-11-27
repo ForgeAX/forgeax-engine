@@ -1,3 +1,6 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-shader
 
 ## Source-template publications
@@ -33,6 +36,11 @@ content digest of final WGSL.
 source format without composing a Cartesian product. Existing precompiled
 publication versions remain readable. Their producer and consumption contract
 is described below; source templates do not change those wire versions.
+
+A project can also publish an `8.0.0` manifest with `templates` and `cooked`
+sections. The Registry verifies both sections before publishing any row and
+rejects overlapping entry hashes or material identifiers. Device recovery
+reuses the verified cooked rows and reconstructs device-local template readers.
 
 ## Native Grade and Final kernels
 
@@ -122,19 +130,58 @@ flow so WGSL `select` does not evaluate both. These are work-reuse rules, not
 quality settings. The production GPU stage readbacks exercise source templates
 and prepare only the three volume kernels they actually dispatch.
 
-## GTAO angular and spatial kernels
+## Screen-space ambient occlusion kernels
 
-GTAO evaluates the same signed primitive across `-pi`, zero and `pi` as a
-cumulative expression rather than a four-segment array loop. The independent
-GPU quadrature covers both sides of the view plane and all three boundaries.
-The 5x5 spatial filter uses fixed Gaussian coefficients and three squarings for
-its eighth-power normal weight. Sampling positions, budgets, radius, intensity,
-depth rejection and filter footprint remain unchanged.
+Standard SSAO shares a reduced furthest HZB and uses a fixed 4x4 rotation
+pattern with view-temporal phase. Forward reconstructs depth normals. Deferred
+adds depth and normal weighted setup and reconstruction for coarse levels.
+
+GTAO shares horizon search and the projected-normal integral between native
+compute and raster. The spatial filter projects each depth tap onto the
+receiver's depth plane. Temporal filtering uses a separate submitted view
+history, and the resolve publishes the minimum of four bilinear samples.
 
 Publication metadata shares immutable facts within one admission. Lossless JSON
 row children are coalesced before recursive interning; signed zero, sparse arrays,
 optional values and nonstandard prototypes retain the original structural path.
-All source digests and reflection validation remain required.
+Accessors retain the ordinary admission route without being invoked by the
+sharing preflight. All source digests and reflection validation remain required.
+
+## Conservative surface intersection
+
+`SDF_SURFACE_INTERSECTION_WGSL` owns binding-free canonical-f32 triangle and slab
+interval queries. `SDF_SURFACE_LOCAL_RAY_WGSL` derives the complete module plus
+raw-affine local-ray construction from that same authority; consumers include
+only the latter when they need both. Callers supply forward-derived residual
+certificates for the stored inverse. Its single `SdfSurfaceRay` input preserves
+world-space origin/direction intervals and original parameters. Those intervals
+must already enclose upstream arithmetic; endpoint subtraction must use interval
+operations and must not normalize away the original segment parameter.
+Unsupported words or arithmetic remain unavailable. Only a primitive hit
+certifies intersection, and slab pruning requires its separate certificate.
+
+Private surface pool V4 keeps complete shared Mesh geometry separate from
+placement-owned coverage. Explicit row records describe opaque, unknown or
+shared partial primitive bits; absent or corrupt records remain unavailable.
+An unknown primitive intersection blocks a later or equal hit, while a proven
+miss does not poison another section. Asset V5 and the 144-byte Instance stay
+unchanged. Coverage changes rebuild the retained pool before publication;
+ordinary material values and poses do not rewrite shared coverage payloads.
+
+`SDF_SCENE_TEXTURE_READ_WGSL` adapts a canonical integer texture to the pool
+decoder's word-fetch functions. Its private header snapshot lasts one invocation.
+The allocation capacity stays distinct from `sdfSceneRowLimit()`, the candidate
+traversal upper bound; neither fetch transport nor packet metadata qualifies geometry.
+Call `sdfSceneView()` explicitly before any word or count query and reject its
+invalid state. It initializes the invocation's snapshot once; word functions read
+only that snapshot and expose zero before initialization. Bindings and expected
+facts must stay unchanged for the invocation.
+
+> [!IMPORTANT]
+> Supply `sdfSceneExpected()` from the canonical source owner: instance words,
+> field words, row limit and nonzero epoch. Never derive it from the sampled
+> texture. Complete projection before reads, and keep bindings and expected
+> facts immutable during an invocation. Invalid metadata exposes no source words.
 
 ## Physical atmosphere tables
 
@@ -155,7 +202,9 @@ half before interpolation. See the [Water entry](../water/README.md#advanced-sim
 Residual-only and shared contact foam are bounded surface coverage. Their
 opacity and scattering retain the authored foam texture and do not enter the
 legacy height power, boost or threshold. They compose with the ordinary foam
-response by maximum; contact capture does not mask an independent local-wave field.
+response by maximum, so contact capture preserves an independent local-wave
+field. The world-space response reserves room for local fluid foam only while
+that Body has an active local foam field.
 
 Display and cube rays retain atmospheric scattering up to a planet intersection.
 Ground reflection belongs to `atmosphere_multiple_scattering_texel`; the display
@@ -216,6 +265,9 @@ snapshots. Complete values, own field order,
 optional absence, array multiplicity and signed zero remain distinct. Non-plain
 or cyclic extension data retains the ordinary detached-copy route. This changes
 neither the wire format nor reference/variant validation.
+The Registry's owned JSON route shares the same complete facts without a second
+clone; row validation remains deferred until first read. Accessors and non-plain
+facts retain the ordinary deferred path rather than acquiring shared identity.
 The ordered-fragment source digest remains v4 because source identity is unchanged. `ShaderRegistry.loadManifest()`
 hashes each pooled UTF-8 fragment once, then checks each source's domain-separated
 digest of its ordered fragment hashes before validating every entry, variant and
@@ -453,25 +505,26 @@ including explicit identity matrices; no shader variant or binding changes.
 > call `sceneIndexDraw(visible.x)` and take coverage from
 > `bitcast<f32>(visible.w)`.
 
-## MaterialAsset 唯一成功路径
+## Canonical MaterialAsset Path
 
 `paramSchema -> derive -> compile/reflect -> cook/load -> extract/record`
-贯穿 shader 与 material。WGSL producer 只声明与 schema 对应的字段；纹理槽
-携带 `coordinateSet`、transform 与 `physicalUvScale`，cook 后由
-`layoutIdentity` 绑定 shader artifact。identity 失效时修 source 或 cook 输入，
-再执行 recook/load。
+spans shader and material. The WGSL producer declares only schema-matched fields.
+Texture slots carry `coordinateSet`, transform and `physicalUvScale`; after cooking,
+`layoutIdentity` binds the shader artifact. If identity becomes invalid, repair
+source or cook inputs, then recook/load.
 
 > [!IMPORTANT]
-> Runtime 只查找已发布的 content-addressed artifact；恢复沿 producer、cook
-> 与 catalog 的 owner 边界进行，不在 app 侧复制 shader artifact。
+> Runtime resolves only published content-addressed artifacts. Recovery follows
+> producer, cook and catalog ownership; apps never duplicate shader artifacts.
 
 ## Standard Surface contract
 
-Standard material 的作者只需要通过 `#import` 使用
-[`surface_v1.wgsl`](./src/surface_v1.wgsl)，并实现唯一的
-`evaluate_surface(SurfaceInput) -> SurfaceData`。`SurfaceData` 是 Standard
-BRDF 的输入，不是最终颜色；Engine-owned Standard pass family 负责顶点、光照、
-阴影、Forward/Deferred、G-buffer、雾和输出。内建默认值位于
+Standard material authors only need to `#import`
+[`surface_v1.wgsl`](./src/surface_v1.wgsl) and implement
+`evaluate_surface(SurfaceInput) -> SurfaceData`. `SurfaceData` supplies inputs
+to the Standard BRDF rather than a final color. The Engine-owned Standard pass
+family handles vertices, lighting, shadows, Forward/Deferred, G-buffer, fog and
+output. Built-in defaults live in
 [`default_standard_surface.wgsl`](./src/default_standard_surface.wgsl)。
 
 ### Minimal authoring shape
@@ -541,12 +594,12 @@ For the complete source-to-runtime example, see the
 > bindings, Engine entry points, or vertex-position mutation. Physical layers
 > and pass admission remain Engine-owned.
 
-渐进导航：`Materials.standard()` → `moduleSlots.surface` → build-time
+Progressive navigation: `Materials.standard()` → `moduleSlots.surface` → build-time
 `#import` composition / reflection → Pack cook → runtime GUID readiness。
-Surface source 不声明 stage entry、`@group/@binding` 或 vertex mutation；参数
-资源由同一 `MaterialAsset.parameters` contract 派生。编译或 cook 失败时读取
-`code`、`detail`、`hint`，修复 authored source 或 producer 后重新 cook，不在
-runtime 读取 raw WGSL 或创建 app-local artifact。
+Surface source declares no stage entries, `@group/@binding` or vertex mutations.
+Parameter resources derive from the same `MaterialAsset.parameters` contract.
+On compile or cook failure, read `code`, `detail` and `hint`, repair authored
+source or the producer and recook; never load raw WGSL or create app-local artifacts at runtime.
 
 > [!IMPORTANT]
 > A custom material starts as WGSL source plus one `MaterialAsset` contract. The build manifest publishes the composed module and the material cook publishes the resolved record, artifact bytes, references, and receipt. Runtime resolves those facts from the catalog; application code does not install or duplicate shader artifacts. The recovery route is always source or cook repair.
@@ -640,24 +693,9 @@ Shadow reception is a per-draw value, not a pipeline constant: there is no
 reception override, and receiving and non-receiving draws share one pipeline. The
 flag does not change shadow casting, bind-group layouts or material values.
 
-When storage buffers are unavailable, the same 96-byte light records, grid
-offset/count pairs and complete membership list use one `rgba32uint` texture at
-`@group(2) @binding(3)`. Its width is 1024 texels; four consecutive words form
-each texel, with the 1024 light records preceding the grid and index list.
-`@group(2) @binding(6)` holds six `vec4` rows in the 96-byte Cluster uniform.
-When AO is active, a row-aligned visibility region
-is appended after the complete Cluster payload, with its base word, logical
-extent and packed row stride in that uniform. Packing recovers the filtered
-UNORM8 byte before integer expansion, keeping identical Cluster words across
-normalized texture decoders with different f32 rounding. The eight visibility
-bits and neutral-white padding are unchanged. Forward PBR samples that region
-through the same integer texture binding, so authored material maps keep their
-full binding budget. The uniform's direct-light strength lane applies
-`mix(1, visibility, directLightingStrength)` to Forward direct illumination;
-zero preserves direct light, while the environment visibility path and material
-occlusion remain independent. The shader decodes light floats with `bitcast`
-and preserves integer metadata and lighting channels; membership and BRDF
-semantics match storage-buffer transport.
+The Standard lighting paths combine screen visibility with material AO at the
+indirect diffuse and environment reflection consumers. Screen reflection hits
+retain the material response.
 
 `src/standard-surface.wgsl` owns the Standard material/fragment evaluation shared
 by ordinary Mesh and the VFX Mesh vertex adapter. Geometry adapters supply world
@@ -865,20 +903,28 @@ without cooking. Nonempty `staticSwitches` require their own cooked publication,
 including explicit `false` selections; an Engine module name alone does not
 establish specialization readiness.
 
-Standard texture availability comes from authored parameter declarations, not
-GPU residency. Cooked materials omit unavailable texture declarations and
-sampling code. Shared built-in Standard modules retain a fixed binding layout
-and specialize sampling with one pipeline override, `STANDARD_TEXTURE_MASK_OVERRIDE`.
-`standardTextureMask()` derives its bits from the canonical texture-field order;
-the renderer carries the authored mask separately from the canonical UBO schema
-and includes it in pipeline identity. Runtime selects published WGSL and GPU
-pipeline constants; it does not compose or cook WGSL. A declared but nonresident
-texture remains enabled and follows the existing resource recovery route.
+Standard texture availability comes from authored parameter declarations. A
+declared texture remains enabled while its GPU resource is recovering. The
+canonical UBO schema is shared by Direct and GPU Scene draws.
+
+- Built-in Standard non-transmissive Forward draws specialize the admitted
+  source template on first use of the resource shape. The selected vertex and
+  fragment binding reads determine the material layout. Changing scalar shading
+  factors or replacing a texture with the same sampling relationship reuses
+  the pipeline. Precompiled publications without source templates use their
+  existing published layout and pipeline overrides.
+- An authored Surface declares its own textures and sampling code in the
+  material contract. Cooked programs omit unavailable declarations. The
+  Surface decodes any channel packing into `SurfaceData` for Standard lighting.
+
+`standardTextureMask()` derives `STANDARD_TEXTURE_MASK_OVERRIDE` from the
+canonical texture-field order. The renderer includes the mask in pipeline
+identity alongside the packed ORM selector.
 The override's low 20 bits retain presence; the higher bits select an earlier
 sample for each independent metallic, roughness, or alpha input when texture,
 sampler, and coordinates match. The selector is zero when that input needs its
-own sample. This changes sampling work without changing the Standard binding
-layout or the authored texture values.
+own sample. In projected Forward programs, shared ORM also supplies occlusion
+through the metallic–roughness sample, so the separate AO binding is omitted.
 Bits 29 and 30 (`STANDARD_TRIPLANAR_PROJECTION_BIT`,
 `STANDARD_OBJECT_SPACE_NORMAL_BIT`) are projection selectors that
 `standardProjectionMask()` derives from the effective `triplanarSpace` and
@@ -1236,19 +1282,6 @@ edge search and subpixel blend. Fractional luma search remains explicit bilinear
 texel sampling for backend stability. Endpoint comparisons allow four f32 rounding
 units scaled by local luminance, so mathematically equal endpoints terminate
 consistently across axes and backends. Output encoding belongs to the graph.
-
-`hdrp-ssao.wgsl` defaults to GTAO through the Render parameter owner: three slices,
-six steps per side, radius 0.25, thickness 1 and linear radial sampling. A shared
-raw visibility kernel serves the fragment and compute entries; the prepared
-Renderer graph selects an eligible entry, then uses the same spatial filter and
-lighting consumer. Forward input preserves the selected material's evaluated
-normal and coverage. Visibility intensity is applied before the existing
-depth/normal bilateral filter. Its cosine-weighted slice integral covers the full
-`cos(theta - normal) * abs(sin(theta))` interval, splitting the analytic primitive
-at `-pi`, `0` and `pi` so tilted normals remain correct when horizons stay on
-one side of zero or cross either pi boundary. Fragment and compute use this same
-function. The verified projected-normal correction, orthographic rays and
-background/normal-plane rejection remain intentional differences from Three.
 
 Vogel PCF samples the original UV footprint with sampler edge clamping; receiver
 slope correction uses the actual half-texel clamped location. Bloom retains its

@@ -79,7 +79,7 @@ export function createFilterPlanFixture(
   const slots = scene.slotsSnapshot();
   const topology = new BatchTopology();
   topology.rebuild(slots);
-  const source = topology.query(topology.sourcePlan(), undefined);
+  const source = topology.query(topology.sourcePlan(), undefined).active;
   expect(source.batches).toHaveLength(options.sharedGeometry ? 1 : 3);
   const receipt = createStandardPbrArtifactReceipt();
   const artifact = {
@@ -133,7 +133,7 @@ export function createFilterPlanFixture(
     indexed: true,
     lodRanges: [[{ first: 0, count: 3, baseVertex: 0 }], [{ first: 3, count: 3, baseVertex: 0 }]],
   };
-  const prepare = (plan: SubmissionPlan = source) => {
+  const prepare = (plan: SubmissionPlan = source, active: SubmissionPlan = plan) => {
     const rows = plan.batches.map((source) => {
       const binding = defined(source.binding);
       const execution = prepareBatchExecution(
@@ -144,19 +144,19 @@ export function createFilterPlanFixture(
       ).unwrap();
       const batch =
         execution.route === 'gpu' ? { ...source, prepared: execution.prepared } : source;
-      return prepareBatchRows(batch, { mesh, execution });
+      return prepareBatchRows(batch, { mesh, execution }, source);
     });
-    return assemblePreparedPlan({ ...plan, batches: rows.map((row) => row.source) }, rows);
+    return assemblePreparedPlan(plan, rows, active);
   };
   const bindings = new Map(slots.map((slot) => [`${slot.entityKey}`, slot.slot === 1 ? 'B' : 'A']));
-  return { source, slots, prepare, bindings, mesh, material: shared };
+  return { source, scene, topology, slots, prepare, bindings, mesh, material: shared };
 }
 
 export function freshFilteredPlan(
   prepared: import('../gpu-driven/production-raster-prepare').PreparedProductionPlan,
   bindings?: ReadonlyMap<string, string>,
 ) {
-  return new FilteredPlanContributionOwner().update(prepared, bindings);
+  return new FilteredPlanContributionOwner().update(prepared, bindings).active;
 }
 
 function defined<T>(value: T | undefined): T {

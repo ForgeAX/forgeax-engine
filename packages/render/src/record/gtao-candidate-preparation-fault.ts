@@ -3,8 +3,6 @@ export interface GtaoCandidatePreparationFaultState {
   gtaoCandidatePreparationFailureGeneration?: number | undefined;
 }
 
-const AO_CALC_PASSES = new Set(['ssao-calc', 'gtao-calc-compute']);
-
 export function armGtaoCandidatePreparationFault(
   state: GtaoCandidatePreparationFaultState,
   deviceGeneration: number,
@@ -34,9 +32,12 @@ export function consumeGtaoCandidatePreparationFault(
     clearGtaoCandidatePreparationFault(state);
     return false;
   }
-  if (!passNames.some((name) => AO_CALC_PASSES.has(name)) || !passNames.includes('ssao-blur')) {
-    return false;
-  }
+  const ssao =
+    passNames.includes('ssao-calc') && passNames.some((name) => name.startsWith('hzb-seed'));
+  const gtao =
+    passNames.includes('gtao-resolve') &&
+    (passNames.includes('gtao-calc') || passNames.includes('gtao-calc-compute'));
+  if (!ssao && !gtao) return false;
   clearGtaoCandidatePreparationFault(state);
   return true;
 }

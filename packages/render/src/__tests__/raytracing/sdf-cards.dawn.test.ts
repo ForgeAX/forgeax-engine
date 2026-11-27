@@ -3,17 +3,50 @@ import { expect, it } from 'vitest';
 import { CARD_LOOKUP_STRIDE, CardLookupStatus } from '../../raytracing/card-lookup';
 import { verifyCardCoverage } from './card-coverage.fixture';
 import { verifyCardSampling } from './card-sampling.fixture';
+import { verifyCardSlotReuse } from './card-slot-reuse.fixture';
 import {
   verifyFittedNearPlaneCards,
   verifyMultiMaterialCards,
 } from './multi-material-cards.fixture';
-import { prepareLutSdfCardsFixture, prepareSdfCardsFixture } from './sdf-cards.commands';
+import {
+  prepareLutSdfCardsFixture,
+  prepareSdfCardsBaseFixture,
+  prepareSdfCardsFixture,
+} from './sdf-cards.commands';
 import { verifySdfCards } from './sdf-cards.fixture';
 import { verifySdfCases } from './sdf-cases.fixture';
 import { verifySdfExpansion } from './sdf-expansion.fixture';
 import { verifyCardMaterial } from './sdf-material.fixture';
 import { verifyTwoSidedSdf } from './sdf-two-sided.fixture';
 import { verifyVisibilityCards } from './visibility-cards.fixture';
+
+it('keeps physical Card colors and texels after real removal and reuse', async () => {
+  const dir = process.env.FORGEAX_RAY_EVIDENCE;
+  if (dir) await mkdir(dir, { recursive: true });
+  const result = await verifyCardSlotReuse(
+    await prepareSdfCardsBaseFixture(),
+    async (name, bytes) => {
+      if (dir) await writeFile(`${dir}/card-slot-${name}.bin`, bytes);
+    },
+  );
+  if (dir)
+    await writeFile(
+      `${dir}/card-slot.json`,
+      JSON.stringify(
+        {
+          width: result.width,
+          height: result.height,
+          resolution: result.resolution,
+          cards: result.cards,
+          stages: result.evidence.map(({ stage }) => stage),
+          scope:
+            'Actual raster and lookup only; authored hit positions do not qualify SDF traversal.',
+        },
+        null,
+        2,
+      ),
+    );
+}, 30000);
 
 it('preserves fitted inner Card near planes through actual raster capture', async () => {
   const evidence = await verifyFittedNearPlaneCards(await prepareSdfCardsFixture());

@@ -1,26 +1,5 @@
-// ssao-bgl.test.ts — feat-20260612-hdrp-ssao M7 (round 2),
-// scope-amend-webgl2-ubo (intensity folded into cluster_uniform.near_far_log.w).
-//
-// Covers w28 / w29 / w44:
-//   w28 — HDRP unified BGL gains 2 SSAO entries (binding 7 texture_2d<f32>,
-//         binding 8 sampler). Existing 5 entries (binding 0 + 3..6) remain
-//         unchanged. Total = 7 entries. Intensity is read by the lighting
-//         shader from cluster_uniform.near_far_log.w (binding 6) — the
-//         dedicated @binding(9) UBO was removed to keep the fragment-stage
-//         UBO count under WebGL2's max_uniform_buffers_per_shader_stage=11.
-//   w29 — A 1x1 r8unorm white fallback texture is lazy-allocated on the
-//         RenderSystemRuntime under label 'hdrp-ssao-fallback-white'; it is
-//         created exactly once and reused on subsequent calls. SSAO disabled
-//         path binds the fallback texture at binding 7.
-//   w44 — createHdrpUnifiedBindGroup always emits 7 bind-group entries
-//         (single-PSO invariant, plan-strategy D-B). Enabled path binds the
-//         real ssaoBlurred texture view + ssaoSampler at bindings 7/8;
-//         disabled path swaps binding 7 to the fallback white texture and
-//         the host writes intensity=0 into cluster_uniform.
-//
-// plan-strategy §D-B / §D-C / §D-F :: tests live in this dedicated file so
-// the existing 5-entry assertions in pipeline.unit.test.ts are migrated
-// holistically (one-cut, no v1/v2 dual fixture).
+import { clusterViewLayoutEntries } from '../../../render/src/environment/bindings';
+// Cluster lighting and SSAO resource ownership.
 
 import type {
   BindGroupLayout,
@@ -45,7 +24,6 @@ import {
 import { createHdrpBindGroupLayoutDescriptor } from '../../../render/src/pipeline-spec';
 import type { RenderSystemRuntime } from '../../../render/src/render-system';
 
-const FRAGMENT_VISIBILITY = 0x2;
 const COMPUTE_VISIBILITY = 0x4;
 
 function mockTexture(label: string): Texture {
@@ -149,9 +127,6 @@ function fakeHdrpBuffers(): HdrpBuffers {
     lightBoundsBuffer: mockBuffer('hdrp-light-bounds'),
     lightBoundsBytes: 6144,
     grid: { x: 16, y: 9, z: 24 },
-    unifiedBindGroupLayout: {
-      label: 'hdrp-unified-bgl',
-    } as unknown as HdrpBuffers['unifiedBindGroupLayout'],
   };
 }
 
@@ -220,52 +195,13 @@ describe('HDRP GPU membership producer bind-group contract', () => {
   });
 });
 
-// ── w28: BGL descriptor 7 entries (5 cluster + 2 ssao) ────────────────────
-
-describe('w28 — HDRP unified BGL SSAO entries (binding 7/8)', () => {
-  it('descriptor entries.length === 7 (5 cluster + 2 ssao)', () => {
-    const desc = createHdrpBindGroupLayoutDescriptor();
-    expect(desc.entries?.length).toBe(7);
-  });
-
-  it('binding 7 is texture_2d<f32> with FRAGMENT visibility (ssaoBlurred)', () => {
-    const desc = createHdrpBindGroupLayoutDescriptor();
-    const b7 = desc.entries?.find((e) => e.binding === 7);
-    expect(b7).toBeDefined();
-    expect(b7?.visibility).toBe(FRAGMENT_VISIBILITY);
-    expect(b7?.texture?.sampleType).toBe('float');
-    expect(b7?.texture?.viewDimension ?? '2d').toBe('2d');
-  });
-
-  it('binding 8 is sampler with FRAGMENT visibility (ssaoSampler)', () => {
-    const desc = createHdrpBindGroupLayoutDescriptor();
-    const b8 = desc.entries?.find((e) => e.binding === 8);
-    expect(b8).toBeDefined();
-    expect(b8?.visibility).toBe(FRAGMENT_VISIBILITY);
-    expect(b8?.sampler).toBeDefined();
-  });
-
-  it('binding 9 is absent (scope-amend-webgl2-ubo: intensity folded into binding 6)', () => {
-    const desc = createHdrpBindGroupLayoutDescriptor();
-    const bindings = desc.entries?.map((e) => e.binding) ?? [];
-    expect(bindings).not.toContain(9);
-  });
-
-  it('existing bindings 0/3/4/5/6 remain unchanged', () => {
-    const desc = createHdrpBindGroupLayoutDescriptor();
-    const b0 = desc.entries?.find((e) => e.binding === 0);
-    expect(b0?.buffer?.hasDynamicOffset).toBe(true);
-    for (const b of [3, 4, 5, 6]) {
-      const e = desc.entries?.find((x) => x.binding === b);
-      expect(e, `binding ${b} present`).toBeDefined();
-    }
-  });
-
-  it('all bindings exactly { 0, 3, 4, 5, 6, 7, 8 }', () => {
-    const desc = createHdrpBindGroupLayoutDescriptor();
-    const bindings = new Set(desc.entries?.map((e) => e.binding));
-    expect(bindings).toEqual(new Set([0, 3, 4, 5, 6, 7, 8]));
-  });
+it('declares Cluster separately from the dynamic Mesh layout', () => {
+  const desc = createHdrpBindGroupLayoutDescriptor();
+  expect(desc.entries?.map(({ binding }) => binding)).toEqual([0]);
+  expect(clusterViewLayoutEntries(true).map(({ binding }) => binding)).toEqual([30, 31, 32, 33]);
+  expect(clusterViewLayoutEntries(false).map(({ binding }) => binding)).toEqual([30, 33]);
+  expect(desc.entries?.every(({ buffer }) => buffer !== undefined)).toBe(true);
+  expect(desc.entries?.[0]?.buffer?.hasDynamicOffset).toBe(true);
 });
 
 // ── w29: 1x1 white fallback texture lazy alloc + cached ───────────────────
@@ -313,57 +249,14 @@ describe('w29 — 1x1 white fallback texture lazy alloc', () => {
   });
 });
 
-// ── w44: createHdrpUnifiedBindGroup 7-entry invariant (enabled vs disabled) ──
-
-describe('w44 — createHdrpUnifiedBindGroup SSAO entries (binding 7/8)', () => {
-  it('enabled path: bind group has 7 entries with real ssaoBlurred view at binding 7', () => {
-    const { runtime, createBindGroup } = makeMockRuntime();
-    const hdrp = fakeHdrpBuffers();
-    const ssaoBlurredView = mockTextureView('ssao-blurred-view');
-    const meshSsbo = mockBuffer('mesh-ssbo');
-
-    const bg = createHdrpUnifiedBindGroup(runtime, hdrp, meshSsbo, {
-      enabled: true,
-      ssaoBlurredView,
-    });
-    expect(bg).not.toBeNull();
-    const desc = createBindGroup.mock.calls[0]?.[0] as
-      | {
-          entries?: Array<{ binding: number; resource: unknown }>;
-        }
-      | undefined;
-    expect(desc?.entries?.length).toBe(7);
-    const b7 = desc?.entries?.find((e) => e.binding === 7);
-    const b7res = b7?.resource as { kind?: string; value?: unknown } | undefined;
-    expect(b7res?.kind).toBe('textureView');
-    expect(b7res?.value).toBe(ssaoBlurredView);
-    const b8 = desc?.entries?.find((e) => e.binding === 8);
-    expect((b8?.resource as { kind?: string } | undefined)?.kind).toBe('sampler');
-    // scope-amend-webgl2-ubo: binding 9 is gone; intensity flows via
-    // cluster_uniform.near_far_log.w on binding 6.
-    const bindings = new Set(desc?.entries?.map((e) => e.binding));
-    expect(bindings).not.toContain(9);
-  });
-
-  it('disabled path: bind group still has 7 entries; binding 7 = fallback white texture', () => {
-    const { runtime, createBindGroup } = makeMockRuntime();
-    const hdrp = fakeHdrpBuffers();
-    const meshSsbo = mockBuffer('mesh-ssbo');
-
-    const bg = createHdrpUnifiedBindGroup(runtime, hdrp, meshSsbo, { enabled: false });
-    expect(bg).not.toBeNull();
-    const desc = createBindGroup.mock.calls[0]?.[0] as
-      | {
-          entries?: Array<{ binding: number; resource: unknown }>;
-        }
-      | undefined;
-    expect(desc?.entries?.length).toBe(7);
-    const bindings = new Set(desc?.entries?.map((e) => e.binding));
-    expect(bindings).toEqual(new Set([0, 3, 4, 5, 6, 7, 8]));
-    // Binding 7 must resolve to a texture-view of the fallback white texture
-    // (single-PSO invariant; plan-strategy §D-B).
-    const b7 = desc?.entries?.find((e) => e.binding === 7);
-    const b7res = b7?.resource as { kind?: string } | undefined;
-    expect(b7res?.kind).toBe('textureView');
-  });
+it('creates one clustered mesh group with no scene texture or sampler', () => {
+  const { runtime, createBindGroup, createTexture } = makeMockRuntime();
+  const group = createHdrpUnifiedBindGroup(runtime, {} as BindGroupLayout, mockBuffer('mesh-ssbo'));
+  expect(group).not.toBeNull();
+  const desc = createBindGroup.mock.calls[0]?.[0] as
+    | { entries: Array<{ binding: number; resource: { kind: string } }> }
+    | undefined;
+  expect(desc?.entries.map(({ binding }) => binding)).toEqual([0]);
+  expect(desc?.entries.every(({ resource }) => resource.kind === 'buffer')).toBe(true);
+  expect(createTexture).not.toHaveBeenCalled();
 });

@@ -22,7 +22,7 @@ fn directDfgTextureFilteringWitness() {
   let sample = textureSample(directDfgLut, directDfgSampler, vec2<f32>(0.0));
 }
 #endif
-@group(0) @binding(0) var<storage,read> instances: array<Instance>;
+@group(0) @binding(0) var<storage,read> instances: array<RawInstance>;
 @group(0) @binding(1) var<storage,read> fields: array<u32>;
 @group(0) @binding(2) var<storage,read> cards: array<Card>;
 @group(0) @binding(3) var<storage,read> lights: array<Light>;

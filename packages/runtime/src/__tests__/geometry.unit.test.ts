@@ -824,6 +824,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   function makeMockDevice(probe: BufferProbe): any {
     const okShim = ok;
     return {
+      caps: mockCaps,
       limits: {
         maxTextureDimension2D: 16384,
         maxTextureArrayLayers: 2048,

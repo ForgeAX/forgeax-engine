@@ -2,6 +2,7 @@ import type { Result, RhiDevice, ShaderModule } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { isShaderTemplateManifestRow, type ShaderCatalog } from '@forgeax/engine-shader';
 import { atmosphereAvailable } from '../environment/capability';
+import { isEngineOwnedMaterialShader } from './material/pipeline-helpers';
 import type { SeedShaderModule } from './material-shader-policy';
 
 import {
@@ -15,6 +16,30 @@ type AsyncCreateShaderModule = (
   device: RhiDevice,
   desc: { code: string; label?: string | undefined },
 ) => Promise<Result<ShaderModule, RhiError>>;
+
+/**
+ * Material programs a recovery candidate rebuilds: the required feature inputs
+ * plus every non-engine program the lost generation drew with. A program draws
+ * through its variant-keyed module, so any drawn variant keeps it. Material
+ * publication installs all cooked alternatives, including optional outputs the
+ * active device never compiled, so unused ones are not recovered.
+ */
+export function recoveryMaterialShaders(
+  required: readonly string[],
+  registry: ShaderCatalog,
+  drewWithModule: (label: string) => boolean,
+): string[] {
+  return [...new Set([...required, ...registry.materialShaderIdentifiers()])].filter(
+    (id) =>
+      required.includes(id) ||
+      (!isEngineOwnedMaterialShader(id) &&
+        (drewWithModule(`module-${id}`) ||
+          registry
+            .materialShaderManifestEntry(id)
+            ?.variants.some((variant) => drewWithModule(`module-${id}#${variant.definesKey}`)) ===
+            true)),
+  );
+}
 
 /**
  * Prewarm ordinary producer-declared material variants before the first frame.
@@ -76,9 +101,7 @@ export async function prewarmRequiredMaterialShaders({
     seedShaderModule(label, shaderResult.value, entry.source);
 
     const prewarmedSources = new Map<string, ShaderModule>([[entry.source, shaderResult.value]]);
-    const manifestEntry = [...registry.materialShaderManifestEntries()].find(
-      (candidate) => candidate.identifier === materialShaderId,
-    );
+    const manifestEntry = registry.materialShaderManifestEntry(materialShaderId);
     if (manifestEntry === undefined) continue;
     if (isShaderTemplateManifestRow(manifestEntry)) continue;
 

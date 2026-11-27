@@ -4,12 +4,14 @@ import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { _internal_getRawDevice, rhi } from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { MemberCandidates } from '../gpu-driven/batch-members';
 import { BatchTopology, type SubmissionPlan } from '../gpu-driven/batch-topology';
+import { GPU_TASK_HEADER_BYTES } from '../gpu-driven/task-header';
 import { GPU_DRIVEN_VIEW_WGSL, GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
 import { MaterialResource } from '../material-resource';
 import { RenderScene } from '../scene/render-scene';
-import { updateGpuView } from './helpers/gpu-input-read-domain';
+import { releaseGpuFixtureReads, updateGpuView } from './helpers/gpu-input-read-domain';
 
 /** Actual cull work expands executions; GPU membership bytes stay unique. */
 export async function verifySharedMeshCandidates() {
@@ -67,7 +69,7 @@ export async function verifySharedMeshCandidates() {
   );
   const topology = new BatchTopology();
   topology.apply(delta);
-  const initial = topology.query(topology.sourcePlan(), undefined);
+  const initial = topology.query(topology.sourcePlan(), undefined).active;
   const root = initial.batches.at(0);
   assert(root);
   const admitted = GpuScene.create(device, 8).unwrap();
@@ -79,7 +81,7 @@ export async function verifySharedMeshCandidates() {
     shaderModuleFactory: { createShaderModule: () => ok(shader) },
   }).unwrap();
   const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
-  const empty = Object.freeze([]);
+  const empty = new MemberCandidates();
   const plan = (active: readonly boolean[]): SubmissionPlan => ({
     revision: active.length,
     candidateCount: active.filter(Boolean).length * 3,
@@ -106,9 +108,22 @@ export async function verifySharedMeshCandidates() {
     for (let frame = 0; frame < 60; frame++) {
       const selected = stages[Math.floor(frame / 15)];
       assert(selected);
+      const memberWrites = scene.inputs.memberNodesWritten;
+      const headerWrites = scene.inputs.taskHeadersWritten;
       updateGpuView(view, selected, scene, planes).unwrap();
       expect(view.inspect().candidateCapacity).toBe(4);
-      if (frame > 0) expect(view.inspect().sharedInputUploadBytes).toBe(0);
+      if (frame > 0) {
+        const newHeaders = frame === 30 ? 4 : frame % 15 === 0 ? 1 : 0;
+        expect(scene.inputs.memberNodesWritten, `membership writes at frame ${frame}`).toBe(
+          memberWrites,
+        );
+        expect(scene.inputs.taskHeadersWritten - headerWrites, `headers at frame ${frame}`).toBe(
+          newHeaders,
+        );
+        expect(view.inspect().sharedInputUploadBytes, `shared bytes at frame ${frame}`).toBe(
+          newHeaders * GPU_TASK_HEADER_BYTES,
+        );
+      }
       const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
       view.addPasses(graph).unwrap();
       const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
@@ -121,6 +136,7 @@ export async function verifySharedMeshCandidates() {
         encoder.copyBufferToBuffer(indirect, 0, readback, 0, selected.batches.length * 20);
         device.queue.submit([encoder.finish().unwrap()]).unwrap();
         await device.queue.onSubmittedWorkDone();
+        releaseGpuFixtureReads(scene);
         const mapped = (await readback.mapAsync(1)).unwrap();
         const words = new Uint32Array(mapped.getMappedRange().unwrap());
         for (const [index, batch] of selected.batches.entries())

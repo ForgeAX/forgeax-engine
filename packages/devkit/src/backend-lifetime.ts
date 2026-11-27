@@ -1,27 +1,26 @@
 import { execFileSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { sha256 } from '@forgeax/engine-types';
+import { writeFileAtomic } from './filesystem-path.js';
 
 /** Process usage belongs beside the backend session, never in a project registry. */
-function directory(root: string) {
-  return join(
-    tmpdir(),
-    'forgeax-backend',
-    createHash('sha256').update(resolve(root)).digest('hex'),
-    'usage',
-  );
+export function backendStateDirectory(root: string): string {
+  return join(tmpdir(), 'forgeax-backend', sha256(resolve(root)));
 }
-function alive(pid: number) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+/** Signal zero treats a process owned by another user as alive. */
+export function processAlive(pid: unknown): boolean {
+  if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  } catch (cause) {
+    return (cause as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
+
 const wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 async function lock(base: string): Promise<() => Promise<void>> {
   await mkdir(base, { recursive: true });
@@ -56,7 +55,7 @@ async function lock(base: string): Promise<() => Promise<void>> {
   }
 }
 function identity(pid: number): string | undefined {
-  if (!alive(pid)) return undefined;
+  if (!processAlive(pid)) return undefined;
   // A recycled PID must never retain a dead Codex process's usage. The portable
   // macOS/Linux distribution records the OS process birth time, not a timeout.
   try {
@@ -88,17 +87,16 @@ async function active(base: string) {
   return count;
 }
 export async function retainBackendLifetime(root: string) {
-  const base = directory(root),
+  const base = join(backendStateDirectory(root), 'usage'),
     path = join(base, `${randomUUID()}.json`);
   const birth = identity(process.pid);
   if (!birth) throw new Error('Cannot establish backend user process identity.');
   const release = await lock(base);
   let closed = false;
   try {
-    await writeFile(`${path}.tmp`, JSON.stringify({ pid: process.pid, identity: birth }), {
+    await writeFileAtomic(path, JSON.stringify({ pid: process.pid, identity: birth }), {
       mode: 0o600,
     });
-    await rename(`${path}.tmp`, path);
   } finally {
     await release();
   }
@@ -130,8 +128,12 @@ export function watchBackendLifetime(
     finish = done;
     fail = reject;
   });
-  const base = directory(root);
+  const base = join(backendStateDirectory(root), 'usage');
   let running = false;
+  const failTick = (error: unknown) => {
+    closed = true;
+    fail(error);
+  };
   const tick = async () => {
     running = true;
     const release = await lock(base);
@@ -149,33 +151,53 @@ export function watchBackendLifetime(
         }
       }
     } catch (error) {
-      closed = true;
-      fail(error);
+      failTick(error);
     } finally {
       await release();
       running = false;
       if (closed) finish();
     }
     if (!closed) {
-      timer = setTimeout(() => {
-        void tick().catch((error) => {
-          closed = true;
-          fail(error);
-        });
-      }, intervalMs);
+      timer = setTimeout(() => void tick().catch(failTick), intervalMs);
       timer.unref();
     }
   };
-  void tick().catch((error) => {
-    closed = true;
-    fail(error);
-  });
+  void tick().catch(failTick);
   return {
     finished,
     close() {
       closed = true;
       clearTimeout(timer);
       if (!running) finish();
+    },
+  };
+}
+
+/** Durable authoring selection only; runtime handles and tokens never persist. */
+export function createWorkspaceSelection(root: string) {
+  const path = join(root, '.forgeax', 'host', 'workspace-selection.json');
+  return {
+    async read(): Promise<string | null | undefined> {
+      try {
+        const value: unknown = JSON.parse(await readFile(path, 'utf8'));
+        if (
+          !value ||
+          typeof value !== 'object' ||
+          !('schemaVersion' in value) ||
+          value.schemaVersion !== 1 ||
+          !('project' in value) ||
+          (value.project !== null && typeof value.project !== 'string')
+        )
+          throw new Error('Invalid persisted workspace project selection.');
+        return value.project as string | null;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+        throw error;
+      }
+    },
+    async write(project: string | null) {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFileAtomic(path, JSON.stringify({ schemaVersion: 1, project }), { mode: 0o600 });
     },
   };
 }

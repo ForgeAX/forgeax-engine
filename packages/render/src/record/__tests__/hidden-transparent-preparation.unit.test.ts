@@ -110,6 +110,7 @@ it('encodes a preparation-only lane without binding a missing frame view group',
       colorAttachmentFormat: 'rgba16float',
       skylightFallback: {
         irradianceView: view,
+        skySh: {},
         prefilterView: view,
         brdfLutView: view,
         sampler,
@@ -123,7 +124,7 @@ it('encodes a preparation-only lane without binding a missing frame view group',
     });
     expect(bind.mock.calls.filter(([index]) => index === 0)).toEqual([]);
     expect(f.receipts).toEqual([]);
-    expect(f.c.frameState.iblBindingInspection).toBeUndefined();
+    expect(f.c.frameState.iblBindings?.inspect()).toBeUndefined();
   } finally {
     f.dispose();
   }

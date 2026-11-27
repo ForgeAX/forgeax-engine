@@ -3,8 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   compareScenePublicationFences,
   createScenePublicationFence,
-  observeScenePublication,
-  parseScenePublicationFence,
   type ScenePublicationFence,
   scenePublicationFenceFromCatalog,
 } from '../registry/scene-publication-fence.js';
@@ -44,8 +42,6 @@ describe('Scene publication fence', () => {
     const created = createScenePublicationFence(publication(4));
     expect(created.ok).toBe(true);
     if (!created.ok) return;
-    const parsed = parseScenePublicationFence(JSON.parse(JSON.stringify(created.value)));
-    expect(parsed).toEqual(created);
     expect(created.value).toMatchObject<ScenePublicationFence>({
       schemaVersion: 'scene-publication-fence/1',
       sourcePath: 'assets/showcase.pack.ts',
@@ -73,7 +69,7 @@ describe('Scene publication fence', () => {
     });
   });
 
-  it('fails closed for mixed generations and observation timeout while preserving LKG', async () => {
+  it('fails closed for mixed generations', () => {
     const first = createScenePublicationFence(publication(1));
     const second = createScenePublicationFence(publication(2));
     expect(first.ok && second.ok).toBe(true);
@@ -84,24 +80,6 @@ describe('Scene publication fence', () => {
         code: 'asset-generation-fence-mismatch',
         phase: 'observation',
         currentGeneration: 2,
-      },
-    });
-
-    const observed = await observeScenePublication({
-      publication: publication(2),
-      waitForOutput: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      },
-      timeoutMs: 1,
-      lastKnownGood: first.value,
-    });
-    expect(observed).toMatchObject({
-      ok: false,
-      error: {
-        code: 'asset-generation-fence-mismatch',
-        phase: 'observation',
-        lastKnownGood: { publicationGeneration: 1 },
-        recoveryActions: ['continue-last-known-good', 'retry-rebuild', 'fresh-reopen'],
       },
     });
   });
@@ -122,6 +100,37 @@ describe('Scene publication fence', () => {
       value: { publicationGeneration: 7 },
     });
     expect(scenePublicationFenceFromCatalog(entries.slice(0, 0), outputGuid)).toMatchObject({
+      ok: false,
+      error: { code: 'asset-generation-fence-mismatch', phase: 'catalog' },
+    });
+  });
+
+  it.each([
+    'sourceRevision',
+    'receiptIdentity',
+  ] as const)('rejects a sibling with a different %s even when generation and content digests agree', (field) => {
+    const original = publication(7);
+    const first = original.outputs[0];
+    if (first === undefined) throw new Error('missing fixture output');
+    const second = { ...first, guid: '01890000-0000-7000-8000-222222222222' };
+    const source = { ...original, outputs: [first, second] };
+    const changed = {
+      ...source,
+      ...(field === 'sourceRevision' ? { sourceRevision: 'other-revision' } : {}),
+      receipt: {
+        ...source.receipt,
+        ...(field === 'sourceRevision'
+          ? { sourceRevision: 'other-revision' }
+          : { inputFingerprint: 'other-receipt' }),
+      },
+    };
+    const entries = [source, changed].map((pub, index) => ({
+      guid: index === 0 ? first.guid : second.guid,
+      kind: 'scene',
+      packageUrl: '/assets/showcase.pack.json',
+      publication: pub,
+    }));
+    expect(scenePublicationFenceFromCatalog(entries, first.guid)).toMatchObject({
       ok: false,
       error: { code: 'asset-generation-fence-mismatch', phase: 'catalog' },
     });

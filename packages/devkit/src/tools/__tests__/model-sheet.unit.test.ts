@@ -24,6 +24,13 @@ function mapping(right: OrthoMapping['right'], up: OrthoMapping['up']): OrthoMap
 }
 
 describe('model.render sheet annotation', () => {
+  it('draws the apostrophe glyph in authored labels', () => {
+    const pixels = blank(5, 7);
+    new SheetCanvas(5, 7, pixels).text("'", 0, 0, [1, 1, 1, 1]);
+    const ink = Array.from({ length: 35 }, (_, index) => (pixels[index * 4] ? '1' : '0'));
+    expect(ink.join('')).toBe('01100001000100000000000000000000000');
+  });
+
   it('moves a label that would cover an earlier one', () => {
     const canvas = new SheetCanvas(320, 240, blank(320, 240));
     canvas.dimension([40, 120], [280, 120], 'A 1.00 M', [1, 1, 1, 1], 14, 1);

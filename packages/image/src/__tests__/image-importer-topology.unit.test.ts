@@ -1,4 +1,9 @@
-import { ImporterRegistry, type RunImportMeta, runImport } from '@forgeax/engine-import';
+import {
+  ImporterRegistry,
+  projectImportPack,
+  type RunImportMeta,
+  runImport,
+} from '@forgeax/engine-import';
 import type { ImportContext } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { imageImporter } from '../image-importer.js';
@@ -182,8 +187,8 @@ describe('image importer required output topology', () => {
     expect(readSource).toHaveBeenCalledTimes(3);
     if (!repaired.ok || 'skipped' in repaired.value) return;
     expect(repaired.value.product.sourceDependencies).toEqual(['tile.png']);
-    expect(repaired.value.pack.assets).toHaveLength(1);
-    expect(repaired.value.pack.assets[0]).toMatchObject({
+    expect(projectImportPack(repaired.value.product, meta).assets).toHaveLength(1);
+    expect(projectImportPack(repaired.value.product, meta).assets[0]).toMatchObject({
       guid: PNG_GUID,
       kind: 'texture',
       sourceKey: 'image:texture',
@@ -202,9 +207,11 @@ describe('image importer required output topology', () => {
         },
       },
     });
-    expect(Array.from(repaired.value.pack.assets[0]?.artifacts.body?.bytes ?? [])).toEqual(
-      repaired.value.pack.assets[0]?.payload.data,
-    );
+    expect(
+      Array.from(
+        projectImportPack(repaired.value.product, meta).assets[0]?.artifacts.body?.bytes ?? [],
+      ),
+    ).toEqual(projectImportPack(repaired.value.product, meta).assets[0]?.payload.data);
 
     const repeated = await runImport(meta, registry, { readSource });
     expect(repeated.ok).toBe(true);
@@ -213,15 +220,15 @@ describe('image importer required output topology', () => {
     expect(repeated.value.product.sourceDependencies).toEqual(
       repaired.value.product.sourceDependencies,
     );
-    expect(repeated.value.pack.assets[0]).toMatchObject({
+    expect(projectImportPack(repeated.value.product, meta).assets[0]).toMatchObject({
       guid: PNG_GUID,
       kind: 'texture',
       sourceKey: 'image:texture',
       sourceIndex: 0,
-      payload: repaired.value.pack.assets[0]?.payload,
+      payload: projectImportPack(repaired.value.product, meta).assets[0]?.payload,
     });
-    expect(repeated.value.pack.assets[0]?.artifacts).toEqual(
-      repaired.value.pack.assets[0]?.artifacts,
+    expect(projectImportPack(repeated.value.product, meta).assets[0]?.artifacts).toEqual(
+      projectImportPack(repaired.value.product, meta).assets[0]?.artifacts,
     );
   });
 });

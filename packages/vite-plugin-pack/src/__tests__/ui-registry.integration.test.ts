@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { createUiImporter } from '@forgeax/engine-ui/importer';
 import { build as viteBuild } from 'vite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { metaFixture } from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { pluginPack } from '../index.js';
 
 const UI_GUID = '019e3969-1d48-7c3b-ac24-6d68f457065f';
@@ -22,14 +23,7 @@ beforeEach(async () => {
   await writeFile(join(root, 'hud.ui.css'), '.hud { color: white; }\n');
   await writeFile(
     join(root, 'hud.ui.html.meta.json'),
-    JSON.stringify({
-      schemaVersion: '1.0.0',
-      kind: 'external-asset-package',
-      importer: 'ui',
-      source: 'hud.ui.html',
-      importSettings: {},
-      subAssets: [{ guid: UI_GUID, sourceIndex: 0, kind: 'ui' }],
-    }),
+    metaFixture('hud.ui.html', 'ui', [{ guid: UI_GUID, sourceIndex: 0, kind: 'ui' }]),
   );
 });
 
@@ -72,6 +66,8 @@ describe('pluginPack UI importer registration', () => {
     const catalog = decodeCatalogWire(
       JSON.parse(await readFile(join(dist, 'pack-index.json'), 'utf8')),
     ).unwrap();
-    expect(catalog.find((entry) => entry.guid === UI_GUID)?.packageUrl).toContain('.pack');
+    expect(catalog.find((entry) => entry.guid === UI_GUID)?.packageUrl).toMatch(
+      /\.runtime-pack\.json$/,
+    );
   });
 });

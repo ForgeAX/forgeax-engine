@@ -35,7 +35,7 @@ export function create(): Frustum {
  * then normalized so (nx, ny, nz) is a unit vector and d is the signed
  * distance from origin. Plane inside-half-space is nx*x + ny*y + nz*z + d > 0.
  *
- * Writes to `out` and returns it.
+ * Reads the matrix at float index `offset` in a packed table. Writes to `out` and returns it.
  *
  * @example
  * ```ts
@@ -46,23 +46,23 @@ export function create(): Frustum {
  * const f = frustum.fromViewProjection(frustum.create(), vp);
  * ```
  */
-export function fromViewProjection(out: Frustum, vp: Mat4Like): Frustum {
-  const m0 = vp[0] as number;
-  const m1 = vp[1] as number;
-  const m2 = vp[2] as number;
-  const m3 = vp[3] as number;
-  const m4 = vp[4] as number;
-  const m5 = vp[5] as number;
-  const m6 = vp[6] as number;
-  const m7 = vp[7] as number;
-  const m8 = vp[8] as number;
-  const m9 = vp[9] as number;
-  const m10 = vp[10] as number;
-  const m11 = vp[11] as number;
-  const m12 = vp[12] as number;
-  const m13 = vp[13] as number;
-  const m14 = vp[14] as number;
-  const m15 = vp[15] as number;
+export function fromViewProjection(out: Frustum, vp: Mat4Like, offset = 0): Frustum {
+  const m0 = vp[offset] as number;
+  const m1 = vp[offset + 1] as number;
+  const m2 = vp[offset + 2] as number;
+  const m3 = vp[offset + 3] as number;
+  const m4 = vp[offset + 4] as number;
+  const m5 = vp[offset + 5] as number;
+  const m6 = vp[offset + 6] as number;
+  const m7 = vp[offset + 7] as number;
+  const m8 = vp[offset + 8] as number;
+  const m9 = vp[offset + 9] as number;
+  const m10 = vp[offset + 10] as number;
+  const m11 = vp[offset + 11] as number;
+  const m12 = vp[offset + 12] as number;
+  const m13 = vp[offset + 13] as number;
+  const m14 = vp[offset + 14] as number;
+  const m15 = vp[offset + 15] as number;
 
   // Keep arithmetic in double precision until each normalized plane is stored.
   writePlane(out, 0, m3 + m0, m7 + m4, m11 + m8, m15 + m12); // left

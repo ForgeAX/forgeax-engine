@@ -1,15 +1,9 @@
 {
-  "schemaVersion": "2.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
+  "schemaVersion": "3.0.0",
+  "packageId": "b6121b4f-f0d8-53ae-823c-69e50046d121",
+  "assets": {
+    "scene/outer-scene": {
       "kind": "scene",
-      "guid": "d07a7b8e-9c12-4f6b-a8e1-3d4f5a6b7c8d",
-      "refs": [
-        "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-        "008e4f75-e7a3-4715-b05b-b93a9ec12074"
-      ],
-      "artifacts": {},
       "payload": {
         "entities": {
           "sibling": {
@@ -42,7 +36,7 @@
           "inner": {
             "components": {},
             "instance": {
-              "source": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+              "source": 0,
               "overrides": [
                 {
                   "target": [
@@ -65,7 +59,11 @@
             }
           }
         }
-      }
+      },
+      "refs": [
+        "76a6cee8-353d-5b03-a683-22a1f10a3a64",
+        "a2a95227-db50-5e9a-bf22-2a9d3c74a890"
+      ]
     }
-  ]
+  }
 }

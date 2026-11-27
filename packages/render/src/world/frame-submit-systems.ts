@@ -1,4 +1,4 @@
-import type { World } from '@forgeax/engine-ecs';
+import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { defineResource, defineSystem } from '@forgeax/engine-ecs';
 import type { RecorderSession } from '@forgeax/engine-profiler';
 import type { CommandBuffer, RhiCommandEncoder } from '@forgeax/engine-rhi';
@@ -101,12 +101,7 @@ function encodeComposite(
     if (view.target === undefined || view.output === undefined) continue;
     const target = internals.getRenderTargetPhysical?.(view.target);
     if (target === undefined) return false;
-    const { width, height, texture } = view.output;
-    const picture = {
-      texture,
-      viewport: { x: 0, y: 0, width, height, renderWidth: width, renderHeight: height },
-    };
-    if (!view.composite.encode(encoder, [picture], target.texture, target.descriptor)) return false;
+    if (!view.composite.encode(encoder, view.output, target.texture, target)) return false;
   }
   if (plan.directDisplay !== undefined) {
     recordContext(internals).encodeRenderTargetReadbacks?.(encoder);
@@ -136,7 +131,9 @@ function publishPhysicalSubmission(
       collectFailure(state, () => view.onSubmittedWork?.(completion));
   if (owner !== undefined) {
     owner.gpuPassTimingSubmittedWork = completion;
-    owner.submittedPassNames = Object.freeze([...(owner.framePassNames ?? [])]);
+    // Recording ended at the physical queue submit. The next attempt opens its
+    // own list, so previous inspection receipts keep these exact commands.
+    owner.submittedPassNames = Object.freeze(owner.framePassNames ?? []);
     collectFailure(state, () => owner.gpuPassTimingCapture?.markSubmitted(completion));
   }
   publishRenderSubmission(world, {
@@ -330,18 +327,25 @@ export function encodeFramePresentation(
 }
 
 /** A preparation barrier has not initialized the surface behind its UI. */
-function hasEncodedSurfaceView(world: World, frame: number): boolean {
-  for (const view of viewComposition(world).recorded) {
-    if (view.target !== undefined) continue;
-    const slot = readViewField(world, view.entity, ViewGraphSeal, 'state');
-    if (slot === undefined) continue;
+function hasEncodedSurfaceView(world: World, primary: EntityHandle | undefined): boolean {
+  const frame = renderSubmission(world).frame;
+  const encodedDisplay = (entity: EntityHandle): boolean => {
+    const slot = readViewField(world, entity, ViewGraphSeal, 'state');
+    if (slot === undefined) return false;
     const seal = world.resolveUniqueRef<ViewGraphSealState>(slot).unwrap();
-    if (
+    return (
       seal.frame === frame &&
       seal.encoding?.kind === 'encoded' &&
       seal.encoding.value.kind === 'display'
-    )
-      return true;
+    );
+  };
+  // Primary display recording is absent from the composed recorder list.
+  // Seals use Render World frame identity, not UI/public observation identity.
+  if (!viewComposition(world).active && primary !== undefined && encodedDisplay(primary))
+    return true;
+  for (const view of viewComposition(world).recorded) {
+    if (view.target !== undefined) continue;
+    if (encodedDisplay(view.entity)) return true;
   }
   return false;
 }
@@ -410,7 +414,8 @@ export function registerFrameSubmitSystems(world: World): void {
       try {
         const sceneOutputEncoded =
           state.composite === 'encoded' ||
-          (renderSubmission(world).open && hasEncodedSurfaceView(world, input.frameId));
+          (renderSubmission(world).open &&
+            hasEncodedSurfaceView(world, input.rendererInternals?.viewEntity));
         encodeFramePresentation(world, input, encoder.encoder, sceneOutputEncoded);
       } catch (cause) {
         state.failures.push(cause);

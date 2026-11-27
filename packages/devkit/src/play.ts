@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isExecutionReport } from '@forgeax/engine-app';
 import type { ArtifactRef } from '@forgeax/engine-tool-runtime';
+import { sha256 } from '@forgeax/engine-types';
 import type { Page } from 'playwright';
 import {
   type BrowserCapture,
@@ -16,32 +16,34 @@ import { type CaptureRendererError, captureRenderFailure } from './capture-rende
 import { type DistManifest, verifyDist } from './dist.js';
 import { type ExecutionHealth, executionHealth } from './execution-health.js';
 import { failureSummary } from './failure-summary.js';
-import type { StartupUiState } from './host/startup-ui.js';
+import { observeBrowserStartup, readStartupObservation } from './host/startup-ui.js';
 import { liveOwnerRecorded } from './live-dev-owner.js';
-import { clickTargetInPage } from './play-click-target.js';
 import type { PlayClockStatus } from './play-clock.js';
-import { acquirePlayLock } from './play-lock.js';
-import { lookInPage } from './play-look.js';
 import {
+  clickTargetInPage,
   DEFAULT_PLAY_VIEWPORTS,
+  lookInPage,
   type PlayViewport,
   parsePlayViewports,
   viewportName,
-} from './play-viewports.js';
+} from './play-input-page.js';
+import { acquirePlayLock } from './play-lock.js';
 import {
+  clipUtf8,
   groupPlayWarnings,
   type PlayWarning,
   SCENE_PREVIEW_HINT,
   warningsField,
 } from './play-warnings.js';
 import { readProjectStartupTimeoutMs } from './project.js';
-import { DEV_EXECUTION_TIMEOUT_MS } from './startup-budget.js';
+import { beforeDeadline, DEV_EXECUTION_TIMEOUT_MS } from './startup-budget.js';
 import type {
   CaptureBackend,
   CommandError,
   CommandResult,
   ProjectCommandOptions,
 } from './types.js';
+import { rejectCommand } from './types.js';
 
 /** Closed failure codes of `forgeax project play`. */
 export type PlayErrorCode =
@@ -498,21 +500,6 @@ function playError(
   return { code, expected, hint, detail };
 }
 
-/** Clips to at most `max` UTF-8 bytes, so byte budgets hold for CJK text and paths too. */
-function clip(text: string, max: number): string {
-  if (Buffer.byteLength(text) <= max) return text;
-  let output = '';
-  let bytes = 0;
-  // `…` is three bytes.
-  for (const char of text) {
-    const size = Buffer.byteLength(char);
-    if (bytes + size > max - 3) break;
-    output += char;
-    bytes += size;
-  }
-  return `${output}…`;
-}
-
 function jsonBytes(value: unknown): number {
   try {
     return Buffer.byteLength(JSON.stringify(value) ?? '');
@@ -531,7 +518,7 @@ function jsonSafe(value: unknown): unknown {
 }
 
 function shallow(value: unknown): unknown {
-  if (typeof value === 'string') return clip(value, 60);
+  if (typeof value === 'string') return clipUtf8(value, 60);
   if (value === null || typeof value !== 'object') return value;
   if (jsonBytes(value) <= 60) return value;
   return Array.isArray(value) ? `[${value.length} items]` : `{${Object.keys(value).length} keys}`;
@@ -581,30 +568,11 @@ type InputGate =
 /** Waits for the generated startup owner's `<html data-forgeax-input="open">` or a fatal. */
 async function waitForInputOpen(page: Page, timeoutMs: number): Promise<InputGate> {
   try {
-    const handle = await page.waitForFunction(
-      () => {
-        const startup = (
-          Reflect.get(globalThis, '__forgeaxStartup') as { inspect?(): StartupUiState } | undefined
-        )?.inspect?.();
-        if (startup?.phase === 'failed' && startup.recovery !== 'retrying')
-          return (startup.diagnostics || startup.message || 'Engine startup failed').slice(
-            0,
-            2_000,
-          );
-        const fatal = document.querySelector('#forgeax-fatal');
-        if (startup === undefined && fatal?.checkVisibility())
-          return (
-            document.querySelector('#forgeax-fatal-details')?.textContent?.trim() ||
-            fatal.textContent?.trim() ||
-            'Engine startup failed'
-          ).slice(0, 2_000);
-        return document.documentElement.dataset.forgeaxInput === 'open';
-      },
-      undefined,
-      { timeout: timeoutMs, polling: 100 },
-    );
-    const value: unknown = await handle.jsonValue();
-    await handle.dispose();
+    const handle = await page.waitForFunction(observeBrowserStartup, 'input' as const, {
+      timeout: timeoutMs,
+      polling: 100,
+    });
+    const value = await readStartupObservation(handle);
     return typeof value === 'string' ? { state: 'fatal', message: value } : { state: 'open' };
   } catch {
     return { state: 'closed' };
@@ -640,27 +608,34 @@ async function readPlayClock(
   page: Page,
   request: PlayClockRequest,
 ): Promise<PlayClockStatus | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      page.evaluate(async (value: PlayClockRequest) => {
-        const inspection = (
-          globalThis as {
-            __forgeaxGameInspection?: { clock?(request: unknown): unknown };
-          }
-        ).__forgeaxGameInspection;
-        return ((await inspection?.clock?.(value)) ?? null) as PlayClockStatus | null;
-      }, request),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`page evaluation exceeded ${EVALUATE_MS} ms`)),
-          EVALUATE_MS,
-        );
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
+  return evaluatePlayPage(
+    page,
+    async (value: PlayClockRequest) => {
+      const inspection = (
+        globalThis as {
+          __forgeaxGameInspection?: { clock?(request: unknown): unknown };
+        }
+      ).__forgeaxGameInspection;
+      return ((await inspection?.clock?.(value)) ?? null) as PlayClockStatus | null;
+    },
+    request,
+    EVALUATE_MS,
+  );
+}
+
+function evaluatePlayPage<R, A>(
+  page: Page,
+  fn: (arg: A) => R | Promise<R>,
+  arg: A,
+  timeoutMs: number,
+): Promise<R> {
+  return beforeDeadline(
+    page.evaluate(fn as never, arg) as Promise<R>,
+    Math.max(1, timeoutMs),
+    () => {
+      throw new Error(`page evaluation exceeded ${timeoutMs} ms`);
+    },
+  );
 }
 
 /** Starts the page clock; the status, or why it could not start. */
@@ -670,13 +645,13 @@ async function startPlayClock(page: Page, scale: number): Promise<PlayClockStatu
     scale,
     stepSeconds: PLAY_CLOCK_STEP_SECONDS,
   }).catch(
-    (cause: unknown) => `Starting the play clock failed: ${clip(failureSummary(cause), 300)}`,
+    (cause: unknown) => `Starting the play clock failed: ${clipUtf8(failureSummary(cause), 300)}`,
   );
   if (typeof status === 'string') return status;
   if (status === null)
     return 'The game inspection exposes no play clock; --time-scale runs only on a development host.';
   if (!status.running)
-    return `The play clock did not start: ${clip(status.error ?? 'unknown reason', 300)}`;
+    return `The play clock did not start: ${clipUtf8(status.error ?? 'unknown reason', 300)}`;
   return status;
 }
 
@@ -818,22 +793,8 @@ export function createPlayContext(
     return false;
   };
   /** One page evaluation bounded by `timeoutMs`, so a stalled realm cannot outlive a wait. */
-  const evaluate = async <R, A>(fn: (arg: A) => R | Promise<R>, arg: A, timeoutMs: number) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        page.evaluate(fn as never, arg) as Promise<R>,
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`page evaluation exceeded ${timeoutMs} ms`)),
-            Math.max(1, timeoutMs),
-          );
-        }),
-      ]);
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-    }
-  };
+  const evaluate = <R, A>(fn: (arg: A) => R | Promise<R>, arg: A, timeoutMs: number) =>
+    evaluatePlayPage(page, fn, arg, timeoutMs);
   const resolveRead = async (read: string | undefined, timeoutMs: number): Promise<string> => {
     if (read !== undefined) return read;
     if (defaultRead !== undefined) return defaultRead;
@@ -880,7 +841,7 @@ export function createPlayContext(
       live();
       throw new PlayHelperError(
         'state-unavailable',
-        `Reading game projection ${id} failed: ${clip(failureSummary(cause), 300)}`,
+        `Reading game projection ${id} failed: ${clipUtf8(failureSummary(cause), 300)}`,
       );
     }
   };
@@ -921,7 +882,7 @@ export function createPlayContext(
       live();
       throw new PlayHelperError(
         'clock-failed',
-        `Stepping the play clock failed: ${clip(failureSummary(cause), 300)}`,
+        `Stepping the play clock failed: ${clipUtf8(failureSummary(cause), 300)}`,
       );
     });
     const { status, state, readError } = result as {
@@ -934,13 +895,13 @@ export function createPlayContext(
         'clock-failed',
         status?.error === undefined
           ? 'The play clock is not running.'
-          : `The play clock stopped: ${clip(status.error, 300)}`,
+          : `The play clock stopped: ${clipUtf8(status.error, 300)}`,
       );
     recorder.clock = status;
     if (readError !== undefined)
       throw new PlayHelperError(
         'state-unavailable',
-        `Reading game projection ${read} failed: ${clip(readError, 300)}`,
+        `Reading game projection ${read} failed: ${clipUtf8(readError, 300)}`,
       );
     return state;
   };
@@ -1160,7 +1121,7 @@ export function createPlayContext(
       live();
       throw new PlayHelperError(
         'advance-failed',
-        `advance failed: ${clip(failureSummary(cause), 300)}`,
+        `advance failed: ${clipUtf8(failureSummary(cause), 300)}`,
       );
     });
     if (result === null)
@@ -1171,7 +1132,7 @@ export function createPlayContext(
     if (!result.ok)
       throw new PlayHelperError(
         'advance-failed',
-        `advance stopped after ${result.frames} frames: ${clip(result.error, 300)}`,
+        `advance stopped after ${result.frames} frames: ${clipUtf8(result.error, 300)}`,
       );
   };
   const context: PlayContext = {
@@ -1302,7 +1263,7 @@ export function createPlayContext(
       if (gate.state !== 'open')
         throw new Error(
           gate.state === 'fatal'
-            ? `Reload failed: ${clip(gate.message, 300)}`
+            ? `Reload failed: ${clipUtf8(gate.message, 300)}`
             : `Input stayed closed for ${startupTimeoutMs} ms after reload`,
         );
       // The reload dropped the page clock; the new page runs at the same scale.
@@ -1484,20 +1445,24 @@ function rerunDetail(
   if (missing === undefined)
     return failure.rerunFrom === undefined
       ? {}
-      : { rerun: clip(rerunCommand(report, failure.rerunFrom), 240) };
+      : { rerun: clipUtf8(rerunCommand(report, failure.rerunFrom), 240) };
   const realTime = (report.timeScale ?? 1) === 1;
   const start = failure.rerunFrom === undefined ? 'the first step' : `"${failure.rerunFrom}"`;
   return {
-    rerun: clip(rerunCommand(report, failure.rerunFrom), 240),
-    setupHint: clip(
+    rerun: clipUtf8(rerunCommand(report, failure.rerunFrom), 240),
+    setupHint: clipUtf8(
       `"${missing}" has no setup, so --from ${shellArg(missing)} fails; rerun starts at ${start}${realTime ? ` (iterate with ${ITERATION_SCALE})` : ''}. Add play.step(${JSON.stringify(missing)}, run, { setup: async (play) => {} }).`,
       300,
     ),
   };
 }
 
-function nonFinalField(report: Pick<PlayReport, 'final' | 'nonFinal'>): Record<string, unknown> {
-  return report.final === false ? { final: false, nonFinal: report.nonFinal ?? [] } : {};
+function compactReportEvidence(report: PlayReport) {
+  return {
+    ...(report.final === false ? { final: false, nonFinal: report.nonFinal ?? [] } : {}),
+    errors: { console: report.errors.console.length, page: report.errors.page.length },
+    report: clipUtf8(relativeTo(report.root, report.report), 160),
+  };
 }
 
 /** A passing real-time private run this long suggests a faster iteration run. */
@@ -1521,30 +1486,28 @@ export function playResultValue(report: PlayReport, detail: boolean): unknown {
   const final = report.screenshots.find((shot) => shot.name === 'final');
   const value: Record<string, unknown> = {
     passed: report.passed,
-    script: clip(report.script, 120),
+    script: clipUtf8(report.script, 120),
     ms: report.timings.totalMs,
     steps: report.steps.length,
     ...(report.mode === 'private' ? {} : { mode: report.mode }),
     ...(report.headers === undefined ? {} : { headers: report.headers }),
-    ...nonFinalField(report),
+    ...compactReportEvidence(report),
     ...(report.returned === undefined ? {} : { returned: summarizeValue(report.returned, 200) }),
     ...(report.state === undefined ? {} : { state: summarizeValue(report.state, 240) }),
     screenshots:
       shots.length <= 4
-        ? shots.map((shot) => clip(shot, 120))
-        : [...shots.slice(0, 3).map((shot) => clip(shot, 120)), `+${shots.length - 3} more`],
+        ? shots.map((shot) => clipUtf8(shot, 120))
+        : [...shots.slice(0, 3).map((shot) => clipUtf8(shot, 120)), `+${shots.length - 3} more`],
     ...(final === undefined ? {} : { rendered: final.rendered }),
     ...(report.rendererError === undefined
       ? {}
       : {
-          rendererError: clip(
+          rendererError: clipUtf8(
             `${report.rendererError.code} x${report.rendererError.count}, last frame ${report.rendererError.frame}: ${report.rendererError.message}`,
             200,
           ),
         }),
-    errors: { console: report.errors.console.length, page: report.errors.page.length },
     ...(iterationHintDue(report) ? { next: NEXT_ITERATION_HINT } : {}),
-    report: clip(relativeTo(report.root, report.report), 160),
   };
   const output = fitBytes(
     value,
@@ -1595,35 +1558,35 @@ function playFailureRaw(report: PlayReport, failure: PlayFailure): Record<string
   const firstError = report.errors.page[0] ?? report.errors.console[0];
   return {
     reason: failure.reason,
-    message: clip(failure.message, 200),
-    ...(failure.step === undefined ? {} : { step: clip(failure.step, 80) }),
-    ...(failure.action === undefined ? {} : { action: clip(failure.action, 100) }),
+    message: clipUtf8(failure.message, 200),
+    ...(failure.step === undefined ? {} : { step: clipUtf8(failure.step, 80) }),
+    ...(failure.action === undefined ? {} : { action: clipUtf8(failure.action, 100) }),
     ...(failure.code === 'play-step-failed' ? rerunDetail(report, failure) : {}),
-    ...nonFinalField(report),
+    ...compactReportEvidence(report),
     ...(report.externalRequests === undefined || report.externalRequests.length === 0
       ? {}
-      : { externalRequests: report.externalRequests.slice(0, 3).map((url) => clip(url, 120)) }),
+      : { externalRequests: report.externalRequests.slice(0, 3).map((url) => clipUtf8(url, 120)) }),
     ...(failure.screenshot === undefined
       ? {}
-      : { screenshot: clip(relativeTo(report.root, failure.screenshot), 120) }),
+      : { screenshot: clipUtf8(relativeTo(report.root, failure.screenshot), 120) }),
     ...(failure.cause === undefined
       ? {}
       : {
           cause: {
-            code: clip(failure.cause.code, 60),
-            ...(failure.cause.hint === undefined ? {} : { hint: clip(failure.cause.hint, 120) }),
+            code: clipUtf8(failure.cause.code, 60),
+            ...(failure.cause.hint === undefined
+              ? {}
+              : { hint: clipUtf8(failure.cause.hint, 120) }),
             ...(failure.cause.detail === undefined
               ? {}
               : { detail: summarizeValue(failure.cause.detail, 120) }),
           },
         }),
     ...(report.state === undefined ? {} : { state: summarizeValue(report.state, 160) }),
-    errors: { console: report.errors.console.length, page: report.errors.page.length },
-    ...(firstError === undefined ? {} : { firstError: clip(firstError, 160) }),
+    ...(firstError === undefined ? {} : { firstError: clipUtf8(firstError, 160) }),
     ...(report.log.length === 0
       ? {}
-      : { log: report.log.slice(-2).map((line) => clip(line, 100)) }),
-    report: clip(relativeTo(report.root, report.report), 160),
+      : { log: report.log.slice(-2).map((line) => clipUtf8(line, 100)) }),
   };
 }
 
@@ -1684,20 +1647,16 @@ export function playFailureError(report: PlayReport): CommandError | undefined {
 }
 
 async function readExecution(page: Page): Promise<ExecutionHealth | 'unavailable'> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const execution = await Promise.race([
+  const execution = await beforeDeadline(
     page.evaluate(() => {
       const inspection = (
         globalThis as { __forgeaxGameInspection?: { renderer?(): { execution?: unknown } } }
       ).__forgeaxGameInspection;
       return inspection?.renderer?.().execution ?? null;
     }),
-    new Promise<null>((done) => {
-      timer = setTimeout(() => done(null), EVALUATE_MS);
-    }),
-  ])
-    .catch(() => null)
-    .finally(() => clearTimeout(timer));
+    EVALUATE_MS,
+    () => null,
+  ).catch(() => null);
   return isExecutionReport(execution) ? executionHealth(execution) : 'unavailable';
 }
 
@@ -1723,7 +1682,7 @@ async function loadScript(path: string): Promise<LoadedScript> {
     return {
       ok: false,
       reason: 'import-failed',
-      message: clip(failureSummary(cause), 400),
+      message: clipUtf8(failureSummary(cause), 400),
     };
   }
   return typeof module.default === 'function'
@@ -1744,7 +1703,7 @@ export function playOutputDir(root: string, scriptPath: string): string {
   const relativePath = relative(root, scriptPath);
   const stem = (path: string) => path.slice(0, path.length - extname(path).length) || 'play';
   if (relativePath === '' || relativePath.startsWith('..') || isAbsolute(relativePath)) {
-    const digest = createHash('sha256').update(scriptPath).digest('hex').slice(0, 8);
+    const digest = sha256(scriptPath).slice(0, 8);
     return resolve(root, 'artifacts/play/external', `${stem(basename(scriptPath))}-${digest}`);
   }
   return resolve(root, 'artifacts/play', ...stem(relativePath).split(sep));
@@ -1797,7 +1756,7 @@ function captureConsole(log: string[]): (abandoned?: boolean) => void {
         .map((value) => (typeof value === 'string' ? value : JSON.stringify(jsonSafe(value))))
         .join(' ');
       if (log.length >= MAX_LOG_LINES) log.shift();
-      log.push(clip(line, 500));
+      log.push(clipUtf8(line, 500));
     };
   }
   return (abandoned = false) => {
@@ -1817,22 +1776,20 @@ function captureConsole(log: string[]): (abandoned?: boolean) => void {
 
 /** Resolves after two animation frames, bounded so a stalled page cannot hold verification. */
 async function settleFrames(page: Page): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  await Promise.race([
+  await beforeDeadline(
     page.evaluate(
       () =>
         new Promise<void>((done) =>
           requestAnimationFrame(() => requestAnimationFrame(() => done())),
         ),
     ),
-    new Promise<void>((done) => {
-      timer = setTimeout(done, EVALUATE_MS);
-    }),
-  ]).finally(() => clearTimeout(timer));
+    EVALUATE_MS,
+    () => undefined,
+  );
 }
 
 function errorMessage(error: unknown): string {
-  return clip(failureSummary(error), 160);
+  return clipUtf8(failureSummary(error), 160);
 }
 
 /**
@@ -1855,22 +1812,7 @@ async function checkViewports(
       await settleFrames(session.page);
       await takeScreenshot(session, recorder, outputDir, `viewport ${name}`, 'validate', requireUi);
     } catch (error) {
-      const browserReport = session.report();
-      const record =
-        browserReport.captures.length > before ? browserReport.captures.at(-1) : undefined;
-      if (record !== undefined) pushScreenshot(recorder, `viewport ${name}`, record);
-      const check = finalCaptureCheck(
-        error,
-        record,
-        browserReport.consoleErrors.length + browserReport.pageErrors.length,
-        requireUi,
-      );
-      return {
-        code: 'play-runtime-failed',
-        reason: check,
-        message: clip(`At viewport ${name}: ${runtimeCheckMessage(check, record, error)}`, 400),
-        ...(record === undefined ? {} : { screenshot: record.output }),
-      };
+      return frameFailure(session, recorder, error, before, requireUi, name);
     }
   }
   return undefined;
@@ -2035,7 +1977,7 @@ function playOpeningPhase(release: PlayRelease | undefined): string {
 
 function describePlayProgress(status: { phase: string }, recorder: PlayRecorder): string {
   if (status.phase !== 'script') return status.phase;
-  const step = recorder.step === undefined ? '' : ` (step "${clip(recorder.step, 80)}")`;
+  const step = recorder.step === undefined ? '' : ` (step "${clipUtf8(recorder.step, 80)}")`;
   return `running the script${step}, ${recorder.steps.length} steps done`;
 }
 
@@ -2124,13 +2066,12 @@ function lockRefusal(
   lockPath: string,
 ): CommandResult<never> {
   if (!loaded.ok)
-    return {
-      ok: false,
-      error: playError('play-script-invalid', SCRIPT_INVALID.expected, SCRIPT_INVALID.hint, {
+    return rejectCommand(
+      playError('play-script-invalid', SCRIPT_INVALID.expected, SCRIPT_INVALID.hint, {
         reason: loaded.reason,
-        message: clip(loaded.message, 200),
+        message: clipUtf8(loaded.message, 200),
       }),
-    };
+    );
   return { ok: false, error: lockError(lock, lockPath) };
 }
 
@@ -2190,30 +2131,30 @@ export async function admitRelease(
   const verified = await verifyDist(distRoot);
   if (!verified.ok) {
     const missing = verified.error.code === 'dist-manifest-unreadable';
-    return {
-      ok: false,
-      error: playError(
+    return rejectCommand(
+      playError(
         'play-not-ready',
         'a built browser distribution with a verified forgeax-dist.json',
-        missing ? RELEASE_BUILD_HINT : `${clip(verified.error.hint, 160)} ${RELEASE_BUILD_HINT}`,
+        missing
+          ? RELEASE_BUILD_HINT
+          : `${clipUtf8(verified.error.hint, 160)} ${RELEASE_BUILD_HINT}`,
         {
           reason: missing ? 'release-missing' : 'release-invalid',
           dist: relativeTo(root, distRoot),
-          cause: { code: verified.error.code, hint: clip(verified.error.hint, 160) },
+          cause: { code: verified.error.code, hint: clipUtf8(verified.error.hint, 160) },
         },
       ),
-    };
+    );
   }
   if ((verified.value.target ?? 'browser') !== 'browser')
-    return {
-      ok: false,
-      error: playError(
+    return rejectCommand(
+      playError(
         'play-not-ready',
         'a distribution built for the browser target',
         `${relativeTo(root, distRoot)} targets ${verified.value.target}; build the browser target with \`forgeax project build\` and pass its --dist.`,
         { reason: 'release-invalid', dist: relativeTo(root, distRoot) },
       ),
-    };
+    );
   return { ok: true, value: { dist, distRoot, manifest: verified.value } };
 }
 
@@ -2261,33 +2202,33 @@ async function playInDevOwner(
   const code = typeof reply?.error?.code === 'string' ? reply.error.code : 'live-operation-failed';
   if (reply?.ok === false && PLAY_RESULT_CODES.has(code)) return reply as CommandResult<unknown>;
   if (run.signal?.aborted === true)
-    return {
-      ok: false,
-      error: playError(
+    return rejectCommand(
+      playError(
         'tool-run-cancelled',
         'the tool run not to be cancelled',
         'Retry the command after resolving the cancellation source.',
         { reason: 'cancelled' },
       ),
-    };
-  return {
-    ok: false,
-    error: playError(
+    );
+  return rejectCommand(
+    playError(
       'play-not-ready',
       'a running `forgeax dev start` owner that admits the play',
       SESSION_UNAVAILABLE_HINT,
       {
         reason: 'session-unavailable',
         cause: {
-          code: clip(code, 60),
-          ...(typeof reply?.error?.hint === 'string' ? { hint: clip(reply.error.hint, 160) } : {}),
+          code: clipUtf8(code, 60),
+          ...(typeof reply?.error?.hint === 'string'
+            ? { hint: clipUtf8(reply.error.hint, 160) }
+            : {}),
           ...(reply?.error?.detail === undefined
             ? {}
             : { detail: summarizeValue(reply.error.detail, 200) }),
         },
       },
     ),
-  };
+  );
 }
 
 /**
@@ -2324,8 +2265,8 @@ function lockError(
             : {
                 holder: {
                   pid: lock.holder.pid,
-                  host: clip(lock.holder.host, 60),
-                  script: clip(lock.holder.script, 120),
+                  host: clipUtf8(lock.holder.host, 60),
+                  script: clipUtf8(lock.holder.script, 120),
                 },
               }),
         },
@@ -2335,7 +2276,7 @@ function lockError(
         'play-not-ready',
         'a writable project play lock',
         `Make ${lockPath} creatable and removable (permissions, read-only file system), then rerun.`,
-        { reason: 'lock-unavailable', lock: lockPath, message: clip(lock.message, 200) },
+        { reason: 'lock-unavailable', lock: lockPath, message: clipUtf8(lock.message, 200) },
       );
   }
 }
@@ -2461,7 +2402,7 @@ export function sessionOpenFailure(cause: unknown): PlayFailure {
     code: 'play-not-ready',
     reason: 'session-failed',
     // Startup failures are often structured objects; String() would print [object Object].
-    message: clip(failureSummary(cause), 400),
+    message: clipUtf8(failureSummary(cause), 400),
     cause: {
       code: captureFailureCode(cause) ?? 'browser-capture-failed',
       ...(typeof owner?.hint === 'string' ? { hint: owner.hint } : {}),
@@ -2510,7 +2451,7 @@ async function openPlaySession(run: PlayRun, browser: BrowserCapture | undefined
       run.failure = {
         code: 'play-not-ready',
         reason: 'release-invalid',
-        message: clip(`The release server did not start: ${failureSummary(cause)}`, 400),
+        message: clipUtf8(`The release server did not start: ${failureSummary(cause)}`, 400),
       };
       run.timings.openMs = Date.now() - openStarted;
       return;
@@ -2566,7 +2507,7 @@ async function awaitPlayInput(run: PlayRun, session: BrowserCaptureSession): Pro
     reason: gate.state === 'fatal' ? 'startup-failed' : 'input-closed',
     message:
       gate.state === 'fatal'
-        ? clip(gate.message, 400)
+        ? clipUtf8(gate.message, 400)
         : `Input stayed closed for ${startupTimeoutMs} ms after the page loaded`,
   });
   return false;
@@ -2598,7 +2539,7 @@ async function recordScriptError(run: PlayRun, error: unknown): Promise<void> {
   const helper = error instanceof PlayHelperError ? error : undefined;
   if (helper?.state !== undefined) run.state = helper.state;
   const located = {
-    message: clip(failureSummary(error), 400),
+    message: clipUtf8(failureSummary(error), 400),
     ...(step === undefined ? {} : { step }),
     ...(recorder.action === undefined ? {} : { action: recorder.action }),
     ...(helper?.reason === 'setup-missing' || helper?.reason === 'range-unmatched'
@@ -2678,7 +2619,7 @@ async function runPlayScript(
     await failWithScreenshot(run, {
       code: 'play-step-failed',
       reason: 'range-unmatched',
-      message: clip(
+      message: clipUtf8(
         `No top-level step matched the range start ${tracker.range.from}; the script ran ${seen === '' ? 'no top-level steps' : seen}.`,
         400,
       ),
@@ -2687,27 +2628,34 @@ async function runPlayScript(
   run.timings.scriptMs = Date.now() - scriptStarted;
 }
 
-function finalFrameFailure(
-  run: PlayRun,
+function frameFailure(
   session: BrowserCaptureSession,
+  recorder: PlayRecorder,
   error: unknown,
   capturesBefore: number,
+  requireUi: boolean,
+  viewport?: string,
 ): PlayFailure {
   const browserReport = session.report();
   // The strict capture records its frame before rejecting; a timeout may record none.
   const record =
     browserReport.captures.length > capturesBefore ? browserReport.captures.at(-1) : undefined;
-  if (record !== undefined) pushScreenshot(run.setup.recorder, 'final', record);
+  if (record !== undefined)
+    pushScreenshot(recorder, viewport === undefined ? 'final' : `viewport ${viewport}`, record);
   const check = finalCaptureCheck(
     error,
     record,
     browserReport.consoleErrors.length + browserReport.pageErrors.length,
-    run.requireUi,
+    requireUi,
   );
+  const message = runtimeCheckMessage(check, record, error);
   return {
     code: 'play-runtime-failed',
     reason: check,
-    message: clip(runtimeCheckMessage(check, record, error), 400),
+    message: clipUtf8(
+      viewport === undefined ? message : `At viewport ${viewport}: ${message}`,
+      400,
+    ),
     ...(record === undefined ? {} : { screenshot: record.output }),
   };
 }
@@ -2720,7 +2668,7 @@ async function verifyPlayFinal(run: PlayRun, session: BrowserCaptureSession): Pr
   try {
     await takeScreenshot(session, recorder, run.outputDir, 'final', 'validate', run.requireUi);
   } catch (error) {
-    run.failure = finalFrameFailure(run, session, error, capturesBefore);
+    run.failure = frameFailure(session, recorder, error, capturesBefore, run.requireUi);
   }
   // Health is read for the play viewport, before any resize. A release build omits the
   // development execution report, so release health is the final frame and errors alone.
@@ -2755,7 +2703,7 @@ export function externalRequestFailure(urls: readonly string[]): PlayFailure | u
   return {
     code: 'play-runtime-failed',
     reason: 'external-request',
-    message: clip(
+    message: clipUtf8(
       `The release page requested ${urls.length} non-local URL${urls.length === 1 ? '' : 's'} (blocked), first ${urls[0]}`,
       400,
     ),
@@ -2764,7 +2712,7 @@ export function externalRequestFailure(urls: readonly string[]): PlayFailure | u
 
 /** The report's `externalRequests`: clipped URLs, at most `MAX_EXTERNAL_REQUESTS`. */
 export function externalRequestsField(urls: readonly string[]): readonly string[] {
-  const kept = urls.slice(0, MAX_EXTERNAL_REQUESTS).map((url) => clip(url, 160));
+  const kept = urls.slice(0, MAX_EXTERNAL_REQUESTS).map((url) => clipUtf8(url, 160));
   return urls.length > MAX_EXTERNAL_REQUESTS
     ? [...kept, `+${urls.length - MAX_EXTERNAL_REQUESTS} more`]
     : kept;
@@ -2904,7 +2852,7 @@ async function playCommandResult(
           kind: 'tool-result',
           uri: reportPath,
           mediaType: 'application/json',
-          digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          digest: `sha256:${sha256(bytes)}`,
         },
       ]
     : [];

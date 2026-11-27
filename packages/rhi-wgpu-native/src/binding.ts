@@ -34,6 +34,11 @@ export interface NativeDevice {
   createBindGroup(descriptor: string): number;
   createRenderPipeline(descriptor: string): number;
   createComputePipeline(descriptor: string): number;
+  createComputePipelineAsync(descriptor: string): Promise<unknown>;
+  adoptComputePipeline(completion: unknown): {
+    id: number;
+    error?: { kind: 'validation' | 'internal'; message: string } | null;
+  };
   pipelineBindGroupLayout(pipeline: number, index: number): number;
   createQuerySet(descriptor: string): number;
   querySetDestroy(id: number): void;
@@ -71,6 +76,7 @@ export interface NativeWindowBinding {
   ): NativeAdapter | null;
   preferredFormat(): GPUTextureFormat;
   supportedAlphaModes(): GPUCanvasAlphaMode[];
+  supportedTextureUsages?(): number;
   configure(device: NativeDevice, descriptor: string): void;
   acquireTexture(device: NativeDevice): number;
   present(): void;
@@ -78,6 +84,9 @@ export interface NativeWindowBinding {
   facts(): string;
   resize(width: number, height: number): void;
   requestRedraw(): void;
+  setPointerLock(locked: boolean): boolean;
+  gamepads(): string;
+  setImeArea(area: string | null): number;
   pollEvents(): string;
   close(): void;
 }
@@ -88,15 +97,17 @@ export const NATIVE_ADDON_PATH = `../native/forgeax-rhi-wgpu-native.${process.pl
 let cached: Result<NativeBinding, RhiError> | undefined;
 
 /** Load the opt-in addon once; a missing or unloadable binary is `adapter-unavailable`. */
-export function loadNativeBinding(): Result<NativeBinding, RhiError> {
-  if (cached !== undefined) return cached;
+export function loadNativeBinding(addonPath?: string): Result<NativeBinding, RhiError> {
+  if (addonPath === undefined && cached !== undefined) return cached;
   const override = process.env.FORGEAX_RHI_WGPU_NATIVE_ADDON;
-  const path = override !== undefined && override !== '' ? override : NATIVE_ADDON_PATH;
+  const path =
+    addonPath ?? (override !== undefined && override !== '' ? override : NATIVE_ADDON_PATH);
+  let bound: Result<NativeBinding, RhiError>;
   try {
     const require = createRequire(import.meta.url);
-    cached = ok(require(path) as NativeBinding);
+    bound = ok(require(path) as NativeBinding);
   } catch (cause) {
-    cached = err(
+    bound = err(
       new RhiError({
         code: 'adapter-unavailable',
         expected: `the native wgpu addon at ${path}`,
@@ -104,5 +115,6 @@ export function loadNativeBinding(): Result<NativeBinding, RhiError> {
       }),
     );
   }
-  return cached;
+  if (addonPath === undefined) cached = bound;
+  return bound;
 }

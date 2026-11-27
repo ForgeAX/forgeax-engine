@@ -21,7 +21,6 @@ import {
 } from '@forgeax/engine-types';
 import type { AssetRegistry } from './asset-registry.js';
 import type { CatalogSource } from './catalog-source.js';
-import { readDocumentJson } from './internal/pack-json.js';
 import { PackReader } from './internal/pack-reader.js';
 import { runtimeSourceReader } from './internal/runtime-assets.js';
 import { assetLoadCancelled } from './internal/wait-for-asset.js';
@@ -99,28 +98,7 @@ export async function captureAssetPublication(
     const existing = runtimeSourceReader(options.registry, source);
     const verifiedPack =
       existing === undefined
-        ? await (async () => {
-            const response = await bound(row.packageUrl, request);
-            if (!response.ok) throw new TypeError('fixed Pack is unavailable');
-            const raw = await readDocumentJson(response);
-            options.signal?.throwIfAborted();
-            const packageScope =
-              scopeId ??
-              (raw !== null &&
-              typeof raw === 'object' &&
-              'scopeId' in raw &&
-              typeof raw.scopeId === 'string'
-                ? raw.scopeId
-                : undefined);
-            if (packageScope === undefined)
-              throw new TypeError('fixed Pack is missing its scope identity');
-            return reader.verify(raw, {
-              scopeId: packageScope,
-              generation: publication.generation,
-              digest: publication.digest,
-              outputSetDigest: publication.outputSetDigest,
-            });
-          })()
+        ? await reader.openDetached(row.packageUrl, { ...publication, scopeId }, bound, signal)
         : await existing.readPack(row, signal, bound);
     if (!verifiedPack.ok) return verifiedPack;
     const pack = verifiedPack.value;

@@ -15,7 +15,7 @@ export async function measureSsao(
     for (const quality of ['off', 'low', 'medium', 'high'] as const) {
       const installed = app.renderer.setProfile({
         ...profile,
-        ssao: quality === 'off' ? false : { quality, radius: 0.5, intensity: 1 },
+        ambientOcclusion: quality === 'off' ? { enabled: false } : { enabled: true, quality, radius: 0.5, intensity: 1 },
       });
       if (!installed.ok) throw installed.error;
       for (let i = 0; i < 15; i++) await capture();

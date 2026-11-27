@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { verifyMultiCameraVfx } from './multi-camera-vfx.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
@@ -31,7 +31,7 @@ it('retains current native VFX work across two-view hidden, pause, resume and de
   const prepared = process.env.FORGEAX_TEST_SHADER_MANIFEST;
   const url =
     prepared === undefined
-      ? shaderManifestUrl(await buildEngineShaderManifest())
+      ? shaderManifestUrl(await buildEngineShaderTemplateManifest())
       : URL.createObjectURL(new Blob([readFileSync(prepared)], { type: 'application/json' }));
   try {
     await verifyMultiCameraVfx({

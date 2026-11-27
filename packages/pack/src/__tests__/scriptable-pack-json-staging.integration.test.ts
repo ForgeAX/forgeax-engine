@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import {
   createScriptablePackModuleExecutorPool,
   createScriptablePackSourceSnapshot,
@@ -77,35 +77,37 @@ it('keeps captured JSON text out of the Worker message while preserving canonica
   }
 });
 
-it('preserves raw captured UTF-16 code units that cannot roundtrip through UTF-8', async () => {
+it.each([
+  '{ broken JSON',
+  '{"text":"' + '\ud800' + '"}\n',
+])('preserves captured raw text %j through Worker staging', async (raw) => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pack-json-codeunits-')));
-  try {
-    const source = join(root, 'owner.pack.ts'),
-      data = join(root, 'data.json');
-    await writeFile(data, '{}');
-    await writeFile(
-      source,
-      declaration("import raw from './data.json?raw';", 'JSON.stringify(raw)'),
-    );
-    const snapshot = createScriptablePackSourceSnapshot(),
-      captured = await snapshot.moduleSources(source);
-    const raw = '{"text":"' + '\ud800' + '"}\n';
-    const loaded = await loadScriptablePack(source, {
-      metadataOnly: true,
-      sourceSnapshot: {
-        ...snapshot,
-        moduleSources: async () => ({ ...captured, sources: { ...captured.sources, [data]: raw } }),
-      },
-    });
-    if (!loaded.ok) throw loaded.error;
-    if (loaded.value.name === undefined) throw new Error('Missing raw observation');
-    expect(JSON.parse(loaded.value.name)).toBe(raw);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
+  const source = join(root, 'owner.pack.ts'),
+    data = join(root, 'data.json');
+  const needsOverride = raw.includes('\ud800');
+  await writeFile(data, needsOverride ? '{}' : raw);
+  await writeFile(source, declaration("import raw from './data.json?raw';", 'JSON.stringify(raw)'));
+  const snapshot = createScriptablePackSourceSnapshot();
+  const captured = await snapshot.moduleSources(source);
+  const loaded = await loadScriptablePack(source, {
+    metadataOnly: true,
+    sourceSnapshot: needsOverride
+      ? {
+          ...snapshot,
+          moduleSources: async () => ({
+            ...captured,
+            sources: { ...captured.sources, [data]: raw },
+          }),
+        }
+      : snapshot,
+  });
+  if (!loaded.ok) throw loaded.error;
+  if (loaded.value.name === undefined) throw new Error('Missing raw observation');
+  expect(JSON.parse(loaded.value.name)).toBe(raw);
 });
 
-it('defers malformed on-demand JSON for static metadata and preserves malformed raw text', async () => {
+it('defers malformed on-demand JSON for static metadata during static metadata', async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pack-json-malformed-')));
   const pool = createScriptablePackModuleExecutorPool({ maxWorkers: 1, maxTasksPerWorker: 1 });
   try {
@@ -126,13 +128,6 @@ it('defers malformed on-demand JSON for static metadata and preserves malformed 
       executor: await pool.acquire(),
     });
     expect(full).toMatchObject({ ok: false, error: { detail: { phase: 'module-load' } } });
-    await writeFile(source, declaration("import raw from './data.json?raw';", 'raw'));
-    const rawLoad = await loadScriptablePack(source, {
-      metadataOnly: true,
-      sourceSnapshot: createScriptablePackSourceSnapshot(),
-    });
-    if (!rawLoad.ok) throw rawLoad.error;
-    expect(rawLoad.value.name).toBe(raw);
   } finally {
     await pool.dispose();
     await rm(root, { recursive: true, force: true });
@@ -242,29 +237,26 @@ it('waits for in-flight staging before timeout cleanup and never posts the retir
 
 it('passes the original captured record to public custom executors', async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pack-json-custom-')));
-  try {
-    const source = join(root, 'owner.pack.ts'),
-      data = join(root, 'data.json'),
-      text = ' { "name": "custom" } ';
-    await writeFile(source, declaration("import data from './data.json';", 'data.name'));
-    await writeFile(data, text);
-    const load = vi.fn(async () => ({
-      default: {
-        schemaVersion: '2.0.0',
-        packageId: new Uint8Array(16).fill(1),
-        build: () => ({ ok: true, value: {} }),
-      },
-    }));
-    const dispose = vi.fn();
-    const result = await loadScriptablePack(source, {
-      sourceSnapshot: createScriptablePackSourceSnapshot(),
-      metadataOnly: true,
-      executor: { load, dispose },
-    });
-    expect(result.ok).toBe(true);
-    expect((load.mock.calls[0] as unknown as [string, Record<string, string>])[1][data]).toBe(text);
-    expect(dispose).toHaveBeenCalledWith('complete');
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
+  const source = join(root, 'owner.pack.ts'),
+    data = join(root, 'data.json'),
+    text = ' { "name": "custom" } ';
+  await writeFile(source, declaration("import data from './data.json';", 'data.name'));
+  await writeFile(data, text);
+  const load = vi.fn(async () => ({
+    default: {
+      schemaVersion: '2.0.0',
+      packageId: new Uint8Array(16).fill(1),
+      build: () => ({ ok: true, value: {} }),
+    },
+  }));
+  const dispose = vi.fn();
+  const result = await loadScriptablePack(source, {
+    sourceSnapshot: createScriptablePackSourceSnapshot(),
+    metadataOnly: true,
+    executor: { load, dispose },
+  });
+  expect(result.ok).toBe(true);
+  expect((load.mock.calls[0] as unknown as [string, Record<string, string>])[1][data]).toBe(text);
+  expect(dispose).toHaveBeenCalledWith('complete');
 });

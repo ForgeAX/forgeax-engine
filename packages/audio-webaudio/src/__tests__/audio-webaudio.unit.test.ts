@@ -22,7 +22,12 @@
 
 import { AUDIO_ENGINE_RESOURCE_KEY, type AudioBackend } from '@forgeax/engine-audio';
 import { defineResource } from '@forgeax/engine-ecs';
-import { ImporterRegistry, type RunImportMeta, runImport } from '@forgeax/engine-import';
+import {
+  ImporterRegistry,
+  projectImportPack,
+  type RunImportMeta,
+  runImport,
+} from '@forgeax/engine-import';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import type { ImportContext, ImportSubAsset } from '@forgeax/engine-types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -331,8 +336,8 @@ function makeMockAudioParam(initialValue: number): AudioParam {
       expect(readSource).toHaveBeenCalledTimes(3);
       if (!repaired.ok || 'skipped' in repaired.value) return;
       expect(repaired.value.product.sourceDependencies).toEqual(['bgm.ogg']);
-      expect(repaired.value.pack.assets).toHaveLength(1);
-      expect(repaired.value.pack.assets[0]).toMatchObject({
+      expect(projectImportPack(repaired.value.product, meta).assets).toHaveLength(1);
+      expect(projectImportPack(repaired.value.product, meta).assets[0]).toMatchObject({
         guid: GUID,
         kind: 'audio',
         sourceKey: 'audio:audio',
@@ -343,7 +348,9 @@ function makeMockAudioParam(initialValue: number): AudioParam {
           source: 'bgm.ogg',
         },
       });
-      expect(repaired.value.pack.assets[0]?.artifacts.source).toMatchObject({
+      expect(
+        projectImportPack(repaired.value.product, meta).assets[0]?.artifacts.source,
+      ).toMatchObject({
         mediaType: 'audio/ogg',
         assetCodec: { name: 'browser-audio' },
         bytes: new Uint8Array([1, 2, 3]),
@@ -403,13 +410,17 @@ function makeMockAudioParam(initialValue: number): AudioParam {
       expect(readCalls).toBe(4);
       if (!repaired.ok || 'skipped' in repaired.value) return;
       expect(repaired.value.product.sourceDependencies).toEqual(['m69-audio.mp3']);
-      expect(repaired.value.pack).toMatchObject({
+      expect(projectImportPack(repaired.value.product, meta)).toMatchObject({
         schemaVersion: '2.0.0',
         kind: 'internal-text-package',
       });
-      expect(repaired.value.pack.assets).toHaveLength(1);
-      expect(repaired.value.pack.assets.filter((asset) => asset.guid === GUID)).toHaveLength(1);
-      expect(repaired.value.pack.assets[0]).toMatchObject({
+      expect(projectImportPack(repaired.value.product, meta).assets).toHaveLength(1);
+      expect(
+        projectImportPack(repaired.value.product, meta).assets.filter(
+          (asset) => asset.guid === GUID,
+        ),
+      ).toHaveLength(1);
+      expect(projectImportPack(repaired.value.product, meta).assets[0]).toMatchObject({
         guid: GUID,
         kind: 'audio',
         sourceKey: 'audio:audio',
@@ -991,6 +1002,46 @@ function makeMockAudioParam(initialValue: number): AudioParam {
       audioWorklet: undefined as unknown as AudioWorklet,
     } as unknown as AudioContext;
   }
+
+  it('holds a Host output switch until its existing context renders again', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'performance'] });
+    const context = makeMockAudioContext('running');
+    let sink = '';
+    let clock = 0;
+    const setSinkId = vi.fn(async (next: string) => {
+      sink = next;
+    });
+    Object.defineProperties(context, {
+      sinkId: { get: () => sink },
+      currentTime: { get: () => clock },
+      setSinkId: { value: setSinkId },
+    });
+    const makeContext = vi.fn(() => context);
+    const engine = new WebAudioEngine({
+      context: makeContext,
+      ownsContext: true,
+      enumerateOutputs: async () => [{ id: 'speakers', label: 'Speakers' }],
+    });
+    try {
+      expect((await engine.listOutputDevices()).unwrap()).toEqual([
+        { id: 'speakers', label: 'Speakers' },
+      ]);
+      expect(makeContext).not.toHaveBeenCalled();
+      const switched = engine.setOutputDevice('speakers');
+      await vi.advanceTimersByTimeAsync(40);
+      expect((await engine.setOutputDevice('')).ok).toBe(false);
+      clock = 0.06;
+      await vi.advanceTimersByTimeAsync(20);
+      expect((await switched).ok).toBe(true);
+      expect((await engine.setOutputDevice('speakers')).ok).toBe(true);
+      expect(engine.getOutputDevice()).toBe('speakers');
+      expect(makeContext).toHaveBeenCalledOnce();
+      expect(setSinkId).toHaveBeenCalledOnce();
+    } finally {
+      engine.destroy();
+      vi.useRealTimers();
+    }
+  });
 
   function makeMockAudioDestinationNode(): AudioDestinationNode {
     return {

@@ -28,10 +28,7 @@ import {
 } from '../ibl/skylight-bind-group';
 import type { DeviceScope, RhiErrorListenerRegistry } from '../lifecycle';
 import { buildPbrPipelineLayouts, type PbrPipelineLayoutBundle } from '../pbr-pipeline';
-import {
-  buildBindGroupLayoutDescriptor,
-  createHdrpBindGroupLayoutDescriptor,
-} from '../pipeline-spec';
+import { buildBindGroupLayoutDescriptor } from '../pipeline-spec';
 import { MESH_PER_ENTITY_STRIDE, MESH_UBO_FULL_ARRAY_BYTES } from '../record/mesh-ssbo';
 import { MATERIAL_UNIFORM_BYTES } from '../record/render-context';
 import {
@@ -133,31 +130,28 @@ export function buildUnlitPipelineLayout(
 }
 
 export interface HdrpPipelineLayouts {
-  /** Unified clustered group(2) layout shared by HDRP and GPU-driven cluster draws. */
+  /** Shared rigid mesh layout for clustered raster draws. */
   readonly unifiedBgl: BindGroupLayout | null;
   readonly pbrPipelineLayout: PipelineLayout | null;
   readonly probePbrPipelineLayout: PipelineLayout | null;
 }
 
 /**
- * HDRP variants bind the unified clustered group(2) instead of the mesh-array
- * slot. Failures leave the layouts null so variant selection falls back to
- * the URP layout rather than disabling every HDRP-variant build.
+ * Clustered raster programs specialize the View later, when the selected
+ * fragment entry is known. They share the ordinary mesh window.
  */
 export function buildHdrpPipelineLayouts(
   device: RhiDevice,
   storageBuffer: boolean,
   pbrLayouts: PbrPipelineLayoutBundle,
 ): HdrpPipelineLayouts {
-  const unified = device.createBindGroupLayout(createHdrpBindGroupLayoutDescriptor(storageBuffer));
-  if (!unified.ok)
-    return { unifiedBgl: null, pbrPipelineLayout: null, probePbrPipelineLayout: null };
+  const meshLayout = pbrLayouts.meshArrayBgl;
   const pipelineLayout = device.createPipelineLayout({
     label: 'hdrp-pbr-pl',
     bindGroupLayouts: [
       pbrLayouts.viewBgl,
       pbrLayouts.materialBgl,
-      unified.value,
+      meshLayout,
       pbrLayouts.instancesBgl,
     ],
   });
@@ -167,22 +161,21 @@ export function buildHdrpPipelineLayouts(
         bindGroupLayouts: [
           pbrLayouts.viewBgl,
           pbrLayouts.materialBgl,
-          unified.value,
+          meshLayout,
           pbrLayouts.probeInstancesBgl,
         ],
       })
     : undefined;
   return {
-    unifiedBgl: unified.value,
+    unifiedBgl: meshLayout,
     pbrPipelineLayout: pipelineLayout.ok ? pipelineLayout.value : null,
     probePbrPipelineLayout: probePipelineLayout?.ok === true ? probePipelineLayout.value : null,
   };
 }
 
 /**
- * GPU-driven Standard batches use the compact scene-index slot(3) while keeping
- * the clustered group(2) bind group the ordinary main pass publishes; a URP
- * mesh-array layout would validate the indirect draw but reject that group.
+ * GPU-driven Standard batches use the compact scene-index slot(3) and
+ * the shared geometry slot(2).
  */
 export function createGpuDrivenClusterPipelineLayout(
   device: RhiDevice,

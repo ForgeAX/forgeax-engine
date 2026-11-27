@@ -3,14 +3,11 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  runnerResources,
-  shaderCompileWorkers,
-  shaderSourceCompileWorkers,
-} from '../lib/runner-resources.mjs';
+import { runnerResources, shaderCompileWorkers } from '../lib/runner-resources.mjs';
 import { runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 import { selectDawnGroups } from './run-dawn-gate.mjs';
 import {
+  isSmokeAppBuildDeferred,
   parseSmokeFrameBudget,
   partitionRunnableEntries,
   readRoster,
@@ -31,6 +28,16 @@ import {
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const vitest = 'scripts/ci/run-vitest-projects.mjs';
+
+function smokeAppBuilds(entries) {
+  return [
+    ...new Set(
+      entries
+        .filter((entry) => !isSmokeAppBuildDeferred(entry))
+        .map((entry) => dirname(entry.path)),
+    ),
+  ];
+}
 // Pure CPU owners consume their own inputs and package outputs, not Engine profiles.
 const packageOnlyUnitOwners = new Set([
   '@forgeax/engine-content',
@@ -42,8 +49,12 @@ const packageOnlyUnitOwners = new Set([
 // These exact CPU fixtures own their complete publication/registry inputs.
 // Other shader tests still consume the prepared Engine profile.
 const packageOnlyUnitFiles = new Set([
+  'packages/vite-plugin-shader/src/__tests__/engine-template-manifest.unit.test.ts',
+  'packages/gltf/src/__tests__/meta-pack-ddc.integration.test.ts',
+  'packages/import/src/__tests__/meta-pack-ddc.integration.test.ts',
   'packages/pack/src/__tests__/runtime-publication.unit.test.ts',
   'packages/devkit/src/tools/__tests__/model-render-target.unit.test.ts',
+  'packages/render/src/__tests__/managed-scene-recording.integration.test.ts',
   ...[
     'manifest-reflection-sharing',
     'manifest-publication',
@@ -57,14 +68,27 @@ const packageOnlyUnitFiles = new Set([
 // These planner tests exercise source scripts and their own fixtures without
 // importing generated Engine packages or invoking the Engine toolchain.
 const sourceOnlyNodeFiles = new Set([
+  'scripts/ci/__tests__/artifact-range-download.test.mjs',
+  'scripts/ci/__tests__/artifact-upload-paths.test.mjs',
+  'scripts/ci/__tests__/browser-tail-ownership.test.mjs',
   'scripts/ci/__tests__/browser-work.test.mjs',
   'scripts/ci/__tests__/ci-focus.test.mjs',
   'scripts/ci/__tests__/core-validation.test.mjs',
+  'scripts/ci/__tests__/coverage-baseline.test.mjs',
+  'scripts/ci/__tests__/native-validation-scope.test.mjs',
+  'scripts/ci/__tests__/post-merge-qualification.test.mjs',
   'scripts/ci/__tests__/download-artifact-with-retry.test.mjs',
   'scripts/ci/__tests__/prepare-ci-inputs.test.mjs',
   'scripts/ci/__tests__/recover-repair-shader-inputs.test.mjs',
   'scripts/ci/__tests__/run-split-vitest-browser.test.mjs',
+  'scripts/ci/__tests__/run-split-vitest-coverage.test.mjs',
+  'scripts/ci/__tests__/run-with-runner-cpu-affinity.test.mjs',
+  'scripts/ci/__tests__/sdk-shader-artifacts.test.mjs',
+  'scripts/ci/__tests__/source-budget-progress.test.mjs',
   'scripts/ci/__tests__/view-diagnostic-workload.test.mjs',
+  'scripts/forgeax/__tests__/sdk-candidate-native-inputs.test.mjs',
+  'scripts/forgeax/__tests__/sdk-pr-preflight.test.mjs',
+  'scripts/lib/__tests__/vite-http-readiness.test.mjs',
 ]);
 
 function nodeFocusPlan(selector) {
@@ -183,7 +207,7 @@ function compatibilityFocusPlan(selector) {
 
 function coverageFocusEnvironment(group, resources, maxWorkers) {
   const workers = group.sourceCompilation
-    ? shaderSourceCompileWorkers(resources, process.env.FORGEAX_SHADER_COMPILE_WORKERS)
+    ? process.env.FORGEAX_SHADER_COMPILE_WORKERS
     : shaderCompileWorkers(
         resources,
         process.env.FORGEAX_SHADER_COMPILE_WORKERS,
@@ -261,7 +285,12 @@ export function focusPlan(
       ['scripts/ci/run-split-vitest-browser.mjs', '--file', selector, '--dry-run'],
       { cwd: root },
     );
-    return { args: ['scripts/ci/run-split-vitest-browser.mjs', '--file', selector] };
+    return {
+      args: ['scripts/ci/run-split-vitest-browser.mjs', '--file', selector],
+      ...(process.env.FORGEAX_CI_CORE_VALIDATION === '1'
+        ? { env: { FORGEAX_BROWSER_COST_REPORT: '1' } }
+        : {}),
+    };
   }
   if (kind === 'view') {
     const groups = JSON.parse(
@@ -271,7 +300,9 @@ export function focusPlan(
       }),
     );
     if (!groups.includes(selector)) throw new Error(`unknown View integration group: ${selector}`);
-    return { args: ['scripts/ci/run-view-integration.mjs', '--candidate', '--group', selector] };
+    return {
+      args: ['scripts/ci/run-view-integration.mjs', '--candidate', '--group', selector],
+    };
   }
   if (kind === 'smoke') {
     frames = parseSmokeFrameBudget(frames);
@@ -283,7 +314,7 @@ export function focusPlan(
       });
       return {
         entries,
-        apps: [...new Set(entries.map((entry) => dirname(entry.path)))],
+        apps: smokeAppBuilds(entries),
         scope: 'full',
         frames,
         shardIndex,
@@ -293,7 +324,7 @@ export function focusPlan(
     const { runnable, independent } = resolved;
     const entry = [...runnable, ...independent].find((candidate) => candidate.gateId === selector);
     if (!entry) throw new Error(`unknown smoke gate ID: ${selector}`);
-    return { entry, apps: [dirname(entry.path)], frames };
+    return { entry, apps: smokeAppBuilds([entry]), frames };
   }
   if (['unit', 'type', 'node'].includes(kind)) return unitFocusPlan(kind, selector);
   throw new Error(`unknown focus kind: ${kind}`);
@@ -354,7 +385,9 @@ export async function main(argv = process.argv.slice(2)) {
   const env = {
     ...process.env,
     EXPECTED_PRODUCT_SHA: head,
-    FORGEAX_SHARED_APP_INPUTS_MANIFEST: join(root, 'shared-build-inputs/manifest.json'),
+    ...(plan.apps?.length
+      ? { FORGEAX_SHARED_APP_INPUTS_MANIFEST: join(root, 'shared-build-inputs/manifest.json') }
+      : {}),
     SMOKE_MIN_FRAMES: String(frames),
   };
   const output = join(root, 'artifacts/ci-focus/result.json');
@@ -383,13 +416,7 @@ export async function main(argv = process.argv.slice(2)) {
   let smoke;
   try {
     await prepareFocus(plan, options['assets-source-root'], run);
-    if (options.kind === 'compatibility')
-      await run([
-        'scripts/forgeax/prepare-shader-release-inputs.mjs',
-        '--build',
-        '--profile',
-        'base-ssao',
-      ]);
+    if (plan.apps?.length) await run(['scripts/build-shared-inputs.mjs']);
     for (const app of plan.apps ?? [])
       await run([
         'scripts/build-apps.mjs',

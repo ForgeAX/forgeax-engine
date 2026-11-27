@@ -33,6 +33,15 @@ async function until(probe) {
   }
 }
 
+function assertRetainedPresentation(actual, expected) {
+  // Project progress may advance while the same presentation remains admitted.
+  const { projectStatus: actualStatus, ...actualPresentation } = actual;
+  const { projectStatus: expectedStatus, ...expectedPresentation } = expected;
+  assert.deepEqual(actualPresentation, expectedPresentation, 'reopening preserves the current View presentation');
+  assert.equal(actualStatus.sessionId, expectedStatus.sessionId, 'reopening preserves the project session');
+  assert.equal(actualStatus.generation, expectedStatus.generation, 'reopening preserves the project generation');
+}
+
 test('View native plugin start/stop and removal preserve the owning Engine Host', { timeout: 15_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'view-startup-'));
   const previousDataHome = process.env.FORGEAX_DATA_HOME;
@@ -55,7 +64,7 @@ test('View native plugin start/stop and removal preserve the owning Engine Host'
     assert.equal((await fetch(first.url)).status, 200);
     assert.equal(workspace.project.project.root, await realpath(root));
     const selectedProject = workspace.project;
-    assert.deepEqual(await start(), first, 'reopening preserves the current View presentation');
+    assertRetainedPresentation(await start(), first);
     assert.equal(workspace.project, selectedProject, 'reopening preserves the owning Engine selection');
     assert.equal((await call(host, 'view.stop', 'view-launcher')).phase, 'stopped');
     assert.equal(host.context.engineWorkspace, workspace);
@@ -112,7 +121,7 @@ test('explicit View restart recovers the exact retired Engine project session', 
     assert.equal(first.phase, 'ready');
     assert.equal(workspace.project.project.root, await realpath(root));
     const selectedProject = workspace.project;
-    assert.deepEqual(await start(), first, 'reopening preserves the current View presentation');
+    assertRetainedPresentation(await start(), first);
     assert.equal(workspace.project, selectedProject, 'reopening preserves the owning Engine selection');
     assert.equal((await call(host, 'view.stop', 'view-launcher')).phase, 'stopped');
     assert.equal(host.context.engineWorkspace, workspace);

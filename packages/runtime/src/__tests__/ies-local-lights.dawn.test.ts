@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminancePng, offscreenCanvas } from './hdr-evidence.fixture';
@@ -11,7 +11,7 @@ import { observeNativeDeviceRequests } from './native-device-work.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
-const manifest = shaderManifestUrl(await buildEngineShaderManifest({ pointShadows: true }));
+const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest({ pointShadows: true }));
 const nativeDevices = observeNativeDeviceRequests();
 async function createIesHost(publicationSource?: { source: string; epoch: number }) {
   const target = offscreenCanvas(IES_TEST_SIZE);

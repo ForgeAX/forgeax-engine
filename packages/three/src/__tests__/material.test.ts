@@ -1,4 +1,4 @@
-import { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, findMaterialPassProgram } from '@forgeax/engine-assets-runtime';
 import {
   AdditiveBlending,
   BackSide,
@@ -14,7 +14,7 @@ import {
   MeshStandardMaterial,
   Texture,
 } from 'three/src/Three.Core.js';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cookPhysicalMaterials, physicalTextureRecipe } from '../build/materials';
 import { ThreeCompatibilityError } from '../errors';
 import { materialTextures, materialValues, projectMaterial, validateMaterial } from '../material';
@@ -191,6 +191,48 @@ describe('Three material projection', () => {
     });
   });
 
+  it('admits both stock Physical shapes from one source and compiles only a selected pass', async () => {
+    const assets = new AssetRegistry();
+    owners.push(assets);
+    const install = vi.spyOn(assets.materialArtifactRegistry, 'register');
+    const project = await prepareMaterialPrograms(assets);
+    const basic = projectMaterial(new MeshBasicMaterial(), {}).unwrap();
+    expect(project(basic)).toBe(basic);
+    const source = new MeshPhysicalMaterial({ clearcoat: 0.5 });
+    const plain = project(projectMaterial(source, {}).unwrap());
+    const texture = assets
+      .create(projectTexture(new DataTexture(new Uint8Array([128, 128, 255, 255]), 1, 1)).unwrap())
+      .unwrap();
+    const mapped = project(projectMaterial(source, { baseColorTexture: { texture } }).unwrap());
+    const plainProgram = assets.materialPayloadProjections.get(plain);
+    const mappedProgram = assets.materialPayloadProjections.get(mapped);
+    if (!plainProgram || !mappedProgram) throw new Error('Missing stock Physical projection');
+    expect(plainProgram.sourceTemplate?.sources).toBe(mappedProgram.sourceTemplate?.sources);
+    expect(mapped.values?.baseColorTexture).toEqual({ texture });
+    expect(plain.values?.baseColorTexture).toBeUndefined();
+    expect(install).not.toHaveBeenCalled();
+    const context = {
+      pipeline: 'forward',
+      backend: 'webgpu',
+      capability: 'storage-buffer',
+      geometry: 'mesh',
+      pass: 'forward',
+      instrumentation: 'none',
+      profile: 'forgeax-material-wgsl-v1',
+      toolchain: 'naga-oil',
+    } as const;
+    const program = findMaterialPassProgram(mappedProgram, 'forward', context);
+    expect(program).toBeDefined();
+    expect(install).toHaveBeenCalledTimes(1);
+    const next = (await prepareMaterialPrograms(assets))(
+      projectMaterial(source, { baseColorTexture: { texture } }).unwrap(),
+    );
+    const nextProgram = assets.materialPayloadProjections.get(next);
+    if (!nextProgram) throw new Error('Missing stock Physical projection');
+    expect(findMaterialPassProgram(nextProgram, 'forward', context)).toBe(program);
+    expect(install).toHaveBeenCalledTimes(1);
+  });
+
   it('admits an exact application-cooked texture combination and rejects a missing variant', {
     timeout: 120000,
   }, async () => {
@@ -245,21 +287,17 @@ describe('Three material projection', () => {
   });
 
   it.each([
-    [FrontSide, null, false, 'front'],
-    [BackSide, null, false, 'back'],
-    [DoubleSide, null, false, 'none'],
-    [FrontSide, null, true, 'back'],
-    [BackSide, null, true, 'front'],
-    [DoubleSide, null, true, 'none'],
-    [FrontSide, FrontSide, false, 'back'],
-    [FrontSide, BackSide, false, 'front'],
-    [BackSide, DoubleSide, false, 'none'],
-    [BackSide, FrontSide, true, 'back'],
-  ] as const)('owns Three shadow sidedness: side=%s override=%s VSM=%s', (side, shadowSide, variance, expected) => {
+    [FrontSide, null, 'front'],
+    [BackSide, null, 'back'],
+    [DoubleSide, null, 'none'],
+    [FrontSide, FrontSide, 'back'],
+    [FrontSide, BackSide, 'front'],
+    [BackSide, DoubleSide, 'none'],
+  ] as const)('owns Three shadow sidedness: side=%s override=%s', (side, shadowSide, expected) => {
     for (const Material of [MeshBasicMaterial, MeshStandardMaterial]) {
       const material = new Material({ side });
       material.shadowSide = shadowSide;
-      const asset = projectMaterial(material, {}, undefined, variance).unwrap();
+      const asset = projectMaterial(material, {}).unwrap();
       expect(
         asset.passes?.find((pass) => pass.name === 'shadow-caster')?.renderState?.cullMode,
       ).toBe(expected);

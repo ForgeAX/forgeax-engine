@@ -17,7 +17,11 @@ export function registerCubePlaneShadowContactCases(renderPath: 'forward' | 'def
     document.body.append(canvas);
     // The cold renderer starts in its measured mode, with unused SSAO disabled.
     fixture = await createCubePlaneShadowContactFixture(canvas, '/shaders/manifest.json', {
-      standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath, ssao: false },
+      standardProfile: {
+        ...DEFAULT_STANDARD_PROFILE,
+        renderPath,
+        ambientOcclusion: { enabled: false },
+      },
     });
     console.info('[cube-contact-progress]', JSON.stringify({ stage: 'fixture-ready', renderPath }));
   }, 60000);

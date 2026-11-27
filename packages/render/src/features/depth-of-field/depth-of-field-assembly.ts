@@ -6,7 +6,10 @@ import type {
   PostProcessShaderEntry,
 } from '../../fullscreen-post-process-pass';
 import type { DepthOfFieldInspection } from '../../inspection-types';
-import { DEPTH_OF_FIELD_POST_PROCESS_IDS } from './depth-of-field-feature';
+import {
+  DEPTH_OF_FIELD_DEPTH_POST_PROCESS_IDS,
+  DEPTH_OF_FIELD_POST_PROCESS_IDS,
+} from './depth-of-field-feature';
 
 interface DepthOfFieldShaderSources {
   readonly singleSample?: string | (() => string);
@@ -30,26 +33,26 @@ const DEPTH_READ: PostProcessReadEntry = { key: 'scene-depth', sampleType: 'dept
 const DEPTH_OF_FIELD_READS: Readonly<
   Record<DepthOfFieldPostProcessId, readonly DepthOfFieldRead[]>
 > = {
-  'forgeax.dof.coc': ['scene-color', 'scene-temporal', DEPTH_READ],
-  'forgeax.dof.prefilter': ['scene-color', 'dof-coc', DEPTH_READ],
-  'forgeax.dof.prefilter.metadata': ['scene-color', 'scene-temporal', 'dof-coc', DEPTH_READ],
+  'forgeax.dof.coc': ['scene-color', DEPTH_READ],
+  'forgeax.dof.tiles': [],
+  'forgeax.dof.prefilter': ['scene-color', 'dof-coc', 'dof-tile-influence', DEPTH_READ],
   'forgeax.dof.gather': [
     'dof-prefilter-near',
-    'scene-temporal',
     'dof-coc',
     'dof-near-metadata',
     'dof-far-metadata',
     'dof-prefilter-far',
     'scene-color',
+    'dof-tile-influence',
     DEPTH_READ,
   ],
   'forgeax.dof.composite': [
     'scene-color',
-    'scene-temporal',
     'dof-coc',
     'dof-near',
     'dof-far',
     'dof-background',
+    'dof-tile-influence',
     DEPTH_READ,
   ],
 };
@@ -80,7 +83,8 @@ export function registerDepthOfFieldBuiltins(
     for (const id of DEPTH_OF_FIELD_POST_PROCESS_IDS) register(id, entries.singleSample, '');
   }
   if (entries.multisampled !== undefined) {
-    for (const id of DEPTH_OF_FIELD_POST_PROCESS_IDS) register(id, entries.multisampled, '.msaa');
+    for (const id of DEPTH_OF_FIELD_DEPTH_POST_PROCESS_IDS)
+      register(id, entries.multisampled, '.msaa');
   }
 }
 
@@ -105,10 +109,9 @@ export async function prewarmDepthOfField(
       singleSample ??= entry;
     }
   }
-  if (singleSample !== undefined && !isShaderTemplateManifestRow(singleSample))
-    for (const id of DEPTH_OF_FIELD_POST_PROCESS_IDS) await prewarm(singleSample, id);
-  if (multisampled !== undefined && !isShaderTemplateManifestRow(multisampled))
-    for (const id of DEPTH_OF_FIELD_POST_PROCESS_IDS) await prewarm(multisampled, `${id}.msaa`);
+  // Each attachment topology shares one shader module across all DoF passes.
+  await prewarm(singleSample, 'forgeax.dof');
+  await prewarm(multisampled, 'forgeax.dof.msaa');
   const single = singleSample,
     multi = multisampled;
   register({

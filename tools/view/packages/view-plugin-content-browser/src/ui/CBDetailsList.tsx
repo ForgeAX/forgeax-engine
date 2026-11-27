@@ -35,7 +35,7 @@ export function CBDetailsList({
   onContextMenu: (event: MouseEvent, item: CBViewItem) => void;
   onBlankClick: () => void;
 }) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const gridStyle = { '--cb-details-cols': COLUMNS.map((column) => column.track).join(' ') } as CSSProperties;
 
   return (
@@ -78,7 +78,7 @@ export function CBDetailsList({
           const sizeLabel = item.type === 'folder'
             ? t('contentBrowser.details.itemCount', { count: item.childCount })
             : formatBytes(item.type === 'file' ? item.estimatedSize : item.estimatedSize);
-          const modifiedLabel = item.type === 'folder' ? '' : formatDate(item.packModifiedAt);
+          const modifiedLabel = item.type === 'folder' ? '' : formatDate(item.packModifiedAt, locale);
           return (
             <div
               role="row"

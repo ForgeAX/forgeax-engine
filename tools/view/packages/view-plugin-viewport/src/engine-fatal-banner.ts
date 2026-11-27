@@ -1,4 +1,5 @@
 import { writeBrowserClipboard } from '@forgeax/engine/host/platform';
+import { t, subscribeLocale } from './i18n/index.ts';
 const ENGINE_FATAL_ID = 'forgeax-fatal';
 const BANNER_CLASS = 'fx-engine-fatal-banner';
 const MESSAGE_CLASS = 'fx-engine-fatal-banner__message';
@@ -51,8 +52,8 @@ function createBanner(document: Document, { onCopy, onClose }: { onCopy: (text: 
   message.className = MESSAGE_CLASS;
   const actions = document.createElement('div');
   actions.className = ACTIONS_CLASS;
-  const copy = button(document, 'Copy error', 'Copy the error reason');
-  const close = button(document, 'Close', 'Dismiss the error banner');
+  const copy = button(document, t('viewport.copyError'), t('viewport.copyReason'));
+  const close = button(document, t('viewport.close'), t('viewport.dismissError'));
   copy.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
@@ -65,7 +66,7 @@ function createBanner(document: Document, { onCopy, onClose }: { onCopy: (text: 
   });
   actions.append(copy, close);
   banner.append(message, actions);
-  return { banner, message, copy };
+  return { banner, message, copy, close };
 }
 
 function placeBanner(banner: HTMLElement, host: HTMLElement | null | undefined) {
@@ -84,15 +85,16 @@ export function attachEngineFatalBanner({
   writeClipboard = writeBrowserClipboard,
 } : { document?: Document; host?: HTMLElement | (() => HTMLElement | null); writeClipboard?: (text: string) => Promise<void> } = {}) {
   if (!document?.createElement) return () => {};
-  const { banner, message, copy } = createBanner(document, {
+  let copyState = 'copyError';
+  const { banner, message, copy, close } = createBanner(document, {
     onCopy(text, button) {
       if (!text) return;
       void writeClipboard(text).then(() => {
-        button.textContent = 'Copied';
+        copyState = 'copied'; renderLabels();
         setTimeout(() => {
-          if (button.isConnected) button.textContent = 'Copy error';
+          if (button.isConnected) { copyState = 'copyError'; renderLabels(); }
         }, 2000);
-      }).catch(error => { button.textContent = 'Copy failed'; button.title = String(error); });
+      }).catch(error => { copyState = 'copyFailed'; renderLabels(); button.title = String(error); });
     },
     onClose() {
       // Restore Engine's initial hidden overlay. Keep the node and its text;
@@ -101,6 +103,16 @@ export function attachEngineFatalBanner({
       banner.hidden = true;
     },
   });
+
+  const renderLabels = () => {
+    const copyText = t(`viewport.${copyState}`);
+    const closeText = t('viewport.close');
+    if (copy.textContent !== copyText) copy.textContent = copyText;
+    copy.setAttribute('aria-label', t('viewport.copyReason'));
+    if (close.textContent !== closeText) close.textContent = closeText;
+    close.setAttribute('aria-label', t('viewport.dismissError'));
+  };
+  const unsubscribeLocale = subscribeLocale(renderLabels);
 
   const sync = () => {
     placeBanner(banner, canvasHost(document, host));
@@ -111,13 +123,14 @@ export function attachEngineFatalBanner({
       return;
     }
     if (message.textContent !== text) message.textContent = text;
-    if (copy.textContent !== 'Copy error') copy.textContent = 'Copy error';
+    copyState = 'copyError';
+    renderLabels();
     banner.hidden = false;
   };
 
   if (typeof MutationObserver !== 'function') {
     sync();
-    return () => banner.remove?.();
+    return () => { unsubscribeLocale(); banner.remove?.(); };
   }
 
   const noticeObserver = new MutationObserver(sync);
@@ -146,6 +159,7 @@ export function attachEngineFatalBanner({
   return () => {
     noticeObserver.disconnect();
     rootObserver?.disconnect();
+    unsubscribeLocale();
     banner.remove?.();
   };
 }

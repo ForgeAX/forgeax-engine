@@ -30,3 +30,14 @@ See the [runtime contract](../../../packages/terrain/README.md). This is the Lan
 | `node apps/hello/terrain/scripts/material-id-evidence.mjs perf` | Three ABBA series per graph path, each 60 warmup + 60 measured frames, actual GPU coverage and CPU/completion intervals |
 
 Use the shared physical-GPU lock for local runs. Performance has no recorder and subtracts no observer overhead; image/capture runs are separate. Original 8 ms CPU draw, 16.67 ms GPU interval union and 33.34 ms frame completion p95 budgets remain unchanged. A paired quality pass is independent of a performance-budget verdict.
+
+## Stored height blocks
+
+Run `pnpm --filter @forgeax/hello-terrain dev` and open the local URL with
+`?storage`. The first visit writes the authored height samples as one immutable
+OPFS file and publishes the per-block index in IndexedDB. Later visits read
+only the two adjacent blocks used by the fixed camera.
+
+The real canvas draws the decoded blocks. `window.__terrainStorage` reports
+the requested and returned bytes, I/O and decode time, the first completed
+frame and both heights at the shared edge.

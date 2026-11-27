@@ -1,11 +1,9 @@
 {
-  "schemaVersion": "2.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "019e9c00-0000-7000-8000-000000000000",
+  "schemaVersion": "3.0.0",
+  "packageId": "38e3156b-2f26-5064-ae4c-7c16bb695e9c",
+  "assets": {
+    "vfx/boss-lightning": {
       "kind": "particle-effect",
-      "execution": "cooked",
       "payload": {
         "schemaVersion": 3,
         "emitters": [
@@ -57,7 +55,7 @@
             "renderers": [
               {
                 "kind": "billboard",
-                "material": "019e9c00-0000-7000-8000-000000000001",
+                "material": "d648b4f3-2bc5-5f0b-8713-2b95e9372242",
                 "blend": "additive"
               }
             ]
@@ -94,7 +92,7 @@
             "renderers": [
               {
                 "kind": "ribbon",
-                "material": "019e9c00-0000-7000-8000-000000000001",
+                "material": "d648b4f3-2bc5-5f0b-8713-2b95e9372242",
                 "stripKey": "alive-index",
                 "capacity": 32,
                 "overflow": "drop-oldest",
@@ -134,7 +132,7 @@
             "renderers": [
               {
                 "kind": "trail",
-                "material": "019e9c00-0000-7000-8000-000000000002",
+                "material": "96b5ec1b-841a-5dc5-be0f-2171aacd75bc",
                 "historyLength": 8,
                 "capacity": 16,
                 "overflow": "drop-oldest",
@@ -174,7 +172,7 @@
             "renderers": [
               {
                 "kind": "beam",
-                "material": "019e9c00-0000-7000-8000-000000000006",
+                "material": "e395f457-6551-59ab-8752-ae2285b56864",
                 "endpointField": "velocity",
                 "capacity": 48,
                 "overflow": "drop-newest",
@@ -213,8 +211,8 @@
             "renderers": [
               {
                 "kind": "mesh",
-                "material": "cd16a32c-0fd2-4c02-861d-a5537baaa793",
-                "mesh": "8da8d508-bb60-4698-8980-09e4a5a7f43b"
+                "material": "6cac769b-70a6-5b34-948b-238bfaab4839",
+                "mesh": "6e5ab21b-b13d-545a-803c-b17d3f9af22c"
               }
             ]
           },
@@ -250,7 +248,7 @@
             "renderers": [
               {
                 "kind": "billboard",
-                "material": "7e43f472-4c4d-4ee3-9aa1-bc89e7402811",
+                "material": "c71041d7-6193-5423-834f-bfe8de29884c",
                 "blend": "additive"
               }
             ]
@@ -287,15 +285,14 @@
             "renderers": [
               {
                 "kind": "billboard",
-                "material": "7e43f472-4c4d-4ee3-9aa1-bc89e7402812",
+                "material": "79c6bfeb-213a-551a-ae17-ca9ee0172cd7",
                 "blend": "additive"
               }
             ]
           }
         ]
       },
-      "refs": [],
-      "artifacts": {}
+      "refs": []
     }
-  ]
+  }
 }

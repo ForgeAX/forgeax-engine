@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
 import { resolveViewerFile, viewerContentType } from '../packages/view-workspace-core/src/viewer-static.ts';
-import { installedEngineRoot } from '../src/engine-root.ts';
+import { installedEngineRoot, installedEngineVersion } from '../src/engine-root.ts';
 import { startViewerStaticServer } from '../src/viewer-static-server.ts';
 
 async function fixture() {
@@ -72,7 +72,7 @@ test('the early viewer shell reports preparation then proxies the Host bootstrap
     server.setBootstrapSource(`http://127.0.0.1:${hostAddress.port}/__forgeax/view/bootstrap`);
     const ready = await fetch(server.bootstrapUrl);
     assert.equal(ready.status, 200);
-    assert.deepEqual(await ready.json(), { configured: true, token: 'host-token' });
+    assert.deepEqual(await ready.json(), { configured: true, token: 'host-token', frontendConfig: { engineVersion: installedEngineVersion() } });
   } finally {
     await server.close();
     await new Promise(resolve => host.close(resolve));

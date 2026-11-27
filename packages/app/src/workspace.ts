@@ -364,33 +364,72 @@ export async function loadEngineWorkspaceMaterialSlots(
   return handles;
 }
 
-export type EngineWorkspaceProjectLifecycle =
-  | { readonly phase: 'preparing'; readonly sessionId: string; readonly generation: number }
-  | {
-      readonly phase: 'starting';
-      readonly sessionId: string;
-      readonly generation: number;
-      readonly document: EngineWorkspaceProjectDocument;
-      readonly target?: EngineWorkspaceTarget;
-      readonly browserGeneration: number;
-    }
-  | {
-      readonly phase: 'running';
-      readonly sessionId: string;
-      readonly generation: number;
-      readonly document: EngineWorkspaceProjectDocument;
-      readonly target: EngineWorkspaceTarget;
-      readonly browserGeneration: number;
-    }
-  | {
-      readonly phase: 'failed';
-      readonly sessionId: string;
-      readonly generation: number;
-      readonly document?: EngineWorkspaceProjectDocument;
-      readonly target?: EngineWorkspaceTarget;
-      readonly failure: unknown;
-      readonly browserGeneration?: number;
-    };
+export interface EngineWorkspaceProjectPreparation {
+  readonly generation: number;
+  readonly stage:
+    | 'project'
+    | 'vite'
+    | 'shader'
+    | 'inventory'
+    | 'produce'
+    | 'publish'
+    | 'ready'
+    | 'failed'
+    | 'cancelled';
+  readonly operation?:
+    | 'project-config'
+    | 'source-inventory'
+    | 'plugin-programs'
+    | 'project-cookers'
+    | 'host-files'
+    | 'vite-server'
+    | 'shader-inputs'
+    | 'scene-connection';
+  readonly startedAt: number;
+  readonly updatedAt: number;
+  readonly activeCount: number;
+  readonly active: readonly {
+    readonly source: string;
+    readonly phase: 'cache' | 'cook' | 'persist' | 'import' | 'shader';
+    readonly startedAt: number;
+    readonly progress?: { readonly completed: number; readonly total: number };
+  }[];
+  readonly recent: readonly { readonly source: string; readonly cacheHit: boolean }[];
+}
+
+interface EngineWorkspaceProjectPreparationStatus {
+  readonly preparation?: EngineWorkspaceProjectPreparation;
+}
+
+export type EngineWorkspaceProjectLifecycle = EngineWorkspaceProjectPreparationStatus &
+  (
+    | { readonly phase: 'preparing'; readonly sessionId: string; readonly generation: number }
+    | {
+        readonly phase: 'starting';
+        readonly sessionId: string;
+        readonly generation: number;
+        readonly document: EngineWorkspaceProjectDocument;
+        readonly target?: EngineWorkspaceTarget;
+        readonly browserGeneration: number;
+      }
+    | {
+        readonly phase: 'running';
+        readonly sessionId: string;
+        readonly generation: number;
+        readonly document: EngineWorkspaceProjectDocument;
+        readonly target: EngineWorkspaceTarget;
+        readonly browserGeneration: number;
+      }
+    | {
+        readonly phase: 'failed';
+        readonly sessionId: string;
+        readonly generation: number;
+        readonly document?: EngineWorkspaceProjectDocument;
+        readonly target?: EngineWorkspaceTarget;
+        readonly failure: unknown;
+        readonly browserGeneration?: number;
+      }
+  );
 
 export interface EngineWorkspaceProjectDocument {
   readonly sessionId: string;
@@ -412,33 +451,35 @@ export interface EngineWorkspaceProjectFailure {
   };
 }
 /** Closed, serializable projection of an owner lifecycle snapshot. */
-export type EngineWorkspaceProjectStatus =
-  | { readonly phase: 'preparing'; readonly sessionId: string; readonly generation: number }
-  | {
-      readonly phase: 'starting';
-      readonly sessionId: string;
-      readonly generation: number;
-      readonly document: EngineWorkspaceProjectDocument;
-      readonly target?: EngineWorkspaceProjectTargetIdentity;
-      readonly browserGeneration: number;
-    }
-  | {
-      readonly phase: 'running';
-      readonly sessionId: string;
-      readonly generation: number;
-      readonly document: EngineWorkspaceProjectDocument;
-      readonly target: EngineWorkspaceProjectTargetIdentity;
-      readonly browserGeneration: number;
-    }
-  | {
-      readonly phase: 'failed';
-      readonly sessionId: string;
-      readonly generation: number;
-      readonly document?: EngineWorkspaceProjectDocument;
-      readonly target?: EngineWorkspaceProjectTargetIdentity;
-      readonly failure: EngineWorkspaceProjectFailure;
-      readonly browserGeneration?: number;
-    };
+export type EngineWorkspaceProjectStatus = EngineWorkspaceProjectPreparationStatus &
+  (
+    | { readonly phase: 'preparing'; readonly sessionId: string; readonly generation: number }
+    | {
+        readonly phase: 'starting';
+        readonly sessionId: string;
+        readonly generation: number;
+        readonly document: EngineWorkspaceProjectDocument;
+        readonly target?: EngineWorkspaceProjectTargetIdentity;
+        readonly browserGeneration: number;
+      }
+    | {
+        readonly phase: 'running';
+        readonly sessionId: string;
+        readonly generation: number;
+        readonly document: EngineWorkspaceProjectDocument;
+        readonly target: EngineWorkspaceProjectTargetIdentity;
+        readonly browserGeneration: number;
+      }
+    | {
+        readonly phase: 'failed';
+        readonly sessionId: string;
+        readonly generation: number;
+        readonly document?: EngineWorkspaceProjectDocument;
+        readonly target?: EngineWorkspaceProjectTargetIdentity;
+        readonly failure: EngineWorkspaceProjectFailure;
+        readonly browserGeneration?: number;
+      }
+  );
 
 export interface EngineWorkspaceProjectHandle {
   readonly project: EngineWorkspaceProject;

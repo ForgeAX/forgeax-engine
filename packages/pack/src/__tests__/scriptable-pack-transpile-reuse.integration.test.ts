@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { Worker } from 'node:worker_threads';
 import ts from 'typescript';
-import { expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it } from 'vitest';
 import {
   createLazyScriptablePackDefinition,
   createScriptablePackModuleExecutorPool,
@@ -50,6 +50,60 @@ const digest = (value: string) => createHash('sha256').update(value).digest('hex
 const prefix = 'snapshot-transpile-real-fixture';
 const runFile = promisify(execFile);
 
+interface FixtureWorkerWitness {
+  readonly loaded: LoadedWire[];
+  readonly posted: LoadWire[];
+  readonly roots: Set<string>;
+  readonly workers: Set<Worker>;
+  corruptNext?: ((entries: TextRecord[]) => TextRecord[]) | undefined;
+}
+
+const fixturesBySource = new Map<string, FixtureWorkerWitness>();
+const fixturesByWorker = new WeakMap<Worker, FixtureWorkerWitness>();
+const emit = Worker.prototype.emit;
+const postMessage = Worker.prototype.postMessage;
+
+beforeAll(() => {
+  Worker.prototype.emit = function (event: string | symbol, ...args: unknown[]): boolean {
+    const fixture = fixturesByWorker.get(this);
+    const value = args[0] as LoadedWire | undefined;
+    if (
+      fixture !== undefined &&
+      event === 'message' &&
+      value?.kind === 'loaded' &&
+      value.definition?.name?.startsWith(prefix)
+    ) {
+      const url = value.definition.name.split('|')[1];
+      if (url === undefined) throw new Error('missing actual compile-root witness');
+      fixture.roots.add(fileURLToPath(url));
+      fixture.loaded.push(structuredClone(value));
+    }
+    return Reflect.apply(emit, this, [event, ...args]);
+  };
+  Worker.prototype.postMessage = function (...args: Parameters<Worker['postMessage']>): void {
+    const value = args[0] as LoadWire | undefined;
+    const fixture = value?.kind === 'load' ? fixturesBySource.get(value.sourcePath) : undefined;
+    if (fixture !== undefined && value !== undefined) {
+      fixturesByWorker.set(this, fixture);
+      fixture.workers.add(this);
+      if (typeof value.compileRoot === 'string') fixture.roots.add(value.compileRoot);
+      if (fixture.corruptNext !== undefined) {
+        if (!Array.isArray(value.transpiles))
+          throw new Error('missing actual reusable-cache transport');
+        value.transpiles = fixture.corruptNext(value.transpiles);
+        fixture.corruptNext = undefined;
+      }
+      fixture.posted.push(structuredClone(value));
+    }
+    Reflect.apply(postMessage, this, args);
+  };
+});
+
+afterAll(() => {
+  Worker.prototype.emit = emit;
+  Worker.prototype.postMessage = postMessage;
+});
+
 async function withFixture(
   run: (f: {
     root: string;
@@ -71,38 +125,8 @@ async function withFixture(
   const roots = new Set<string>();
   const loaded: LoadedWire[] = [];
   const posted: LoadWire[] = [];
-  let corruptNext: ((entries: TextRecord[]) => TextRecord[]) | undefined;
-  const emit = Worker.prototype.emit;
-  const postMessage = Worker.prototype.postMessage;
-  Worker.prototype.emit = function (event: string | symbol, ...args: unknown[]): boolean {
-    if (event === 'online') workers.add(this);
-    const value = args[0] as LoadedWire | undefined;
-    if (
-      event === 'message' &&
-      value?.kind === 'loaded' &&
-      value.definition?.name?.startsWith(prefix)
-    ) {
-      const url = value.definition.name.split('|')[1];
-      if (url === undefined) throw new Error('missing actual compile-root witness');
-      roots.add(fileURLToPath(url));
-      loaded.push(structuredClone(value));
-    }
-    return Reflect.apply(emit, this, [event, ...args]);
-  };
-  Worker.prototype.postMessage = function (...args: Parameters<Worker['postMessage']>): void {
-    const value = args[0] as LoadWire | undefined;
-    if (value?.kind === 'load' && value.sourcePath === source) {
-      if (typeof value.compileRoot === 'string') roots.add(value.compileRoot);
-      if (corruptNext !== undefined) {
-        if (!Array.isArray(value.transpiles))
-          throw new Error('missing actual reusable-cache transport');
-        value.transpiles = corruptNext(value.transpiles);
-        corruptNext = undefined;
-      }
-      posted.push(structuredClone(value));
-    }
-    Reflect.apply(postMessage, this, args);
-  };
+  const fixture: FixtureWorkerWitness = { loaded, posted, roots, workers };
+  fixturesBySource.set(source, fixture);
   try {
     await mkdir(join(root, 'node_modules', 'fixture-alias'), { recursive: true });
     await writeFile(
@@ -164,16 +188,15 @@ async function withFixture(
       workers,
       pool,
       corrupt: (transform) => {
-        corruptNext = transform;
+        fixture.corruptNext = transform;
       },
     });
   } finally {
-    Worker.prototype.emit = emit;
-    Worker.prototype.postMessage = postMessage;
     try {
       await pool.dispose();
     } finally {
-      // Only this serial test's actual workers/compile-root witnesses are cleaned.
+      // A fixture can outlive Vitest's deadline. Close only its dispatched Workers.
+      fixturesBySource.delete(source);
       await Promise.all([...workers].map((worker) => worker.terminate()));
       await Promise.all(
         [...roots].map((directory) => rm(directory, { recursive: true, force: true })),

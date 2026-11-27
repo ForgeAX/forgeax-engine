@@ -10,6 +10,7 @@ import { type Mat4, mat4 } from '@forgeax/engine-math';
 import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
 import { normalizeClippingPlanes } from '@forgeax/engine-types';
 import { jitterCameraProjection } from '../camera-projection';
+import { isTemporalAntialias } from '../components/camera';
 import { DirectionalLight } from '../components/directional-light';
 import {
   DirectionalShadowFilterValue,
@@ -19,8 +20,10 @@ import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
 import { LineCapValue, LineWidthUnitsValue } from '../components/lines';
 import { PointShapeValue } from '../components/points';
 import { sunSourceRadiusOf } from '../components/sun-source-radius';
+import { groundSolarTransmittance } from '../environment/ground-solar';
 import { writeAtmosphereUniform } from '../environment/uniform';
 import { type AtmosphereParameters, type FogFrame, fogIsActive } from '../extract/environment';
+import type { StandardProfile } from '../pipeline/standard-profile';
 import type { PointsLinesStyle } from '../points-lines/snapshot';
 import type { CameraSnapshot } from '../render-contract';
 import type { DirectionalLightSnapshot, SpotLightSnapshot } from '../render-system-extract';
@@ -30,14 +33,11 @@ import type { TemporalView } from '../temporal/view';
 import type { ViewLights } from '../world/render-lights';
 import { computeProjectionMatrix, computeViewMatrix } from './helpers';
 
-export const VIEW_UNIFORM_BYTES = 1312;
+export const VIEW_UNIFORM_BYTES = 1392;
 /** Four Point/Spot lanes each for depth, filtering, viewport and frozen origins. */
 export const SHADOW_PARAMS_BYTES = 16 * 16;
 export const POINTS_LINES_VIEW_BYTES = 176;
 export const POINTS_LINES_VIEW_SLOT_STRIDE = 256;
-export const POINTS_LINES_VIEW_SLOT_COUNT = 1024;
-export const POINTS_LINES_VIEW_BUFFER_SIZE =
-  POINTS_LINES_VIEW_SLOT_STRIDE * POINTS_LINES_VIEW_SLOT_COUNT;
 /** Dynamic View slot: VIEW_UNIFORM_BYTES rounded up to the 256-byte offset alignment. */
 export const VIEW_UNIFORM_SLOT_STRIDE = 1536;
 export const POINT_SHADOW_VIEW_SLOT_COUNT = 24;
@@ -68,8 +68,8 @@ export const UNFOGGED_VIEW_UNIFORM_OFFSET =
   VIEW_UNIFORM_SLOT_STRIDE * (TRANSLUCENT_VIEW_SLOT_BASE + TRANSLUCENT_FOG_COMPOSITIONS.length);
 export const PLANAR_REFLECTION_UNIFORM_OFFSET =
   UNFOGGED_VIEW_UNIFORM_OFFSET + VIEW_UNIFORM_SLOT_STRIDE;
-/** viewProjection, plane and enabled lanes of the planar reflection projection. */
-export const PLANAR_REFLECTION_UNIFORM_SIZE = 96;
+/** Mirrored projection, plane, capture state, and receiver fade coefficients. */
+export const PLANAR_REFLECTION_UNIFORM_SIZE = 112;
 /** A never-written, therefore disabled, projection inside the same slot. */
 export const PLANAR_REFLECTION_DISABLED_UNIFORM_OFFSET = PLANAR_REFLECTION_UNIFORM_OFFSET + 256;
 export const POST_PROCESS_VIEW_UNIFORM_OFFSET =
@@ -117,7 +117,6 @@ function directionalShadowFilterCarrier(
   quality: DirectionalShadowQuality | undefined,
 ): readonly [number, number, number] {
   if (quality === undefined) return [0, 0, 0];
-  if (quality.kind === 'variance') return [DirectionalShadowFilterValue.variance, 0, 0];
   if (quality.kind === 'pcf-soft') return [DirectionalShadowFilterValue.pcfSoft, 0, 0];
   if (quality.kind === 'pcf-vogel') return [DirectionalShadowFilterValue.pcfVogel, 0, 0];
   if (quality.kind === 'pcss') {
@@ -240,6 +239,25 @@ interface ViewCloudShadowProjection {
   readonly thickness?: number;
 }
 
+/** One slab for the largest adjacent View family. Padding belongs to its reserved slots. */
+class ViewUniformFamily {
+  private readonly storage = new Float32Array(
+    (5 * VIEW_UNIFORM_SLOT_STRIDE + VIEW_UNIFORM_BYTES) / 4,
+  );
+  readonly faces = this.storage;
+  readonly fog = this.storage.subarray(0, (2 * VIEW_UNIFORM_SLOT_STRIDE + VIEW_UNIFORM_BYTES) / 4);
+  readonly fogWithDisabled = this.storage.subarray(
+    0,
+    (3 * VIEW_UNIFORM_SLOT_STRIDE + VIEW_UNIFORM_BYTES) / 4,
+  );
+
+  writeSlot(slot: number, view: Float32Array): number {
+    const offset = slot * (VIEW_UNIFORM_SLOT_STRIDE / 4);
+    this.storage.set(view, offset);
+    return offset;
+  }
+}
+
 /** Synchronous queue writes consume staging bytes before returning. */
 function createViewUboScratch() {
   const VIEW_PAYLOAD_FLOATS = VIEW_UNIFORM_BYTES / 4;
@@ -252,10 +270,53 @@ function createViewUboScratch() {
     view: mat4.create(),
     inverse: mat4.create(),
     auxiliary: new Float32Array(VIEW_PAYLOAD_FLOATS),
+    family: new ViewUniformFamily(),
   };
 }
 let viewUboScratch: ReturnType<typeof createViewUboScratch> | undefined;
 let writingViewUbo = false;
+
+function writeViewAtmosphere(
+  viewPayload: Float32Array,
+  atmosphere: AtmosphereParameters | undefined,
+  atmosphereProfile: StandardProfile['atmosphere'],
+  near: number,
+  sceneCapture: boolean,
+  light: DirectionalLightSnapshot | undefined,
+): void {
+  if (atmosphere !== undefined) {
+    writeAtmosphereUniform(viewPayload, 292, atmosphere, sceneCapture ? 64 : 0);
+    if (
+      atmosphereProfile?.aerialPerspectiveQuality === 'fast' &&
+      !sceneCapture &&
+      !atmosphere.backgroundOnly
+    ) {
+      const start =
+        atmosphereProfile.aerialPerspectiveStartM ?? (atmosphere.aerialPerspectiveStart || 100);
+      viewPayload[314] = Math.max(start, near) * 0.001;
+      viewPayload[316] = -Math.max(
+        1,
+        Math.min(
+          atmosphereProfile.sampleCountMaxPerSlice ?? 2,
+          2 * (atmosphereProfile.traceSampleCountScale ?? 1),
+        ),
+      );
+      viewPayload[318] = (atmosphereProfile.aerialPerspectiveRangeM ?? 96_000) * 0.001;
+      viewPayload[319] =
+        (viewPayload[319] ?? 0) +
+        4 +
+        (atmosphereProfile.skyAtmosphereAffectsHeightFog === false ? 8 : 0);
+    }
+    // The low bit selects aerial perspective; the second describes the captured sun lane.
+    if (light !== undefined) {
+      viewPayload[319] = (viewPayload[319] ?? 0) + 2;
+      const ground = groundSolarTransmittance(atmosphere, light.direction, true);
+      viewPayload.set(ground, 344);
+      viewPayload[347] =
+        !atmosphere.backgroundOnly && light.perPixelAtmosphereTransmittance === false ? 1 : 2;
+    }
+  }
+}
 
 /**
  * feat-20260704 M3/w18: assemble + upload the per-frame View UBO payload.
@@ -269,7 +330,8 @@ let writingViewUbo = false;
  * SSOT, no double-negation).
  *
  * feat-20260520-directional-light-shadow-mapping M1b / w7 + feat-20260613-csm
- * M4 / w16+w25: viewPayload is 292 floats. Layout matches common.wgsl View
+ * M4 / w16+w25: View includes the original 292-float camera and fog prefix.
+ * Layout matches common.wgsl View
  * struct byte-for-byte:
  *   [ 0..15] worldViewProj, [16..18] lightDir, [20..22] lightColor,
  *   [24..26] cameraPos, [28..43] lightViewProj0 (was lightSpaceMatrix),
@@ -290,10 +352,21 @@ let writingViewUbo = false;
  *   [280..283] clippingControl, [284..287] fogColorDensity,
  *   [288..291] fogHeightOpacity (heightFalloff, maxOpacity, translucent-fog slot, frame time),
  *   [292..315] atmosphere medium, [316..319] atmosphereControl,
- *   [320..323] fogSky (skyOpacity, vertex route, camera height density, reserved).
+ *   [320..323] fogSky (skyOpacity, vertex route, camera height density, Deferred channel proof),
+ *   [324..327] SSR work budgets, [328..343] subsurface profiles,
+ *   [344..347] CPU ground solar RGB and surface lighting mode.
  *
  * @internal
  */
+export function indirectSpecularMode(
+  profile: StandardProfile | undefined,
+  screenReflections: boolean,
+): 0 | 1 | 3 {
+  if (profile?.ibl !== false) return 0;
+  const gi = profile.diffuseGi;
+  return screenReflections || (gi?.gather !== 'baked' && gi?.reflections !== undefined) ? 1 : 3;
+}
+
 export function writeViewUbo(
   queue: RhiQueue,
   viewUniformBuffer: Buffer,
@@ -309,8 +382,20 @@ export function writeViewUbo(
   sceneCapture = false,
   /** Render sample elapsed seconds; the existing fogHeightOpacity.w lane. */
   frameTimeSeconds?: number,
-  viewport?: { readonly width: number; readonly height: number },
+  viewport?: {
+    readonly width: number;
+    readonly height: number;
+    readonly outputWidth?: number;
+    readonly outputHeight?: number;
+  },
   ssrQuality?: import('../quality').RenderQualityBudgets['ssr'],
+  deferredChannelProjection = 0,
+  subsurfaceProfiles?: readonly number[],
+  indirectSpecular: 0 | 1 | 3 = 0,
+  atmosphereProfile?: StandardProfile['atmosphere'],
+  forwardProjectedSun = false,
+  inlineSsr = false,
+  ssrPreviousColorValid = false,
 ): void {
   // Borrow ordinary staging once; raw getter/queue callback reentry owns an
   // independent invocation and cannot overwrite the caller's pending upload.
@@ -326,7 +411,15 @@ export function writeViewUbo(
     const resolvedTemporal = typeof temporalOrOffset === 'number' ? undefined : temporalOrOffset;
     const viewPayload = scratch.payload;
     viewPayload.fill(0);
-    writeSsrQualityLanes(viewPayload, ssrQuality);
+    const ssrPhase =
+      isTemporalAntialias(camera.antialias) && !sceneCapture
+        ? ((resolvedTemporal?.temporalFrameIndex ?? 0) % 1024) + 1
+        : 0;
+    writeSsrQualityLanes(viewPayload, ssrQuality, ssrPhase, inlineSsr);
+    // Packed 20-bit integer, exactly representable in a regular f32 lane.
+    // The low 20 bits belong to Deferred channel projection. Keep the combined word exact in f32.
+    viewPayload[323] = deferredChannelProjection | (indirectSpecular << 20);
+    if (subsurfaceProfiles !== undefined) scratch.words.set(subsurfaceProfiles, 328);
     const projMatrix = computeProjectionMatrix(camera, scratch.projection);
     const viewMatrix = computeViewMatrix(camera, scratch.view);
     // The payload owns its matrix storage. Publish unjittered temporal lanes
@@ -334,20 +427,29 @@ export function writeViewUbo(
     const mainProjection = scratch.mainProjection;
     mat4.multiply(mainProjection, projMatrix, viewMatrix);
     writeTemporalLanes(viewPayload, mainProjection, camera, resolvedTemporal);
+    viewPayload[231] = Number(forwardProjectedSun);
     jitterCameraProjection(projMatrix, projMatrix, resolvedTemporal?.currentJitterUv);
     mat4.multiply(mainProjection, projMatrix, viewMatrix);
 
     if (camera.clipping !== undefined) writeClippingLanes(viewPayload, camera.clipping);
     writeFogAndClockLanes(viewPayload, fog, frameTimeSeconds);
-    if (atmosphere !== undefined) {
-      writeAtmosphereUniform(viewPayload, 292, atmosphere, sceneCapture ? 64 : 0);
-      // The low bit selects aerial perspective; the second describes the captured sun lane.
-      if (lights.directional !== undefined) viewPayload[319] = (viewPayload[319] ?? 0) + 2;
-    }
+    writeViewAtmosphere(
+      viewPayload,
+      atmosphere,
+      atmosphereProfile,
+      camera.near,
+      sceneCapture,
+      lights.directional === undefined ? undefined : light,
+    );
     writeCameraAndSunLanes(viewPayload, mainProjection, camera, light, viewport, scratch.words);
     writeCascadeProjectionLanes(viewPayload, lights, mainProjection, scratch.inverse);
     if (camera.screenSpaceReflection !== undefined)
-      writeScreenSpaceReflectionLanes(viewPayload, camera.screenSpaceReflection);
+      writeScreenSpaceReflectionLanes(
+        viewPayload,
+        camera.screenSpaceReflection,
+        inlineSsr,
+        ssrPreviousColorValid,
+      );
     if (cloudShadowProjection !== undefined)
       writeCloudShadowLanes(viewPayload, cloudShadowProjection);
     writeDirectionalShadowLanes(viewPayload, lights, light);
@@ -366,43 +468,31 @@ export function writeViewUbo(
 
     // Auxiliary captures must not overwrite the display shadow view slots.
     if (byteOffset !== 0) return;
-    uploadTranslucentFogViews(queue, viewUniformBuffer, viewPayload, scratch.auxiliary);
-    uploadUnfoggedView(queue, viewUniformBuffer, viewPayload, scratch.auxiliary);
-    uploadPointShadowFaceViews(queue, viewUniformBuffer, viewPayload, lights, scratch.auxiliary);
-    if (resolvedTemporal !== undefined) {
-      const postProcessPayload = scratch.auxiliary;
-      postProcessPayload.set(viewPayload);
-      postProcessPayload.set(viewPayload.subarray(196, 212), 0);
-      mat4.invert(scratch.inverse, mat4.view(postProcessPayload));
-      postProcessPayload.set(scratch.inverse, 44);
-      const uploaded = queue.writeBuffer(
-        viewUniformBuffer,
-        POST_PROCESS_VIEW_UNIFORM_OFFSET,
-        postProcessPayload,
-      );
-      if (!uploaded.ok) throw uploaded.error;
-    }
+    uploadFogViews(queue, viewUniformBuffer, viewPayload, scratch.family);
+    uploadPointShadowFaceViews(queue, viewUniformBuffer, viewPayload, lights, scratch.family);
+    if (resolvedTemporal !== undefined)
+      uploadPostProcessView(queue, viewUniformBuffer, scratch, viewport);
   } finally {
     writingViewUbo = previousWriting;
   }
 }
 
-function uploadUnfoggedView(
+/** Exact after-tonemap coverage uses the output viewport and unjittered projection. */
+function uploadPostProcessView(
   queue: RhiQueue,
-  viewUniformBuffer: Buffer,
-  viewPayload: Float32Array,
-  disabled: Float32Array,
+  buffer: Buffer,
+  scratch: ReturnType<typeof createViewUboScratch>,
+  viewport: { readonly outputWidth?: number; readonly outputHeight?: number } | undefined,
 ): void {
-  if (viewPayload[321] === 1) {
-    // Preserve camera, lighting, clipping and frame time. No draw-specific
-    // shader variant or second material uniform is needed for fog:false.
-    disabled.set(viewPayload);
-    disabled[289] = 0;
-    disabled[290] = 0;
-    disabled[321] = 0;
-    const uploaded = queue.writeBuffer(viewUniformBuffer, UNFOGGED_VIEW_UNIFORM_OFFSET, disabled);
-    if (!uploaded.ok) throw uploaded.error;
-  }
+  const { payload, auxiliary, inverse } = scratch;
+  auxiliary.set(payload);
+  auxiliary.set(payload.subarray(196, 212), 0);
+  if (viewport?.outputWidth !== undefined) auxiliary[23] = viewport.outputWidth;
+  if (viewport?.outputHeight !== undefined) auxiliary[27] = viewport.outputHeight;
+  mat4.invert(inverse, mat4.view(auxiliary));
+  auxiliary.set(inverse, 44);
+  const uploaded = queue.writeBuffer(buffer, POST_PROCESS_VIEW_UNIFORM_OFFSET, auxiliary);
+  if (!uploaded.ok) throw uploaded.error;
 }
 
 function writeForwardHeightFogLanes(
@@ -430,20 +520,17 @@ function writeForwardHeightFogLanes(
   }
 }
 
-/** Opaque trace scale and traversal limits at [324..327]. */
+/** Shared SSR ray budget and accepted temporal phase at [324..327]. */
 export function writeSsrQualityLanes(
   viewPayload: Float32Array,
   quality?: import('../quality').RenderQualityBudgets['ssr'],
+  phase = 0,
+  forward = false,
 ): void {
-  viewPayload.set(
-    [
-      quality?.resolutionScale ?? 1,
-      quality?.hizIterations ?? 64,
-      quality?.linearIterations ?? 1024,
-      quality?.refineSteps ?? 5,
-    ],
-    324,
-  );
+  const tier = quality?.quality ?? 'high';
+  const multiRay = !forward && phase > 0 && tier === 'high';
+  const steps = tier === 'low' || multiRay ? 8 : 16;
+  viewPayload.set([quality?.resolutionScale ?? 1, steps, multiRay ? 4 : 1, phase], 324);
 }
 
 /** clippingPlanes at [256..279] and clippingControl at [280..283]. */
@@ -607,11 +694,13 @@ function writeTemporalLanes(
 function writeScreenSpaceReflectionLanes(
   viewPayload: Float32Array,
   ssr: NonNullable<CameraSnapshot['screenSpaceReflection']>,
+  inlineSsr: boolean,
+  previousColorValid: boolean,
 ): void {
   viewPayload[236] = ssr.maxDistance;
   viewPayload[237] = ssr.thickness;
   viewPayload[238] = ssr.maxRoughness;
-  viewPayload[239] = 1;
+  viewPayload[239] = inlineSsr ? (previousColorValid ? 3 : 2) : previousColorValid ? 4 : 1;
 }
 
 /** Cloud shadow projection at [240..255]. */
@@ -715,24 +804,26 @@ function writeSpotProjectionLanes(
 }
 
 /** One display View copy per translucent fog composition, tagged in lane 290. */
-function uploadTranslucentFogViews(
+function uploadFogViews(
   queue: RhiQueue,
-  viewUniformBuffer: Buffer,
-  viewPayload: Float32Array,
-  translucentPayload: Float32Array,
+  buffer: Buffer,
+  view: Float32Array,
+  family: ViewUniformFamily,
 ): void {
-  // Each queued write copies its source before the next staging update.
-  translucentPayload.set(viewPayload);
+  const disabled = view[321] === 1;
+  const span = disabled ? family.fogWithDisabled : family.fog;
   for (let index = 0; index < TRANSLUCENT_FOG_COMPOSITIONS.length; index++) {
-    const composition = TRANSLUCENT_FOG_COMPOSITIONS[index] as TranslucentFogComposition;
-    translucentPayload[290] = index + 1;
-    const uploaded = queue.writeBuffer(
-      viewUniformBuffer,
-      translucentViewOffset(composition),
-      translucentPayload,
-    );
-    if (!uploaded.ok) throw uploaded.error;
+    const offset = family.writeSlot(index, view);
+    span[offset + 290] = index + 1;
   }
+  if (disabled) {
+    const offset = family.writeSlot(TRANSLUCENT_FOG_COMPOSITIONS.length, view);
+    span[offset + 289] = 0;
+    span[offset + 290] = 0;
+    span[offset + 321] = 0;
+  }
+  const uploaded = queue.writeBuffer(buffer, translucentViewOffset('straight'), span);
+  if (!uploaded.ok) throw uploaded.error;
 }
 
 /** One display View copy per point-shadow atlas face, with that face matrix in lane 28. */
@@ -741,21 +832,23 @@ function uploadPointShadowFaceViews(
   viewUniformBuffer: Buffer,
   viewPayload: Float32Array,
   lights: ViewLights,
-  facePayload: Float32Array,
+  family: ViewUniformFamily,
 ): void {
   for (const snapshot of lights.pointShadow ?? []) {
     if (snapshot.shadowAtlasLayer < 0 || snapshot.shadowAtlasLayer >= SHADOW_ATLAS_DEFAULT_LAYERS)
       continue;
     for (let face = 0; face < 6; face += 1) {
-      facePayload.set(viewPayload);
-      const matrix = snapshot.shadowMatrices.subarray(face * 16, (face + 1) * 16);
-      facePayload.set(matrix, 28);
-      const uploaded = queue.writeBuffer(
-        viewUniformBuffer,
-        pointShadowViewOffset(snapshot.shadowAtlasLayer, face),
-        facePayload,
-      );
-      if (!uploaded.ok) throw uploaded.error;
+      const offset = family.writeSlot(face, viewPayload) + 28;
+      const matrices = snapshot.shadowMatrices;
+      const base = face * 16;
+      const count = Math.min(16, matrices.length - base);
+      for (let i = 0; i < count; i++) family.faces[offset + i] = matrices[base + i] as number;
     }
+    const uploaded = queue.writeBuffer(
+      viewUniformBuffer,
+      pointShadowViewOffset(snapshot.shadowAtlasLayer, 0),
+      family.faces,
+    );
+    if (!uploaded.ok) throw uploaded.error;
   }
 }

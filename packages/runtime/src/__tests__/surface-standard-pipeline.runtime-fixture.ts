@@ -51,10 +51,7 @@ import {
   type SurfaceOpticalParameters,
 } from '../../../../apps/preview/src/surface-optical-evidence';
 import { surfaceEvidenceGuid } from '../../../../apps/preview/src/surface-standard-evidence-identity';
-import {
-  completeReadyFrame,
-  drawReadyFrame,
-} from '../../../../scripts/test/ready-render-frame.mjs';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import quality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import {
   assetGuid,
@@ -64,6 +61,7 @@ import {
 import { testPlatform } from '../../../app/src/__tests__/platform-fixture';
 import { installDefaultAssetDecoders } from '../asset-contributions';
 import { testAssets } from './helpers/runtime-assets';
+import { completeSurfaceAppBaseline } from './surface-app-lifecycle-baseline.fixture';
 import {
   compareSurfaceAppLifecycleRois,
   createSurfaceAppLifecycleCoverageMask,
@@ -361,7 +359,7 @@ export function assertSurfacePixelFalsification(
 
 export function populateSurfaceWorld(
   world: World,
-  materials: readonly MaterialAsset[],
+  materials: readonly (MaterialAsset | undefined)[],
   waterInstanceTransforms?: Float32Array,
   options?: { readonly msaa4x?: boolean },
 ): {
@@ -391,13 +389,14 @@ export function populateSurfaceWorld(
     .unwrap();
   const mediumMembers: SurfaceDynamicInputMemberIdentity[] = [];
   const materialHandles = new Map<MaterialAsset, AssetHandle<'material'>>();
+  const center = (materials.length - 1) / 2;
   for (const [index, material] of materials.entries()) {
+    if (material === undefined) continue;
     let handle = materialHandles.get(material);
     if (handle === undefined) {
       handle = testAssets(world).create(material).unwrap();
       materialHandles.set(material, handle);
     }
-    const center = (materials.length - 1) / 2;
     const isWaterB =
       material.surface?.model === 'single-layer-medium' && mediumMembers.length === 1;
     const entity = world
@@ -596,7 +595,7 @@ export function createSurfaceHostLossInstrumentation(): {
 
 const SURFACE_APP_EVENT_LIFETIME_SECONDS = 0.45;
 const SURFACE_SPLASH_AUTHORED_LIFETIME_SECONDS = 0.34;
-export const SURFACE_SPLASH_EFFECT_GUID = '7a0e0000-0000-7000-8000-000000000001';
+export const SURFACE_SPLASH_EFFECT_GUID = '78a0722c-579d-5ca8-a197-ceac969d9735';
 
 /** Production VFX host used by both Dawn and Browser Surface journeys. */
 export function createSurfaceSplashRuntimeHost(): VfxRuntimeHost {
@@ -944,18 +943,21 @@ async function prepareSurfaceAppLifecycleScene(
 ): Promise<SurfaceAppLifecycleScene> {
   const { renderer } = input;
   const assets = surfaceAssets(input.assets);
-  const materials = await Promise.all(
-    SURFACE_CASES.map(async ({ guid }) =>
-      (await loadSurfaceMaterial(assets, parseSurfaceGuid(guid))).unwrap(),
-    ),
+  // Keep the calibrated water cells and a real deferred draw through recovery.
+  // The separate rendering proof exercises every material permutation.
+  const cells = await Promise.all(
+    SURFACE_CASES.map(async ({ guid, id, rootPlan }) => {
+      if (id !== 'default-base' && rootPlan !== 'single-layer-medium') return undefined;
+      return (await loadSurfaceMaterial(assets, parseSurfaceGuid(guid))).unwrap();
+    }),
   );
   const world = new World({
     assets,
     time: { fixedDeltaSeconds: 1 / 60, maxStepsPerUpdate: 120, maxDeltaSeconds: 3 },
   });
-  const { mediumMembers } = populateSurfaceWorld(world, materials);
+  const { mediumMembers } = populateSurfaceWorld(world, cells);
   const dynamicInput = createSurfaceDynamicInput(
-    materials,
+    cells.filter((material) => material !== undefined),
     mediumMembers,
     renderer.inspect().frame.deviceGeneration,
   );
@@ -1732,8 +1734,10 @@ class SurfaceAppLifecycleDrive {
   // pipelines on that receipt, so finish the same baseline at zero World delta.
   async captureBaseline(): Promise<SurfaceAppLifecycleFrameCapture> {
     const { run, app } = this;
-    const baselineReceipt = await completeReadyFrame(
-      async () => {
+    const baselineReceipt = await completeSurfaceAppBaseline({
+      renderer: run.renderer,
+      receipts: run.receipts,
+      async submit() {
         const index = run.receipts.length;
         run.armLifecycleObservation();
         if (index === 0) {
@@ -1746,19 +1750,7 @@ class SurfaceAppLifecycleDrive {
           throw new Error('surface-app-lifecycle: baseline receipt unavailable');
         return receipt;
       },
-      {
-        timeoutMs: 30_000,
-        async onCompleted(receipt) {
-          if (
-            receipt.presentation !== 'ready' &&
-            receipt.observationDomains?.includes('linear-hdr')
-          ) {
-            const observed = await run.renderer.observe(receipt, { include: ['linear-hdr'] });
-            if (!observed.ok) throw observed.error;
-          }
-        },
-      },
-    );
+    });
     return run.captureReceipt('baseline', baselineReceipt);
   }
 
@@ -3056,7 +3048,11 @@ export async function runSurfaceManagedMediumOracle(
     Math.max(...left.map((value, index) => Math.abs(value - (right[index] ?? Number.NaN))));
   try {
     for (const renderPath of ['forward', 'deferred'] as const) {
-      const configured = renderer.setProfile({ ...profile, renderPath, ssao: false });
+      const configured = renderer.setProfile({
+        ...profile,
+        renderPath,
+        ambientOcclusion: { enabled: false },
+      });
       if (!configured.ok) throw configured.error;
       for (const geometryLane of ['direct', 'automatic'] as const) {
         const capture = async (isMedium: boolean, phase: SurfaceManagedMediumStage['phase']) => {

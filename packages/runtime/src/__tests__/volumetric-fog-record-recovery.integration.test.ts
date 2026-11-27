@@ -15,6 +15,7 @@ import { rhi as nullRhi, RhiNullAdapter } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import { err, type Result, type TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import {
   nativeOutputShaderFixture,
   renderLifecycleManifestUrl,
@@ -369,9 +370,7 @@ it.each([
     renderer.subscribe((event) => {
       if (event.kind === 'error') errors.push(event.error);
     });
-    const firstResult = renderer.draw(request);
-    expect(firstResult.ok, JSON.stringify(errors)).toBe(true);
-    const first = required(firstResult);
+    const first = await drawReadyFrame(renderer, request);
     expect(errors).toEqual([]);
     expect(first).toBeDefined();
     expect(
@@ -395,7 +394,7 @@ it.each([
       renderer.inspect().perFramePassNames,
       JSON.stringify(renderer.inspect().perFramePassNames),
     ).toEqual(previousPasses);
-    const retry = required(renderer.draw(request));
+    const retry = await drawReadyFrame(renderer, request);
     expect(retry?.barrelDistortion?.strength).toBeCloseTo(0.3);
     expect(retry?.barrelDistortion?.width).toBe(96);
     expect(renderer.inspect().perFramePassNames).not.toContain('volume-composite');

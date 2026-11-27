@@ -1,3 +1,4 @@
+import { nowMs } from '@forgeax/engine-platform';
 import { ShaderSource, shaderSourceForDescriptor } from '@forgeax/engine-types';
 import { ShadowViewResources } from '../record/shadow-view-resources';
 import { resolveMaterialShaderVariantSet, type SeedShaderModule } from './material-shader-policy';
@@ -6,7 +7,6 @@ import { resolveMaterialShaderVariantSet, type SeedShaderModule } from './materi
 // policy/adapters and returns a fully prepared PipelineState.
 
 import type {
-  BindGroupLayout,
   PipelineLayout,
   PipelineLibraryManifest,
   RenderPipeline,
@@ -20,13 +20,20 @@ import {
   isShaderTemplateManifestRow,
   type MaterialShaderManifestEntry,
   type MaterialShaderManifestVariant,
+  manifestShaderSource,
   materialShaderPreparedSourceRows,
-  materialShaderSourceEquals,
+  materialShaderSource,
   type PipelineGroup2Contract,
   type ShaderCatalog,
+  TAA_SCENE_VELOCITY_WGSL,
 } from '@forgeax/engine-shader';
 import { isShaderCompilerProfile, type ManifestEntry } from '@forgeax/engine-types';
 import { prewarmDepthOfField } from '../features/depth-of-field/depth-of-field-assembly';
+import { sceneVelocityComputeSource } from '../features/motion-blur/scene-velocity-motion-blur';
+import {
+  SCENE_VELOCITY_TEMPORAL_LABEL,
+  SCENE_VELOCITY_TEMPORAL_WGSL,
+} from '../temporal/default-gbuffer-velocity';
 import type { RhiBackendPack } from './backend-contract';
 import {
   prewarmSsrWithDepthPyramid,
@@ -59,6 +66,7 @@ import type {
   VolumetricFogShaderSources,
 } from '../render-contract';
 import { type PipelineState, selectSwapChainFormat } from '../render-system';
+import { TRANSMISSION_MERGE_LABEL, TRANSMISSION_MERGE_WGSL } from '../transmission/merge';
 import { createExtendedLightingFallbackResources } from './extended-lighting-fallback';
 import { createLayeredTextureFallbackViews } from './layered-texture-fallback';
 import { prewarmRequiredMaterialShaders } from './material-shader-prewarm';
@@ -122,11 +130,11 @@ import {
   emptyEngineShaderModules,
   findEngineManifestEntry,
   findMaterialShaderEntry,
+  prepareStandardSceneSources,
   prewarmAtmospherePrograms,
   prewarmFullscreenPostProcesses,
   prewarmPointsLinesProgram,
   prewarmShadowCasterModules,
-  prewarmStandardScenePrograms,
   publishIblPrograms,
   type ResolvedEngineManifestEntries,
   resolveEngineManifestEntries,
@@ -197,11 +205,11 @@ export async function prepareBackgroundPipelineLibrary(
       modules.add(pipeline.vertex.module);
       if (pipeline.fragment !== undefined) modules.add(pipeline.fragment.module);
     }
-    let slice = performance.now();
+    let slice = nowMs();
     for (const module of modules) {
-      if (performance.now() - slice >= BACKGROUND_ANALYSIS_SLICE_MS) {
+      if (nowMs() - slice >= BACKGROUND_ANALYSIS_SLICE_MS) {
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
-        slice = performance.now();
+        slice = nowMs();
       }
       if (!active()) return;
       const descriptor = manifest.shaders[module];
@@ -257,15 +265,14 @@ type BootModuleLayouts = Pick<
   PipelineState,
   | 'pbrPipelineLayout'
   | 'gpuDrivenInstancesBindGroupLayout'
+  | 'gpuDrivenPrimitiveBindGroupLayout'
+  | 'gpuDrivenSkinPrimitiveBindGroupLayout'
   | 'gpuDrivenPbrPipelineLayout'
   | 'gpuDrivenPbrSkinPipelineLayout'
   | 'surfaceDirectInstancesBindGroupLayout'
   | 'sceneDirectInstancesBindGroupLayout'
   | 'sceneDirectPipelineLayout'
   | 'sceneDirectClusterPipelineLayout'
-  | 'gpuDrivenClusterPbrPipelineLayout'
-  | 'gpuDrivenClusterPbrSkinPipelineLayout'
-  | 'gpuDrivenClusterMeshBindGroupLayout'
   | 'hdrpPbrPipelineLayout'
   | 'hdrpProbePbrPipelineLayout'
   | 'pbrSkinPipelineLayout'
@@ -285,21 +292,20 @@ function selectBootModuleLayouts(
   pbrLayouts: PbrPipelineLayoutBundle,
   hdrp: HdrpPipelineLayouts,
   gpuDriven: GpuDrivenReadyLayouts,
-  gpuDrivenCluster: GpuDrivenClusterLayouts,
+  sceneDirectClusterPipelineLayout: PipelineLayout | null,
 ): BootModuleLayouts {
   if (!bootModulesReady) {
     return {
       pbrPipelineLayout: null,
       gpuDrivenInstancesBindGroupLayout: null,
+      gpuDrivenPrimitiveBindGroupLayout: null,
+      gpuDrivenSkinPrimitiveBindGroupLayout: null,
       gpuDrivenPbrPipelineLayout: null,
       gpuDrivenPbrSkinPipelineLayout: null,
       surfaceDirectInstancesBindGroupLayout: null,
       sceneDirectInstancesBindGroupLayout: null,
       sceneDirectPipelineLayout: null,
       sceneDirectClusterPipelineLayout: null,
-      gpuDrivenClusterPbrPipelineLayout: null,
-      gpuDrivenClusterPbrSkinPipelineLayout: null,
-      gpuDrivenClusterMeshBindGroupLayout: null,
       hdrpPbrPipelineLayout: null,
       hdrpProbePbrPipelineLayout: null,
       pbrSkinPipelineLayout: null,
@@ -312,15 +318,14 @@ function selectBootModuleLayouts(
   return {
     pbrPipelineLayout: pbrLayouts.pipelineLayout,
     gpuDrivenInstancesBindGroupLayout: gpuDriven.gpuDrivenInstancesBindGroupLayout,
+    gpuDrivenPrimitiveBindGroupLayout: gpuDriven.gpuDrivenPrimitiveBindGroupLayout,
+    gpuDrivenSkinPrimitiveBindGroupLayout: gpuDriven.gpuDrivenSkinPrimitiveBindGroupLayout,
     gpuDrivenPbrPipelineLayout: gpuDriven.gpuDrivenPbrPipelineLayout,
     gpuDrivenPbrSkinPipelineLayout: gpuDriven.gpuDrivenPbrSkinPipelineLayout,
     surfaceDirectInstancesBindGroupLayout: gpuDriven.surfaceDirectInstancesBindGroupLayout,
     sceneDirectInstancesBindGroupLayout: gpuDriven.sceneDirectInstancesBindGroupLayout,
     sceneDirectPipelineLayout: gpuDriven.sceneDirectPipelineLayout,
-    sceneDirectClusterPipelineLayout: gpuDrivenCluster.sceneDirect,
-    gpuDrivenClusterPbrPipelineLayout: gpuDrivenCluster.rigid,
-    gpuDrivenClusterPbrSkinPipelineLayout: gpuDrivenCluster.skin,
-    gpuDrivenClusterMeshBindGroupLayout: hdrp.unifiedBgl,
+    sceneDirectClusterPipelineLayout,
     hdrpPbrPipelineLayout: hdrp.pbrPipelineLayout,
     hdrpProbePbrPipelineLayout: hdrp.probePbrPipelineLayout,
     pbrSkinPipelineLayout: gpuDriven.pbrSkinPipelineLayout,
@@ -328,51 +333,6 @@ function selectBootModuleLayouts(
     pbrSkinMeshBindGroupLayout: gpuDriven.pbrSkinMeshBindGroupLayout,
     hdrpSkinPipelineLayout: gpuDriven.hdrpSkinPipelineLayout,
     hdrpSkinMeshBindGroupLayout: gpuDriven.hdrpSkinMeshBindGroupLayout,
-  };
-}
-
-interface GpuDrivenClusterLayouts {
-  readonly rigid: PipelineLayout | null;
-  readonly skin: PipelineLayout | null;
-  readonly sceneDirect: PipelineLayout | null;
-}
-
-/** Scene-index cluster layouts need storage; scene-direct cluster is the texture-table form. */
-function buildGpuDrivenClusterLayouts(
-  device: RhiDevice,
-  storageBuffer: boolean,
-  pbrLayouts: PbrPipelineLayoutBundle,
-  hdrpUnifiedBgl: BindGroupLayout | null,
-  gpuDriven: GpuDrivenReadyLayouts,
-): GpuDrivenClusterLayouts {
-  if (!storageBuffer) {
-    // Clustered scene-direct unlit keeps the cluster group(2) and reads the
-    // texture tables at slot 3.
-    const sceneDirect = createGpuDrivenClusterPipelineLayout(
-      device,
-      'pbr-scene-direct-cluster-pl',
-      pbrLayouts,
-      hdrpUnifiedBgl,
-      gpuDriven.sceneDirectInstancesBindGroupLayout,
-    );
-    return { rigid: null, skin: null, sceneDirect };
-  }
-  return {
-    sceneDirect: null,
-    rigid: createGpuDrivenClusterPipelineLayout(
-      device,
-      'pbr-gpu-driven-cluster-pl',
-      pbrLayouts,
-      hdrpUnifiedBgl,
-      gpuDriven.gpuDrivenInstancesBindGroupLayout,
-    ),
-    skin: createGpuDrivenClusterPipelineLayout(
-      device,
-      'pbr-skin-gpu-driven-cluster-pl',
-      pbrLayouts,
-      gpuDriven.hdrpSkinMeshBindGroupLayout,
-      gpuDriven.gpuDrivenInstancesBindGroupLayout,
-    ),
   };
 }
 
@@ -456,7 +416,10 @@ export async function buildReadyWebGPU(
    * Install manifest-owned SSR and depth-pyramid utility sources only after
    * both bundles compile; SSR trace currently reads the pyramid.
    */
-  setSsrShaderSources: (sources: SsrShaderSources, pyramid: DepthPyramidShaderSources) => void,
+  setSsrShaderSources: (
+    sources: SsrShaderSources | undefined,
+    pyramid: DepthPyramidShaderSources,
+  ) => void,
   /** Install manifest-owned atmosphere utility sources only after all modules compile. */
   setAtmosphereShaderSources: (sources: AtmosphereShaderSources) => void,
   setStandardSceneShaderSources: (
@@ -517,7 +480,9 @@ export async function buildReadyWebGPU(
         const key = resolveMaterialShaderVariantSet(
           'CLUSTER_FORWARD_AVAILABLE=true',
           entry,
-          rhiDevice.caps.backendKind,
+          // Both storage and texture transports pack the same reflected ABI.
+          // This is a CPU compilation, independent of the active device lane.
+          caps.webgl2Downlevel ? 'webgpu' : rhiDevice.caps.backendKind,
           true,
           rhiDevice.limits.maxSampledTexturesPerShaderStage,
         );
@@ -590,8 +555,14 @@ export async function buildReadyWebGPU(
         computeStorageTexture ? 'compute' : 'fragment',
       );
       if (sources !== undefined) setSsrShaderSources(sources.ssr, sources.pyramid);
+      const merge = await compileUtilityShader(
+        TRANSMISSION_MERGE_LABEL,
+        TRANSMISSION_MERGE_WGSL,
+        'stock transmission',
+      );
+      seedShaderModule(TRANSMISSION_MERGE_LABEL, merge, TRANSMISSION_MERGE_WGSL);
     }
-    const scenePrograms = await prewarmStandardScenePrograms(
+    const scenePrograms = await prepareStandardSceneSources(
       registry,
       compileUtilityShader,
       seedShaderModule,
@@ -673,13 +644,14 @@ export async function buildReadyWebGPU(
     pbr: ShaderModule;
     gpuDrivenPbrPrograms: EngineShaderModules['gpuDrivenPbrPrograms'];
   }> => {
+    const source = manifestShaderSource(entries.pbr);
     const pbrModule = await compileModule(
-      entries.pbr.wgsl,
+      source,
       'pbr',
       'PBR shader module compiled',
       'inspect manifest pbr entry composed wgsl; check device.features',
     );
-    seedShaderModule('module-forgeax::default-standard-pbr', pbrModule, entries.pbr.wgsl);
+    seedShaderModule('module-forgeax::default-standard-pbr', pbrModule, source);
     const pbrManifestEntry = findMaterialShaderEntry(registry, 'forgeax::default-standard-pbr');
     const gpuDrivenModules = await buildGpuDrivenPbrReadyModules({
       registry,
@@ -703,15 +675,19 @@ export async function buildReadyWebGPU(
         ? undefined
         : materialShaderPreparedSourceRows(pbrManifestEntry).find(
             (variant): variant is MaterialShaderManifestVariant =>
-              'definesKey' in variant && materialShaderSourceEquals(variant, entries.pbr.wgsl),
+              'definesKey' in variant && materialShaderSource(variant).sameText(source),
           );
     if (pbrVariant !== undefined)
       seedShaderModule(
         `module-forgeax::default-standard-pbr#${pbrVariant.definesKey}`,
         pbrModule,
-        entries.pbr.wgsl,
+        source,
       );
-    if (immediateCreateShaderModule === undefined)
+    if (
+      immediateCreateShaderModule === undefined &&
+      pbrManifestEntry !== undefined &&
+      !isShaderTemplateManifestRow(pbrManifestEntry)
+    )
       await prewarmStandardPbrVariants(pbrManifestEntry, entries.pbr, pbrModule);
     return { pbr: pbrModule, gpuDrivenPbrPrograms: gpuDrivenModules.gpuDrivenPbrPrograms };
   };
@@ -760,10 +736,45 @@ export async function buildReadyWebGPU(
     });
     const analyticFog = findEngineManifestEntry(registry, manifestEntries, 'forgeax::analytic-fog');
     if (analyticFog !== undefined) registerBuiltinAnalyticFog(() => analyticFog.wgsl);
-    if (entries.motionBlur !== undefined && !isShaderTemplateManifestRow(entries.motionBlur))
+    // These single utility programs can enter a live temporal graph directly.
+    // Seed the validated modules so recorders without a synchronous compiler
+    // can encode the first temporal frame on the same path as other devices.
+    if (entries.motionBlur !== undefined) {
       await prewarmTemporal(entries.motionBlur, 'forgeax.motion-blur');
-    if (entries.taaResolve !== undefined && !isShaderTemplateManifestRow(entries.taaResolve))
+      if (rhiDevice.caps.compute && rhiDevice.caps.storageBuffer && rhiDevice.caps.storageTexture) {
+        const motionBlurVelocitySource = sceneVelocityComputeSource();
+        const label = 'motion-blur-tile-summary';
+        const module = await compileModule(
+          motionBlurVelocitySource,
+          label,
+          'scene-velocity Motion Blur compute shader module compiles before the first temporal frame',
+          'inspect the Motion Blur depth, velocity and scene-view bindings',
+        );
+        seedShaderModule(label, module, motionBlurVelocitySource);
+        seedShaderModule('motion-blur', module, motionBlurVelocitySource);
+      }
+    }
+    if (entries.taaResolve !== undefined) {
       await prewarmTemporal(entries.taaResolve, 'forgeax.taa-resolve');
+      const taaVelocitySource = TAA_SCENE_VELOCITY_WGSL;
+      const taaVelocityLabel = postProcessShaderModuleLabel(taaVelocitySource);
+      const taaVelocityModule = await compileModule(
+        taaVelocitySource,
+        taaVelocityLabel,
+        'scene-velocity TAA resolve shader module compiled before the first temporal frame',
+        'inspect the TAA scene-velocity bindings and device.features',
+      );
+      seedShaderModule(taaVelocityLabel, taaVelocityModule, taaVelocitySource);
+      const label = SCENE_VELOCITY_TEMPORAL_LABEL;
+      const source = SCENE_VELOCITY_TEMPORAL_WGSL;
+      const module = await compileModule(
+        source,
+        label,
+        'scene velocity reconstruction compiles before the first temporal frame',
+        'inspect the Standard depth and packed velocity bindings',
+      );
+      seedShaderModule(label, module, source);
+    }
     await prewarmDepthOfField(manifestEntries, prewarmTemporal, registerBuiltinDepthOfField);
     const { motionBlur, taaResolve } = entries;
     registerBuiltinTemporalPostProcesses({
@@ -893,6 +904,7 @@ export async function buildReadyWebGPU(
       bloomComposite,
       ssao,
       ssaoGBufferV2: entries.ssao?.programContract?.gbuffer === 'standard-gbuffer/2',
+      ssaoCompactGBuffer: entries.ssao?.programContract?.compactGbuffer === 'standard-gbuffer/4',
       gtaoGBufferV2: entries.gtaoCompute?.programContract?.gbuffer === 'standard-gbuffer/2',
       gtaoCompute,
       gpuDrivenPbrPrograms: standard.gpuDrivenPbrPrograms,
@@ -904,8 +916,7 @@ export async function buildReadyWebGPU(
   const bootModulesReady = modules.unlit !== null && modules.pbr !== null;
 
   // Standard layouts: view + material + mesh-array + instances (no group(4)).
-  // HDRP variants swap the clustered unified group(2); GPU-driven batches keep
-  // that group with the compact scene-index slot(3).
+  // Clustered and baseline GPU-driven passes share their Primitive and Scene layouts.
   const pbrLayouts = buildReadyPbrLayouts(rhiDevice, caps);
   const unlitPipelineLayout = buildUnlitPipelineLayout(
     rhiDevice,
@@ -921,13 +932,15 @@ export async function buildReadyWebGPU(
       asyncCreateShaderModule,
     );
   const gpuDriven = buildGpuDrivenPbrReadyLayouts(rhiDevice, caps.storageBuffer, pbrLayouts);
-  const gpuDrivenCluster = buildGpuDrivenClusterLayouts(
-    rhiDevice,
-    caps.storageBuffer,
-    pbrLayouts,
-    hdrp.unifiedBgl,
-    gpuDriven,
-  );
+  const sceneDirectClusterPipelineLayout = caps.storageBuffer
+    ? null
+    : createGpuDrivenClusterPipelineLayout(
+        rhiDevice,
+        'pbr-scene-direct-cluster-pl',
+        pbrLayouts,
+        hdrp.unifiedBgl,
+        gpuDriven.sceneDirectInstancesBindGroupLayout,
+      );
 
   // Pipeline-scoped shared buffers; per-frame bind groups reference them and
   // queue.writeBuffer updates their contents.
@@ -1018,7 +1031,7 @@ export async function buildReadyWebGPU(
   const runtimeLinearLdrMaterialSpecTable = buildLinearLdrMaterialSpecTable(
     swapChainFormats.view,
   ).map((spec) => withMaterialVertexInputs(registry, spec));
-  prewarmMaterialSpecPipelines(
+  await prewarmMaterialSpecPipelines(
     [...runtimeSpecConstTable, ...runtimeLinearLdrMaterialSpecTable],
     shaderModuleMap,
     pipelineDeviceProvider,
@@ -1072,7 +1085,13 @@ export async function buildReadyWebGPU(
     standardPbrShaderUvSetCount,
     unlitPipelineMsaa: cachedUnlitPipeline(false, 4),
     unlitPipelineHdrMsaa: cachedUnlitPipeline(true, 4),
-    ...selectBootModuleLayouts(bootModulesReady, pbrLayouts, hdrp, gpuDriven, gpuDrivenCluster),
+    ...selectBootModuleLayouts(
+      bootModulesReady,
+      pbrLayouts,
+      hdrp,
+      gpuDriven,
+      sceneDirectClusterPipelineLayout,
+    ),
     gpuDrivenPbrPrograms: modules.gpuDrivenPbrPrograms,
     hdrpMeshBindGroupLayout: hdrp.unifiedBgl,
     hdrpClusterMembershipPipeline,
@@ -1089,6 +1108,7 @@ export async function buildReadyWebGPU(
         label: 'view-linear-clamp',
         magFilter: 'linear',
         minFilter: 'linear',
+        mipmapFilter: 'linear',
         addressModeU: 'clamp-to-edge',
         addressModeV: 'clamp-to-edge',
         addressModeW: 'clamp-to-edge',

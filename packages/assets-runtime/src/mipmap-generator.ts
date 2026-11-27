@@ -36,6 +36,8 @@ export type MipmapShaderModuleFactory = (
   desc: { code: string; label?: string },
 ) => Promise<Result<ShaderModule, RhiError>>;
 
+type MipmapPipelineKey = `${GPUTextureFormat}/${string}`;
+
 /**
  * Per-device pipeline cache structure (research F-2 SSOT).
  * Held under a module-private `WeakMap<RhiDevice, MipmapPipelineCache>`.
@@ -44,7 +46,7 @@ interface MipmapPipelineCache {
   readonly sampler: Sampler;
   readonly module: ShaderModule;
   readonly layout: BindGroupLayout;
-  readonly pipelines: Map<GPUTextureFormat, RenderPipeline>;
+  readonly pipelines: Map<MipmapPipelineKey, RenderPipeline>;
   normalRoughness?: NormalRoughnessMipmapPipelines;
   normalRoughnessPreparation?: Promise<Result<NormalRoughnessMipmapPipelines, RhiError>>;
 }
@@ -94,6 +96,44 @@ fn vs_main(@builtin(vertex_index) vid : u32) -> VsOut {
 fn fs_main(in : VsOut) -> @location(0) vec4<f32> {
   return textureSample(src_texture, src_sampler, in.uv);
 }
+
+fn gaussian(uv: vec2<f32>, texel: vec2<f32>) -> vec4<f32> {
+  // Pair neighboring weights of the separable [1, 3, 3, 1] kernel.
+  let d = texel * 0.75;
+  return 0.25 * (
+    textureSampleLevel(src_texture, src_sampler, uv + vec2<f32>(-d.x, -d.y), 0.0) +
+    textureSampleLevel(src_texture, src_sampler, uv + vec2<f32>( d.x, -d.y), 0.0) +
+    textureSampleLevel(src_texture, src_sampler, uv + vec2<f32>(-d.x,  d.y), 0.0) +
+    textureSampleLevel(src_texture, src_sampler, uv + vec2<f32>( d.x,  d.y), 0.0)
+  );
+}
+
+@fragment
+fn fs_gaussian(in: VsOut) -> @location(0) vec4<f32> {
+  return gaussian(in.uv, 1.0 / vec2<f32>(textureDimensions(src_texture)));
+}
+
+override sharpenStrength: f32 = 0.0;
+
+@fragment
+fn fs_sharpen(in: VsOut) -> @location(0) vec4<f32> {
+  let texel = 1.0 / vec2<f32>(textureDimensions(src_texture));
+  let narrow = gaussian(in.uv, texel);
+  // Pair the eight binomial taps along each axis. Sharpen luminance only.
+  let offsets = vec4<f32>(-2.625, -0.875, 0.875, 2.625);
+  let weights = vec4<f32>(0.0625, 0.4375, 0.4375, 0.0625);
+  let luma = vec3<f32>(0.2126, 0.7152, 0.0722);
+  var broadLuma = 0.0;
+  for (var y = 0u; y < 4u; y++) {
+    for (var x = 0u; x < 4u; x++) {
+      let uv = in.uv + vec2<f32>(offsets[x], offsets[y]) * texel;
+      broadLuma += dot(textureSampleLevel(src_texture, src_sampler, uv, 0.0).rgb, luma)
+        * weights[x] * weights[y];
+    }
+  }
+  let delta = (dot(narrow.rgb, luma) - broadLuma) * sharpenStrength;
+  return vec4<f32>(narrow.rgb + vec3<f32>(delta), narrow.a);
+}
 `;
 
 /**
@@ -115,6 +155,13 @@ export function mipmapCacheSize(device: RhiDevice): number {
  * bind-group-layout are constructed lazily on the first cache miss for a
  * given device and reused across all formats on that device.
  */
+function mipmapPipelineKey(
+  format: GPUTextureFormat,
+  filter: GpuTextureMipFilter = 'box',
+): MipmapPipelineKey {
+  return `${format}/${typeof filter === 'string' ? filter : `sharpen-${filter.strength}`}`;
+}
+
 export async function getOrCreateMipmapPipeline(
   device: RhiDevice,
   format: GPUTextureFormat,
@@ -149,7 +196,23 @@ export async function getOrCreateMipmapPipeline(
     const prepared = await state.normalRoughnessPreparation;
     return prepared.ok ? ok(prepared.value.base) : prepared;
   }
-  const existing = cache.value.pipelines.get(format);
+  if (
+    typeof filter === 'object' &&
+    (!Number.isInteger(filter.strength) || filter.strength < 0 || filter.strength > 10)
+  )
+    return err(
+      new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'integer mip sharpening strength in [0, 10]',
+        hint: 'use 0 for Gaussian or select a bounded sharpening strength',
+      }),
+    );
+  if (device.caps.backendKind === 'wgpu-webgl2' && filter !== 'box') {
+    const stage = await getOrCreateMipmapPipeline(device, format, asyncCreateShaderModule);
+    if (!stage.ok) return stage;
+  }
+  const key = mipmapPipelineKey(format, filter);
+  const existing = cache.value.pipelines.get(key);
   if (existing !== undefined) {
     return ok(existing);
   }
@@ -159,18 +222,20 @@ export async function getOrCreateMipmapPipeline(
   });
   if (!layoutRes.ok) return layoutRes;
   const pipelineRes = device.createRenderPipeline({
-    label: `mipmap-pipeline-${format}`,
+    label: `mipmap-pipeline-${key}`,
     layout: layoutRes.value,
     vertex: { module: cache.value.module, entryPoint: 'vs_main', buffers: [] },
     fragment: {
       module: cache.value.module,
-      entryPoint: 'fs_main',
+      ...(typeof filter === 'object' && filter.strength > 0
+        ? { entryPoint: 'fs_sharpen', constants: { sharpenStrength: filter.strength / 10 } }
+        : { entryPoint: filter === 'box' ? 'fs_main' : 'fs_gaussian' }),
       targets: [{ format }],
     },
     primitive: { topology: 'triangle-list' },
   });
   if (!pipelineRes.ok) return pipelineRes;
-  cache.value.pipelines.set(format, pipelineRes.value);
+  cache.value.pipelines.set(key, pipelineRes.value);
   return pipelineRes;
 }
 
@@ -288,7 +353,8 @@ function encodeMipmapBlit(
   levels: number,
   pipeline: RenderPipeline,
   cache: MipmapPipelineCache,
-): Result<readonly Texture[], RhiError> {
+  transient: Texture[],
+): Result<void, RhiError> {
   const arrayLayerCount = descriptor.arrayLayerCount ?? 1;
   if (!Number.isSafeInteger(arrayLayerCount) || arrayLayerCount < 1)
     return err(
@@ -299,7 +365,16 @@ function encodeMipmapBlit(
       }),
     );
   if (device.caps.backendKind === 'wgpu-webgl2')
-    return encodePhysicalMipmapChain(device, encoder, texture, descriptor, levels, pipeline, cache);
+    return encodePhysicalMipmapChain(
+      device,
+      encoder,
+      texture,
+      descriptor,
+      levels,
+      pipeline,
+      cache,
+      transient,
+    );
   for (let layer = 0; layer < arrayLayerCount; layer++) {
     for (let i = 1; i < levels; i++) {
       const srcViewRes = device.createTextureView(texture, {
@@ -348,7 +423,7 @@ function encodeMipmapBlit(
     }
   }
 
-  return ok([]);
+  return ok(undefined);
 }
 
 /** GLES mip views share mutable base/max levels with the physical texture.
@@ -362,12 +437,18 @@ function encodePhysicalMipmapChain(
   levels: number,
   pipeline: RenderPipeline,
   cache: MipmapPipelineCache,
-): Result<readonly Texture[], RhiError> {
-  const images: Texture[] = [];
-  const fail = (error: RhiError): Result<never, RhiError> => {
-    for (const image of images) device.destroyTexture(image);
-    return err(error);
-  };
+  transient: Texture[],
+): Result<void, RhiError> {
+  const stage = cache.pipelines.get(mipmapPipelineKey(descriptor.format));
+  if (stage === undefined)
+    return err(
+      new RhiError({
+        code: 'rhi-not-available',
+        expected: 'an identity blit pipeline for staging the base mip',
+        hint: 'prewarm the mipmap pipeline before recording the physical chain',
+      }),
+    );
+  const images = transient;
   for (let mip = 0; mip < levels; mip++) {
     const image = device.createTexture({
       label: `mipmap-physical-${mip}`,
@@ -376,11 +457,11 @@ function encodePhysicalMipmapChain(
       format: descriptor.format,
       usage: MIPMAP_SCRATCH_USAGE | 0x02 | 0x04,
     });
-    if (!image.ok) return fail(image.error);
+    if (!image.ok) return err(image.error);
     images.push(image.value);
   }
   const first = images[0];
-  if (first === undefined) return ok(images);
+  if (first === undefined) return ok(undefined);
   const layers = descriptor.arrayLayerCount ?? 1;
   for (let layer = 0; layer < layers; layer++) {
     let previous = layers > 1 ? first : texture;
@@ -395,9 +476,9 @@ function encodePhysicalMipmapChain(
     for (const [mip, image] of images.entries()) {
       if (mip === 0 && layers > 1) continue;
       const source = device.createTextureView(previous, { dimension: '2d' });
-      if (!source.ok) return fail(source.error);
+      if (!source.ok) return err(source.error);
       const target = device.createTextureView(image, { dimension: '2d' });
-      if (!target.ok) return fail(target.error);
+      if (!target.ok) return err(target.error);
       const group = device.createBindGroup({
         label: `mipmap-physical-bg-${mip}`,
         layout: cache.layout,
@@ -406,7 +487,7 @@ function encodePhysicalMipmapChain(
           { binding: 1, resource: { kind: 'textureView', value: source.value } },
         ],
       });
-      if (!group.ok) return fail(group.error);
+      if (!group.ok) return err(group.error);
       const pass = encoder.beginRenderPass({
         label: `mipmap-physical-pass-${mip}`,
         colorAttachments: [
@@ -418,7 +499,7 @@ function encodePhysicalMipmapChain(
           },
         ],
       });
-      pass.setPipeline(pipeline);
+      pass.setPipeline(mip === 0 ? stage : pipeline);
       pass.setBindGroup(0, group.value);
       pass.draw(3, 1, 0, 0);
       pass.end();
@@ -431,7 +512,7 @@ function encodePhysicalMipmapChain(
       previous = image;
     }
   }
-  return ok(images);
+  return ok(undefined);
 }
 
 /**
@@ -454,12 +535,19 @@ export function encodeMipmaps(
   encoder: RhiCommandEncoder,
   texture: Texture,
   descriptor: MipmapTextureDescriptor,
+  capture?: (release: () => void) => void,
 ): Result<() => void, RhiError> {
   const levels = descriptor.levels ?? numMipLevels(descriptor);
-  if (levels <= 1) return ok(() => {});
+  if (levels <= 1) {
+    const release = () => {};
+    capture?.(release);
+    return ok(release);
+  }
   const cache = deviceCache.get(device);
   const normal = descriptor.filter === 'normal-roughness';
-  const pipeline = normal ? cache?.normalRoughness?.base : cache?.pipelines.get(descriptor.format);
+  const pipeline = normal
+    ? cache?.normalRoughness?.base
+    : cache?.pipelines.get(mipmapPipelineKey(descriptor.format, descriptor.filter));
   if (normal && descriptor.format !== 'rgba8unorm')
     return err(
       new RhiError({
@@ -476,24 +564,96 @@ export function encodeMipmaps(
         hint: 'prewarm the texture format before recording its mip chain',
       }),
     );
-  const encoded =
-    normal && cache.normalRoughness !== undefined
-      ? encodeNormalRoughnessMipmaps(
-          device,
-          encoder,
-          texture,
-          descriptor,
-          levels,
-          cache,
-          cache.normalRoughness,
-        )
-      : encodeMipmapBlit(device, encoder, texture, descriptor, levels, pipeline, cache);
-  if (!encoded.ok) return encoded;
-  let released = false;
-  return ok(() => {
+  const transient: Texture[] = [];
+  let encoding = true,
+    cancelled = false,
+    released = false;
+  let failure: { readonly cause: unknown } | undefined;
+  const release = () => {
+    if (failure !== undefined) throw failure.cause;
+    if (encoding) {
+      cancelled = true;
+      return;
+    }
     if (released) return;
     released = true;
-    for (const texture of encoded.value) device.destroyTexture(texture);
+    const failures: unknown[] = [];
+    for (const texture of transient) {
+      try {
+        const result = device.destroyTexture(texture);
+        if (!result.ok) failures.push(result.error);
+      } catch (cause) {
+        failures.push(cause);
+      }
+    }
+    if (failures.length > 0) {
+      failure = {
+        cause:
+          failures.length === 1
+            ? failures[0]
+            : new AggregateError(failures, 'mipmap scratch retirement failed'),
+      };
+      throw failure.cause;
+    }
+    transient.length = 0;
+  };
+  let encoded: Result<void, RhiError> | undefined;
+  let thrown: { readonly cause: unknown } | undefined;
+  try {
+    capture?.(release);
+    if (!cancelled)
+      encoded =
+        normal && cache.normalRoughness !== undefined
+          ? encodeNormalRoughnessMipmaps(
+              device,
+              encoder,
+              texture,
+              descriptor,
+              levels,
+              cache,
+              cache.normalRoughness,
+              transient,
+            )
+          : encodeMipmapBlit(
+              device,
+              encoder,
+              texture,
+              descriptor,
+              levels,
+              pipeline,
+              cache,
+              transient,
+            );
+  } catch (cause) {
+    thrown = { cause };
+  }
+  encoding = false;
+  const cleanup = (primary: unknown) => {
+    try {
+      release();
+    } catch (cause) {
+      // This realm-local receipt retains the exact unconfirmed scratch identities.
+      throw new AggregateError([primary, cause], 'mipmap preparation and retirement failed', {
+        cause: release,
+      });
+    }
+  };
+  if (thrown !== undefined) {
+    cleanup(thrown.cause);
+    throw thrown.cause;
+  }
+  if (encoded === undefined || !encoded.ok || cancelled) {
+    const error = encoded !== undefined && !encoded.ok ? encoded.error : unavailableMipmapWork();
+    cleanup(error);
+    return err(error);
+  }
+  return ok(release);
+}
+function unavailableMipmapWork(): RhiError {
+  return new RhiError({
+    code: 'webgpu-runtime-error',
+    expected: 'an encoded, open mipmap transaction',
+    hint: 'discard the cancelled or incomplete transaction without submitting it',
   });
 }
 
@@ -506,54 +666,72 @@ export function prepareMipmaps(
   device: RhiDevice,
   texture: Texture,
   descriptor: MipmapTextureDescriptor,
+  capture?: (work: MipmapEncoderWork) => void,
 ): Result<MipmapEncoderWork, RhiError> {
   const levels = descriptor.levels ?? numMipLevels(descriptor);
-  if (levels <= 1) return ok({ finish: () => ok(undefined), discard: () => undefined });
-
-  const encoderRes = device.createCommandEncoder({ label: 'mipmap-recovery-setup-encoder' });
-  if (!encoderRes.ok) return encoderRes;
-  const encoded = encodeMipmaps(device, encoderRes.value, texture, descriptor);
-  if (!encoded.ok) {
-    try {
-      encoderRes.value.finish();
-    } catch {
-      // The preparation error is authoritative; the encoder has no separate
-      // abort operation, so best-effort close is the only cleanup boundary.
-    }
-    return encoded;
+  if (levels <= 1) {
+    const work = { finish: () => ok(undefined), discard: () => undefined };
+    capture?.(work);
+    return ok(work);
   }
-  let closed = false;
-  let released = false;
-  return ok({
+  const encoder = device.createCommandEncoder({ label: 'mipmap-recovery-setup-encoder' });
+  if (!encoder.ok) return encoder;
+  let encoding = true,
+    cancelled = false,
+    closed = false,
+    released = false;
+  let releaseScratch: (() => void) | undefined;
+  let discardFailure: { readonly cause: unknown } | undefined;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    try {
+      encoder.value.finish();
+    } catch {
+      /* No abort API; never submit this encoder. */
+    }
+  };
+  const work: MipmapEncoderWork = {
     finish: () => {
-      if (closed) {
-        return err(
-          new RhiError({
-            code: 'webgpu-runtime-error',
-            expected: 'mipmap recovery setup work is finished at most once',
-            hint: 'discard the candidate transaction after finish and do not reuse its encoder',
-          }),
-        );
-      }
+      if (encoding || cancelled || closed) return err(unavailableMipmapWork());
       closed = true;
-      return encoderRes.value.finish();
+      return encoder.value.finish();
     },
     discard: () => {
+      if (discardFailure !== undefined) throw discardFailure.cause;
+      if (encoding) {
+        cancelled = true;
+        return;
+      }
       if (released) return;
       released = true;
-      if (!closed) {
-        closed = true;
-        try {
-          encoderRes.value.finish();
-        } catch {
-          // Candidate cleanup is idempotent and does not submit the discarded
-          // command buffer.
-        }
+      close();
+      try {
+        releaseScratch?.();
+      } catch (cause) {
+        discardFailure = { cause };
+        throw cause;
       }
-      // Destruction after submission is deferred until the queued copies finish.
-      encoded.value();
     },
-  });
+  };
+  let result: Result<() => void, RhiError> | undefined;
+  try {
+    capture?.(work);
+    if (!cancelled)
+      result = encodeMipmaps(device, encoder.value, texture, descriptor, (release) => {
+        releaseScratch = release;
+      });
+  } catch (cause) {
+    encoding = false;
+    close();
+    throw cause;
+  }
+  encoding = false;
+  if (result === undefined || !result.ok || cancelled) {
+    work.discard();
+    return result !== undefined && !result.ok ? result : err(unavailableMipmapWork());
+  }
+  return ok(work);
 }
 
 /**
@@ -637,7 +815,7 @@ export function encodeMipmapLevel(
       }),
     );
   }
-  const pipeline = cache.pipelines.get(format);
+  const pipeline = cache.pipelines.get(mipmapPipelineKey(format));
   if (pipeline === undefined) {
     return err(
       new RhiError({

@@ -3,32 +3,27 @@ import {
   createEngineWorkspaceTools,
   ENGINE_WORKSPACE_STATE_TOPIC,
   ENGINE_WORKSPACE_TOOL_SOURCE,
-  type EngineWorkspaceProjectHandle,
   type EngineWorkspaceProvider,
   type EngineWorkspaceRuntime,
   snapshotEngineWorkspace,
 } from '@forgeax/engine-app';
 import type { Context } from '@forgeax/engine-plugin';
 import type { ToolApi, ToolExecutionContext } from '@forgeax/engine-tool-runtime';
+import type { createWorkspaceSelection } from './backend-lifetime.js';
 import type { DevKitHostBinding } from './host-binding.js';
 import { createOperationHistoryTools } from './operation-history.js';
 import { createProjectCatalogueTools } from './project-catalogue-tools.js';
 import { createWorkspaceLiveTools } from './workspace-live-tools.js';
+import { runningWorkspaceTarget } from './workspace-preparation.js';
 import {
   createDevKitWorkspaceProvider,
   DevKitWorkspaceError,
   type DevKitWorkspaceProviderOptions,
 } from './workspace-provider.js';
-import type { createWorkspaceSelection } from './workspace-selection.js';
 import { createWorkspaceThumbnails } from './workspace-thumbnails.js';
 
 export const ENGINE_WORKSPACE_CALL_SERVICE = 'engine.workspace.call';
 export const ENGINE_WORKSPACE_CAPABILITIES_SERVICE = 'engine.workspace.capabilities';
-
-function projectTarget(project: EngineWorkspaceProjectHandle | undefined) {
-  const status = project?.status;
-  return status?.phase === 'running' ? status.target : undefined;
-}
 
 export interface DevKitWorkspacePluginOptions extends DevKitWorkspaceProviderOptions {
   readonly hostBinding: DevKitHostBinding;
@@ -61,10 +56,6 @@ export const devKitWorkspacePlugin = {
     const api = ctx.get('toolApi') as ToolApi;
     let catalogEpoch = 0;
     let thumbnailEpoch = 0;
-    const thumbnails = new Map<
-      EngineWorkspaceRuntime,
-      ReturnType<typeof createWorkspaceThumbnails>
-    >();
     const publish = () =>
       backend.transport.publish(ENGINE_WORKSPACE_STATE_TOPIC, {
         ...snapshotEngineWorkspace(runtime, catalogEpoch),
@@ -72,95 +63,67 @@ export const devKitWorkspacePlugin = {
       });
     const notePublished = () => {
       catalogEpoch += 1;
-      for (const owner of thumbnails.values()) owner.refresh();
+      thumbnails.refresh();
       publish();
     };
-    const runtimes = new Set<EngineWorkspaceRuntime>();
-    const createRuntime = () => {
-      const session = createEngineWorkspaceRuntime(
-        options.provider ??
-          createDevKitWorkspaceProvider({
-            ...options,
-            onTargetChanged: async () => {
-              const project = session.project;
-              const status = project?.status;
-              const retired = status?.phase === 'starting' && status.browserGeneration > 0;
-              const previews = retired ? session.previews : [];
-              const play = retired ? session.play : undefined;
-              publish();
-              for (const preview of previews) await session.closePreview(preview);
-              if (play) await session.stopPlay?.(play);
-              if (retired) publish();
-              await options.onTargetChanged?.();
-            },
-          }),
-      );
-      runtimes.add(session);
-      thumbnails.set(
-        session,
-        createWorkspaceThumbnails(session, () => {
-          thumbnailEpoch++;
-          publish();
+    const runtime = createEngineWorkspaceRuntime(
+      options.provider ??
+        createDevKitWorkspaceProvider({
+          ...options,
+          onTargetChanged: async () => {
+            const status = runtime.project?.status;
+            const retired = status?.phase === 'starting' && status.browserGeneration > 0;
+            const previews = retired ? runtime.previews : [];
+            const play = retired ? runtime.play : undefined;
+            publish();
+            for (const preview of previews) await runtime.closePreview(preview);
+            if (play) await runtime.stopPlay?.(play);
+            if (retired) publish();
+            await options.onTargetChanged?.();
+          },
         }),
-      );
-      return session;
-    };
-    const runtime = createRuntime();
+    );
+    const thumbnails = createWorkspaceThumbnails(runtime, () => {
+      thumbnailEpoch++;
+      publish();
+    });
     let saving = Promise.resolve();
-    const saveSelection = (session: EngineWorkspaceRuntime, operation: string, result: unknown) => {
+    const saveSelection = (result: unknown) => {
       if (
         !options.selection ||
-        session !== runtime ||
-        !['engine.project.open', 'engine.project.close'].includes(operation) ||
         (result && typeof result === 'object' && 'ok' in result && result.ok === false)
       )
         return Promise.resolve();
-      const project = session.project?.project.root ?? null;
+      const project = runtime.project?.project.root ?? null;
       const selection = options.selection;
       saving = saving.catch(() => {}).then(() => selection.write(project));
       return saving;
     };
     const forCaller = (caller?: ToolExecutionContext['caller'], targetId?: string) => {
-      if (caller?.kind === 'frontend' && caller.sourceId?.startsWith('forgeax-workspace:')) {
-        return [...runtimes].find((session) => {
-          const status = session.project?.status;
-          const document = status && status.phase !== 'preparing' ? status.document : undefined;
-          return (
-            document &&
-            caller.sourceId === `forgeax-workspace:${document.sessionId}:${document.targetId}`
-          );
-        });
+      const source = caller?.kind === 'frontend' ? caller.sourceId : undefined;
+      const projectPage = source?.startsWith('forgeax-workspace:');
+      // The retained View Shell observes the backend-owned workspace.
+      if (!projectPage && (!targetId || source === 'view-frontend')) return runtime;
+      const status = runtime.project?.status;
+      const accepted = status && status.phase !== 'preparing' ? status : undefined;
+      const document = accepted?.document;
+      if (projectPage) {
+        return document && source === `forgeax-workspace:${document.sessionId}:${document.targetId}`
+          ? runtime
+          : undefined;
       }
-      if (caller?.kind === 'frontend' && caller.sourceId === 'view-frontend') {
-        // The retained View Shell observes the backend-owned workspace. A
-        // connection is a presentation lifetime, never a project owner.
-        return runtime;
-      }
-      if (targetId)
-        return [...runtimes].find((session) => {
-          const status = session.project?.status;
-          // Keep published identities routable after failure; the project
-          // owner decides whether an operation can still run.
-          return [
-            ...(status && status.phase !== 'preparing' ? [status.document, status.target] : []),
-            ...session.previews.map((preview) => preview.target),
-            session.play?.target,
-          ].some((target) => target?.targetId === targetId);
-        });
-      return runtime;
-    };
-    const sessionTools = new WeakMap<
-      EngineWorkspaceRuntime,
-      ReturnType<typeof createEngineWorkspaceTools>
-    >();
-    const thumbnailTool = (session: EngineWorkspaceRuntime) => {
-      const owner = thumbnails.get(session);
-      if (!owner) throw new Error('Workspace thumbnail owner unavailable');
-      return owner.tool;
+      // Failed sessions keep their published identities for diagnostics.
+      const targets = [
+        document,
+        accepted?.target,
+        ...runtime.previews.map((preview) => preview.target),
+        runtime.play?.target,
+      ];
+      return targets.some((target) => target?.targetId === targetId) ? runtime : undefined;
     };
     const tools = [
       ...createEngineWorkspaceTools(runtime, publish),
-      thumbnailTool(runtime),
+      thumbnails.tool,
       ...createWorkspaceLiveTools(),
       ...createOperationHistoryTools(),
       ...createProjectCatalogueTools(),
@@ -222,11 +185,12 @@ export const devKitWorkspacePlugin = {
           return tool.execute(args, context);
         if (!tool.descriptor.id.startsWith('engine.run.')) {
           const input = args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
-          const session = forCaller(
-            context.caller,
-            typeof input.targetId === 'string' ? input.targetId : undefined,
-          );
-          if (!session)
+          if (
+            !forCaller(
+              context.caller,
+              typeof input.targetId === 'string' ? input.targetId : undefined,
+            )
+          )
             return {
               ok: false as const,
               error: {
@@ -235,27 +199,15 @@ export const devKitWorkspacePlugin = {
                 hint: 'Refresh the workspace and use its exact target identity.',
               },
             };
-          let handlers = sessionTools.get(session);
-          if (!handlers) {
-            handlers = [...createEngineWorkspaceTools(session, publish), thumbnailTool(session)];
-            sessionTools.set(session, handlers);
-          }
-          const handler = handlers.find(
-            (candidate) => candidate.descriptor.id === tool.descriptor.id,
-          );
-          if (handler) {
-            const result = await handler.execute(args, context);
-            if (
-              tool.descriptor.id === 'engine.project.open' ||
-              tool.descriptor.id === 'engine.project.close'
-            )
-              thumbnails.get(session)?.refresh();
-            await saveSelection(session, tool.descriptor.id, result);
-            return result;
-          }
         }
         const result = await tool.execute(args, context);
-        await saveSelection(runtime, tool.descriptor.id, result);
+        if (
+          tool.descriptor.id === 'engine.project.open' ||
+          tool.descriptor.id === 'engine.project.close'
+        ) {
+          thumbnails.refresh();
+          await saveSelection(result);
+        }
         return result;
       },
     }));
@@ -336,32 +288,30 @@ export const devKitWorkspacePlugin = {
       },
     );
     const disconnect = backend.transport.onClientDisconnect((caller) => {
-      for (const session of runtimes) {
-        const opened = session.project;
-        const target = projectTarget(opened);
-        if (opened && target && session.runtimePack)
-          void session
-            .runtimePack({
-              ...opened,
-              targetId: target.targetId,
-              worldId: target.worldId,
-              connectionId: caller.connectionId,
-              request: { operation: 'release' },
-            })
+      const opened = runtime.project;
+      const target = runningWorkspaceTarget(opened);
+      if (opened && target && runtime.runtimePack)
+        void runtime
+          .runtimePack({
+            ...opened,
+            targetId: target.targetId,
+            worldId: target.worldId,
+            connectionId: caller.connectionId,
+            request: { operation: 'release' },
+          })
+          .catch(() => {})
+          .finally(publish);
+      for (const preview of [...runtime.previews, runtime.play])
+        if (preview)
+          void Promise.resolve()
+            .then(() =>
+              preview.revokeConnection?.({
+                targetId: preview.target.targetId,
+                connectionId: caller.connectionId,
+              }),
+            )
             .catch(() => {})
             .finally(publish);
-        for (const preview of [...session.previews, session.play])
-          if (preview)
-            void Promise.resolve()
-              .then(() =>
-                preview.revokeConnection?.({
-                  targetId: preview.target.targetId,
-                  connectionId: caller.connectionId,
-                }),
-              )
-              .catch(() => {})
-              .finally(publish);
-      }
     });
     ctx.provide('engineWorkspace', runtime);
     ctx.provide('engineWorkspaceForCaller', forCaller);
@@ -373,10 +323,8 @@ export const devKitWorkspacePlugin = {
       await provider.revoke('Engine workspace plugin disposed');
       for (const handle of new Set((await modelingProviders.catch(() => new Map())).values()))
         await handle.revoke('Engine workspace plugin disposed');
-      await Promise.all([...thumbnails.values()].map((owner) => owner.close()));
-      thumbnails.clear();
-      await Promise.all([...runtimes].map((session) => session.dispose()));
-      runtimes.clear();
+      await thumbnails.close();
+      await runtime.dispose();
     });
   },
 };

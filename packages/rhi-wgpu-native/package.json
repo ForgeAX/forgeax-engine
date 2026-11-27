@@ -1,7 +1,7 @@
 {
   "name": "@forgeax/engine-rhi-wgpu-native",
   "version": "0.0.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,

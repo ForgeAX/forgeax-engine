@@ -1,3 +1,4 @@
+import { standardTextureMask } from '@forgeax/engine-shader';
 import type { MaterialRenderState } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { materialDepthStencil, supportsGpuShadowRenderState } from '../material-render-state';
@@ -164,6 +165,50 @@ describe('material raster state', () => {
     for (const field of Object.keys(state)) {
       expect(renderStateHash(state)).not.toBe(renderStateHash({ ...state, [field]: 0 }));
     }
+  });
+
+  it.each([
+    { projected: true, mask: 0, vertexUsesMask: false },
+    {
+      projected: true,
+      mask: standardTextureMask([{ name: 'baseColorTexture', type: 'texture2d' }]),
+      vertexUsesMask: false,
+    },
+    {
+      projected: true,
+      mask: standardTextureMask([{ name: 'displacementTexture', type: 'texture2d' }]),
+      vertexUsesMask: true,
+    },
+    { projected: false, mask: 0, vertexUsesMask: true },
+  ])('projects the Standard screen-shadow vertex override ($projected, $mask)', (row) => {
+    const createRenderPipeline = vi.fn((_descriptor: unknown) => ({ ok: true, value: {} }));
+    const constants = { '64000': row.mask };
+    const result = buildPipelineForMaterialShader(
+      'standard-screen-shadow',
+      { source, paramSchema: [] },
+      {
+        device: { createRenderPipeline },
+        shaderModuleFactory: { createShaderModule: () => ({ ok: true, value: {} }) },
+        pipelineLayout: {},
+        vertexBuffers: [],
+        colorFormat: 'rgba16float',
+        depthFormat: 'depth32float-stencil8',
+        constants,
+        projectSurfaceResources: row.projected,
+      } as unknown as PipelineBuilderContext,
+      { depthCompare: 'less-equal', depthWriteEnabled: false },
+      undefined,
+      'vs_scene_index',
+      'fs_forward_sun_shadow',
+    );
+    expect(result.ok).toBe(true);
+    const descriptor = createRenderPipeline.mock.calls[0]?.[0];
+    expect(descriptor).toMatchObject({
+      vertex: { entryPoint: 'vs_scene_index' },
+      fragment: { entryPoint: 'fs_forward_sun_shadow', constants },
+    });
+    if (row.vertexUsesMask) expect(descriptor).toHaveProperty('vertex.constants', constants);
+    else expect(descriptor).not.toHaveProperty('vertex.constants');
   });
 
   it.each([

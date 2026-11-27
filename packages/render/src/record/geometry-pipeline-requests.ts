@@ -1,12 +1,19 @@
 import {
-  STANDARD_SURFACE_DISCARDS_OVERRIDE,
-  withSupportedLeanInputs,
-} from '@forgeax/engine-shader';
+  deriveVertexLayoutProjectionFromMask,
+  type VertexLayoutProjection,
+  vertexLayoutHasColor,
+} from '@forgeax/engine-geometry';
+import { withSupportedLeanInputs } from '@forgeax/engine-shader';
 import {
   STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES,
   standardTransmissionAdmission,
 } from '../assembly/device-feature-admission';
 import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-blend';
+import {
+  MaterialPipelineRequestCache,
+  type MaterialPipelineRequestFacts,
+} from '../assembly/material/pipeline-request-cache';
+import { isDepthVelocityEntry } from '../gpu-driven/raster-selection';
 import {
   classifyOitDraw,
   OIT_FRAGMENT_ENTRY,
@@ -18,17 +25,14 @@ import {
   pointsLinesFragmentEntry,
 } from '../points-lines/record';
 import type { PointsLinesStyle } from '../points-lines/snapshot';
-import {
-  PREDEPTH_FRAGMENT_ENTRY,
-  predepthCoversMaterial,
-  predepthFragmentEntry,
-} from '../predepth-coverage';
+import { PREDEPTH_FRAGMENT_ENTRY, predepthCoversMaterial } from '../predepth-coverage';
 import { markPipelinePreparationPending } from '../render-system-presentation';
+import { CapturedSceneTransform } from '../scene/captured-transform';
 import type { MaterialFrame } from '../scene/material-dispatch';
-import type { ValidatedRenderable } from './frame-snapshot';
+import type { DrawRows, ValidatedRenderable } from './frame-snapshot';
 import { variantSetFromDefines } from './helpers';
 import { detectNineSliceScaleTooSmall } from './main-pass-material';
-import { lacksSurfaceDataEntry, selectStandardForwardScreenEntry } from './standard-opaque-entry';
+import { selectStandardForwardScreenEntry } from './standard-opaque-entry';
 
 // Shared exact geometry PSO request producer.
 
@@ -53,11 +57,10 @@ import { maskedInEarlyPassVariantSet, materialAlphaMask } from '../material-alph
 import {
   clippingCapRenderState,
   derivedRenderState,
+  reflectedRenderState,
   seededDepthRenderState,
-  transformRenderState,
 } from '../material-render-state';
 import {
-  applySurfaceDiscardAxis,
   colorlessFormat,
   colorlessFragmentEntry,
   effectiveStandardShadowReception,
@@ -75,6 +78,7 @@ import {
   SKIN_UNCOVERED_GBUFFER_ENTRY,
 } from '../pbr-pipeline';
 import {
+  pipelineStripIndexFormat,
   renderStateHash,
   standardStorageVariantSet,
   standardTopologyVariantSet,
@@ -82,7 +86,7 @@ import {
 } from '../pipeline-spec';
 
 import type { DispatchEntry, MaterialSnapshot } from '../render-system-extract';
-import { STANDARD_SURFACE_MSAA_NORMAL } from '../temporal/scene-data';
+import { admitsInlineSsr, withInlineSsrVariant } from '../ssr/admission';
 import { geometryRenderStateForTopology, selectGeometryPipeline } from './main-pass-material';
 import type {
   _InternalRenderPipelineContext,
@@ -91,6 +95,14 @@ import type {
 } from './render-context';
 import { selectForwardFragmentEntry } from './standard-opaque-entry';
 import { materialFogViewOffset, translucentFogComposition } from './view-ubo';
+
+/** Compute-produced vertices keep the source mesh's interleaved ABI. */
+export function drawVertexLayout(entry: ValidatedRenderable) {
+  const layout = entry.mesh.layoutProjection;
+  return entry.source.gpuVertexSource === undefined || layout.streams === undefined
+    ? layout
+    : deriveVertexLayoutProjectionFromMask(layout.mask).unwrap();
+}
 
 /** Resolve the material artifact key from the draw's declared shader family. */
 function geometryMaterialVariantSet(
@@ -133,52 +145,6 @@ function directMediumLayoutKind(
     : undefined;
 }
 
-type MaterialPipelineLookup = {
-  readonly materialShaderId: string;
-  readonly isHdrTarget: boolean;
-  readonly topology: PrimitiveTopology;
-  readonly indexFormat: 'uint16' | 'uint32';
-  readonly variantSet: string | undefined;
-  readonly vertexEntry: string | undefined;
-  readonly fragmentEntry: string | undefined;
-  readonly passKind: PassKind;
-  readonly layoutProjection: import('@forgeax/engine-geometry').VertexLayoutProjection;
-  readonly sampleCount: number;
-  readonly colorFormatOverride: GPUTextureFormat | undefined;
-  readonly viewShadows: boolean | undefined;
-  readonly additionalColorFormatsKey: string | undefined;
-  readonly textureMask: number | undefined;
-  readonly layoutKind: DirectSurfaceLayoutKind | undefined;
-  readonly waterInfoFormat: 'rgba16float' | 'rgba32float' | undefined;
-  readonly handle: MaterialShaderPipelineEntry | null;
-};
-
-type MaterialPipelineLookupKey = Omit<MaterialPipelineLookup, 'handle'>;
-
-function findMaterialPipelineLookup(
-  lookups: readonly MaterialPipelineLookup[] | undefined,
-  key: MaterialPipelineLookupKey,
-): MaterialPipelineLookup | undefined {
-  return lookups?.find(
-    (cached) =>
-      cached.isHdrTarget === key.isHdrTarget &&
-      cached.topology === key.topology &&
-      cached.indexFormat === key.indexFormat &&
-      cached.variantSet === key.variantSet &&
-      cached.vertexEntry === key.vertexEntry &&
-      cached.fragmentEntry === key.fragmentEntry &&
-      cached.textureMask === key.textureMask &&
-      cached.layoutKind === key.layoutKind &&
-      cached.waterInfoFormat === key.waterInfoFormat &&
-      cached.passKind === key.passKind &&
-      cached.layoutProjection.digest === key.layoutProjection.digest &&
-      cached.sampleCount === key.sampleCount &&
-      cached.colorFormatOverride === key.colorFormatOverride &&
-      cached.viewShadows === key.viewShadows &&
-      cached.additionalColorFormatsKey === key.additionalColorFormatsKey,
-  );
-}
-
 type GeometryRenderState = ReturnType<typeof geometryRenderStateForTopology>;
 
 /**
@@ -188,21 +154,20 @@ type GeometryRenderState = ReturnType<typeof geometryRenderStateForTopology>;
 function withStandardAlphaMaskAxis(
   variantSet: string,
   materialShaderId: Parameters<typeof isCanonicalStandardPbrMaterialShader>[0],
-  paramSnapshot: Parameters<typeof materialAlphaMask>[0],
+  alphaMask: boolean,
 ): string {
   return isCanonicalStandardPbrMaterialShader(materialShaderId)
-    ? `${variantSet}+ALPHA_MASK=${materialAlphaMask(paramSnapshot)}`
+    ? `${variantSet}+ALPHA_MASK=${alphaMask}`
     : variantSet;
 }
 
-/** Coverage is a dedicated temporal material variant, not a color/alpha tap. */
+/** Select binary coverage for a temporal-family raster request. */
 export function variantSetForCoveragePass(
   variantSet: string | undefined,
   coverageOnly: boolean,
 ): string | undefined {
   if (!coverageOnly) return variantSet;
-  // fs_temporal never alpha-tests (cutout reaches it as reactive coverage), so
-  // coverage programs exist only in the opaque ALPHA_MASK lane.
+  // Coverage has its own alpha and hash gates, independent of the color axis.
   if (variantSet?.includes('ALPHA_MASK=true')) {
     variantSet = variantSet.replace('ALPHA_MASK=true', 'ALPHA_MASK=false');
   }
@@ -269,8 +234,6 @@ export function geometryRenderStateForPass(
   fragmentEntry?: string,
   opaqueDepthPrimed = false,
 ): GeometryRenderState {
-  if (passKind === 'forward' && fragmentEntry === STANDARD_SURFACE_MSAA_NORMAL.fragmentEntryPoint)
-    return derivedRenderState(base, 'standard-msaa-normal', msaaNormalState);
   if (passKind !== 'temporal' && surfacePass !== 'velocity') {
     if (!opaqueDepthPrimed) return base;
     const compare = base?.depthCompare ?? 'less';
@@ -280,11 +243,36 @@ export function geometryRenderStateForPass(
       depthCompare: compare === 'less' ? 'less-equal' : 'greater-equal',
     }));
   }
+  if (
+    passKind === 'temporal' &&
+    fragmentEntry === 'fs_temporal_depth' &&
+    base?.alphaToCoverageEnabled === true
+  )
+    return derivedRenderState(base, 'temporal', temporalState);
+  if (passKind === 'temporal' && isDepthVelocityEntry(fragmentEntry))
+    return derivedRenderState(base, 'temporal-depth-prepass', temporalDepthPrepassState);
   return derivedRenderState(
     base,
     coverageOnly ? 'temporal-coverage' : 'temporal',
     coverageOnly ? temporalCoverageState : temporalState,
   );
+}
+
+function selectForwardSsrVariant(
+  variant: string | undefined,
+  enabled: boolean,
+  passKind: PassKind,
+  colorCount: number,
+  coverage: boolean,
+  shader: string,
+): string | undefined {
+  return enabled &&
+    passKind === 'forward' &&
+    colorCount > 0 &&
+    !coverage &&
+    (isStandardPbrMaterialShader(shader) || shader.startsWith('forgeax::standard-terrain'))
+    ? withInlineSsrVariant(variant)
+    : variant;
 }
 
 /**
@@ -325,18 +313,11 @@ function temporalPassState(base: GeometryRenderState, coverageOnly: boolean): Ge
 }
 const temporalState = (base: GeometryRenderState) => temporalPassState(base, false);
 const temporalCoverageState = (base: GeometryRenderState) => temporalPassState(base, true);
-const msaaNormalState = (base: GeometryRenderState): GeometryRenderState => {
-  const state = { ...base };
-  delete state.blend;
-  return {
-    ...state,
-    outputs: STANDARD_SURFACE_MSAA_NORMAL.outputs,
-    colorWriteMask: 15,
-    alphaToCoverageEnabled: false,
-    depthWriteEnabled: false,
-    depthCompare: 'less-equal',
-  };
-};
+const temporalDepthPrepassState = (base: GeometryRenderState): GeometryRenderState => ({
+  ...temporalPassState(base, false),
+  depthWriteEnabled: base?.depthWriteEnabled ?? true,
+  depthCompare: base?.depthCompare ?? 'less',
+});
 const spriteState = (state: GeometryRenderState): GeometryRenderState => ({
   ...state,
   depthWriteEnabled: false,
@@ -411,19 +392,6 @@ function drawMaterialShaderId(
     : SKIN_MATERIAL_SHADER_ID;
 }
 
-/** Built-in Unlit / Standard programs declare the surface-data entry without an artifact. */
-function outsideSurfaceDataPass(
-  fragmentEntry: string | undefined,
-  materialShaderId: string | undefined,
-  artifact: MaterialShaderArtifact | undefined,
-): boolean {
-  const builtIn =
-    materialShaderId === undefined ||
-    materialShaderId === 'forgeax::default-unlit' ||
-    isStandardPbrMaterialShader(materialShaderId);
-  return lacksSurfaceDataEntry(fragmentEntry, materialShaderId, artifact?.program, builtIn);
-}
-
 /** A forward pass without color attachments is the depth-only scene prepass. */
 function isColorlessForwardPass(passKind: PassKind, colorFormats: readonly unknown[]): boolean {
   return passKind === 'forward' && colorFormats.length === 0;
@@ -458,9 +426,20 @@ function prepassFragmentEntry(
   );
 }
 
+/** All PipelineState members consumed by the pure geometry request producer. */
+export type GeometryPipelineRequestState = Pick<
+  _InternalRenderPipelineContext['pipelineState'],
+  | 'unlitPipeline'
+  | 'unlitPipelineHdr'
+  | 'unlitPipelineMsaa'
+  | 'unlitPipelineHdrMsaa'
+  | 'standardPbrShaderUvSetCount'
+  | 'gpuDrivenInstancesBindGroupLayout'
+>;
+
 export interface GeometryPipelineRequestContext {
   readonly runtime: PipelineRequestRuntime;
-  readonly pipelineState: _InternalRenderPipelineContext['pipelineState'];
+  readonly pipelineState: GeometryPipelineRequestState;
   readonly lightingKind: 'no-local-lights' | 'clustered' | undefined;
   readonly clipping: _InternalRenderPipelineContext['camera']['clipping'];
   readonly visibleSurface: boolean;
@@ -476,6 +455,7 @@ export interface GeometryPipelineRequestContext {
   /** The frame's directional shadow qualifies for the one-cascade Vogel receiver. */
   readonly directionalShadowSimple?: boolean;
   readonly leanLighting?: boolean;
+  readonly forwardInlineSsr?: boolean;
   readonly waterInfoFormat?: 'rgba16float' | 'rgba32float';
 }
 /** Normal recording projects its own facts into the same narrow producer input. */
@@ -501,6 +481,7 @@ export function geometryPipelineRequestContext(
     | 'waterInfoFormat'
   >,
 ): GeometryPipelineRequestContext {
+  const ssr = c.frameState.ssrSpatialAdmission;
   return {
     runtime: c.runtime,
     pipelineState: c.pipelineState,
@@ -518,6 +499,9 @@ export function geometryPipelineRequestContext(
     warnedNineSliceScaleEntities: c.frameState.warnedNineSliceScaleEntities,
     directionalShadowSimple: c.directionalShadowSimple === true,
     leanLighting: c.leanLighting === true,
+    forwardInlineSsr:
+      ssr?.status === 'admitted' &&
+      admitsInlineSsr(c.runtime.device, c.pipelineState.extendedLightingAvailable, ssr),
     ...(c.waterInfoFormat === undefined ? {} : { waterInfoFormat: c.waterInfoFormat }),
   };
 }
@@ -543,10 +527,10 @@ function seededGeometryRenderState(
   seeded: boolean,
   state: MaterialRenderState | undefined,
   shaderId: string | undefined,
-  params: Parameters<typeof materialAlphaMask>[0],
+  alphaMask: boolean,
 ): MaterialRenderState | undefined {
   if (!seeded) return state;
-  const masked = isCanonicalStandardPbrMaterialShader(shaderId) && materialAlphaMask(params);
+  const masked = isCanonicalStandardPbrMaterialShader(shaderId) && alphaMask;
   return seededDepthRenderState(state, masked);
 }
 
@@ -602,6 +586,9 @@ export function createGeometryPipelineRequests(
     const dataOnly =
       coverageOnly ||
       surfacePass === 'depth' ||
+      surfacePass === 'visibility' ||
+      surfacePass === 'coverage' ||
+      surfacePass === 'depth-velocity' ||
       surfacePass === 'shadow' ||
       surfacePass === 'velocity' ||
       surfacePass === 'nearest-layer';
@@ -612,111 +599,30 @@ export function createGeometryPipelineRequests(
       composition,
     );
   };
-  const materialPipelineLookupCache = new Map<string, Map<string, MaterialPipelineLookup[]>>();
-  // Attachment formats are pass-owned. Reuse their immutable projection and
-  // comparison keys across every material lookup in this geometry pass.
+  // The pass owns one selection per distinct physical request and issuing factory.
+  const materialPipelines = new MaterialPipelineRequestCache<MaterialShaderPipelineEntry>(Infinity);
+  const lookupFacts: MaterialPipelineRequestFacts = [];
+  // The pass owns one ordered additional-target sequence for all of its draws.
   let additionalColorFormats: readonly GPUTextureFormat[] | undefined;
-  let additionalColorFormatsKey: string | undefined;
-  // The simple receiver is an optimization of the general one; the general
-  // row draws every frame correctly. A pending receiver or lighting
-  // specialization falls back to that full program for the current draw.
-  let frameSimple = c.directionalShadowSimple;
-  let frameLean = c.leanLighting;
-  let specializationRequested = false;
-  const resolveMaterialPipeline = (
+  // Only a device request needs a profiling callback that captures these operands.
+  // A resolved selection stays in the pass lookup without allocating a callback context.
+  function issueMaterialPipeline(
+    factory: PipelineRequestRuntime['getMaterialShaderPipelineEntry'],
     materialShaderId: string,
     renderState: MaterialSnapshot['renderState'],
     topology: PrimitiveTopology,
-    indexFormat: 'uint16' | 'uint32',
-    variantSet: string | undefined,
+    indexFormat: GPUIndexFormat,
+    pipelineVariantSet: string | undefined,
     colorFormat: GPUTextureFormat | undefined,
     layoutProjection: import('@forgeax/engine-geometry').VertexLayoutProjection,
-    vertexEntry?: string,
-    fragmentEntry?: string,
-    textureMask?: number,
-    layoutKind?: DirectSurfaceLayoutKind,
-    pipelinePreparation = false,
-    waterInfoFormat?: 'rgba16float' | 'rgba32float',
-  ): MaterialShaderPipelineEntry | null => {
-    const baseVariantSet = withCoverageVariant(variantSet);
-    // Skinned Standard has no visible-surface variant: deformed draws publish no
-    // rows, so its uncovered entry fills the identity target with row 0.
-    const skinnedVisibleSurface =
-      c.visibleSurface &&
-      passKind === 'deferred' &&
-      isStandardPbrSkinMaterialShader(materialShaderId) &&
-      (fragmentEntry === undefined || fragmentEntry === 'fs_gbuffer');
-    if (skinnedVisibleSurface) fragmentEntry = SKIN_UNCOVERED_GBUFFER_ENTRY;
-    const generalVariantSet =
-      !c.visibleSurface || skinnedVisibleSurface
-        ? baseVariantSet
-        : `${baseVariantSet ? `${baseVariantSet}+` : ''}VISIBLE_SURFACE_AVAILABLE=true`;
-    const pipelineVariantSet = withFrameLightingVariant(
-      generalVariantSet,
-      frameSimple,
-      frameLean,
-      passKind,
-      coverageOnly,
-      materialShaderId,
-    );
-    specializationRequested = pipelineVariantSet !== generalVariantSet;
-    // Deferred targets follow the graph's ordered GBuffer contract, including
-    // an admitted temporal-v1 attachment. Forward fallback remains an extra
-    // output only for its Standard producer; other forward shaders keep their
-    // own single-target contract.
-    const outputs = renderState?.outputs;
-    if (
-      outputs !== undefined &&
-      (outputs.length !== colorFormats.length ||
-        outputs.some((output, index) => output.format !== colorFormats[index]))
-    ) {
-      throw new RhiError({
-        code: 'webgpu-runtime-error',
-        expected: 'material outputs match the graph attachments in location order',
-        hint: `bind ${outputs.map((output) => `${output.name}:${output.format}`).join(', ')}; received ${colorFormats.join(', ')}`,
-      });
-    }
-    // The OIT accumulation pass carries accum + weight; both OIT fragment
-    // entries write both locations.
-    let reflectionFallbackFormats: readonly GPUTextureFormat[] | undefined;
-    let reflectionFallbackFormatsKey: string | undefined;
-    if (
-      outputs !== undefined ||
-      oit === 'accumulate' ||
-      passKind === 'deferred' ||
-      (isCanonicalStandardPbrMaterialShader(materialShaderId) &&
-        c.reflectionFallbackColorFormat !== undefined)
-    ) {
-      if (additionalColorFormats === undefined) {
-        additionalColorFormats = colorFormats.slice(1);
-        additionalColorFormatsKey = additionalColorFormats.join(',');
-      }
-      reflectionFallbackFormats = additionalColorFormats;
-      reflectionFallbackFormatsKey = additionalColorFormatsKey;
-    }
-    const renderStateKey = renderStateHash(renderState);
-    const shaderLookupCache = materialPipelineLookupCache.get(materialShaderId);
-    const cachedLookups = shaderLookupCache?.get(renderStateKey);
-    const lookupKey: MaterialPipelineLookupKey = {
-      materialShaderId,
-      isHdrTarget,
-      topology,
-      indexFormat,
-      variantSet: pipelineVariantSet,
-      vertexEntry,
-      fragmentEntry,
-      passKind,
-      layoutProjection,
-      sampleCount,
-      colorFormatOverride: colorFormat,
-      viewShadows: c.viewShadows,
-      additionalColorFormatsKey: reflectionFallbackFormatsKey,
-      textureMask,
-      layoutKind,
-      waterInfoFormat,
-    };
-    const cached = findMaterialPipelineLookup(cachedLookups, lookupKey);
-    if (cached !== undefined) return cached.handle;
+    vertexEntry: string | undefined,
+    fragmentEntry: string | undefined,
+    textureMask: number | undefined,
+    layoutKind: DirectSurfaceLayoutKind | undefined,
+    reflectionFallbackFormats: readonly GPUTextureFormat[] | undefined,
+    viewShadows: boolean | undefined,
+    waterInfoFormat: 'rgba16float' | 'rgba32float' | undefined,
+  ): MaterialShaderPipelineEntry | null {
     // Published Surface artifacts carry both direct and scene-index modules.
     // The boot artifact may be the scene-index specialization selected by the
     // retained producer, so a direct slot-3 layout must still resolve the
@@ -746,10 +652,7 @@ export function createGeometryPipelineRequests(
     const surfaceDiscards = viewSurfaceDiscards(shaderArtifact, c.clipping);
     const colorless = isColorlessForwardPass(passKind, colorFormats);
     const resolvePipeline = () =>
-      // Main color draws own missing-draw readiness; other getter callers retain their policy.
-      (pipelinePreparation || passKind === 'forward' || passKind === 'deferred'
-        ? (runtime.prepareMaterialShaderPipelineEntry ?? runtime.getMaterialShaderPipelineEntry)
-        : runtime.getMaterialShaderPipelineEntry)?.(
+      factory?.(
         materialShaderId,
         isHdrTarget,
         renderState,
@@ -781,51 +684,145 @@ export function createGeometryPipelineRequests(
         materialAbiRasterConstants(
           textureMask,
           surfaceDiscards,
-          effectiveStandardShadowReception(shaderArtifact, c.viewShadows),
+          effectiveStandardShadowReception(shaderArtifact, viewShadows),
         ),
         waterInfoFormat,
       ) ?? null;
-    const handle = profile(resolvePipeline);
-    // A null handle is a transient async-build signal (`rhi-not-available`),
-    // not a stable pipeline result. Do not memoize it in this frame's lookup:
-    // caching the first pending lookup would turn a one-frame shader warm-up
-    // into a permanent skip for every later frame in a tight smoke loop. The
-    // owning runtime cache remains the SSOT; retrying here is bounded by the
-    // existing per-frame draw path and preserves the explicit skip-draw
-    // recovery while the pipeline becomes ready.
-    if (handle !== null) {
-      const nextLookup: MaterialPipelineLookup = { ...lookupKey, handle };
-      if (shaderLookupCache === undefined) {
-        materialPipelineLookupCache.set(
-          materialShaderId,
-          new Map([[renderStateKey, [nextLookup]]]),
-        );
-      } else if (cachedLookups === undefined) {
-        shaderLookupCache.set(renderStateKey, [nextLookup]);
-      } else {
-        cachedLookups.push(nextLookup);
-      }
+    return profile(resolvePipeline);
+  }
+  // The simple receiver is an optimization of the general one; the general
+  // row draws every frame correctly. A pending receiver or lighting
+  // specialization falls back to that full program for the current draw.
+  const resolveMaterialPipeline = (
+    materialShaderId: string,
+    renderState: MaterialSnapshot['renderState'],
+    topology: PrimitiveTopology,
+    indexFormat: 'uint16' | 'uint32',
+    variantSet: string | undefined,
+    colorFormat: GPUTextureFormat | undefined,
+    layoutProjection: import('@forgeax/engine-geometry').VertexLayoutProjection,
+    vertexEntry?: string,
+    fragmentEntry?: string,
+    textureMask?: number,
+    layoutKind?: DirectSurfaceLayoutKind,
+    pipelinePreparation = false,
+    waterInfoFormat?: 'rgba16float' | 'rgba32float',
+  ): MaterialShaderPipelineEntry | null => {
+    const baseVariantSet = withCoverageVariant(variantSet);
+    // Skinned Standard has no visible-surface variant: deformed draws publish no
+    // rows, so its uncovered entry fills the identity target with row 0.
+    const skinnedVisibleSurface =
+      c.visibleSurface &&
+      passKind === 'deferred' &&
+      isStandardPbrSkinMaterialShader(materialShaderId) &&
+      (fragmentEntry === undefined ||
+        fragmentEntry === 'fs_gbuffer' ||
+        fragmentEntry === 'fs_gbuffer_compact');
+    if (skinnedVisibleSurface && fragmentEntry !== 'fs_gbuffer_compact')
+      fragmentEntry = SKIN_UNCOVERED_GBUFFER_ENTRY;
+    const visibleVariantSet =
+      !c.visibleSurface || skinnedVisibleSurface
+        ? baseVariantSet
+        : `${baseVariantSet ? `${baseVariantSet}+` : ''}VISIBLE_SURFACE_AVAILABLE=true`;
+    const generalVariantSet = selectForwardSsrVariant(
+      visibleVariantSet,
+      c.forwardInlineSsr === true,
+      passKind,
+      colorFormats.length,
+      coverageOnly,
+      materialShaderId,
+    );
+    let pipelineVariantSet = withFrameLightingVariant(
+      generalVariantSet,
+      c.directionalShadowSimple,
+      c.leanLighting,
+      passKind,
+      coverageOnly,
+      materialShaderId,
+    );
+    // Deferred targets follow the graph's ordered GBuffer contract, including
+    // an admitted temporal-v1 attachment. Forward fallback remains an extra
+    // output only for its Standard producer; other forward shaders keep their
+    // own single-target contract.
+    const outputs = renderState?.outputs;
+    if (
+      outputs !== undefined &&
+      (outputs.length !== colorFormats.length ||
+        outputs.some((output, index) => output.format !== colorFormats[index]))
+    ) {
+      throw new RhiError({
+        code: 'webgpu-runtime-error',
+        expected: 'material outputs match the graph attachments in location order',
+        hint: `bind ${outputs.map((output) => `${output.name}:${output.format}`).join(', ')}; received ${colorFormats.join(', ')}`,
+      });
     }
-    return handle;
-  };
-
-  /**
-   * A frame that turns simple (a light stops casting, a cascade setting drops
-   * to one Vogel cascade) must not wait for the simple PSO: while it builds,
-   * the draw binds the general receiver, which the boot path prewarms. The
-   * fallback is never memoized under the simple key, so the simple row takes
-   * over once its build resolves.
-   */
-  const resolveMaterialPipelineOrGeneral: typeof resolveMaterialPipeline = (...args) => {
-    const handle = resolveMaterialPipeline(...args);
-    if (handle !== null || !specializationRequested) return handle;
-    frameSimple = false;
-    frameLean = false;
-    try {
-      return resolveMaterialPipeline(...args);
-    } finally {
-      frameSimple = c.directionalShadowSimple;
-      frameLean = c.leanLighting;
+    // The OIT accumulation pass carries accum + weight; both OIT fragment
+    // entries write both locations.
+    let reflectionFallbackFormats: readonly GPUTextureFormat[] | undefined;
+    if (
+      outputs !== undefined ||
+      oit === 'accumulate' ||
+      passKind === 'deferred' ||
+      (isCanonicalStandardPbrMaterialShader(materialShaderId) &&
+        c.reflectionFallbackColorFormat !== undefined)
+    ) {
+      if (additionalColorFormats === undefined) {
+        additionalColorFormats = colorFormats.slice(1);
+      }
+      reflectionFallbackFormats = additionalColorFormats;
+    }
+    const renderStateKey = renderStateHash(renderState);
+    const viewShadows = c.viewShadows;
+    const layoutDigest = layoutProjection.digest;
+    const stripIndexFormat = pipelineStripIndexFormat(topology, indexFormat);
+    for (;;) {
+      const factory =
+        pipelinePreparation || passKind === 'forward' || passKind === 'deferred'
+          ? (runtime.prepareMaterialShaderPipelineEntry ?? runtime.getMaterialShaderPipelineEntry)
+          : runtime.getMaterialShaderPipelineEntry;
+      lookupFacts[0] = materialShaderId;
+      lookupFacts[1] = renderStateKey;
+      lookupFacts[2] = topology;
+      lookupFacts[3] = stripIndexFormat;
+      lookupFacts[4] = pipelineVariantSet;
+      lookupFacts[5] = vertexEntry;
+      lookupFacts[6] = fragmentEntry;
+      lookupFacts[7] = layoutDigest;
+      lookupFacts[8] = colorFormat;
+      lookupFacts[9] = viewShadows;
+      lookupFacts[10] = reflectionFallbackFormats;
+      lookupFacts[11] = textureMask;
+      lookupFacts[12] = layoutKind;
+      lookupFacts[13] = waterInfoFormat;
+      lookupFacts[14] = factory;
+      const previous = materialPipelines.get(lookupFacts);
+      if (previous !== undefined) return previous;
+      // Artifact lookup, profiling and the backend can issue nested requests.
+      const issued = lookupFacts.slice();
+      const handle = issueMaterialPipeline(
+        factory,
+        materialShaderId,
+        renderState,
+        topology,
+        indexFormat,
+        pipelineVariantSet,
+        colorFormat,
+        layoutProjection,
+        vertexEntry,
+        fragmentEntry,
+        textureMask,
+        layoutKind,
+        reflectionFallbackFormats,
+        viewShadows,
+        waterInfoFormat,
+      );
+      // A pending specialization may be ready on the next draw in this same pass.
+      if (handle !== null) materialPipelines.set(issued, handle);
+      if (handle !== null || pipelineVariantSet === generalVariantSet) return handle;
+      // A pending lighting specialization can use the general receiver for this draw.
+      drawPipelineReported = true;
+      // Each result is installed under the variant the device actually accepted.
+      pipelineVariantSet = generalVariantSet;
     }
   };
 
@@ -836,7 +833,7 @@ export function createGeometryPipelineRequests(
     layout: import('@forgeax/engine-geometry').VertexLayoutProjection,
     preparation = false,
   ): MaterialShaderPipelineEntry | null =>
-    resolveMaterialPipelineOrGeneral(
+    resolveMaterialPipeline(
       POINTS_LINES_MATERIAL_SHADER_ID,
       geometryRenderStateForTopology('line-list', { ...material.renderState, cullMode: 'none' }),
       'triangle-list',
@@ -880,7 +877,9 @@ export function createGeometryPipelineRequests(
    * direct program when the slot is resident; null reports a layout failure.
    */
   const resolveUnlitPipeline = (
-    entry: import('./frame-snapshot').ValidatedRenderable,
+    indexFormat: GPUIndexFormat,
+    layout: VertexLayoutProjection,
+    unlitHasColor: boolean,
     smMaterialShaderId: string | undefined,
     smTopology: PrimitiveTopology,
     submeshMaterial: MaterialSnapshot,
@@ -889,30 +888,21 @@ export function createGeometryPipelineRequests(
     fragmentEntry: string | undefined,
     pipelinePreparation: boolean,
     sceneDirect: boolean,
+    alphaMask: boolean,
   ): {
     readonly entry: MaterialShaderPipelineEntry | null;
     readonly sceneDirect: boolean;
-  } | null => {
+  } => {
     const unlitShaderId = smMaterialShaderId ?? 'forgeax::default-unlit';
-    const unlitProjectionVariantResult = variantSetFromVertexLayoutProjection(
-      entry.mesh.layoutProjection,
-      undefined,
-    );
-    if (!unlitProjectionVariantResult.ok) {
-      drawPipelineReported = true;
-      runtime.errorRegistry.fire(unlitProjectionVariantResult.error);
-      return null;
-    }
-    const unlitHasColor = unlitProjectionVariantResult.value === 'VERTEX_COLOR_AVAILABLE=true';
     const resolveUnlit = (variantSet: string, layoutKind?: DirectSurfaceLayoutKind) =>
-      resolveMaterialPipelineOrGeneral(
+      resolveMaterialPipeline(
         unlitShaderId,
         pipelineRenderState,
         smTopology,
-        entry.mesh.indexFormat,
-        `${variantSet}+ALPHA_MASK=${materialAlphaMask(submeshMaterial.paramSnapshot)}`,
+        indexFormat,
+        `${variantSet}+ALPHA_MASK=${alphaMask}`,
         colorFormatOverride,
-        entry.mesh.layoutProjection,
+        layout,
         vertexEntry,
         fragmentEntry,
         submeshMaterial.standardTextureMask,
@@ -932,6 +922,7 @@ export function createGeometryPipelineRequests(
         textureCluster ? 'scene-direct-cluster-unlit' : 'scene-direct-unlit',
       );
       if (direct !== null) return { entry: direct, sceneDirect: true };
+      drawPipelineReported = true;
     }
     const unlitVariantSet = textureCluster
       ? standardTopologyVariantSet(standardLighting, false, unlitHasColor)
@@ -940,9 +931,9 @@ export function createGeometryPipelineRequests(
   };
 
   const resolveDrawArtifact = (
-    entry: ValidatedRenderable,
+    vertexColorAvailable: boolean,
     smMaterialShaderId: string | undefined,
-    submeshMaterial: MaterialSnapshot,
+    alphaMask: boolean,
     authoredVariantSet: string | undefined,
     isSkinEntry: boolean,
   ): MaterialShaderArtifact | undefined => {
@@ -951,18 +942,11 @@ export function createGeometryPipelineRequests(
       : runtime.getMaterialShaderArtifact?.(smMaterialShaderId, {
           deformation: isSkinEntry ? 'skin' : 'rigid',
           address: 'direct',
-          variantSet:
-            applySurfaceDiscardAxis(authoredVariantSet, {
-              [STANDARD_SURFACE_DISCARDS_OVERRIDE]: standardSurfaceDiscardMask(
-                false,
-                (c.clipping?.planes.length ?? 0) > 0,
-              ),
-            }).variantSet ?? '',
+          ...(authoredVariantSet === undefined ? {} : { variantSet: authoredVariantSet }),
+          surfaceDiscards: standardSurfaceDiscardMask(false, (c.clipping?.planes.length ?? 0) > 0),
           clustered: clusteredLighting,
-          alphaMask: materialAlphaMask(submeshMaterial.paramSnapshot),
-          vertexColorAvailable: entry.mesh.layoutProjection.attributes.some(
-            (attribute) => attribute.key === 'color',
-          ),
+          alphaMask,
+          vertexColorAvailable,
         });
   };
 
@@ -983,10 +967,15 @@ export function createGeometryPipelineRequests(
         shaderArtifact?.receipt?.forwardFog ??
         materialPipelineEntry?.program?.forwardFog;
       if (contract === undefined) {
-        const registered = runtime.shaderRegistry?.findMaterialArtifact(
-          smMaterialShaderId ?? 'forgeax::default-unlit',
-        );
-        if (registered?.ok) contract = registered.value.program.forwardFog;
+        const registry = runtime.shaderRegistry;
+        const key = smMaterialShaderId ?? 'forgeax::default-unlit';
+        const declaration = registry?.materialArtifactDeclaration(key);
+        if (declaration?.kind === 'source') {
+          contract = declaration.forwardFog ?? declaration.receipt?.forwardFog;
+        } else {
+          const registered = registry?.findMaterialArtifact(key);
+          if (registered?.ok) contract = registered.value.program.forwardFog;
+        }
       }
       if (contract !== 'height-vertex/1')
         throw new RendererContractFailureError(
@@ -999,23 +988,9 @@ export function createGeometryPipelineRequests(
   const resolveDrawCoverage = (
     fragmentEntry: string | undefined,
     coveredByPredepth: boolean,
-    shaderArtifact: MaterialShaderArtifact | undefined,
-    smMaterialShaderId: string | undefined,
   ): string | undefined | false => {
-    if (fragmentEntry === PREDEPTH_FRAGMENT_ENTRY) {
-      pipelineSelection.skipped = !coveredByPredepth;
-      if (!coveredByPredepth || shaderArtifact === undefined) return false;
-      fragmentEntry =
-        colorFormats.length === 0 ? predepthFragmentEntry(shaderArtifact) : 'fs_ao_input';
-    }
-    // A program without the surface-data entry is shaded by the main pass only.
-    pipelineSelection.skipped = outsideSurfaceDataPass(
-      fragmentEntry,
-      smMaterialShaderId,
-      shaderArtifact,
-    );
-    if (pipelineSelection.skipped) return false;
-    return fragmentEntry;
+    pipelineSelection.skipped = fragmentEntry === PREDEPTH_FRAGMENT_ENTRY && !coveredByPredepth;
+    return pipelineSelection.skipped ? false : fragmentEntry;
   };
 
   const resolveDrawPipeline = (
@@ -1029,8 +1004,11 @@ export function createGeometryPipelineRequests(
     fragmentEntry: string | undefined,
     oitAccumulateDraw: boolean,
     authoredVariantSet: string | undefined,
+    layout: VertexLayoutProjection,
+    reflected: boolean,
     pipelinePreparation = false,
     sceneDirect = false,
+    alphaMask = materialAlphaMask(submeshMaterial.paramSnapshot),
   ): boolean => {
     const isSkinEntry = entry.source.skinBinding !== undefined;
     const waterOwner = entry.source.waterOwner;
@@ -1042,23 +1020,28 @@ export function createGeometryPipelineRequests(
       selectedShaderId,
       submeshMaterial,
     );
+    const sourceLayout = entry.mesh.layoutProjection;
+    const hasVertexColor = vertexLayoutHasColor(sourceLayout);
     const shaderArtifact = resolveDrawArtifact(
-      entry,
+      hasVertexColor,
       smMaterialShaderId,
-      submeshMaterial,
+      alphaMask,
       authoredVariantSet,
       isSkinEntry,
     );
-    const coveredByPredepth = predepthCoversMaterial(shaderArtifact, selectedRenderState);
-    const coverageEntry = resolveDrawCoverage(
-      fragmentEntry,
-      coveredByPredepth,
-      shaderArtifact,
-      smMaterialShaderId,
-    );
+    const coveredByPredepth =
+      (seededDepth || fragmentEntry === PREDEPTH_FRAGMENT_ENTRY) &&
+      predepthCoversMaterial(shaderArtifact, selectedRenderState);
+    const coverageEntry = resolveDrawCoverage(fragmentEntry, coveredByPredepth);
     if (coverageEntry === false) return false;
     fragmentEntry = coverageEntry;
     const resolveDrawProbeBlend = () => {
+      if (
+        coverageOnly &&
+        surfacePass !== 'velocity' &&
+        isCanonicalStandardPbrMaterialShader(smMaterialShaderId)
+      )
+        return false;
       const cookedProbeBlend =
         shaderArtifact !== undefined && requiresProbeBlendRecord(shaderArtifact);
       const probeBlendAvailable =
@@ -1094,7 +1077,7 @@ export function createGeometryPipelineRequests(
       ? derivedRenderState(selectedRenderState, 'sprite', spriteState)
       : geometryRenderStateForTopology(smTopology, selectedRenderState);
     let pipelineRenderState = geometryRenderStateForPass(
-      transformRenderState(basePipelineRenderState, entry.source.transform.world),
+      reflectedRenderState(basePipelineRenderState, reflected),
       passKind,
       coverageOnly,
       surfacePass,
@@ -1102,7 +1085,7 @@ export function createGeometryPipelineRequests(
       opaqueDepthPrimed,
     );
     const projectDepthAndWaterRenderState = () => {
-      if (depthPrepass)
+      if (depthPrepass && passKind !== 'temporal')
         pipelineRenderState = derivedRenderState(pipelineRenderState, 'opaque-depth', (state) => ({
           ...state,
           colorWriteMask: 0,
@@ -1116,7 +1099,22 @@ export function createGeometryPipelineRequests(
         pipelineRenderState = derivedRenderState(
           pipelineRenderState,
           `water-${surfacePass}`,
-          (state) => ({ ...state, outputs }),
+          (state) => ({
+            ...state,
+            outputs,
+            ...(surfacePass !== 'forward-color'
+              ? {}
+              : {
+                  blend: {
+                    color: {
+                      operation: 'add',
+                      srcFactor: 'src-alpha',
+                      dstFactor: 'one-minus-src-alpha',
+                    },
+                    alpha: { operation: 'add', srcFactor: 'zero', dstFactor: 'one' },
+                  },
+                }),
+          }),
         );
       }
     };
@@ -1126,7 +1124,7 @@ export function createGeometryPipelineRequests(
       seededDepth && coveredByPredepth,
       pipelineRenderState,
       smMaterialShaderId,
-      submeshMaterial.paramSnapshot,
+      alphaMask,
     );
     const projectTransparentDepthState = () => {
       if (
@@ -1162,7 +1160,9 @@ export function createGeometryPipelineRequests(
     let resolvedPipelineVariantSet: string | undefined;
     if (smMaterialShaderId === undefined || smMaterialShaderId === 'forgeax::default-unlit') {
       const unlit = resolveUnlitPipeline(
-        entry,
+        entry.mesh.indexFormat,
+        layout,
+        layout === sourceLayout ? hasVertexColor : vertexLayoutHasColor(layout),
         smMaterialShaderId,
         smTopology,
         submeshMaterial,
@@ -1171,8 +1171,8 @@ export function createGeometryPipelineRequests(
         fragmentEntry,
         pipelinePreparation,
         sceneDirect,
+        alphaMask,
       );
-      if (unlit === null) return false;
       materialPipelineEntry = unlit.entry;
       sceneDirectSelected = unlit.sceneDirect;
       smPipelineHandle =
@@ -1195,9 +1195,6 @@ export function createGeometryPipelineRequests(
       // variant's manifest definesKey IS that exact non-empty string
       // (CLUSTER_FORWARD_AVAILABLE=false+STORAGE_BUFFER_AVAILABLE=true)
       // -- the canonical-empty rule only applies to the all-true case.
-      const hasVertexColor = entry.mesh.layoutProjection.attributes.some(
-        (attribute) => attribute.key === 'color',
-      );
       // The all-true HDRP variant uses the canonical empty key only when
       // every variant axis is true. A plain mesh adds the geometry-owned
       // VERTEX_COLOR_AVAILABLE=false axis, so retain the two capability
@@ -1233,7 +1230,7 @@ export function createGeometryPipelineRequests(
       const materialCapabilityVariantSet = withStandardAlphaMaskAxis(
         transmissionVariantSet,
         smMaterialShaderId,
-        submeshMaterial.paramSnapshot,
+        alphaMask,
       );
       const resolveDrawWaterVariants = () => {
         const standardPbrMaterial =
@@ -1287,14 +1284,14 @@ export function createGeometryPipelineRequests(
         forwardFragmentEntry,
       );
       resolvedPipelineVariantSet = drawVariantSet;
-      const cachedPipeline = resolveMaterialPipelineOrGeneral(
+      const cachedPipeline = resolveMaterialPipeline(
         smMaterialShaderId,
         pipelineRenderState,
         smTopology,
         entry.mesh.indexFormat,
         drawVariantSet,
         colorFormatOverride,
-        entry.mesh.layoutProjection,
+        layout,
         vertexEntry,
         forwardFragmentEntry,
         submeshMaterial.standardTextureMask,
@@ -1344,7 +1341,7 @@ export function createGeometryPipelineRequests(
   // a pending build still retries on the next draw.
 
   return {
-    resolveMaterialPipeline: resolveMaterialPipelineOrGeneral,
+    resolveMaterialPipeline,
     resolvePointsLinesPipeline,
     resolveDrawPipeline,
     pipelineSelection,
@@ -1364,7 +1361,7 @@ export type GeometryPipelinePassMatch = (
 ) => boolean;
 export type GeometryPipelinePreparationContext = GeometryPipelineRequestContext & {
   readonly materialFrame?: MaterialFrame;
-  readonly pipelinePreparationEntries?: readonly ValidatedRenderable[];
+  readonly pipelinePreparationEntries?: DrawRows;
   readonly frameState: {
     pipelinePreparationPending?: boolean;
     pipelinePreparationPendingReason?: import('../render-contract').FramePresentationPendingReason;
@@ -1381,6 +1378,8 @@ export function prepareGeometryPipelineRequests(
   const { resolveDrawPipeline, resolvePointsLinesPipeline, pipelineSelection } = requests;
   const { passKind, oit, fragmentEntryPoint } = options;
   const { frameState } = c;
+  let rowLayout: VertexLayoutProjection | undefined;
+  let reflected = false;
   const preparePass = (
     entry: import('./frame-snapshot').ValidatedRenderable,
     topology: PrimitiveTopology,
@@ -1390,7 +1389,9 @@ export function prepareGeometryPipelineRequests(
   ): void => {
     let fragmentEntry =
       passKind === 'temporal'
-        ? undefined
+        ? isDepthVelocityEntry(fragmentEntryPoint)
+          ? fragmentEntryPoint
+          : undefined
         : selectStandardForwardScreenEntry(fragmentEntryPoint, selectedPass.fragmentEntry);
     let accumulate = false;
     if (oit !== undefined) {
@@ -1424,6 +1425,10 @@ export function prepareGeometryPipelineRequests(
         });
       return;
     }
+    if (rowLayout === undefined) {
+      rowLayout = drawVertexLayout(entry);
+      reflected = CapturedSceneTransform.reflected(entry.source.transform);
+    }
     const resolved = resolveDrawPipeline(
       entry,
       topology,
@@ -1435,6 +1440,8 @@ export function prepareGeometryPipelineRequests(
       fragmentEntry,
       accumulate,
       authoredVariantSet,
+      rowLayout,
+      reflected,
       true,
     );
     if (!resolved && pipelineSelection.skipped) return;
@@ -1451,6 +1458,7 @@ export function prepareGeometryPipelineRequests(
   };
   const preparePipelines = (passMatches: GeometryPipelinePassMatch): void => {
     for (const entry of c.pipelinePreparationEntries ?? []) {
+      rowLayout = undefined;
       const passes = entry.source.pipelinePreparation ?? [];
       const authoredVariantSet = variantSetFromDefines(passes.at(-1)?.defines);
       let nextSubmeshIndex = 0;

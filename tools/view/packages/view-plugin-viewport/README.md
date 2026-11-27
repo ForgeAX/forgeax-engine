@@ -15,6 +15,12 @@ The shared controller samples and coalesces pointer deltas once per render frame
 flushes the final delta before commit, and cancels its frame lease on retirement.
 Camera math remains in Engine; workspace selection continues through the shared API.
 
+Scene navigation help follows the admitted Scene target in the active workspace.
+It stays hidden before a Scene is opened, during project or Play startup, after
+project failure or target loss, and while Play is selected. The toolbar derives
+this visibility from the existing workspace snapshot and Scene surface selector;
+it does not infer readiness from elapsed time or the project document's presence.
+
 ### Play presentation lifetime
 
 An adopted Play document remains attached and renderable until Engine acknowledges

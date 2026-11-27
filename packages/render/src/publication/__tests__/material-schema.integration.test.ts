@@ -31,7 +31,10 @@ import { MATERIAL_PER_ENTITY_STRIDE } from '../../record/render-context';
 import type { RenderPublication } from '../contract';
 import { installPublicationPrograms, publicationMaterialSchemaRebinder } from '../programs';
 import { createRenderPublisher } from '../publisher';
-import { ownReceivedPublicationMaterials } from '../received-materials';
+import {
+  adoptWorkerPublicationMaterials,
+  ownReceivedPublicationMaterials,
+} from '../received-materials';
 import { RenderPublicationReceiver } from '../receiver';
 import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
@@ -277,6 +280,9 @@ it('detaches numeric and ABI aliases while preserving dynamic resource identitie
   if (owned === undefined || second === undefined) throw new Error('Missing owned values');
   expect(owned.materialParamSchema).toBe(second.materialParamSchema);
   expect(owned.materialParamSchema).not.toBe(material.materialParamSchema);
+  expect(owned.passes).toBe(second.passes);
+  expect(owned.passes).not.toBe(material.passes);
+  expect(Object.isFrozen(owned.passes)).toBe(true);
   expect(owned.paramSnapshot).toBe(second.paramSnapshot);
   expect(owned.paramSnapshot).not.toBe(values);
   expect(owned.baseColor.buffer).toBeInstanceOf(ArrayBuffer);
@@ -300,6 +306,35 @@ it('detaches numeric and ABI aliases while preserving dynamic resource identitie
   expect(owned.textureCoordinates?.get('albedo')?.transform?.offset?.[0]).toBe(0.5);
   f.receiver.dispose();
   f.publisher.dispose();
+});
+
+it('adopts the Worker-owned program graph while isolating shared material values', () => {
+  const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }]);
+  try {
+    const row = f.packet.materials[0];
+    if (row === undefined) throw new Error('Missing published material');
+    const color = new Float32Array(new SharedArrayBuffer(12)) as typeof row.value.baseColor;
+    color.set([0.25, 0.5, 0.75]);
+    const source = encodeRenderPublication({
+      ...f.packet,
+      materials: [{ ...row, value: { ...row.value, baseColor: color } }],
+    });
+    const received = structuredClone(source);
+    const wire = received.side?.materials?.[0]?.value;
+    const material = adoptWorkerPublicationMaterials(received).side?.materials?.[0]?.value;
+    if (wire === undefined || material === undefined) throw new Error('Missing Worker material');
+
+    expect(material.passes).toBe(wire.passes);
+    expect(Object.isFrozen(material.passes)).toBe(true);
+    expect(material.materialParamSchema).toBe(wire.materialParamSchema);
+    expect(material.baseColor.buffer).toBeInstanceOf(ArrayBuffer);
+    color[0] = 1;
+    expect(wire.baseColor[0]).toBe(1);
+    expect(material.baseColor[0]).toBe(0.25);
+  } finally {
+    f.receiver.dispose();
+    f.publisher.dispose();
+  }
 });
 
 it.each([

@@ -555,8 +555,9 @@ export function flushCommands(buffer: CommandBufferImpl, world: WorldForCommands
       );
     }
     world[worldInternal].poisonExecution({
-      code: 'shared-kernel-failed',
-      kernelName: 'CommandBuffer.flush',
+      code: 'system-failed',
+      systemName: buffer._systemName,
+      schedule: buffer._scheduleName,
       cause: error,
       partialWrite: true,
       retryable: false,

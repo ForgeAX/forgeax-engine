@@ -1,14 +1,12 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
 import { buildCatalogProjection } from '../catalog-builder.js';
 import { decodeCatalogWire, encodeCatalogWire } from '../catalog-wire.js';
 
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+const scratch = temporaryDirectories();
+afterEach(scratch.clear);
 
 const sourceOverrides = {
   'mesh/a': {
@@ -62,8 +60,7 @@ function effectiveOverride(row: {
 }
 
 async function catalogFor(meta: object) {
-  const root = await mkdtemp(join(tmpdir(), 'forgeax-overrides-per-row-'));
-  roots.push(root);
+  const root = await scratch.make('forgeax-overrides-per-row-');
   await writeFile(join(root, 'scene.glb'), 'fixture');
   await writeFile(join(root, 'scene.glb.meta.json'), JSON.stringify(meta));
   const catalog = await buildCatalogProjection([root], {

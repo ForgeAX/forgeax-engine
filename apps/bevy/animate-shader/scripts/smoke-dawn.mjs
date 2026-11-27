@@ -8,7 +8,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
+import { readCookedShaderManifestPublication, readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const WIDTH = testQuality.viewport.width;
@@ -64,7 +64,7 @@ const canvas = {
   removeEventListener() {},
 };
 
-const manifest = JSON.parse(readShaderManifestText(resolve(root, 'dist', 'shaders', 'manifest.json')));
+const manifest = await readCookedShaderManifestPublication(JSON.parse(readShaderManifestText(resolve(root, 'dist', 'shaders', 'manifest.json'))));
 const manifestUrl = processShaderManifestUrl(resolve(root, 'dist', 'shaders', 'manifest.json'));
 const { World } = await import('@forgeax/engine-ecs');
 const { AssetRegistry } = await import('@forgeax/engine-assets-runtime');

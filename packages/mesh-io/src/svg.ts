@@ -40,7 +40,7 @@ export async function svgWorker(
         const style = path.userData.style;
         const geometries = [];
         if (style.fill !== 'none' && style.fillOpacity > 0) {
-          for (const shape of SVGLoader.createShapes(path)) geometries.push({ geometry: new ShapeGeometry(shape, workerData.segments), color: path.color, opacity: style.fillOpacity * (style.opacity ?? 1) });
+          for (const shape of path.toShapes()) geometries.push({ geometry: new ShapeGeometry(shape, workerData.segments), color: path.color, opacity: style.fillOpacity * (style.opacity ?? 1) });
         }
         if (style.stroke !== undefined && style.stroke !== 'none' && style.strokeOpacity > 0 && style.strokeWidth > 0) {
           for (const subpath of path.subPaths) {

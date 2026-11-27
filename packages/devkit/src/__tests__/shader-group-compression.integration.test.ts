@@ -51,8 +51,7 @@ it.each([
       sourceRoot: root,
       outputRoot: root,
       artifacts,
-      catalog: [{ packageUrl: pack, sourcePath: 'assets/material.pack.ts' }],
-      packIndexPath: 'pack-index.json',
+      sources: new Map([[pack, 'assets/material.pack.ts']]),
       delivery: {},
       compressEntries,
       pathOf: (url: string, from: string) =>

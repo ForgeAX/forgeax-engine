@@ -1,7 +1,6 @@
 import { defineComponent, defineSystem, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { RendererOperationError } from '../errors/render';
 import { deriveCameraStandardConfiguration } from '../pipeline/camera-standard-profile';
-import { STANDARD_PIPELINE_ID } from '../pipeline/standard-profile';
 import { resolveFrameMaterials } from '../record/frame-admission';
 import {
   prepareFrameLighting,
@@ -19,7 +18,6 @@ import {
 } from '../record/render-context';
 import { resetRenderFeatureGraphState } from '../record/typed-frame-graph';
 import type { CameraSnapshot } from '../render-contract';
-import { ssaoStructuralIdentity } from '../ssao-config';
 import {
   RenderCascadeFitOrder,
   RenderEnvironmentAdmitOrder,
@@ -30,7 +28,7 @@ import {
 import { viewLightsOf } from './render-lights';
 import { ViewRecorder } from './render-views';
 import { RenderPrepare, renderSubmission, renderWorldFor } from './render-world';
-import { requireViewField } from './view-field';
+import { readViewState, requireViewField } from './view-field';
 import { stagedViewInputs, ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
@@ -76,12 +74,8 @@ export function viewStandardLightingOf(
   world: World,
   entity: EntityHandle | undefined,
 ): ViewStandardLightingOutcome | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewStandardLighting)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewStandardLightingState>(
-      requireViewField(world, entity, ViewStandardLighting, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<ViewStandardLightingState>(world, entity, ViewStandardLighting);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.outcome : undefined;
 }
 
@@ -198,10 +192,7 @@ function admitCameraConfiguration(
   if (!configuration.ok) return false;
   const signature = JSON.stringify([
     configuration.value.profile?.renderPath,
-    ssaoStructuralIdentity(
-      configuration.value.config?.ssao,
-      configuration.value.profile?.pipelineId === STANDARD_PIPELINE_ID,
-    ),
+    configuration.value.config?.ambientOcclusion,
   ]);
   frameState.cameraStandardProfile = configuration.value.profile;
   frameState.installedPipelineConfig = configuration.value.config;
@@ -252,6 +243,7 @@ function prepareViewStandardLighting(
           camera,
           pipelineState ?? undefined,
           frame.renderables,
+          projection?.renderables,
         ),
     );
     prepareViewSky(internals, resourceWorld, frameState, frame);

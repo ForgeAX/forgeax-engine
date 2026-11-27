@@ -2,11 +2,11 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  DDC_LAYOUT_VERSION,
   type DdcEntry,
   DdcEntryStore,
   ddcOutputDigest,
-  resolveDdcLayout,
+  defaultBuildCacheRoot,
+  resolveRuntimeDdcRoot,
   semanticDdcKey,
 } from '@forgeax/engine/ddc';
 import { defineFeature } from '../../lab/feature';
@@ -50,34 +50,29 @@ export default defineFeature({
   catalog: 'DDC v2',
   kind: 'headless',
   summary:
-    'The Node-only derived-data cache: an absolute injected layout, a semantic content key over importer inputs, and an immutable entry store where staged data is invisible until an atomic publish. It is disposable: deleting it only costs a recook.',
+    'The Node-only derived-data cache: isolated runtime scopes under the project root, a semantic content key over importer inputs, and an immutable entry store where staged data is invisible until an atomic publish. It is disposable: deleting it only costs a recook.',
   expect:
-    'Layout v2 needs absolute roots and an explicit projectDdcRoot; equal inputs give one key regardless of settings order and any byte change gives another; a staged entry is invisible until publish; a republish is "existing"; a tampered receipt reads as a miss; deleting the cache root is a clean miss.',
+    'Runtime scopes remain distinct under the injected project root; equal inputs give one key regardless of settings order and any byte change gives another; a staged entry is invisible until publish; a republish is "existing"; a tampered receipt reads as a miss; deleting the cache root is a clean miss.',
   async run(checks) {
     const root = await mkdtemp(join(tmpdir(), 'feature-lab-ddc-'));
     try {
-      const layout = resolveDdcLayout({
-        buildCacheRoot: join(root, 'build'),
-        projectDdcRoot: join(root, 'project'),
-      });
+      const projectRoot = join(root, '.forgeax/ddc/v2');
+      const cache = defaultBuildCacheRoot(root);
+      checks.equal(
+        'default build root stays separate',
+        cache,
+        join(root, '.forgeax/ddc/build-cache'),
+      );
+      const binding = { scopeId: 'editor_main', generation: 1 };
+      const scoped = resolveRuntimeDdcRoot(projectRoot, binding);
+      checks.equal(
+        'runtime root stays in the project scope',
+        scoped,
+        join(projectRoot, 'runtime/editor_main-1'),
+      );
       checks.ok(
-        'layout resolves with absolute roots',
-        layout.ok && layout.value.version === DDC_LAYOUT_VERSION,
-      );
-      const relative = resolveDdcLayout({
-        buildCacheRoot: 'relative/build',
-        projectDdcRoot: join(root, 'project'),
-      });
-      checks.equal(
-        'relative root code',
-        relative.ok ? 'ok' : relative.error.code,
-        'ddc-root-absolute-required',
-      );
-      const unscoped = resolveDdcLayout({ buildCacheRoot: join(root, 'build') });
-      checks.equal(
-        'missing projectDdcRoot code',
-        unscoped.ok ? 'ok' : unscoped.error.code,
-        'ddc-project-root-required',
+        'scope IDs do not alias',
+        resolveRuntimeDdcRoot(projectRoot, { ...binding, scopeId: 'editor/main' }) !== scoped,
       );
 
       const bytes = new Uint8Array([7, 7, 7]);
@@ -93,7 +88,6 @@ export default defineFeature({
         semantic({ a: 1, b: 2 }, new Uint8Array([7, 7, 8])) !== key,
       );
 
-      const cache = join(root, 'entries-root');
       const store = new DdcEntryStore(cache);
       const staged = await store.stage(entryFor(key));
       checks.ok('staged entry is invisible', (await store.read(key)) === null);
@@ -108,10 +102,7 @@ export default defineFeature({
         key,
       });
 
-      await writeFile(
-        join(cache, 'entries', key, 'receipt.json'),
-        JSON.stringify({ ...entryFor(key).receipt, key: 'f'.repeat(64) }),
-      );
+      await writeFile(join(cache, 'entries', key, 'entry.json'), '{}');
       checks.ok('tampered receipt reads as a miss', (await store.read(key)) === null);
 
       await rm(cache, { recursive: true, force: true });

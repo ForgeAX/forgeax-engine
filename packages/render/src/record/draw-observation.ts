@@ -1,8 +1,12 @@
 import type { World } from '@forgeax/engine-ecs';
-import { MAX_INSPECTION_SAMPLES, MAX_RECEIPT_OBSERVATION_BYTES } from '../observation-budget';
+import {
+  appendedObservationBytes,
+  MAX_INSPECTION_SAMPLES,
+  MAX_RECEIPT_OBSERVATION_BYTES,
+} from '../observation-budget';
 import type { DrawObservation, MaterialDrawObservation } from '../render-contract';
 import type { ValidatedRenderable } from './frame-snapshot';
-import type { RenderableDrawReceipt } from './gpu-draw-receipts';
+import { type RenderableDrawReceipt, selectSubmittedMaterialProgram } from './gpu-draw-receipts';
 import type { RenderSystemInternals } from './render-context';
 
 /** One bounded staging list owned by the actual record callback, committed at submit. */
@@ -10,6 +14,7 @@ export function createDrawObservation(
   internals: Pick<RenderSystemInternals, 'device' | 'resolvePipelineReference'>,
 ) {
   const draws: MaterialDrawObservation[] = [];
+  let bytes = 2;
   let reason: Extract<DrawObservation, { status: 'unavailable' }>['reason'] | undefined;
   return {
     /** A GPU-lane draw without a per-row receipt; its lineage is never observable. */
@@ -29,19 +34,16 @@ export function createDrawObservation(
       }
       const material = receipt?.material;
       const publication = material?.materialPublication;
-      const candidates =
-        publication?.programs.filter((p) => p.specializationKey === receipt?.programKey) ?? [];
-      const program =
-        receipt?.passIndex === undefined
-          ? candidates.length === 1
-            ? candidates[0]
-            : undefined
-          : publication?.programs[receipt.passIndex];
+      const program = selectSubmittedMaterialProgram(
+        publication?.programs,
+        receipt?.passIndex !== undefined,
+        receipt?.passIndex ?? 0,
+        receipt?.programKey,
+      );
       if (
         material === undefined ||
         publication === undefined ||
         program === undefined ||
-        program.specializationKey !== receipt?.programKey ||
         world === undefined ||
         submeshIndex === undefined
       ) {
@@ -72,13 +74,11 @@ export function createDrawObservation(
         program,
         pipeline,
       });
-      draws.push(row);
-      if (
-        new TextEncoder().encode(JSON.stringify(draws)).byteLength > MAX_RECEIPT_OBSERVATION_BYTES
-      ) {
+      bytes = appendedObservationBytes(bytes, row);
+      if (bytes > MAX_RECEIPT_OBSERVATION_BYTES) {
         draws.length = 0;
         reason = 'snapshot-too-large';
-      }
+      } else draws.push(row);
     },
     commit(ready: boolean): DrawObservation {
       if (!ready) reason ??= 'presentation-pending';

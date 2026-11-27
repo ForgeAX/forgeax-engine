@@ -1,6 +1,6 @@
 import { box3, frustum, mat4 } from '@forgeax/engine-math';
 import type { CameraSnapshot } from '../render-contract';
-import type { CameraAdmission, RenderableSnapshot } from '../render-system-extract';
+import type { RenderableSnapshot, ResidualCameraAdmission } from '../render-system-extract';
 import type { MaterialFrame } from '../scene/material-dispatch';
 import { cameraBoundsVisible, cullSceneSlots, type SlotCullState } from '../scene/persistent-cull';
 import type {
@@ -10,7 +10,7 @@ import type {
 import { computeViewProjectionMatrix } from './helpers';
 
 interface CaptureVisibility {
-  readonly admission: CameraAdmission;
+  readonly admission: ResidualCameraAdmission;
   readonly visible: (source: RenderableSnapshot) => boolean;
 }
 

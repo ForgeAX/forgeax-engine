@@ -1,18 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import {
-  lstat,
-  mkdir,
-  open,
-  readdir,
-  readFile,
-  realpath,
-  rename,
-  rm,
-  stat,
-} from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { processAlive } from './backend-lifetime.js';
+import { writeFileAtomic } from './filesystem-path.js';
 import type { CommandError } from './types.js';
+import { failCommand, rejectCommand } from './types.js';
 
 export type KnownProject = Readonly<{
   root: string;
@@ -199,15 +192,6 @@ async function readStore(path: string): Promise<Store> {
   }
 }
 
-async function processAlive(pid: number) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
 async function acquireLock(path: string) {
   const started = Date.now();
   while (Date.now() - started < LOCK_TIMEOUT_MS) {
@@ -260,7 +244,7 @@ async function acquireLock(path: string) {
       const record = value as Record<string, unknown>;
       const pid = Number.isSafeInteger(record.pid) ? Number(record.pid) : undefined;
       owner = {
-        ...(pid === undefined ? {} : { ownerPid: pid, ownerAlive: await processAlive(pid) }),
+        ...(pid === undefined ? {} : { ownerPid: pid, ownerAlive: processAlive(pid) }),
         ...(typeof record.nonce === 'string' ? { ownerNonce: record.nonce } : {}),
       };
     }
@@ -288,22 +272,11 @@ async function syncDirectory(path: string) {
 }
 
 async function writeStore(path: string, store: Store) {
-  const pending = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  let created = false;
-  try {
-    const file = await open(pending, 'wx', 0o600);
-    created = true;
-    try {
-      await file.writeFile(`${JSON.stringify(store, null, 2)}\n`, 'utf8');
-      await file.sync();
-    } finally {
-      await file.close();
-    }
-    await rename(pending, path);
-    await syncDirectory(path);
-  } finally {
-    if (created) await rm(pending, { force: true });
-  }
+  await writeFileAtomic(path, `${JSON.stringify(store, null, 2)}\n`, {
+    mode: 0o600,
+    syncFile: true,
+  });
+  await syncDirectory(path);
 }
 
 async function storageResult<T>(
@@ -313,11 +286,9 @@ async function storageResult<T>(
   try {
     return { ok: true, value: await action() };
   } catch (cause) {
-    return {
-      ok: false,
-      error:
-        cause instanceof KnownProjectStoreCleanupError ? cause.failure : sourceFailure(path, cause),
-    };
+    return rejectCommand(
+      cause instanceof KnownProjectStoreCleanupError ? cause.failure : sourceFailure(path, cause),
+    );
   }
 }
 
@@ -413,15 +384,12 @@ export async function registerKnownProject(
   options: { path?: string } = {},
 ): Promise<KnownProjectResult<KnownProject>> {
   if (!isAbsolute(root))
-    return {
-      ok: false,
-      error: {
-        code: 'known-project-directory-invalid',
-        expected: 'An absolute Node-visible project directory',
-        hint: 'Choose a directory on the backend machine.',
-        detail: { path: root },
-      },
-    };
+    return failCommand(
+      'known-project-directory-invalid',
+      'An absolute Node-visible project directory',
+      'Choose a directory on the backend machine.',
+      { path: root },
+    );
   const { readProjectFacts } = await import('./project.js');
   const facts = await readProjectFacts(root);
   if (!facts.ok) return facts;

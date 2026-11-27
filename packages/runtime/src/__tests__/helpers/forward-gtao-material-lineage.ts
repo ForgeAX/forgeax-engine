@@ -1,12 +1,19 @@
 import { runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
 import type { FrameModel } from '@forgeax/engine-rhi-debug';
-import type { MaterialShaderManifestEntry, ShaderRegistry } from '@forgeax/engine-shader';
+import {
+  isShaderTemplateManifestRow,
+  type MaterialShaderManifestEntry,
+  materialShaderAxes,
+  materialShaderPreparedSourceRows,
+  type ShaderRegistry,
+} from '@forgeax/engine-shader';
 import { canonicalJson, type MaterialAsset } from '@forgeax/engine-types';
 
 type MaterialShaderRegistry = Pick<
   ShaderRegistry,
   'findMaterialArtifact' | 'materialShaderManifestEntry'
->;
+> &
+  Partial<Pick<ShaderRegistry, 'preparedSurfaceSourceRows'>>;
 
 export interface ForwardGtaoMaterialLineage {
   readonly shaderIdentifier: string;
@@ -44,7 +51,7 @@ type SelectedProgramFacts = Omit<
 >;
 type ProgramFacts = Omit<SelectedProgramFacts, 'variantSelection'>;
 
-/** Match captured work to one admitted program, retaining every equivalent authored variant. */
+/** Match captured work to one admitted program, retaining the equivalent admitted shader rows. */
 export function resolveForwardGtaoMaterialLineage(
   registry: MaterialShaderRegistry,
   material: MaterialAsset,
@@ -72,6 +79,7 @@ export function resolveForwardGtaoMaterialLineage(
     capturedFragmentEntryPoints,
     ...selectedProgramFacts(
       publication,
+      registry,
       capturedSource,
       shaderIdentifier,
       capturedFragmentEntryPoints,
@@ -81,17 +89,29 @@ export function resolveForwardGtaoMaterialLineage(
 
 function selectedProgramFacts(
   publication: MaterialPublication,
+  registry: MaterialShaderRegistry,
   capturedSource: string,
   shaderIdentifier: string,
   capturedFragmentEntryPoints: readonly string[],
 ): SelectedProgramFacts {
-  const variants = publication.variants;
+  // Only prepared native recipes could have supplied a captured module. Cooked
+  // publications already contain their complete artifact roster.
+  const native = isShaderTemplateManifestRow(publication);
+  const variants = native
+    ? materialShaderPreparedSourceRows(publication).filter((row) => 'definesKey' in row)
+    : publication.variants;
+  const singleProgram = native
+    ? materialShaderAxes(publication).length === 0
+    : variants.length === 0;
+  const admittedMatches = singleProgram
+    ? publication.composedWgsl === capturedSource
+      ? [undefined]
+      : []
+    : variants.filter((variant) => variant.composedWgsl === capturedSource);
   const matches =
-    variants.length === 0
-      ? publication.composedWgsl === capturedSource
-        ? [undefined]
-        : []
-      : variants.filter((variant) => variant.composedWgsl === capturedSource);
+    admittedMatches.length === 0 && native
+      ? (registry.preparedSurfaceSourceRows?.(shaderIdentifier, capturedSource) ?? [])
+      : admittedMatches;
   if (matches.length === 0) {
     throw new Error(
       `captured forward shader source must match exactly one admitted variant or shared program for ${shaderIdentifier}; matches=0`,

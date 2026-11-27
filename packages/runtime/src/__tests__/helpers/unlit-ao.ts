@@ -9,9 +9,18 @@ import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug'
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
-import { decodeSsaoRawNormal } from '../../../../render/src/__tests__/gtao-reference';
-import { captureForwardGtaoTarget, type ForwardGtaoCaptureHost } from './forward-gtao-capture';
+import {
+  GPU_BUFFER_USAGE_COPY_SRC,
+  GPU_BUFFER_USAGE_STORAGE,
+} from '../../../../render/src/gpu-usage';
+import {
+  byteErrorMetrics,
+  captureForwardGtaoBuffer,
+  captureForwardGtaoTarget,
+  type ForwardGtaoCaptureHost,
+} from './forward-gtao-capture';
 import { describeForwardGtaoFailure } from './forward-gtao-failure';
+import type { createForwardGtaoSceneDataConsumer } from './forward-gtao-scene-data';
 import {
   attachStandardPbrSkin,
   standardPbrSkinMaterial,
@@ -20,16 +29,31 @@ import {
 
 export const UNLIT_AO_SIZE = 64;
 
-/** Real color/depth/normal coverage, on both direct and scene-index submissions. */
+/** Real color and depth coverage, on both direct and scene-index submissions. */
 export async function verifyUnlitAo(
   host: RendererHostAssembly,
   recorder: RecorderAttachment,
   onTape: (lane: string, tape: EncodedTape) => Promise<void>,
+  surface?: ReturnType<typeof createForwardGtaoSceneDataConsumer>,
 ) {
   const { renderer, assets } = host;
   const debug = host.debugDrawHost as ForwardGtaoCaptureHost &
     Pick<RendererLegacyHostAdapter, 'setClusterWorkObservationForConformance'>;
   debug.setClusterWorkObservationForConformance(true);
+  const observationBuffer =
+    surface === undefined
+      ? undefined
+      : debug.device
+          .createBuffer({
+            label: 'unlit-ao-surface-readback',
+            size: surface.observationBytes,
+            usage: GPU_BUFFER_USAGE_COPY_SRC | GPU_BUFFER_USAGE_STORAGE,
+          })
+          .unwrap();
+  if (surface !== undefined && observationBuffer !== undefined) {
+    surface.setObservationBuffer(observationBuffer);
+    surface.setEnabled(true);
+  }
   const errors: unknown[] = [];
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
@@ -107,49 +131,80 @@ export async function verifyUnlitAo(
       throw new Error(JSON.stringify(describeForwardGtaoFailure(cause)), { cause });
     }
   };
-  // Forward AO reconstructs its normal from the depth-only prepass and carries
-  // it beside visibility in ssao-raw (rgba8 octahedral, about 1/127 precision).
-  const centerNormal = (capture: Awaited<ReturnType<typeof captureForwardGtaoTarget>>) => {
-    expect(capture.format).toBe('rgba8unorm');
-    const pixel =
-      (Math.floor(capture.height / 2) * capture.width + Math.floor(capture.width / 2)) * 4;
-    return decodeSsaoRawNormal(
-      (capture.bytes[pixel + 1] ?? NaN) / 255,
-      (capture.bytes[pixel + 2] ?? NaN) / 255,
+  const expectNormal = async (lane: 'automatic' | 'direct', expected: readonly number[]) => {
+    if (surface === undefined || observationBuffer === undefined) return;
+    await draw(lane);
+    const bytes = await captureForwardGtaoBuffer(
+      debug,
+      observationBuffer,
+      surface.observationBytes,
     );
+    const depth = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const size = UNLIT_AO_SIZE;
+    const center = Math.floor(size / 2);
+    const position = (x: number, y: number) => {
+      const deviceZ = depth.getFloat32((y * size + x) * 4, true);
+      const distance = 0.1 / (deviceZ + (1 - deviceZ) * (0.1 / 30));
+      const scale = distance * Math.tan(Math.PI / 6);
+      return [
+        (((x + 0.5) / size) * 2 - 1) * scale,
+        (1 - ((y + 0.5) / size) * 2) * scale,
+        -distance,
+      ] as const;
+    };
+    const centerPosition = position(center, center);
+    const right = position(center + 1, center);
+    const down = position(center, center + 1);
+    const dx = right.map((value, axis) => value - (centerPosition[axis] ?? 0));
+    const dy = down.map((value, axis) => value - (centerPosition[axis] ?? 0));
+    const [a = 0, b = 0, c = 0] = dx;
+    const [d = 0, e = 0, f = 0] = dy;
+    const normal = [e * c - f * b, f * a - d * c, d * b - e * a];
+    const length = Math.hypot(...normal);
+    for (let axis = 0; axis < 3; axis++)
+      expect((normal[axis] ?? NaN) / length).toBeCloseTo(expected[axis] ?? NaN, 1);
+    expect(debug.getCurrentGraphTarget('standard-scene-surface-normal')).toBeUndefined();
   };
-  const nearNormal = (actual: readonly number[], expected: readonly number[]) => {
-    for (let axis = 0; axis < 3; axis++) expect(actual[axis]).toBeCloseTo(expected[axis] ?? NaN, 1);
-  };
+  const captureAo = (lane: 'automatic' | 'direct') =>
+    captureForwardGtaoTarget(debug, 'ssao-calc', () => draw(lane));
   try {
     for (const algorithm of ['ssao', 'gtao'] as const) {
       const configured = renderer.setProfile({
         ...renderer.inspect().profile,
         renderPath: 'forward',
-        ssao: { algorithm },
+        ambientOcclusion: { enabled: true, method: algorithm },
       });
       if (!configured.ok) throw configured.error;
       for (const geometryLane of ['automatic', 'direct'] as const) {
         // No authored normal texture: AO must see the rotated mesh surface.
         for (let frame = 0; frame < 60; frame++) await draw(geometryLane);
-        const capture = () => captureForwardGtaoTarget(debug, 'ssao-raw', () => draw(geometryLane));
-        nearNormal(centerNormal(await capture()), [Math.sin(angle), 0, Math.cos(angle)]);
+        await expectNormal(geometryLane, [Math.sin(angle), 0, Math.cos(angle)]);
+        const opaqueAo = await captureForwardGtaoTarget(debug, 'ssao-calc', () =>
+          draw(geometryLane),
+        );
         // Alpha Mask holes reveal the actual background normal, not a phantom foreground.
         assets.update(material, { values: { baseColor: [0.8, 0.3, 0.1, 0] } }).unwrap();
-        nearNormal(centerNormal(await capture()), [0, 0, 1]);
+        await expectNormal(geometryLane, [0, 0, 1]);
+        const maskedAo = await captureForwardGtaoTarget(debug, 'ssao-calc', () =>
+          draw(geometryLane),
+        );
+        expect(opaqueAo.format).toBe('r8unorm');
+        expect(byteErrorMetrics(opaqueAo.bytes, maskedAo.bytes).maxAbsolute).toBeGreaterThan(0);
         assets.update(material, { values: { baseColor: [0.8, 0.3, 0.1, 1] } }).unwrap();
-        nearNormal(centerNormal(await capture()), [Math.sin(angle), 0, Math.cos(angle)]);
+        await expectNormal(geometryLane, [Math.sin(angle), 0, Math.cos(angle)]);
         assets.update(alphaTexture, { data: new Uint8Array([255, 255, 255, 0]) }).unwrap();
-        nearNormal(centerNormal(await capture()), [0, 0, 1]);
+        await expectNormal(geometryLane, [0, 0, 1]);
         assets.update(alphaTexture, { data: new Uint8Array([255, 255, 255, 255]) }).unwrap();
-        nearNormal(centerNormal(await capture()), [Math.sin(angle), 0, Math.cos(angle)]);
+        await expectNormal(geometryLane, [Math.sin(angle), 0, Math.cos(angle)]);
         expect(renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
           status: 'active',
-          algorithm,
+          requestedMethod: algorithm,
+          effectiveMethod: 'ssao',
+          input: { normalSchema: 'depth-reconstruction' },
         });
       }
     }
-    // Standard PBR-Skin must retain its posed surface normal alongside Unlit AO.
+    // Standard PBR-Skin must contribute its posed depth to AO.
     const skinMaterial = assets
       .create(standardPbrSkinMaterial(Materials.standard({ baseColor: [0.8, 0.3, 0.1, 1] })))
       .unwrap();
@@ -165,16 +220,17 @@ export async function verifyUnlitAo(
       await draw(geometryLane);
       (await recorder.frameBoundary()).unwrap();
       await onTape(geometryLane, (await pendingTape).unwrap());
-      const capture = await captureForwardGtaoTarget(debug, 'ssao-raw', () => draw(geometryLane));
-      nearNormal(centerNormal(capture), [Math.sin(angle), 0, Math.cos(angle)]);
+      await expectNormal(geometryLane, [Math.sin(angle), 0, Math.cos(angle)]);
+      const posed = await captureAo(geometryLane);
       world
         .set(skin.joint, Transform, {
           ...pose,
           quat: [0, -Math.sin(angle / 2), 0, Math.cos(angle / 2)],
         })
         .unwrap();
-      const moved = await captureForwardGtaoTarget(debug, 'ssao-raw', () => draw(geometryLane));
-      nearNormal(centerNormal(moved), [-Math.sin(angle), 0, Math.cos(angle)]);
+      await expectNormal(geometryLane, [-Math.sin(angle), 0, Math.cos(angle)]);
+      const moved = await captureAo(geometryLane);
+      expect(byteErrorMetrics(posed.bytes, moved.bytes).maxAbsolute).toBeGreaterThan(0);
       world.set(skin.joint, Transform, pose).unwrap();
     }
     expect(errors).toEqual([]);
@@ -182,5 +238,8 @@ export async function verifyUnlitAo(
     lease.dispose();
     unsubscribe();
     debug.setClusterWorkObservationForConformance(false);
+    surface?.setEnabled(false);
+    if (observationBuffer !== undefined)
+      (await debug.device.destroyBuffer(observationBuffer)).unwrap();
   }
 }

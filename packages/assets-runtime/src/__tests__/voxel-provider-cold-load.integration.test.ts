@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { projectRuntimePack } from '@forgeax/engine-pack';
 import {
   createRuntimePackPublication,
   projectExternalCatalogEntries,
@@ -207,10 +206,7 @@ describe('external voxel provider cold-load route', () => {
       outputs,
       generation: 1,
     });
-    const projected = projectRuntimePack(publication.pack);
-    expect(projected.ok).toBe(true);
-    if (!projected.ok) return;
-    const pack = projected.value as PackV2<unknown>;
+    const pack: PackV2<unknown> = publication.pack;
     const producerRows = projectExternalCatalogEntries(
       {
         schemaVersion: 'provider/1',

@@ -51,7 +51,8 @@ export default {
     const reply = await client.transport.request<{ projectId: string }, { sources?: { sourcePath: string }[] }>(VIEW_PACK_SOURCES_SERVICE, { projectId });
     return [...new Set((reply.sources ?? []).map(s => projectRelative(s.sourcePath, root)).filter(p => p.endsWith('.pack.ts')))].sort();
    },
-   operations: modelingOperations((service, payload) => client.transport.request(service, payload)),
+   operations: modelingOperations((service, payload, signal) =>
+    client.transport.request(service, payload, signal === undefined ? undefined : { signal })),
    async readImage(path) {
     const file = await client.transport.request<{ path: string }, { dataUrl?: string }>(VIEW_FILE_GET_SERVICE, { path });
     return file.dataUrl;
@@ -84,7 +85,7 @@ export default {
   const node = document.createElement('section');
   node.dataset.forgeaxViewSurface = 'modeling';
   node.style.cssText = 'height:100%;min-height:0;overflow:auto';
-  const unregister = page.registerType({ typeId: 'modeling', context: 'project', title: 'Modeling', order: 12,
+  const unregister = page.registerType({ typeId: 'modeling', context: 'project', titleKey: 'view.pages.modeling', order: 12,
    closable: true, singleton: true, initial: false, openable: true, layout: 'surface', showPanelRail: false, hideWhenInactive: true });
   const unmount = page.mount('modeling', node);
   let dispose: Dispose | undefined;

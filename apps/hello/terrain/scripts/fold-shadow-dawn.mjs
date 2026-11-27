@@ -69,7 +69,7 @@ try {
       backendArgs: ['backend=metal'],
       appOptions: {
         rhi: recorder.backend.rhi,
-        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath, ssao: false },
+        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath, ambientOcclusion: { enabled: false } },
       },
     });
     const capture = async (name) => {

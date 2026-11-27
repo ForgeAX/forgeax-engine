@@ -49,7 +49,10 @@ async function fixture() {
     assets.update(source, { data: new Uint8Array(64).fill(1) }).unwrap();
     const batch = observer.read().unwrap();
     assert(batch.changes.length === 1);
-    for (const change of batch.changes) store.adoptCubemapChange(change, resources);
+    for (const change of batch.changes)
+      store.adoptAssetChange(resources, change, (error) => {
+        throw error;
+      });
     batch.accept();
   };
   const close = () => {
@@ -71,12 +74,10 @@ it('retires the old cube and all IBL textures after submitted readers complete',
     const oldCube = f.store.getCubemapGpuTexture(f.source, f.resources);
     const oldIbl = f.store.getCubemapIbl(f.source, f.resources);
     assert(oldCube && oldIbl);
-    const oldIblTextures = [
-      oldIbl.irradianceTexture,
-      oldIbl.prefilterTexture,
-      oldIbl.brdfLutTexture,
-    ];
+    const oldIblTextures = [oldIbl.prefilterTexture, oldIbl.brdfLutTexture];
+    const destroyBuffer = vi.spyOn(f.device, 'destroyBuffer');
     const compiled = pipelines.mock.calls.length;
+    expect(destroyBuffer).not.toHaveBeenCalledWith(oldIbl.skySh);
     f.store.trackMeshSubmission(submitted.promise);
     f.edit();
     expect(f.store.getCubemapStatus(f.source, f.resources)).toBeUndefined();
@@ -92,6 +93,7 @@ it('retires the old cube and all IBL textures after submitted readers complete',
     await submitted.promise;
     await Promise.resolve();
     expect(oldCube.isDestroyed).toBe(true);
+    expect(destroyBuffer).toHaveBeenCalledWith(oldIbl.skySh);
     for (const texture of oldIblTextures) expect(destroy).toHaveBeenCalledWith(texture);
     expect(current?.isDestroyed).toBe(false);
     for (let version = 0; version < 3; version++) {

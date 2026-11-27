@@ -3,6 +3,7 @@ import { textureContribution } from '@forgeax/engine-image';
 import {
   ImporterRegistry,
   type ImportRunnerFs,
+  projectImportPack,
   type RunImportMeta,
   runImport,
 } from '@forgeax/engine-import';
@@ -168,11 +169,13 @@ describe('glTF physical material importer route', { timeout: 60_000 }, () => {
     if (!result.ok || 'skipped' in result.value)
       throw new Error('physical import did not publish a pack');
 
-    expect(result.value.pack.assets).toHaveLength(11);
+    expect(projectImportPack(result.value.product).assets).toHaveLength(11);
     expect(result.value.cookProducts).toHaveLength(11);
     expect(result.value.cookProducts.every((product) => product.receipt !== undefined)).toBe(true);
 
-    const material = result.value.pack.assets.find((asset) => asset.guid === MATERIAL_GUID);
+    const material = projectImportPack(result.value.product).assets.find(
+      (asset) => asset.guid === MATERIAL_GUID,
+    );
     if (material === undefined) throw new Error('physical material pack row missing');
     expect([...material.refs].sort()).toEqual([...TEXTURE_GUIDS, ...SAMPLER_GUIDS].sort());
 
@@ -195,7 +198,7 @@ describe('glTF physical material importer route', { timeout: 60_000 }, () => {
       expect(parameterNames.has(name)).toBe(true);
     }
 
-    const { assets: runtime } = importedSource(result.value.pack);
+    const { assets: runtime } = importedSource(projectImportPack(result.value.product));
     runtime.installDecoder(materialContribution.kind, materialContribution.decoder);
     runtime.installDecoder(textureContribution.kind, textureContribution.decoder);
     runtime.installDecoder(samplerContribution.kind, samplerContribution.decoder);

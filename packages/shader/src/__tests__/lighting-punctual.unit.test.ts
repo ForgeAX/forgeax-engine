@@ -148,7 +148,7 @@ describe('direct punctual lighting shader contract', () => {
     );
     const shared = await readFile(new URL('../standard-lighting.wgsl', import.meta.url), 'utf8');
     expect(shared).toMatch(
-      /evaluateStandardClusterLobes\(ndc, pixel, viewZ, worldPosition, normal, direction,\s*albedo, metallic, alpha, f0, transmission, false, receiveShadows, receiverChannels,\s*useDirectDfgLut,/u,
+      /evaluateStandardClusterLobes\(ndc, pixel, viewZ, worldPosition, normal, direction,\s*albedo, metallic, alpha, f0, transmission, false, receiveShadows, receiverChannels, projectedChannels,\s*useDirectDfgLut,/u,
     );
     expect(source).toContain('clearcoatAlpha,');
     expect(source).toContain('vec3<f32>(0.04),');
@@ -161,7 +161,7 @@ describe('direct punctual lighting shader contract', () => {
     expect(source).toContain('PCSS_MEDIUM_COMPARE_TAPS');
     expect(source).toContain('PCSS_HIGH_RAW_TAPS');
     expect(source).toContain('PCSS_HIGH_COMPARE_TAPS');
-    expect(source).toContain('fn _samplePcssForCascade');
+    expect(source).toContain('fn sampleDirectionalPcss');
     expect(source).toContain('if (blockerCount == 0u)');
     expect(source).toContain('shadow_load_raw_depth');
     expect(source).toContain('shadow_sample_compare');
@@ -183,22 +183,20 @@ describe('direct punctual lighting shader contract', () => {
     );
     expect(punctual).toContain('select(-normal, normal, dot(normal, toLight) >= 0.0)');
     expect(shared).toContain('if (any(transmission > vec3<f32>(0.0)))');
-    expect(shared).toContain(
-      'let backIrradiance = sampleSkylightDiffuse(sky, -normal, irradianceMap, irradianceSampler);',
-    );
+    expect(shared).toContain('back = sampleSkylightDiffuse(sky, -normal, skySh);');
     const diffuseOwner = shared.slice(
       shared.indexOf('fn sampleSkylightDiffuse('),
-      shared.indexOf('fn sampleSkylightRadiance('),
+      shared.indexOf('fn sampleStandardReflectionRadiance('),
     );
     expect(diffuseOwner).toContain(
       'let rotation = select(sky.rotation, sky.diffuseRotation, probe);',
     );
     expect(diffuseOwner).toContain(
-      'return sampleIblDiffuse(normal, rotation, irradianceMap, irradianceSampler)',
+      'return evaluateSkyPolynomial(skySh, inverseRotateEnvironment(normal, rotation))',
     );
     expect(diffuseOwner).toContain('* skylightHemisphereScale(sky, scale, normal);');
     expect(pbr).toContain('#ifdef DIFFUSE_TRANSMISSION_AVAILABLE');
-    expect(pbr).toContain('diffuseAlbedo = diffuseAlbedo * (1.0 - diffuseTransmissionFactor);');
+    expect(pbr).toContain('diffuseAlbedo = diffuseAlbedo * (1.0 - diffuseTransmission.w);');
     expect(pbr).toMatch(/directionalShadowNormal = select\(receiverNormal, -receiverNormal,/);
   });
 });

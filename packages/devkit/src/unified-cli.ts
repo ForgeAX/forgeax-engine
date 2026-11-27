@@ -11,6 +11,8 @@ import {
 import { createDevkitCliStartup } from './cli-host.js';
 import { compactCliResult } from './cli-presentation.js';
 import { ignoreProjectState } from './project-state-ignore.js';
+import { discoverRhiDebugOperations } from './rhi-debug/operations.js';
+import type { ToolClient } from './tools/client.js';
 
 export interface UnifiedCliResult {
   readonly ok: boolean;
@@ -38,7 +40,6 @@ export interface UnifiedCliOptions {
 
 interface ParsedCli {
   readonly path: readonly string[];
-  readonly positionals: readonly string[];
   readonly root: string;
   readonly json: boolean;
   readonly tree: boolean;
@@ -91,7 +92,6 @@ interface CliParseState {
   tree: boolean;
   detail: boolean;
   inputRaw: string | undefined;
-  inputSeen: boolean;
   flagsSeen: boolean;
 }
 
@@ -135,7 +135,6 @@ function applyValueFlag(
     state.root = next;
   } else if (flag === '--input') {
     state.inputRaw = next;
-    state.inputSeen = true;
   } else {
     state.args[key] = next;
     state.flagsSeen = true;
@@ -181,26 +180,24 @@ function parseArgs(argv: readonly string[]): ParsedCli {
     tree: false,
     detail: false,
     inputRaw: undefined,
-    inputSeen: false,
     flagsSeen: false,
   };
   const helpRequested = argv[0] === 'help';
   const tokens = helpRequested ? argv.slice(1) : argv;
   for (let index = 0; index < tokens.length; index += 1)
     index += applyCliToken(state, tokens, index, helpRequested);
-  if (state.inputSeen && state.flagsSeen) {
+  if (state.inputRaw !== undefined && state.flagsSeen) {
     throw new Error('--input cannot be combined with named command flags');
   }
   const input = state.inputRaw === undefined ? undefined : parseInput(state.inputRaw, state.root);
   return {
     path: state.path,
-    positionals: [],
     root: state.root,
     json: state.json,
     tree: state.tree,
     detail: state.detail,
     helpRequested,
-    ...(state.inputSeen ? { input } : {}),
+    ...(state.inputRaw === undefined ? {} : { input }),
     args: state.args,
   };
 }
@@ -281,29 +278,27 @@ function coerceNamedArgs(
     if (property.type === 'boolean') {
       if (value !== 'true' && value !== 'false') throw new Error(`--${key} expects true or false`);
       output[key] = value === 'true';
-    } else if (property.type === 'number') {
-      const parsed = Number(value);
-      if (!Number.isFinite(parsed)) throw new Error(`--${key} expects a number`);
-      output[key] = parsed;
-    } else if (property.type === 'integer') {
-      const parsed = Number(value);
-      if (!Number.isSafeInteger(parsed)) throw new Error(`--${key} expects an integer`);
-      output[key] = parsed;
+    } else if (property.type === 'number' || property.type === 'integer') {
+      const number = Number(value);
+      const valid =
+        property.type === 'number' ? Number.isFinite(number) : Number.isSafeInteger(number);
+      if (!valid)
+        throw new Error(
+          `--${key} expects ${property.type === 'number' ? 'a number' : 'an integer'}`,
+        );
+      output[key] = number;
     } else if (property.type === 'array' || property.type === 'object') {
+      let parsed: unknown;
       try {
-        const parsed = JSON.parse(value) as unknown;
-        if (property.type === 'array' && !Array.isArray(parsed))
-          throw new Error(`--${key} expects a JSON array`);
-        if (
-          property.type === 'object' &&
-          (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))
-        )
-          throw new Error(`--${key} expects a JSON object`);
-        output[key] = parsed;
-      } catch (error) {
-        if (error instanceof Error && error.message.startsWith('--')) throw error;
+        parsed = JSON.parse(value);
+      } catch {
         throw new Error(`--${key} expects JSON`);
       }
+      const array = Array.isArray(parsed);
+      if (property.type === 'array' && !array) throw new Error(`--${key} expects a JSON array`);
+      if (property.type === 'object' && (parsed === null || typeof parsed !== 'object' || array))
+        throw new Error(`--${key} expects a JSON object`);
+      output[key] = parsed;
     } else {
       output[key] = value;
     }
@@ -361,8 +356,6 @@ export async function runUnifiedCli(
         : result;
     rawCommand = parsed.path.join(' ');
     const client = await cli.service.ready();
-    let commandPath = parsed.path;
-    let positionals = parsed.positionals;
     if (parsed.helpRequested) {
       return present({
         ok: true,
@@ -370,39 +363,17 @@ export async function runUnifiedCli(
         value: client.help(parsed.path, parsed.tree),
       });
     }
-    if (parsed.path.length > 0) {
-      for (let length = parsed.path.length; length > 0; length -= 1) {
-        const candidate = parsed.path.slice(0, length);
-        try {
-          const candidateHelp = client.help(candidate);
-          const remaining = [...parsed.path.slice(length), ...parsed.positionals];
-          if (remaining.length > 0 && candidateHelp.leaf === undefined) {
-            throw new Error(
-              `unknown command path after ${candidate.join(' ')}: ${remaining.join(' ')}`,
-            );
-          }
-          commandPath = candidate;
-          positionals = remaining;
-          break;
-        } catch {
-          // The longest valid prefix is the command; remaining values are inputs.
-        }
-      }
-    }
+    const { path: commandPath, leaf } = resolveInvocation(client, parsed.path);
     const command = commandPath.join(' ');
-    if (commandPath.length === 0 || parsed.args.help === true) {
+    if (leaf === undefined || parsed.args.help === true) {
       return present({
         ok: true,
         command: command || 'help',
         value: client.help(commandPath, parsed.tree),
       });
     }
-    const help = client.help(commandPath, false);
-    if (help.leaf === undefined) {
-      return present({ ok: true, command, value: client.help(commandPath, parsed.tree) });
-    }
-    const effectiveSchema = strictInputSchema(help.leaf?.inputSchema as ToolJsonSchema | undefined);
-    const positional = positionalArgs(command, parsed.args, positionals);
+    const effectiveSchema = strictInputSchema(leaf.inputSchema as ToolJsonSchema | undefined);
+    const positional = positionalArgs(command, parsed.args, parsed.path.slice(commandPath.length));
     // The global selector remains an argument only for commands declaring it.
     // Project plugins must receive the same selected root as built-in commands.
     const namedArgs =
@@ -436,8 +407,34 @@ export async function runUnifiedCli(
   }
 }
 
-/** `forgeax rhi timing TAPE` is `--artifact TAPE`. */
-const RHI_ARTIFACT_COMMANDS = new Set(['rhi summary', 'rhi inspect', 'rhi read', 'rhi timing']);
+/** The longest command prefix owns the remaining positional inputs. */
+function resolveInvocation(client: ToolClient, tokens: readonly string[]) {
+  for (let length = tokens.length; length > 0; length--) {
+    const path = tokens.slice(0, length);
+    try {
+      const { leaf } = client.help(path);
+      if (leaf !== undefined || length === tokens.length) return { path, leaf };
+    } catch {
+      // Shorten a path with positional arguments before reporting an unknown command.
+    }
+  }
+  return { path: tokens, leaf: undefined };
+}
+
+/** Positional aliases published by the CLI; named inputs still use each command schema. */
+const positionalNames = new Map<string, readonly string[]>([
+  ['asset guid', ['packageId', 'key']],
+  ['asset import', ['path']],
+  ['asset inspect', ['subject']],
+  ['asset resolve', ['subject']],
+  ['project new', ['root']],
+  ['sdk install', ['root']],
+  ['project play', ['script']],
+  ['project engine use-local', ['path']],
+  ...discoverRhiDebugOperations()
+    .filter(({ inputSchema }) => inputSchema.required?.includes('artifact'))
+    .map(({ name }) => [name.replace('.', ' '), ['artifact']] as const),
+]);
 
 function positionalArgs(
   command: string,
@@ -445,44 +442,18 @@ function positionalArgs(
   positionals: readonly string[],
 ): Record<string, unknown> {
   const args = { ...flags };
-  if (command === 'asset guid') {
-    // `asset guid <packageId> <key>`: the Pack subject namespace, then the sourceKey.
-    if (positionals.length > 2) {
-      throw new Error(
-        `too many positional arguments for ${command}: ${positionals.slice(2).join(' ')}`,
-      );
-    }
-    if (positionals[0] !== undefined) args.packageId = positionals[0];
-    if (positionals[1] !== undefined) args.key = positionals[1];
-    return args;
-  }
-  const positionalName =
-    command === 'asset import'
-      ? 'path'
-      : command === 'asset inspect' || command === 'asset resolve'
-        ? 'subject'
-        : command === 'project new' || command === 'sdk install'
-          ? 'root'
-          : command === 'project play'
-            ? 'script'
-            : command === 'project engine use-local'
-              ? 'path'
-              : RHI_ARTIFACT_COMMANDS.has(command)
-                ? 'artifact'
-                : undefined;
-  if (positionalName === undefined) {
-    if (positionals.length > 0) {
-      throw new Error(`unexpected positional argument for ${command}: ${positionals[0]}`);
-    }
-    return args;
-  }
-  if (positionals.length > 1) {
+  const names = positionalNames.get(command) ?? [];
+  if (positionals.length > names.length) {
     throw new Error(
-      `too many positional arguments for ${command}: ${positionals.slice(1).join(' ')}`,
+      names.length === 0
+        ? `unexpected positional argument for ${command}: ${positionals[0]}`
+        : `too many positional arguments for ${command}: ${positionals.slice(names.length).join(' ')}`,
     );
   }
-  const first = positionals[0];
-  if (first !== undefined) args[positionalName] = first;
+  for (const [index, value] of positionals.entries()) {
+    const name = names[index];
+    if (name !== undefined) args[name] = value;
+  }
   return args;
 }
 

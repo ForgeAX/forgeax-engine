@@ -14,10 +14,16 @@ it('takes the previous pose from the palette composed for the same held inputs',
     'compose',
   );
   // Storage task layout: 32 header bytes, then current and previous palettes.
-  const palettes = () =>
-    upload.mock.calls
-      .filter(([, , , , size]) => size === 2 * 64)
-      .map(([, , data]) => Array.from(new Float32Array(data as ArrayBuffer, 0, 32)));
+  const palettes = () => {
+    const writes = upload.mock.calls.filter(([, , , , size]) => size === 32 + 2 * 128);
+    expect(writes).toHaveLength(1);
+    const data = writes[0]?.[2] as ArrayBuffer;
+    expect(Array.from(new Uint32Array(data, 0, 3))).toEqual([f.first.slot + 1, 2, 2]);
+    return [
+      Array.from(new Float32Array(data, 32, 32)),
+      Array.from(new Float32Array(data, 160, 32)),
+    ];
+  };
   try {
     tasks.begin(f.frame);
     expect(tasks.demand(f.first)).toBeDefined();

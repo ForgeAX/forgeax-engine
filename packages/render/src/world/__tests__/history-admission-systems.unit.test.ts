@@ -1,26 +1,19 @@
-import { type EntityHandle, World } from '@forgeax/engine-ecs';
-import { RhiNullAdapter } from '@forgeax/engine-rhi-null';
-import { describe, expect, it, vi } from 'vitest';
+import { World } from '@forgeax/engine-ecs';
+import { describe, expect, it } from 'vitest';
 import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { viewSourceFixture } from '../../__tests__/view-source.fixture';
-import { DeviceScope } from '../../device/device-scope';
 import type { RenderFrameState } from '../../record/frame-snapshot';
 import type { RenderSystemInternals } from '../../record/render-context';
-import { beginSsrHistoryFrame } from '../../record/ssr-history-frame';
 import type { CameraSnapshot, VolumetricFogFrameContext } from '../../render-contract';
 import type { ExtractedVolumetricFog } from '../../render-system-extract';
 import type { SsrSpatialAdmission } from '../../ssr/admission';
 
 import { ViewDiffuseGi } from '../gi-systems';
 import {
-  commitSsrHistoryBaseline,
   consumeViewHistoryAdmission,
-  consumeViewSsrHistoryStage,
   RENDER_HISTORY_ADMISSION_SYSTEM,
-  RENDER_SSR_HISTORY_STAGE_SYSTEM,
   registerHistoryAdmissionSystem,
   viewHistoryAdmissionOf,
-  viewSsrHistoryStageOf,
   volumeTemporalSignature,
 } from '../history-admission-systems';
 import { type PassPlanInput, viewPassPlanQueue } from '../pass-plan-systems';
@@ -162,7 +155,7 @@ describe('render-history-admission system', () => {
     const { world, view, internals } = setup();
     expect(runQueue(world).ok).toBe(true);
     const outcome = viewHistoryAdmissionOf(world, view);
-    expect(outcome).toEqual({ kind: 'admitted', fog: undefined, ssrReset: undefined });
+    expect(outcome).toEqual({ kind: 'admitted', fog: undefined });
     expect(consumeViewHistoryAdmission(internals)).toBe(outcome);
     beginRenderFrame(world, 2);
     expect(viewHistoryAdmissionOf(world, view)).toBeUndefined();
@@ -187,15 +180,6 @@ describe('render-history-admission system', () => {
     expect(consumeViewHistoryAdmission(internals).fog?.readSlot).toBeNull();
   });
 
-  it('derives the SSR camera reset from the committed baseline', () => {
-    const cut = setup({ frameState: { ssrLastCameraEntity: 3 } });
-    expect(runQueue(cut.world).ok).toBe(true);
-    expect(consumeViewHistoryAdmission(cut.internals).ssrReset).toBe('camera-cut');
-    const version = setup({ frameState: { ssrLastCameraEntity: 7, ssrLastHistoryVersion: 0 } });
-    expect(runQueue(version.world).ok).toBe(true);
-    expect(consumeViewHistoryAdmission(version.internals).ssrReset).toBe('history-version');
-  });
-
   it('stores an unavailable code when the view planned no topology', () => {
     const { world, view, internals } = setup({ topology: false });
     expect(runQueue(world).ok).toBe(true);
@@ -217,206 +201,5 @@ describe('render-history-admission system', () => {
     expect(runQueue(world).ok).toBe(true);
     expect(viewHistoryAdmissionOf(world, view)).toBeUndefined();
     expect(() => consumeViewHistoryAdmission(internals)).toThrow(RENDER_HISTORY_ADMISSION_SYSTEM);
-  });
-});
-
-describe('commitSsrHistoryBaseline', () => {
-  function withSsr(
-    world: ReturnType<typeof createRenderWorld>,
-    view: EntityHandle,
-    status: string,
-  ) {
-    const state = world.allocUniqueRef('ViewSsrAdmission', {
-      frame: 1,
-      outcome: { kind: 'resolved', admission: { status } },
-    });
-    world.removeComponent(view, ViewSsrAdmission).unwrap();
-    world.addComponent(view, { component: ViewSsrAdmission, data: { state } }).unwrap();
-  }
-
-  it('advances the camera baseline and keeps an admitted owner', () => {
-    const owner = { reset: vi.fn(), retireAfterFence: vi.fn() };
-    const { world, view, frameState } = setup({ frameState: { ssrHistoryOwner: owner } });
-    const internals = { device: { queue: {} } } as unknown as RenderSystemInternals;
-    commitSsrHistoryBaseline(world, view, frameState, internals, camera);
-    expect(frameState.ssrLastCameraEntity).toBe(7);
-    expect(frameState.ssrLastHistoryVersion).toBe(1);
-    expect(frameState.ssrHistoryOwner).toBe(owner);
-    expect(owner.reset).not.toHaveBeenCalled();
-  });
-
-  it('retires the owner of an accepted submission whose SSR is no longer admitted', () => {
-    const owner = { reset: vi.fn(), retireAfterFence: vi.fn() };
-    const { world, view, frameState } = setup({ frameState: { ssrHistoryOwner: owner } });
-    withSsr(world, view, 'not-requested');
-    const internals = { device: { queue: {} } } as unknown as RenderSystemInternals;
-    commitSsrHistoryBaseline(world, view, frameState, internals, camera);
-    expect(owner.reset).toHaveBeenCalledWith('disable');
-    expect(owner.retireAfterFence).toHaveBeenCalledOnce();
-    expect(frameState.ssrHistoryOwner).toBeUndefined();
-  });
-});
-
-describe('render-ssr-history-stage system', () => {
-  async function device() {
-    const rhi = (await new RhiNullAdapter().requestDevice()).unwrap();
-    const fired: unknown[] = [];
-    const runtime = {
-      device: rhi,
-      deviceScope: DeviceScope.create(41, 'renderer'),
-      errorRegistry: { fire: (error: unknown) => fired.push(error) },
-    };
-    return { runtime, fired };
-  }
-  const config = { thickness: 1 };
-  const admittedSsr = { status: 'admitted', config } as unknown as SsrSpatialAdmission;
-
-  it('registers in RenderQueue after render-history-admission', () => {
-    const { world } = setup();
-    const system = world
-      .scheduleData()
-      .find((schedule) => schedule.name === 'RenderQueue')
-      ?.systems.find((s) => s.name === RENDER_SSR_HISTORY_STAGE_SYSTEM);
-    expect(system?.after).toEqual([RENDER_HISTORY_ADMISSION_SYSTEM]);
-    expect(system?.queries[0]?.read).toEqual(['ViewRecorder', 'ViewPassPlans']);
-    expect(system?.queries[0]?.optional).toEqual(['ViewSsrHistoryStage']);
-  });
-
-  it('stages an idle outcome and the admission for a view without SSR', () => {
-    const notRequested = { status: 'not-requested' } as SsrSpatialAdmission;
-    const { world, view, internals, frameState } = setup({ ssr: notRequested });
-    expect(runQueue(world).ok).toBe(true);
-    expect(viewSsrHistoryStageOf(world, view)).toEqual({ kind: 'idle' });
-    expect(frameState.ssrSpatialAdmission).toBe(notRequested);
-    expect(consumeViewSsrHistoryStage(internals, notRequested)).toEqual({ kind: 'idle' });
-  });
-
-  it('allocates the owner at the render extent and applies the camera reset', async () => {
-    const { runtime } = await device();
-    const { world, view, internals, frameState } = setup({
-      ssr: admittedSsr,
-      internals: runtime,
-      extent: { internalWidth: 6, internalHeight: 3 },
-      frameState: { ssrLastCameraEntity: 3 },
-    });
-    expect(runQueue(world).ok).toBe(true);
-    expect(viewSsrHistoryStageOf(world, view)).toEqual({
-      kind: 'staged',
-      cameraReset: 'camera-cut',
-    });
-    const owner = frameState.ssrHistoryOwner;
-    expect(owner?.resources.width).toBe(6);
-    expect(owner?.resources.height).toBe(3);
-    expect(owner?.inspect().resetReason).toBe('camera-cut');
-    expect(frameState.ssrSpatialAdmission).toBe(admittedSsr);
-    expect(owner?.candidate).toBeUndefined();
-    expect(consumeViewSsrHistoryStage(internals, admittedSsr)).toEqual({
-      kind: 'staged',
-      cameraReset: 'camera-cut',
-    });
-  });
-
-  it('resizes an owner whose extent changed and keeps one that did not', async () => {
-    const { runtime } = await device();
-    const first = setup({
-      ssr: admittedSsr,
-      internals: runtime,
-      extent: { internalWidth: 6, internalHeight: 3 },
-      frameState: { ssrLastCameraEntity: 7, ssrLastHistoryVersion: 1 },
-    });
-    expect(runQueue(first.world).ok).toBe(true);
-    const owner = first.frameState.ssrHistoryOwner;
-    const before = owner?.resources;
-    // Same extent on the next frame: the resources survive and nothing resets.
-    beginRenderFrame(first.world, 2);
-    runQueue(first.world);
-    expect(first.frameState.ssrHistoryOwner).toBe(owner);
-    expect(owner?.resources).toBe(before);
-    expect(owner?.inspect().resetReason).toBe('first-enable');
-    const resized = setup({
-      ssr: admittedSsr,
-      internals: runtime,
-      extent: { internalWidth: 10, internalHeight: 5 },
-      frameState: { ssrHistoryOwner: owner, ssrLastCameraEntity: 7, ssrLastHistoryVersion: 1 },
-    });
-    expect(runQueue(resized.world).ok).toBe(true);
-    expect(owner?.resources.width).toBe(10);
-    expect(owner?.inspect().resetReason).toBe('resize');
-  });
-
-  it('stores a reported failure when the owner cannot be allocated', async () => {
-    const { runtime, fired } = await device();
-    runtime.device.createTexture = () =>
-      ({
-        ok: false,
-        error: { code: 'out-of-memory' },
-      }) as never;
-    const { world, view, frameState } = setup({ ssr: admittedSsr, internals: runtime });
-    expect(runQueue(world).ok).toBe(true);
-    expect(viewSsrHistoryStageOf(world, view)).toMatchObject({
-      kind: 'failed',
-      code: 'owner-create-failed',
-    });
-    expect(fired).toHaveLength(1);
-    expect(frameState.ssrHistoryOwner).toBeUndefined();
-  });
-
-  it('stores an unexpected throw as data and the recording rethrows it', () => {
-    const { world, view, internals } = setup({
-      ssr: admittedSsr,
-      // A device without `createTexture`: allocation throws inside the system.
-      internals: { device: {}, deviceScope: undefined },
-    });
-    expect(runQueue(world).ok).toBe(true);
-    expect(viewSsrHistoryStageOf(world, view)).toMatchObject({
-      kind: 'failed',
-      code: 'owner-threw',
-    });
-    expect(() => consumeViewSsrHistoryStage(internals, admittedSsr)).toThrow(TypeError);
-  });
-
-  it('leaves the recording without a stage once the system is removed', () => {
-    const { world, view, internals } = setup({ ssr: admittedSsr });
-    expect(
-      world.removeSystem(
-        RenderQueue,
-        registeredSystem(world, RenderQueue, 'render-ssr-history-stage'),
-      ).ok,
-    ).toBe(true);
-    expect(runQueue(world).ok).toBe(true);
-    expect(viewSsrHistoryStageOf(world, view)).toBeUndefined();
-    expect(() => consumeViewSsrHistoryStage(internals, admittedSsr)).toThrow(
-      RENDER_SSR_HISTORY_STAGE_SYSTEM,
-    );
-  });
-
-  it('begins the candidate in recording and takes the temporal reset only without a camera reset', async () => {
-    const { runtime } = await device();
-    const { world, internals, frameState } = setup({
-      ssr: admittedSsr,
-      internals: runtime,
-      extent: { internalWidth: 6, internalHeight: 3 },
-    });
-    expect(runQueue(world).ok).toBe(true);
-    const stage = consumeViewSsrHistoryStage(internals, admittedSsr);
-    const view = { resetReason: 'resize', currentJitterUv: [0.25, 0.5] } as never;
-    const record = {
-      ...runtime,
-      canvas: { width: 8, height: 4 },
-    } as unknown as RenderSystemInternals;
-    expect(beginSsrHistoryFrame(record, frameState, admittedSsr, stage, view)).toBe(true);
-    const owner = frameState.ssrHistoryOwner;
-    expect(owner?.candidate).toBeDefined();
-    expect(owner?.inspect().resetReason).toBe('resize');
-    owner?.abortFrame(owner.candidate as never, 'submit');
-    expect(
-      beginSsrHistoryFrame(
-        record,
-        frameState,
-        admittedSsr,
-        { kind: 'failed', code: 'owner-resize-failed', cause: 1 },
-        view,
-      ),
-    ).toBe(false);
   });
 });

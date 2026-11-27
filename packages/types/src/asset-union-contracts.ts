@@ -55,11 +55,10 @@ import type {
  * `buildGraph` time; `passCount` is the first real key (a custom pipeline declares that
  * many passes). The URP ignores `config` (its topology is fixed).
  *
- * `config.clusterGrid` is the HDRP cluster grid dimensions (x/y/z each an integer in
- * [1, 64]; default {16, 9, 24}). It is ignored by URP.
+ * `config.clusterGrid` sets the Standard cluster grid dimensions. Each axis
+ * is an integer in [1, 64] and the default is {16, 9, 24}.
  *
- * `config.ssao` enables SSAO (Screen-Space Ambient Occlusion) for the HDRP
- * deferred path. Ignored by URP.
+ * `config.ambientOcclusion` configures screen-space ambient occlusion.
  */
 export interface RenderPipelineAsset {
   readonly kind: 'render-pipeline';
@@ -68,40 +67,45 @@ export interface RenderPipelineAsset {
   readonly config?: {
     readonly passCount?: number;
     readonly clusterGrid?: { readonly x: number; readonly y: number; readonly z: number };
-    readonly ssao?: {
+    readonly ambientOcclusion?: {
       readonly enabled: boolean;
-      /** Screen-space AO estimator; defaults to GTAO. */
-      readonly algorithm?: 'ssao' | 'gtao' | 'spiral-ssao' | undefined;
-      /** Apply AO to lighting (default) or the completed linear HDR scene before temporal/post. */
-      readonly application?: 'lighting' | 'scene-color' | undefined;
-      /** Scene-color visibility strength in [0, 1]; default 0.95. */
-      readonly sceneColorStrength?: number | undefined;
-      /** Explicit estimator budget, integer 1..64; otherwise derived from algorithm/quality. */
-      readonly sampleCount?: number | undefined;
-      /** Fraction of screen-space AO applied to direct light, in [0, 1]; default 0. */
-      readonly directLightingStrength?: number | undefined;
+      /** Screen-space AO method; defaults to SSAO. */
+      readonly method?: 'ssao' | 'gtao' | undefined;
       readonly radius?: number | undefined;
       readonly bias?: number | undefined;
       readonly intensity?: number | undefined;
-      /** GTAO view-space depth rejection; default 1 world unit. */
-      readonly thickness?: number | undefined;
-      /** GTAO radial distribution exponent; default 1 (linear). */
-      readonly distanceExponent?: number | undefined;
-      /** GTAO horizon update falloff in [0, 1]; default 1. */
-      readonly distanceFallOff?: number | undefined;
-      /** AO extent relative to internal scene color, in [0.25, 1]; default 1. */
-      readonly resolutionScale?: number | undefined;
-      readonly quality?: 'low' | 'medium' | 'high' | undefined;
+      /** UE screen-space AO quality, before application of the project quality ceiling. */
+      readonly quality?: number | 'low' | 'medium' | 'high' | undefined;
+      readonly levels?: 0 | 1 | 2 | 3 | undefined;
+      readonly maxQuality?: number | undefined;
+      readonly power?: number | undefined;
+      readonly fadeDistance?: number | undefined;
+      readonly fadeRadius?: number | undefined;
+      readonly radiusInWorldSpace?: boolean | undefined;
+      readonly mipBlend?: number | undefined;
+      readonly mipScale?: number | undefined;
+      readonly mipThreshold?: number | undefined;
+      readonly gtao?:
+        | {
+            readonly useNormals?: boolean;
+            readonly downsample?: boolean;
+            readonly spatialFilter?: boolean;
+            readonly temporalFilter?: boolean;
+            readonly filterWidth?: 4 | 5;
+            readonly numAngles?: number;
+            readonly thicknessBlend?: number;
+            readonly falloffEnd?: number;
+            readonly temporalBlendWeight?: number;
+          }
+        | undefined;
     };
     /** Final display-encoded RGBA8 dither; defaults to true when omitted. */
     readonly outputDither?: boolean;
     /** Saved assets without this field retain the V1 linear-FXAA output contract. */
     readonly outputContract?: 'standard-output-v1' | 'standard-output-v2';
     /**
-     * Two-phase GPU-driven occlusion against a conservative furthest-depth
-     * pyramid (HZB), including every sample of an MSAA attachment. This is
-     * separate from hardware occlusion queries. Omission is off for Forward
-     * and on for Deferred; explicit true/false overrides the path default.
+     * Two-phase GPU instance occlusion for Standard Deferred using a
+     * conservative furthest-depth pyramid. Omission enables it for Deferred.
      */
     readonly gpuOcclusion?: boolean;
     /**

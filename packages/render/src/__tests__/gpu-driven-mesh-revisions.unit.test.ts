@@ -27,6 +27,7 @@ import type {
 } from '../gpu-driven/production-raster-prepare';
 import { GpuScene } from '../gpu-scene';
 import { MaterialResource } from '../material-resource';
+import { buildGpuDrivenPrimitiveBindGroupLayout } from '../pbr-pipeline';
 import { worldRenderResources } from '../publication/resource-scope';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { RenderPipelineFrame } from '../render-pipeline';
@@ -41,7 +42,7 @@ import {
 } from './gpu-driven-production-fixture';
 import { duplicateMeshVertices, editResidentMesh } from './managed-mesh-edit';
 
-async function fixture(materialIndices?: readonly number[]) {
+async function fixture(materialIndices?: readonly number[], stationary = false) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const store = new GpuResidencyCache();
   const configure = () => store.configureGpuDevice(device, undefined, device.caps);
@@ -75,7 +76,9 @@ async function fixture(materialIndices?: readonly number[]) {
       material,
       materials: [material],
       materialBindingSources: ['engine-default'],
-      instances: { transforms, instanceCount: 8, cacheKey: index + 1, archVersion: 1 },
+      ...(stationary
+        ? { mobility: 'static' as const }
+        : { instances: { transforms, instanceCount: 8, cacheKey: index + 1, archVersion: 1 } }),
       gpuDrivenDraws: [
         {
           ...defined(gpuSnapshot(index + 1, Number(handle)).gpuDrivenDraws?.[0]),
@@ -146,7 +149,7 @@ async function fixture(materialIndices?: readonly number[]) {
   availability.scene.sync(delta).unwrap();
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  expect(topology.query(topology.sourcePlan(), undefined).batches).toHaveLength(2);
+  expect(topology.query(topology.sourcePlan(), undefined).active.batches).toHaveLength(2);
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
   const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const production = new GpuDrivenProduction(device, { createShaderModule: () => ok(shader) });
@@ -162,7 +165,7 @@ async function fixture(materialIndices?: readonly number[]) {
     ...standardPbrInputs(device, shader, viewLayout),
     scene: {
       scene: availability.scene,
-      plan: topology.query(topology.sourcePlan(), undefined),
+      plan: topology.query(topology.sourcePlan(), undefined).active,
       slots: projection.slotsSnapshot(),
       slotAt: projection.slotAt,
     },
@@ -170,10 +173,10 @@ async function fixture(materialIndices?: readonly number[]) {
     meshBySlot: bySlot,
     viewBindGroupLayout: viewLayout,
   };
-  const prepare = () => {
+  const prepare = (commit = true) => {
     const frame = production.prepare(admitGpuFixture(input)).unwrap();
     if (frame === undefined) throw new Error('Expected admitted prepared frame');
-    frame._commitResourceReplacement();
+    if (commit) frame._commitResourceReplacement();
     return frame;
   };
   const unrelatedUpload = () => {
@@ -217,7 +220,7 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
     const vertices = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'setVertexBuffer');
     let compiled: ReturnType<RenderGraphBuilder<RenderPipelineFrame>['compile']> | undefined;
     try {
-      let current = f.prepare();
+      let current = f.prepare(false);
       const firstSignature = current.topologySignature();
       const recordingSignature = current._recordingTopologySignature?.();
       const graph = new RenderGraphBuilder<RenderPipelineFrame>();
@@ -255,9 +258,11 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       compiled = graph.compile({ device: f.device, surfaceSize: { width: 1, height: 1 } });
       const retained = compiled.unwrap();
       const encode = () => {
+        current._sealResourceReads().unwrap();
         const encoder = f.device.createCommandEncoder().unwrap();
         retained.execute({ encoder } as RenderPipelineFrame).unwrap();
         f.device.queue.submit([encoder.finish().unwrap()]).unwrap();
+        current._commitResourceReplacement();
       };
       encode();
       f.store.trackMeshSubmission(oldCompleted);
@@ -276,7 +281,7 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       expect(replacement.vertexBuffer).not.toBe(old.vertexBuffer);
       expect(old.vertexBuffer.isDestroyed).toBe(false);
       f.bySlot.set(0, replacement);
-      current = f.prepare();
+      current = f.prepare(false);
       expect(current.topologySignature()).not.toBe(firstSignature);
       expect(current._recordingTopologySignature?.()).toBe(recordingSignature);
       vertices.mockClear();
@@ -314,11 +319,37 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       current = changedProgram;
       encode();
       expect(f.production.lateRasterClasses.projected).toBe(late + 1);
-      changedProgram._commitResourceReplacement();
     } finally {
       completeOld();
       vertices.mockRestore();
       if (compiled?.ok) await compiled.value.retire();
+      f.close();
+    }
+  });
+
+  it('retires departed physical camera classes while new material programs keep drawing', async () => {
+    const f = await fixture();
+    try {
+      const first = f.prepare();
+      const raster = defined(
+        first.projectCamera?.({ format: 'rgba8unorm', sampleCount: 1 }),
+      ).unwrap();
+      expect(raster.hasWork('opaque')).toBe(true);
+      for (let frame = 1; frame <= 60; frame++) {
+        const materialArtifact = {
+          ...defined(f.input.materialArtifact),
+          fragmentEntry: `camera-fragment-${frame}`,
+        };
+        const next = defined(
+          f.production.prepare(admitGpuFixture({ ...f.input, materialArtifact })).unwrap(),
+        );
+        raster.stageCameraClasses?.();
+        expect(raster.hasWork('opaque')).toBe(true);
+        expect(f.production.lateRasterClasses.retired).toBe(frame);
+        expect(f.production.lateRasterClasses.projected).toBe(frame);
+        next._commitResourceReplacement();
+      }
+    } finally {
       f.close();
     }
   });
@@ -410,7 +441,7 @@ describe('GPU-driven resident mesh identity and content epochs', () => {
       const delta = f.projection.apply(changes);
       f.input.scene.scene.sync(delta).unwrap();
       f.topology.apply(delta);
-      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined);
+      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined).active;
       f.input.scene.slots = f.projection.slotsSnapshot();
       f.bySlot.clear();
       for (const slot of f.input.scene.slots)
@@ -730,7 +761,7 @@ describe('GPU preparation pass dependencies before partitioning', () => {
     false,
     true,
   ])('projects a directional view once when its light disables the static shadow cache (owned %s)', async (ownedRequests) => {
-    const f = await fixture();
+    const f = await fixture(undefined, true);
     try {
       const main = defined(f.input.materialArtifact);
       const shadow = { ...main, pass: 'shadow', program: createMaterialShaderProgram('shadow-a') };
@@ -766,7 +797,7 @@ describe('GPU preparation pass dependencies before partitioning', () => {
         return frame;
       };
 
-      // Default: initial casters are settled, so they live in the static layer.
+      // The fixture authors both rigid casters as static.
       const cached = update(true);
       expect(cached.shadowViewPool?.isActive(staticLayer)).toBe(true);
       const settled = candidates(cached, staticLayer);
@@ -896,12 +927,12 @@ describe('selected GPU material graph dependencies', () => {
             .prepare(admitGpuFixture({ ...f.input, materialArtifacts, shadowMaterialArtifacts }))
             .unwrap(),
         );
-        frame._commitResourceReplacement();
         return frame;
       };
       const first = prepare(),
         signature = first.topologySignature(),
         facts = projectFacts(first);
+      first._commitResourceReplacement();
       const unused = {
         ...artifact,
         material: 'fixture::unused',
@@ -913,6 +944,7 @@ describe('selected GPU material graph dependencies', () => {
       const second = prepare();
       expect(second.topologySignature()).toBe(signature);
       sameProjection(facts, projectFacts(second));
+      second._commitResourceReplacement();
       expect(f.production.inspect()).toMatchObject({
         preparedBatchBuilds: 0,
         filteredPlanBuilds: 0,
@@ -1002,12 +1034,12 @@ describe('selected GPU material graph dependencies', () => {
             )
             .unwrap(),
         );
-        frame._commitResourceReplacement();
         return { frame, selected };
       };
       const first = prepare(),
         signature = first.frame.topologySignature(),
         facts = projectFacts(first.frame);
+      first.frame._commitResourceReplacement();
       const roster = f.input.scene.plan.batches.map((batch) => ({
         id: batch.batchId,
         generation: batch.generation,
@@ -1017,7 +1049,7 @@ describe('selected GPU material graph dependencies', () => {
       const delta = f.projection.apply([{ kind: 'remove', entityKey: 1 }]);
       f.input.scene.scene.sync(delta).unwrap();
       f.topology.apply(delta);
-      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined);
+      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined).active;
       f.input.scene.slots = f.projection.slotsSnapshot();
       const next = prepare();
       expect([...defined(next.selected.materialArtifacts).keys()].sort()).toEqual(
@@ -1033,6 +1065,7 @@ describe('selected GPU material graph dependencies', () => {
       ).toEqual(roster);
       expect(next.frame.topologySignature()).toBe(signature);
       sameProjection(facts, projectFacts(next.frame));
+      next.frame._commitResourceReplacement();
       expect(f.production.inspect()).toMatchObject({
         candidateCapacity: before.candidateCapacity,
         batchCapacity: before.batchCapacity,
@@ -1139,7 +1172,7 @@ describe('selected GPU material graph dependencies', () => {
       Object.assign(f.input.scene, { skin: skinFrames.prepareFrame(f.projection.slotsSnapshot()) });
       f.input.scene.scene.sync(delta).unwrap();
       f.topology.apply(delta);
-      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined);
+      f.input.scene.plan = f.topology.query(f.topology.sourcePlan(), undefined).active;
       f.input.scene.slots = f.projection.slotsSnapshot();
       const materialArtifacts = new Map(
         f.input.scene.plan.batches.map((batch) => [
@@ -1148,19 +1181,7 @@ describe('selected GPU material graph dependencies', () => {
         ]),
       );
       const state = defined(f.input.materialPipelineState);
-      const skinLayout = f.device
-        .createBindGroupLayout({
-          entries: [
-            {
-              binding: 0,
-              visibility: 1,
-              buffer: { type: 'read-only-storage', hasDynamicOffset: true },
-            },
-            { binding: 1, visibility: 1, buffer: { type: 'read-only-storage' } },
-            { binding: 2, visibility: 1, buffer: { type: 'uniform', hasDynamicOffset: true } },
-          ],
-        })
-        .unwrap();
+      const skinLayout = buildGpuDrivenPrimitiveBindGroupLayout(f.device, true);
       const materialPipelineState = {
         ...state,
         gpuDrivenPbrPrograms: new Map([
@@ -1174,7 +1195,7 @@ describe('selected GPU material graph dependencies', () => {
           ],
         ]),
         gpuDrivenPbrSkinPipelineLayout: defined(state.gpuDrivenPbrPipelineLayout),
-        pbrSkinMeshBindGroupLayout: skinLayout,
+        gpuDrivenSkinPrimitiveBindGroupLayout: skinLayout,
       };
       const prepare = (materialSkinArtifact: MaterialShaderArtifact) =>
         defined(

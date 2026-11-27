@@ -20,6 +20,7 @@ export async function verifyMaterialReferences(
     scene: THREE.Scene,
     camera: THREE.PerspectiveCamera,
   ) => Promise<void>,
+  { replay = true } = {},
 ) {
   await renderer.init();
   const scene = new THREE.Scene(),
@@ -100,7 +101,7 @@ export async function verifyMaterialReferences(
     if (base instanceof THREE.LineDashedNodeMaterial)
       Reflect.set(materials[1] as object, 'dashOffset', 0.14);
     const edited = await capture('right-target-edit');
-    await verifyReplay(edited, `r187-material-reference-${mode}`);
+    if (replay) await verifyReplay(edited, `r187-material-reference-${mode}`);
   } finally {
     geometry.dispose();
     for (const material of new Set([...materials, base, target])) material.dispose();

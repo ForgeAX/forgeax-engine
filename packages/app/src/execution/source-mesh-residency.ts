@@ -1,3 +1,7 @@
+import {
+  assetDataBytes,
+  type MeshPresentationInput,
+} from '@forgeax/engine-assets-runtime/internal';
 import type { World } from '@forgeax/engine-ecs';
 import {
   type DynamicGeometryCandidate,
@@ -5,11 +9,12 @@ import {
   type DynamicGeometryReceipt,
   type RenderPublicationIdentity,
 } from '@forgeax/engine-render';
-import type {
-  DynamicGeometryResidencyPort,
-  MeshPipelinePreparation,
+import {
+  type DynamicGeometryResidencyPort,
+  type MeshPipelinePreparation,
+  meshTransfers,
 } from '@forgeax/engine-render/internal';
-import { err, ok } from '@forgeax/engine-types';
+import { err, type MeshAsset, ok } from '@forgeax/engine-types';
 import {
   type CompletedMeshConsumption,
   MESH_CONSUMPTION_LANES,
@@ -20,6 +25,10 @@ import {
 } from './render-worker-protocol';
 
 type Prepared = Awaited<ReturnType<DynamicGeometryResidencyPort['prepare']>>;
+type MeshInput = Parameters<DynamicGeometryResidencyPort['prepare']>[0];
+type MeshPreparation =
+  | MeshInput
+  | (Omit<MeshInput, 'mesh'> & { readonly deferredMesh: MeshPresentationInput });
 type DynamicGeometryRecordStageLane = NonNullable<DynamicGeometryReceipt['recordStageLane']>;
 type Session = RenderPublicationIdentity & {
   readonly generation: number;
@@ -32,7 +41,9 @@ interface Request {
   readonly entity: number | undefined;
   readonly meshHandle: number;
   readonly revision: number;
-  ready: boolean;
+  readonly recoverable: boolean;
+  readiness: 'pending' | 'ready' | 'retired';
+  handoff?: (() => void) | undefined;
   consumedCompletion?: number;
   consumedOrder?: number;
   consumedLane?: DynamicGeometryRecordStageLane;
@@ -57,16 +68,27 @@ const unavailable = (detail?: unknown) =>
   );
 
 function preparationError(error: MeshResidencyFailure): DynamicGeometryError {
-  const code =
-    error.code === 'render-publication-invalid' || error.code === 'mesh-residency-invalid-handle'
-      ? 'dynamic-geometry-invalid'
-      : error.code === 'mesh-residency-world-not-attached'
-        ? 'dynamic-geometry-world-not-attached'
-        : error.code === 'mesh-residency-gpu-failed'
-          ? 'dynamic-geometry-gpu-failed'
-          : error.code === 'mesh-residency-gpu-not-ready'
-            ? 'dynamic-geometry-gpu-not-ready'
-            : error.code;
+  let code: DynamicGeometryError['code'];
+  switch (error.code) {
+    case 'render-publication-invalid':
+    case 'mesh-residency-invalid-handle':
+      code = 'dynamic-geometry-invalid';
+      break;
+    case 'mesh-residency-world-not-attached':
+      code = 'dynamic-geometry-world-not-attached';
+      break;
+    case 'mesh-residency-budget-exceeded':
+      code = 'dynamic-geometry-budget-exceeded';
+      break;
+    case 'mesh-residency-gpu-failed':
+      code = 'dynamic-geometry-gpu-failed';
+      break;
+    case 'mesh-residency-gpu-not-ready':
+      code = 'dynamic-geometry-gpu-not-ready';
+      break;
+    default:
+      code = error.code;
+  }
   return new DynamicGeometryError(code, error.expected, error.hint, { actual: error });
 }
 
@@ -94,7 +116,11 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
     private readonly session: () => Session | undefined,
   ) {}
   get hasUnreleasedMeshes(): boolean {
-    return this.requests.size > 0;
+    return this.requests.size !== 0;
+  }
+  get requiresRetirementAcknowledgement(): boolean {
+    for (const request of this.requests.values()) if (!request.recoverable) return true;
+    return false;
   }
   currentnessToken(): object | undefined {
     const session = this.session();
@@ -118,7 +144,13 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
     return token;
   }
 
-  prepare: DynamicGeometryResidencyPort['prepare'] = async (input, options) => {
+  prepare = async (
+    input: MeshPreparation,
+    options?: Parameters<DynamicGeometryResidencyPort['prepare']>[1] & {
+      /** The asset owner can reproduce these exact bytes after transport loss. */
+      readonly recoverable?: boolean;
+    },
+  ): ReturnType<DynamicGeometryResidencyPort['prepare']> => {
     const signal = options?.signal;
     const session = this.session();
     if (input.world !== this.world || session === undefined || signal?.aborted)
@@ -130,7 +162,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
       const completions = [...this.credits].flatMap((request) =>
         request.release
           ? [request.release.promise]
-          : !request.ready
+          : request.readiness === 'pending'
             ? [request.prepared.then(() => {})]
             : [],
       );
@@ -181,7 +213,50 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
           ),
         ),
       );
+    let bytes = 'deferredMesh' in input ? input.deferredMesh.bytes : undefined;
+    if ('mesh' in input && options?.transfers?.length) {
+      try {
+        bytes = assetDataBytes(input.mesh, undefined, 'receive');
+      } catch (cause) {
+        return err(
+          new DynamicGeometryError(
+            'dynamic-geometry-invalid',
+            'transferable Mesh content is plain data with private binary storage',
+            'prepare a private copy before transferring Mesh residency',
+            { actual: cause },
+          ),
+        );
+      }
+    }
     const requestId = ++this.sequence;
+    const postMesh = (mesh: MeshAsset, transfers: readonly ArrayBuffer[] | undefined) =>
+      session.post(
+        {
+          kind: 'mesh-prepare',
+          requestId,
+          input: {
+            source: session.source,
+            epoch: session.epoch,
+            meshHandle: input.meshHandle,
+            revision: input.assetRevision,
+            mesh,
+            ...(input.pipelinePreparation === undefined
+              ? {}
+              : { pipelinePreparation: input.pipelinePreparation }),
+          },
+          ...(input.entity === undefined ? {} : { entity: input.entity }),
+          ...(bytes === undefined ? {} : { reserved: true }),
+        },
+        transfers,
+      );
+    const handoff = () => {
+      if ('mesh' in input) postMesh(input.mesh, options?.transfers);
+      else {
+        const mesh = input.deferredMesh.capture();
+        postMesh(mesh, meshTransfers(mesh));
+        input.deferredMesh.sent?.();
+      }
+    };
     let resolve!: (result: Prepared) => void;
     let reject!: (cause: unknown) => void;
     const prepared = new Promise<Prepared>((done, fail) => {
@@ -194,6 +269,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
       finished = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', cancel);
+      request.handoff = undefined;
       resolve();
     };
     let programs = input.pipelinePreparation?.programs;
@@ -223,7 +299,8 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
       entity: input.entity,
       meshHandle: Number(input.meshHandle),
       revision: input.assetRevision,
-      ready: false,
+      recoverable: options?.recoverable === true,
+      readiness: 'pending',
       finish,
       fail,
     };
@@ -237,24 +314,16 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
     this.credits.add(request);
     signal?.addEventListener('abort', cancel, { once: true });
     try {
-      session.post(
-        {
-          kind: 'mesh-prepare',
+      if (bytes === undefined) handoff();
+      else {
+        request.handoff = handoff;
+        session.post({
+          kind: 'mesh-reserve',
           requestId,
-          input: {
-            source: session.source,
-            epoch: session.epoch,
-            meshHandle: input.meshHandle,
-            revision: input.assetRevision,
-            mesh: input.mesh,
-            ...(input.pipelinePreparation === undefined
-              ? {}
-              : { pipelinePreparation: input.pipelinePreparation }),
-          },
-          ...(input.entity === undefined ? {} : { entity: input.entity }),
-        },
-        options?.transfers,
-      );
+          identity: { source: session.source, epoch: session.epoch },
+          bytes,
+        });
+      }
     } catch (cause) {
       request.ended = unavailable(cause);
       this.requests.delete(requestId);
@@ -274,27 +343,15 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
     )
       return;
     if (message.kind === 'mesh-released') {
-      if (request.release === undefined) return;
-      this.requests.delete(message.requestId);
-      this.credits.delete(request);
-      this.forgetConsumption(message.requestId, request);
-      const failure = message.result.ok
-        ? message.result.deviceGeneration === request.session.generation
-          ? undefined
-          : unavailable('stale release generation')
-        : preparationError(message.result.error);
-      if (failure === undefined) {
-        request.finish(
-          err(request.failure ?? unavailable('mesh preparation was cancelled or released')),
-        );
-        request.release.resolve();
-      } else {
-        request.fail(failure);
-        request.release.reject(failure);
-      }
+      this.acknowledgeRelease(message.requestId, request, message.result);
       return;
     }
-    if (request.release !== undefined) return;
+    if (message.kind === 'mesh-retired') {
+      this.noteRetirement(message.requestId, request, message.result);
+      return;
+    }
+    if (request.release !== undefined || request.readiness !== 'pending') return;
+    if ((message.kind === 'mesh-reserved') !== (request.handoff !== undefined)) return;
     const current = this.session();
     if (
       !message.result.ok ||
@@ -310,7 +367,18 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
       void this.release(message.requestId).catch(request.fail);
       return;
     }
-    request.ready = true;
+    if (message.kind === 'mesh-reserved') {
+      const handoff = request.handoff;
+      request.handoff = undefined;
+      try {
+        handoff?.();
+      } catch (cause) {
+        request.failure = unavailable(cause);
+        void this.release(message.requestId).catch(request.fail);
+      }
+      return;
+    }
+    request.readiness = 'ready';
     this.currentnessRevision = Object.freeze({});
     if (request.entity !== undefined) this.credits.delete(request);
     request.finish(
@@ -318,7 +386,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
         isCurrent: () => {
           const live = this.session();
           return (
-            request.ready &&
+            request.readiness === 'ready' &&
             request.release === undefined &&
             request.ended === undefined &&
             live?.source === request.session.source &&
@@ -329,6 +397,47 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
         release: (evict) => this.release(message.requestId, request, evict),
       }),
     );
+  }
+
+  private noteRetirement(
+    requestId: number,
+    request: Request,
+    result: MeshResidencyResponse['result'],
+  ): void {
+    if (
+      request.readiness !== 'ready' ||
+      !result.ok ||
+      result.deviceGeneration !== request.session.generation
+    )
+      return;
+    request.readiness = 'retired';
+    this.currentnessRevision = Object.freeze({});
+    this.forgetConsumption(requestId, request);
+  }
+
+  private acknowledgeRelease(
+    requestId: number,
+    request: Request,
+    result: MeshResidencyResponse['result'],
+  ): void {
+    if (request.release === undefined) return;
+    this.requests.delete(requestId);
+    this.credits.delete(request);
+    this.forgetConsumption(requestId, request);
+    const failure = result.ok
+      ? result.deviceGeneration === request.session.generation
+        ? undefined
+        : unavailable('stale release generation')
+      : preparationError(result.error);
+    if (failure === undefined) {
+      request.finish(
+        err(request.failure ?? unavailable('mesh preparation was cancelled or released')),
+      );
+      request.release.resolve();
+    } else {
+      request.fail(failure);
+      request.release.reject(failure);
+    }
   }
 
   private release(
@@ -356,7 +465,8 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
       return request.release.promise;
     }
     if (request.ended !== undefined) return Promise.reject(request.ended);
-    request.ready = false;
+    request.handoff = undefined;
+    if (evict) request.readiness = 'retired';
     this.currentnessRevision = Object.freeze({});
     this.credits.add(request);
     this.forgetConsumption(requestId, request);
@@ -418,7 +528,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
       if (lane === undefined) continue;
       const request = this.requests.get(proof.bindings[index] ?? -1);
       if (
-        request?.ready &&
+        request?.readiness === 'ready' &&
         request.release === undefined &&
         request.session.source === session.source &&
         request.session.epoch === session.epoch &&
@@ -435,30 +545,25 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
     bindings?.delete(requestId);
     if (bindings?.size === 0) this.byEntity.delete(request.entity);
   }
-  /**
-   * The newest request for this mesh handle is ready with exactly this
-   * revision, in the current session, and the receiver keeps its payload until
-   * the next publication adopts it (no request to evict it has been sent).
-   */
+  /** The current receiver attests this exact version is still adoptable. */
   holdsPrepared(meshHandle: number, revision: number): boolean {
-    let latest: Request | undefined;
-    let latestId = -1;
-    for (const [requestId, request] of this.requests)
-      if (request.meshHandle === meshHandle && requestId > latestId) {
-        latest = request;
-        latestId = requestId;
-      }
     const live = this.session();
-    return (
-      latest?.ready === true &&
-      latest.revision === revision &&
-      latest.ended === undefined &&
-      latest.failure === undefined &&
-      (latest.release === undefined || !latest.release.evict) &&
-      live?.source === latest.session.source &&
-      live.epoch === latest.session.epoch &&
-      live.generation === latest.session.generation
-    );
+    if (live === undefined) return false;
+    for (const request of this.requests.values()) {
+      if (
+        request.readiness === 'ready' &&
+        request.meshHandle === meshHandle &&
+        request.revision === revision &&
+        request.ended === undefined &&
+        request.failure === undefined &&
+        !request.release?.evict &&
+        live.source === request.session.source &&
+        live.epoch === request.session.epoch &&
+        live.generation === request.session.generation
+      )
+        return true;
+    }
+    return false;
   }
   publishedFixedStep(world: World): number | undefined {
     return world === this.world ? this.fixedStep : undefined;
@@ -486,7 +591,7 @@ export class SourceMeshResidency implements DynamicGeometryResidencyPort {
     this.currentnessRevision = Object.freeze({});
     const error = unavailable(cause);
     for (const request of this.requests.values()) {
-      request.ready = false;
+      request.readiness = 'retired';
       request.ended = error;
       if (request.receiverDisposed) {
         request.finish(err(request.failure ?? error));

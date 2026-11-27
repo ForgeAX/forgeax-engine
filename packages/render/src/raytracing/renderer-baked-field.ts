@@ -9,17 +9,18 @@ import type { RenderSystemInternals } from '../record/render-context';
 import { recordContext } from '../world/view-record-context';
 import { createRayDiffuseComposite } from './diffuse-composite';
 import {
-  createIrradianceFieldViewKernels,
+  createBakedIrradianceFieldViewKernels,
   IRRADIANCE_FIELD_FRAME_BYTES,
   IRRADIANCE_FIELD_UNIFORM_BYTES,
   packIrradianceFieldUniform,
 } from './irradiance-field';
-import type { FieldGatherExtent, FieldGatherSource } from './irradiance-field-graph';
+import type { FieldGatherExtent } from './irradiance-field-graph';
 import { IRRADIANCE_FIELD_PROBE_BYTES } from './irradiance-field-plan';
 import {
   type IrradianceVolume,
   irradianceVolumeKind,
   irradianceVolumeProbeBlocks,
+  irradianceVolumeProbeMeta,
   validateIrradianceVolume,
 } from './irradiance-volume';
 import { requirePublishedKernel } from './published-kernel';
@@ -49,34 +50,135 @@ export interface BakedFieldInspection {
 }
 
 export interface BakedFieldExtent extends FieldGatherExtent {
+  readonly device: RenderSystemInternals['device'];
+  readonly deviceGeneration: number;
+  readonly output: { readonly buffer: Buffer; readonly lifetime: ResidencyLifetime };
+  readonly frame: { readonly buffer: Buffer };
   readonly gathered: Buffer;
   readonly lifetime: ResidencyLifetime;
 }
 
-/** One loaded volume's resident probes; the graph gathers them, nothing traces. */
-export interface PreparedBakedField extends FieldGatherSource<BakedFieldExtent> {
+interface ResidentBakedVolume {
+  readonly volume: IrradianceVolume;
+  readonly bytes: number;
+  readonly view: Awaited<ReturnType<typeof createBakedPrograms>>['view'];
+  readonly composite: Awaited<ReturnType<typeof createBakedPrograms>>['composite'];
+  readonly sample: import('@forgeax/engine-rhi').BindGroup;
+  readonly lifetime: ResidencyLifetime;
+  readonly fence: RendererGenerationFence;
+}
+
+/** The exact volume and view grid borrowed by one or more compatible submissions. */
+export interface PreparedBakedField {
   readonly generation: number;
   readonly fence: RendererGenerationFence;
-  readonly volume: IrradianceVolume;
-  readonly buffers: Readonly<
-    Record<
-      'field' | 'frame' | 'irradiance' | 'moments' | 'meta',
-      { readonly buffer: Buffer; readonly size: number }
-    >
-  >;
+  readonly source: ResidentBakedVolume;
+  readonly extent: BakedFieldExtent;
   track(completed: Promise<unknown>): void;
   commit(): void;
-  retire(): void;
 }
 
 const storage = 128 | 12;
+
+function allocateViewOutput(device: RenderSystemInternals['device'], size: number) {
+  const buffer = device
+    .createBuffer({ label: 'baked-field.output', size, usage: storage })
+    .unwrap();
+  return { buffer, lifetime: new ResidencyLifetime(() => device.destroyBuffer(buffer)) };
+}
+
+function createViewGrid(
+  input: BakedFieldFrameInput,
+  deviceGeneration: number,
+  previous: BakedFieldExtent | undefined,
+): BakedFieldExtent {
+  const { width, height } = input;
+  const device = input.runtime.device;
+  if (width * height * 16 > device.limits.maxStorageBufferBindingSize)
+    throw new Error('baked field view buffers exceed the storage binding limit');
+  const half = input.profile.resolution === 'half';
+  const gatherWidth = half ? Math.ceil(width / 2) : width;
+  const gatherHeight = half ? Math.ceil(height / 2) : height;
+  const sameOutput =
+    previous !== undefined &&
+    previous.device === device &&
+    previous.deviceGeneration === deviceGeneration &&
+    previous.width === width &&
+    previous.height === height;
+  const output = sameOutput ? previous.output : allocateViewOutput(device, width * height * 16);
+  const created: Buffer[] = [];
+  const make = (label: string, size: number, usage = storage) => {
+    const buffer = device.createBuffer({ label: `baked-field.${label}`, size, usage }).unwrap();
+    created.push(buffer);
+    return buffer;
+  };
+  const destroy = () => {
+    for (const buffer of created) device.destroyBuffer(buffer);
+  };
+  try {
+    const frame = { buffer: make('frame', IRRADIANCE_FIELD_FRAME_BYTES, 64 | 8) };
+    const dimensions = new Uint32Array([gatherWidth, gatherHeight, width, height]);
+    device.queue.writeBuffer(frame.buffer, 20 * 4, new Uint8Array(dimensions.buffer)).unwrap();
+    return {
+      device,
+      deviceGeneration,
+      width,
+      height,
+      gatherWidth,
+      gatherHeight,
+      frame,
+      output,
+      gathered: half ? make('gathered', gatherWidth * gatherHeight * 16) : output.buffer,
+      upsampled: half ? output.buffer : undefined,
+      lifetime: new ResidencyLifetime(destroy),
+    };
+  } catch (cause) {
+    destroy();
+    if (!sameOutput) output.lifetime.retire();
+    throw cause;
+  }
+}
+
+async function createBakedPrograms(
+  device: RenderSystemInternals['device'],
+  compile: NonNullable<RenderSystemInternals['createShaderModule']>,
+  gatherSource: string,
+  compositeSource: string,
+) {
+  const [gather, fragment] = await Promise.all([
+    compile(device, { label: 'baked-field.view', code: gatherSource }),
+    compile(device, { label: 'baked-field.composite', code: compositeSource }),
+  ]);
+  const [viewPrograms, diffuseComposite] = await Promise.all([
+    createBakedIrradianceFieldViewKernels(device, gather.unwrap()),
+    createRayDiffuseComposite(device, fragment.unwrap(), 'reconstructed'),
+  ]);
+  const { sampleLayout, kernels: view } = viewPrograms.unwrap();
+  const composite = diffuseComposite.unwrap();
+  return { sampleLayout, view, composite };
+}
+
 /** Renderer-owned baked diffuse GI: a Catalog irradiance volume gathered per
  * pixel through the irradiance-field sampler. The generation follows the
  * device, the selected volume content and the profile; no frame traces or updates probes. */
 export class RendererBakedField {
   #input: BakedFieldFrameInput | undefined;
-  #key = '';
+  #deviceGeneration: number | undefined;
+  #sourceVersion: number | undefined;
+  #programs:
+    | {
+        readonly device: RenderSystemInternals['device'];
+        readonly generation: number;
+        readonly gather: string;
+        readonly composite: string;
+        readonly compile: NonNullable<RenderSystemInternals['createShaderModule']>;
+        readonly ready: ReturnType<typeof createBakedPrograms>;
+      }
+    | undefined;
+  #sourceGeneration = 0;
   #generation = 0;
+  #resident: ResidentBakedVolume | undefined;
+  #grid: BakedFieldExtent | undefined;
   #pending = false;
   #ready: PreparedBakedField | undefined;
   #error: RhiError | undefined;
@@ -92,7 +194,9 @@ export class RendererBakedField {
 
   get ready(): PreparedBakedField | undefined {
     const ready = this.#ready;
-    return ready?.fence.currentGeneration() === ready?.generation ? ready : undefined;
+    return ready !== undefined && ready.fence.currentGeneration() === ready.generation
+      ? ready
+      : undefined;
   }
 
   inspect(): BakedFieldInspection {
@@ -109,13 +213,10 @@ export class RendererBakedField {
         : {
             volume: {
               guid: input.profile.volume,
-              digest: ready.volume.digest,
-              dimensions: ready.volume.dimensions,
-              probes: ready.volume.probeCount,
-              bytes:
-                ready.buffers.irradiance.size +
-                ready.buffers.moments.size +
-                ready.buffers.meta.size,
+              digest: ready.source.volume.digest,
+              dimensions: ready.source.volume.dimensions,
+              probes: ready.source.volume.probeCount,
+              bytes: ready.source.bytes,
             },
           }),
       ...(this.#error === undefined
@@ -131,76 +232,98 @@ export class RendererBakedField {
     };
   }
 
-  #signature(): string {
-    const input = this.#input;
-    if (input === undefined) return '';
-    return JSON.stringify([
-      recordContext(input.runtime).deviceScope.generation,
-      this.#source === undefined
-        ? undefined
-        : runtimeAssets(this.#source.assets).version(this.#source.handle).unwrap(),
-      input.profile.volume,
-      input.profile.resolution,
-    ]);
-  }
-
   prepare(input: BakedFieldFrameInput): void {
     if (this.#disposed) return;
+    const deviceGeneration = recordContext(input.runtime).deviceScope.generation;
+    if (
+      this.#input !== undefined &&
+      (this.#input.runtime.device !== input.runtime.device ||
+        (this.#deviceGeneration !== undefined && this.#deviceGeneration !== deviceGeneration))
+    )
+      this.disable();
     if (
       this.#input !== undefined &&
       (this.#input.runtime.assets !== input.runtime.assets ||
         this.#input.profile.volume !== input.profile.volume)
     )
-      this.disable();
+      this.#releaseVolume();
+    if (
+      this.#input !== undefined &&
+      (this.#input.profile.resolution !== input.profile.resolution ||
+        this.#input.width !== input.width ||
+        this.#input.height !== input.height)
+    ) {
+      this.#generation++;
+      this.#ready = undefined;
+      this.#submitted = 0;
+      if (this.#resident !== undefined) this.#error = undefined;
+    }
     this.#input = input;
     if (this.#source === undefined) {
+      const generation = this.#sourceGeneration;
       if (this.#pending || this.#error) return;
       this.#pending = true;
-      const generation = this.#generation;
       const assets = input.runtime.assets;
       void assets
         .load(input.profile.volume, irradianceVolumeKind)
         .then((loaded) => {
           if (!loaded.ok) {
-            if (!this.#disposed && this.#generation === generation)
+            if (!this.#disposed && this.#sourceGeneration === generation)
               this.#fail(input.runtime, loaded.error);
             return;
           }
-          if (this.#disposed || this.#generation !== generation) assets.release(loaded.value);
+          if (this.#disposed || this.#sourceGeneration !== generation) assets.release(loaded.value);
           else this.#source = { assets, guid: input.profile.volume, handle: loaded.value };
         })
         .catch((cause) => {
-          if (!this.#disposed && this.#generation === generation) this.#fail(input.runtime, cause);
+          if (!this.#disposed && this.#sourceGeneration === generation)
+            this.#fail(input.runtime, cause);
         })
         .finally(() => {
           this.#pending = false;
         });
       return;
     }
-    const key = this.#signature();
-    if (key !== this.#key) {
+    const source = this.#source;
+    const records = runtimeAssets(source.assets);
+    const version = records.version(source.handle).unwrap();
+    if (deviceGeneration !== this.#deviceGeneration || version !== this.#sourceVersion) {
+      this.#sourceGeneration++;
       this.#generation++;
-      this.#key = key;
-      this.#ready?.retire();
+      this.#deviceGeneration = deviceGeneration;
+      this.#sourceVersion = version;
+      this.#resident?.lifetime.retire();
+      this.#resident = undefined;
       this.#ready = undefined;
       this.#error = undefined;
       this.#submitted = 0;
     }
-    if (this.#pending || this.#ready || this.#error) return;
+    const generation = this.#sourceGeneration;
+    if (this.#error !== undefined) return;
+    if (this.#resident !== undefined) {
+      if (this.#ready === undefined) this.#bindView(this.#resident, input, deviceGeneration);
+      return;
+    }
+    if (this.#pending) return;
     this.#pending = true;
-    const generation = this.#generation;
     const fence: RendererGenerationFence = {
       capturedGeneration: generation,
       currentGeneration: () =>
-        !this.#disposed && this.#generation === generation && this.#signature() === this.#key
+        !this.#disposed &&
+        this.#sourceGeneration === generation &&
+        recordContext(input.runtime).deviceScope.generation === deviceGeneration &&
+        records.version(source.handle).unwrap() === version
           ? generation
           : -1,
     };
     void this.#build(input, fence)
       .then(
         (candidate) => {
-          if (fence.currentGeneration() === generation) this.#ready = candidate;
-          else candidate.retire();
+          const current = this.#input;
+          if (current !== undefined && fence.currentGeneration() === generation) {
+            this.#resident = candidate;
+            this.#bindView(candidate, current, deviceGeneration);
+          } else candidate.lifetime.retire();
         },
         (cause) => {
           if (fence.currentGeneration() === generation) this.#fail(input.runtime, cause);
@@ -211,9 +334,65 @@ export class RendererBakedField {
       });
   }
 
+  #bindView(
+    source: ResidentBakedVolume,
+    input: BakedFieldFrameInput,
+    deviceGeneration: number,
+  ): void {
+    let grid = this.#grid;
+    if (
+      grid === undefined ||
+      grid.device !== input.runtime.device ||
+      grid.deviceGeneration !== deviceGeneration ||
+      grid.width !== input.width ||
+      grid.height !== input.height ||
+      (grid.upsampled !== undefined) !== (input.profile.resolution === 'half')
+    ) {
+      try {
+        grid = createViewGrid(input, deviceGeneration, grid);
+      } catch (cause) {
+        this.#fail(input.runtime, cause);
+        return;
+      }
+      this.#replaceGrid(grid);
+    }
+    const extent = grid;
+    const generation = this.#generation;
+    const fence: RendererGenerationFence = {
+      capturedGeneration: generation,
+      currentGeneration: () =>
+        this.#generation === generation &&
+        source.fence.currentGeneration() === source.fence.capturedGeneration
+          ? generation
+          : -1,
+    };
+    this.#ready = {
+      source,
+      extent,
+      generation,
+      fence,
+      track(completed) {
+        source.lifetime.track(completed);
+        extent.lifetime.track(completed);
+        extent.output.lifetime.track(completed);
+      },
+      commit: () => {
+        if (fence.currentGeneration() === generation) this.#submitted++;
+      },
+    };
+  }
+
+  #replaceGrid(next: BakedFieldExtent | undefined): void {
+    const previous = this.#grid;
+    this.#grid = next;
+    previous?.lifetime.retire();
+    if (previous !== undefined && previous.output !== next?.output)
+      previous.output.lifetime.retire();
+  }
+
   #fail(runtime: RenderSystemInternals, cause: unknown): void {
-    this.#ready?.retire();
     this.#ready = undefined;
+    this.#replaceGrid(undefined);
     this.#error =
       cause instanceof RhiError
         ? cause
@@ -236,7 +415,7 @@ export class RendererBakedField {
   async #build(
     input: BakedFieldFrameInput,
     fence: RendererGenerationFence,
-  ): Promise<PreparedBakedField> {
+  ): Promise<ResidentBakedVolume> {
     const { runtime, profile } = input;
     const device = runtime.device;
     const shaders = runtime.shaderRegistry;
@@ -254,28 +433,46 @@ export class RendererBakedField {
     const volume = fixed.value;
     try {
       validateIrradianceVolume(volume).unwrap();
-      const entries = [...shaders.entries()];
-
-      const [viewModule, compositeModule] = await Promise.all([
-        compile(device, {
-          label: 'baked-field.view',
-          code: requirePublishedKernel(entries, 'gatherBakedField', 'standard-gbuffer/2'),
-        }),
-        compile(device, {
-          label: 'baked-field.composite',
-          code: requirePublishedKernel(entries, 'fs_ray_diffuse', 'standard-gbuffer/2'),
-        }),
-      ]);
-      const { sampleLayout, kernels: view } = createIrradianceFieldViewKernels(
-        device,
-        viewModule.unwrap(),
-        'baked',
-      ).unwrap();
-      const composite = createRayDiffuseComposite(
-        device,
-        compositeModule.unwrap(),
-        'reconstructed',
-      ).unwrap();
+      const gatherSource = requirePublishedKernel(
+        shaders.entries(),
+        'gatherBakedField',
+        'standard-gbuffer/2',
+      );
+      const compositeSource = requirePublishedKernel(
+        shaders.entries(),
+        'fs_ray_diffuse',
+        'standard-gbuffer/2',
+      );
+      const generation = recordContext(runtime).deviceScope.generation;
+      let programs = this.#programs;
+      if (
+        programs === undefined ||
+        programs.device !== device ||
+        programs.generation !== generation ||
+        programs.gather !== gatherSource ||
+        programs.composite !== compositeSource ||
+        programs.compile !== compile
+      ) {
+        programs = {
+          device,
+          generation,
+          gather: gatherSource,
+          composite: compositeSource,
+          compile,
+          ready: createBakedPrograms(device, compile, gatherSource, compositeSource),
+        };
+        this.#programs = programs;
+      }
+      let kernels: Awaited<ReturnType<typeof createBakedPrograms>>;
+      try {
+        kernels = await programs.ready;
+      } catch (cause) {
+        if (this.#programs === programs) this.#programs = undefined;
+        throw cause;
+      }
+      if (fence.currentGeneration() !== fence.capturedGeneration)
+        throw new Error('baked field selection changed during program preparation');
+      const { sampleLayout, view, composite } = kernels;
       const owned: Buffer[] = [];
       const limit = device.limits.maxStorageBufferBindingSize;
       const upload = (label: string, bytes: ArrayBufferView, usage = storage) => {
@@ -292,11 +489,8 @@ export class RendererBakedField {
           .unwrap();
         return { buffer, size: bytes.byteLength };
       };
-      let extent: BakedFieldExtent | undefined;
       const destroy = () => {
-        extent?.lifetime.retire();
         for (const buffer of owned) device.destroyBuffer(buffer);
-        fixed.dispose();
       };
       try {
         const [dx, dy, dz] = volume.dimensions;
@@ -315,10 +509,9 @@ export class RendererBakedField {
             ),
             64 | 8,
           ),
-          frame: upload('frame', new Uint8Array(IRRADIANCE_FIELD_FRAME_BYTES), 64 | 8),
           irradiance: upload('irradiance', irradianceVolumeProbeBlocks(volume)),
           moments: upload('moments', volume.moments),
-          meta: upload('meta', volume.meta),
+          meta: upload('meta', irradianceVolumeProbeMeta(volume)),
         };
         if (buffers.irradiance.size !== volume.probeCount * IRRADIANCE_FIELD_PROBE_BYTES)
           throw new Error('baked probe blocks do not match the field stride');
@@ -333,64 +526,21 @@ export class RendererBakedField {
             })),
           })
           .unwrap();
-        const half = profile.resolution === 'half';
-        const lifetime = new ResidencyLifetime(destroy);
-        const resize = (): BakedFieldExtent => {
-          const { width, height } = this.#input ?? input;
-          if (extent !== undefined && extent.width === width && extent.height === height)
-            return extent;
-          if (width * height * 16 > limit)
-            throw new Error('baked field view buffers exceed the storage binding limit');
-          const gatherWidth = half ? Math.ceil(width / 2) : width;
-          const gatherHeight = half ? Math.ceil(height / 2) : height;
-          const created: Buffer[] = [];
-          const make = (label: string, size: number) => {
-            const buffer = device
-              .createBuffer({ label: `baked-field.${label}`, size, usage: storage })
-              .unwrap();
-            created.push(buffer);
-            return buffer;
-          };
-          extent?.lifetime.retire();
-          extent = {
-            width,
-            height,
-            gatherWidth,
-            gatherHeight,
-            gathered: make('gathered', gatherWidth * gatherHeight * 16),
-            upsampled: half ? make('upsampled', width * height * 16) : undefined,
-            lifetime: new ResidencyLifetime(() => {
-              for (const buffer of created) device.destroyBuffer(buffer);
-            }),
-          };
-          // The gather/upsample kernels read only `gather` (u32 20..23) of the field frame.
-          const frame = new Uint32Array(IRRADIANCE_FIELD_FRAME_BYTES / 4);
-          frame.set([gatherWidth, gatherHeight, width, height], 20);
-          device.queue.writeBuffer(buffers.frame.buffer, 0, new Uint8Array(frame.buffer)).unwrap();
-          return extent;
-        };
-        resize();
+        const lifetime = new ResidencyLifetime(() => {
+          try {
+            destroy();
+          } finally {
+            fixed.dispose();
+          }
+        });
         return {
-          generation: fence.capturedGeneration,
-          fence,
           volume,
-          buffers,
+          bytes: buffers.irradiance.size + buffers.moments.size + buffers.meta.size,
           view,
           sample,
           composite,
-          extent: resize,
-          track: (completed) => {
-            lifetime.track(completed);
-            extent?.lifetime.track(completed);
-          },
-          commit: () => {
-            if (
-              fence.currentGeneration() === fence.capturedGeneration &&
-              this.#ready?.generation === fence.capturedGeneration
-            )
-              this.#submitted++;
-          },
-          retire: () => lifetime.retire(),
+          fence,
+          lifetime,
         };
       } catch (cause) {
         destroy();
@@ -402,17 +552,26 @@ export class RendererBakedField {
     }
   }
 
-  disable(): void {
+  #releaseVolume(): void {
     if (this.#input === undefined) return;
+    this.#sourceGeneration++;
     this.#generation++;
-    this.#ready?.retire();
+    this.#resident?.lifetime.retire();
+    this.#resident = undefined;
     this.#ready = undefined;
     this.#input = undefined;
     if (this.#source !== undefined) this.#source.assets.release(this.#source.handle);
     this.#source = undefined;
-    this.#key = '';
+    this.#deviceGeneration = undefined;
+    this.#sourceVersion = undefined;
     this.#error = undefined;
     this.#submitted = 0;
+  }
+
+  disable(): void {
+    this.#releaseVolume();
+    this.#replaceGrid(undefined);
+    this.#programs = undefined;
   }
 
   dispose(): void {

@@ -9,7 +9,8 @@ import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import type { MeshSsboBufferWrapper } from '../../assembly/mesh-ssbo-grow';
-import { meshSlotBindGroup } from '../frame-lighting';
+import { meshSsboBufferBinding } from '../../assembly/mesh-ssbo-grow';
+import { meshBufferBindGroup, meshSlotBindGroup } from '../frame-lighting';
 import type { RenderFrameState } from '../frame-snapshot';
 import { findFromChain } from '../mesh-ssbo';
 import type { PipelineState } from '../render-context';
@@ -95,4 +96,27 @@ it('keys paged storage by its physical page rather than the stable wrapper', () 
   expect(
     findFromChain(f.state.meshBindGroupCache, [f.pipeline.meshBindGroupLayout, second], 'mesh'),
   ).toBe(b);
+});
+
+it('binds the same allocation that produced the page-relative offset across roster replacement', () => {
+  const f = fixture();
+  const first = {} as Buffer,
+    second = {} as Buffer;
+  const oldPages = { byteStride: 256, byteSize: 32768, buffers: [first, second] };
+  const newPages = { byteStride: 512, byteSize: 32768, buffers: [first] };
+  let reads = 0;
+  const storage = {
+    buffer: null,
+    get pages() {
+      return reads++ === 0 ? oldPages : newPages;
+    },
+  };
+  const address = meshSsboBufferBinding(storage, 320);
+  f.storage.pages = newPages;
+  meshBufferBindGroup(f.device, f.state, f.pipeline, f.counts, address.buffer);
+  expect(reads).toBe(1);
+  expect(address.byteOffset).toBe(64);
+  const resource = f.descriptors[0]?.entries[0]?.resource;
+  expect(resource?.kind === 'buffer' && resource.value.buffer).toBe(second);
+  expect(meshSsboBufferBinding(storage, 320, address)).toEqual({ buffer: first, byteOffset: 320 });
 });

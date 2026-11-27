@@ -1,8 +1,37 @@
-import type { PassSelector } from '@forgeax/engine-types';
+import type { MaterialSurfacePassKind, PassSelector } from '@forgeax/engine-types';
 import type { MaterialSnapshot } from '../render-system-extract';
 import type { AcceptedMaterial } from '../scene/material-dispatch';
 import { matchPass } from '../systems/pass-selector';
 import { standardTransmissionValue } from '../transmission/projection';
+
+const WATER_RECORD_PASSES = {
+  'water-prepass': ['depth', 'fs_water_prepass'],
+  'water-visibility': ['visibility', 'fs_water_visibility'],
+  'water-coverage': ['coverage', 'fs_water_coverage'],
+  'water-depth-velocity': ['depth-velocity', 'fs_water_depth_velocity'],
+  'water-color': ['color', 'fs_water_color'],
+  'water-forward-color': ['forward-color', 'fs_water_forward_color'],
+  'water-forward-color-temporal': ['forward-color-temporal', 'fs_water_forward_color_temporal'],
+  'water-forward-color-velocity': ['forward-color-velocity', 'fs_water_forward_color_velocity'],
+  'water-shadow': ['shadow', 'fs_water_shadow'],
+  'water-velocity': ['velocity', 'fs_water_velocity'],
+} as const satisfies Record<string, readonly [MaterialSurfacePassKind, string]>;
+
+type WaterRecordMode = keyof typeof WATER_RECORD_PASSES;
+
+export function waterRecordPass(mode: MaterialRecordMode | undefined) {
+  return mode !== undefined && Object.hasOwn(WATER_RECORD_PASSES, mode)
+    ? WATER_RECORD_PASSES[mode as WaterRecordMode]
+    : undefined;
+}
+
+export function isWaterForwardColorMode(mode: MaterialRecordMode | undefined): boolean {
+  return (
+    mode === 'water-forward-color' ||
+    mode === 'water-forward-color-temporal' ||
+    mode === 'water-forward-color-velocity'
+  );
+}
 
 export type MaterialRecordMode =
   | 'opaque'
@@ -17,10 +46,7 @@ export type MaterialRecordMode =
   | 'oit-residual'
   | 'single-layer-medium-nearest-layer'
   | 'single-layer-medium-color'
-  | 'water-prepass'
-  | 'water-color'
-  | 'water-shadow'
-  | 'water-velocity';
+  | WaterRecordMode;
 
 export function isWaterMaterial(material: MaterialSnapshot): boolean {
   return material.surfaceModel === 'single-layer-water';
@@ -30,14 +56,13 @@ export function isSurfaceRecordMode(mode: MaterialRecordMode | undefined): boole
   return (
     mode === 'single-layer-medium-nearest-layer' ||
     mode === 'single-layer-medium-color' ||
-    mode === 'water-prepass' ||
-    mode === 'water-color' ||
-    mode === 'water-shadow' ||
-    mode === 'water-velocity'
+    waterRecordPass(mode) !== undefined
   );
 }
 
-export function isMediumMaterial(material: MaterialSnapshot): boolean {
+export function isMediumMaterial(
+  material: Pick<MaterialSnapshot, 'surfaceModel' | 'materialShaderId'>,
+): boolean {
   return (
     material.surfaceModel === 'single-layer-medium' ||
     material.surfaceModel === 'single-layer-water' ||
@@ -47,13 +72,7 @@ export function isMediumMaterial(material: MaterialSnapshot): boolean {
 
 export function matchesRecordMode(material: MaterialSnapshot, mode: MaterialRecordMode): boolean {
   const medium = isMediumMaterial(material);
-  if (
-    mode === 'water-prepass' ||
-    mode === 'water-color' ||
-    mode === 'water-shadow' ||
-    mode === 'water-velocity'
-  )
-    return isWaterMaterial(material);
+  if (waterRecordPass(mode) !== undefined) return isWaterMaterial(material);
   if (mode === 'single-layer-medium-nearest-layer' || mode === 'single-layer-medium-color')
     return medium && !isWaterMaterial(material);
   return matchesOrdinaryRecordMode(material, mode, medium);
@@ -83,18 +102,22 @@ export function materialMatchesPass(
   return true;
 }
 
-/** Resolve the fixed material table already uploaded for this draw. */
-export function drawMaterial(
-  c: Pick<
-    import('./render-context')._InternalRenderPipelineContext,
-    'materialSlots' | 'materialSlotIndices'
-  >,
+/** FrameList.at also accepts negative and fractional indices. A draw address never does. */
+export function submittedMaterialRow(
+  slots: import('../scene/frame-list').FrameList<readonly number[]>,
   row: number,
+): readonly number[] | undefined {
+  return Number.isInteger(row) && row >= 0 ? slots.at(row) : undefined;
+}
+
+/** Resolve a submesh from its submitted row and the fixed, uploaded material table. */
+export function materialFromSubmittedSlots(
+  materials: readonly MaterialSnapshot[],
+  indices: readonly number[] | undefined,
   sourceSlot = 0,
 ): MaterialSnapshot {
-  const indices = Number.isInteger(row) && row >= 0 ? c.materialSlotIndices.at(row) : undefined;
   const slot = indices?.[sourceSlot] ?? indices?.[0];
-  const material = slot === undefined ? undefined : c.materialSlots[slot];
+  const material = slot === undefined ? undefined : materials[slot];
   if (material === undefined) throw new Error('Draw has no fixed submitted material slot');
   return material;
 }

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { definePack, definePackageId } from '@forgeax/engine-pack/source';
 import { ok } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import {
   produceScriptablePackProducts,
   type ScriptablePackInput,
@@ -17,6 +17,7 @@ const digest = (bytes: string | Uint8Array) =>
 
 async function fixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'forgeax-transport-ddc-')));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
   const sourcePath = join(root, 'source.pack.ts');
   let text = 'first',
     base = '/';
@@ -86,85 +87,68 @@ async function fixture() {
       text = value;
       await writeFile(sourcePath, text);
     },
-    dispose: () => rm(root, { recursive: true, force: true }),
   };
 }
 
 it('reuses verified transport metadata with current producer bytes and independent returned snapshots', async () => {
   const f = await fixture();
-  try {
-    const first = await f.run(),
-      second = await f.run();
-    expect(f.cook).toHaveBeenCalledTimes(1);
-    expect(f.policy).toHaveBeenCalledTimes(1);
-    expect(second.finalized).toEqual(first.finalized);
-    expect(second.finalized.pack).not.toBe(first.finalized.pack);
-    const cache = await createScriptablePackTransportCache({
-      root: f.root,
-      identityRoot: f.root,
-      canReuse: () => true,
-    });
-    expect(await cache.read(f.input(), second.product)).toBeDefined();
-    const body = second.product.product.assets[0]?.artifacts.body;
-    if (body === undefined) throw new Error('Missing current product body');
-    body.bytes[0] = 255;
-    expect(await cache.read(f.input(), second.product)).toBeUndefined();
-    expect((await f.run()).finalized).toEqual(first.finalized);
-  } finally {
-    await f.dispose();
-  }
+  const first = await f.run(),
+    second = await f.run();
+  expect(f.cook).toHaveBeenCalledTimes(1);
+  expect(f.policy).toHaveBeenCalledTimes(1);
+  expect(second.finalized).toEqual(first.finalized);
+  expect(second.finalized.pack).not.toBe(first.finalized.pack);
+  const cache = await createScriptablePackTransportCache({
+    root: f.root,
+    identityRoot: f.root,
+    canReuse: () => true,
+  });
+  expect(await cache.read(f.input(), second.product)).toBeDefined();
+  const body = second.product.product.assets[0]?.artifacts.body;
+  if (body === undefined) throw new Error('Missing current product body');
+  body.bytes[0] = 255;
+  expect(await cache.read(f.input(), second.product)).toBeUndefined();
+  expect((await f.run()).finalized).toEqual(first.finalized);
 });
 
 it('invalidates source content, transport policy and publication generation independently', async () => {
   const f = await fixture();
-  try {
-    const first = await f.run();
-    f.setBase('/relocated/');
-    const moved = await f.run();
-    expect(moved.finalized.packageUrl).not.toBe(first.finalized.packageUrl);
-    expect(f.cook).toHaveBeenCalledTimes(1);
-    expect(f.policy).toHaveBeenCalledTimes(2);
-    const generation = await f.run(f.input({ publicationGeneration: 2 }));
-    expect(generation.publication.generation).toBe(2);
-    expect(f.policy).toHaveBeenCalledTimes(3);
-    await f.setText('changed source bytes');
-    const changed = await f.run();
-    expect(changed.finalized.digest).not.toBe(moved.finalized.digest);
-    expect(f.cook).toHaveBeenCalledTimes(2);
-    expect(f.policy).toHaveBeenCalledTimes(4);
-  } finally {
-    await f.dispose();
-  }
+  const first = await f.run();
+  f.setBase('/relocated/');
+  const moved = await f.run();
+  expect(moved.finalized.packageUrl).not.toBe(first.finalized.packageUrl);
+  expect(f.cook).toHaveBeenCalledTimes(1);
+  expect(f.policy).toHaveBeenCalledTimes(2);
+  const generation = await f.run(f.input({ publicationGeneration: 2 }));
+  expect(generation.publication.generation).toBe(2);
+  expect(f.policy).toHaveBeenCalledTimes(3);
+  await f.setText('changed source bytes');
+  const changed = await f.run();
+  expect(changed.finalized.digest).not.toBe(moved.finalized.digest);
+  expect(f.cook).toHaveBeenCalledTimes(2);
+  expect(f.policy).toHaveBeenCalledTimes(4);
 });
 
 it('rebuilds corrupted transport without recooking a valid product', async () => {
   const f = await fixture();
-  try {
-    const first = await f.run();
-    const entries = join(f.root, 'scriptable-pack-transports/entries');
-    const [key] = await readdir(entries);
-    if (key === undefined) throw new Error('Missing transport DDC entry');
-    await writeFile(join(entries, key, 'artifacts/transport.v8.br.bin'), 'corrupt');
-    expect((await f.run()).finalized).toEqual(first.finalized);
-    expect(f.cook).toHaveBeenCalledTimes(1);
-    expect(f.policy).toHaveBeenCalledTimes(2);
-  } finally {
-    await f.dispose();
-  }
+  const first = await f.run();
+  const entries = join(f.root, 'scriptable-pack-transports/entries');
+  const [key] = await readdir(entries);
+  if (key === undefined) throw new Error('Missing transport DDC entry');
+  await writeFile(join(entries, key, 'artifacts/transport.v8.br.bin'), 'corrupt');
+  expect((await f.run()).finalized).toEqual(first.finalized);
+  expect(f.cook).toHaveBeenCalledTimes(1);
+  expect(f.policy).toHaveBeenCalledTimes(2);
 });
 
 it('keeps ordinary borrowed policies live unless they explicitly declare a transport identity', async () => {
   const f = await fixture();
-  try {
-    const { transportIdentity: _, ...source } = f.input();
-    await f.run(source);
-    f.setBase('/live/');
-    expect((await f.run(source)).finalized.packageUrl).toContain('/live/');
-    expect(f.cook).toHaveBeenCalledTimes(1);
-    expect(f.policy).toHaveBeenCalledTimes(2);
-  } finally {
-    await f.dispose();
-  }
+  const { transportIdentity: _, ...source } = f.input();
+  await f.run(source);
+  f.setBase('/live/');
+  expect((await f.run(source)).finalized.packageUrl).toContain('/live/');
+  expect(f.cook).toHaveBeenCalledTimes(1);
+  expect(f.policy).toHaveBeenCalledTimes(2);
 });
 
 it('reuses verified transport metadata after relocating the project cache', async () => {
@@ -198,7 +182,6 @@ it('reuses verified transport metadata after relocating the project cache', asyn
     expect(f.cook).toHaveBeenCalledTimes(1);
     expect(f.policy).toHaveBeenCalledTimes(1);
   } finally {
-    await f.dispose();
     await rm(movedRoot, { recursive: true, force: true });
   }
 });

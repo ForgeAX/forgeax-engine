@@ -10,6 +10,8 @@ export default defineConfig({
     'src/decode-image-from-file.ts',
     'src/image-importer.ts',
     'src/ktx2-encode.ts',
+    'src/node-encode-pool.ts',
+    'src/node-encode-worker.ts',
     'src/png-encoder.ts',
   ],
   // Node-only decode and encode dependencies stay outside the browser-safe root entry.

@@ -61,6 +61,11 @@ export async function verifyMultiCamera(
   },
   warmupFrames = 60,
 ) {
+  const originalProfile = {
+    ...renderer.inspect().profile,
+    ambientOcclusion: { enabled: false },
+  };
+  renderValue(renderer.setProfile(originalProfile));
   const world = new World(publication === undefined ? {} : { assets: publication.assets });
   const errors: unknown[] = [];
   const off = renderer.subscribe((event) => {
@@ -445,7 +450,6 @@ export async function verifyMultiCamera(
     expect(views.every((v) => v.frustum.culled > 0)).toBe(true);
     expect(views.map((view) => view.dynamicResolution?.status)).toEqual(['fixed', 'fixed']);
     expect(views.map((view) => view.dynamicResolution?.extent?.scale)).toEqual([0.75, 1]);
-    const originalProfile = renderer.inspect().profile;
     const originalMaterials = models.map((entity) => [
       ...world.get(entity, MeshRenderer).unwrap().materials,
     ]);
@@ -458,7 +462,13 @@ export async function verifyMultiCamera(
       world
         .addComponent(camera, { component: ScreenSpaceReflection, data: { maxDistance: 12 } })
         .unwrap();
-    renderValue(renderer.setProfile({ ...originalProfile, renderPath: 'deferred', ssao: true }));
+    renderValue(
+      renderer.setProfile({
+        ...originalProfile,
+        renderPath: 'deferred',
+        ambientOcclusion: { enabled: true },
+      }),
+    );
     journey = 'deferred-ssao-ssr';
     for (let frame = 0; frame < 3; frame += 1) await draw();
     expect(

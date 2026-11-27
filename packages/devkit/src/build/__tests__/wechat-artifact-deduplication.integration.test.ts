@@ -7,6 +7,7 @@ import { brotliCompressSync, brotliDecompressSync } from 'node:zlib';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { copyMeshAttribute, meshAssetContribution } from '@forgeax/engine-geometry';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
+import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import { createWechatPackageFetcher } from '@forgeax/engine-platform-wechat';
 import type { PackIndexEntry, PackV2 } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
@@ -19,6 +20,7 @@ it('shares identical produced bodies while retaining distinct Catalog assets and
   const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
   const assets = join(root, 'assets');
   const out = join(root, 'out');
+  const packId = '01900000-0000-7000-8000-000000000072';
   try {
     await mkdir(assets);
     await mkdir(out);
@@ -42,15 +44,19 @@ export default {
       join(assets, 'another.pack.ts'),
       `
 import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { definePackageId } from '@forgeax/engine-pack/source';
 export default {
   schemaVersion: '2.0.0',
-  packageId: new Uint8Array([1,159,250,151,0,0,112,0,128,0,0,0,0,0,0,72]),
+  packageId: definePackageId('${packId}'),
   build: () => ({ ok: true, value: { another: createBoxGeometry(2, 3, 4).unwrap() } }),
 };
 `,
     );
     const emitted = new Map<string, string | Uint8Array>();
-    const plugin = createPluginPackInternal({ roots: [assets] });
+    const plugin = createPluginPackInternal({
+      roots: [assets],
+      ddc: { buildCacheRoot: join(root, 'ddc') },
+    });
     try {
       await plugin.generateBundle.call({
         emitFile(asset) {
@@ -77,6 +83,9 @@ export default {
       if (entry?.packageUrl === undefined) throw new Error(`missing published entry: ${key}`);
       return entry;
     };
+    expect(entryFor('another').guid).toBe(
+      AssetGuid.format(AssetGuid.derive(definePackageId(packId), 'another')),
+    );
     const descriptorFor = (key: string) => {
       const entry = entryFor(key);
       const pack = json(String(entry.packageUrl).replace(/^\//, '')) as PackV2;

@@ -45,8 +45,9 @@ import { invalid, unsupported } from './errors';
 /** Project only matrices expressible by the existing native offset/rotation/scale contract. */
 export function textureCoordinates(
   texture: Texture,
+  updateMatrix = true,
 ): Result<ResolvedMaterialTextureCoordinates, Error> {
-  if (texture.matrixAutoUpdate) texture.updateMatrix();
+  if (updateMatrix && texture.matrixAutoUpdate) texture.updateMatrix();
   const [a, b, p, c, d, q, x, y, w] = texture.matrix.elements;
   if (!texture.matrix.elements.every((value) => Number.isFinite(Math.fround(value))))
     return invalid('Texture UV transform values', texture.uuid);
@@ -223,7 +224,7 @@ export function projectTexture(
       image.value.height !== target.height
     )
       return invalid('Texture mip extent', texture.uuid);
-    data.set(image.value.data, target.byteOffset);
+    if (data !== image.value.data) data.set(image.value.data, target.byteOffset);
   }
   return ok({ kind: 'texture', shape, format, colorSpace: srgb ? 'srgb' : 'linear', mips, data });
 }
@@ -274,7 +275,6 @@ function readImage(
   const bytesPerPixel =
     channels * (texture.type === HalfFloatType ? 2 : texture.type === FloatType ? 4 : 1);
   const row = width * bytesPerPixel;
-  const pixels = new Uint8Array(row * height);
   if (dimensions.data !== undefined) {
     const source = dimensions.data;
     if (
@@ -290,8 +290,7 @@ function readImage(
     if (view.byteLength < stride * (height - 1) + row)
       return invalid('DataTexture byte length', texture.uuid);
     const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-    for (let y = 0; y < height; y++)
-      pixels.set(bytes.subarray(y * stride, y * stride + row), (flipY ? height - 1 - y : y) * row);
+    return ok({ width, height, data: copyImageRows(bytes, row, height, flipY) });
   } else {
     if (typeof document === 'undefined')
       return unsupported('image texture requires a browser or RGBA DataTexture', texture.uuid);
@@ -304,18 +303,24 @@ function readImage(
     try {
       context.drawImage(image as CanvasImageSource, 0, 0, width, height);
       const rgba = context.getImageData(0, 0, width, height).data;
+      const premultiply = texture.premultiplyAlpha;
+      if (channels === 4 && !premultiply) {
+        // ImageData is a new, independent snapshot of the converted sRGB canvas.
+        const bytes = new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength);
+        return ok({ width, height, data: flipY ? copyImageRows(bytes, row, height, true) : bytes });
+      }
+      const pixels = new Uint8Array(row * height);
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
           const target = ((flipY ? height - 1 - y : y) * width + x) * channels;
           for (let channel = 0; channel < channels; channel++)
             pixels[target + channel] = Math.round(
               (rgba[(y * width + x) * 4 + channel] ?? 0) *
-                (texture.premultiplyAlpha && channel < 3
-                  ? (rgba[(y * width + x) * 4 + 3] ?? 255) / 255
-                  : 1),
+                (premultiply && channel < 3 ? (rgba[(y * width + x) * 4 + 3] ?? 255) / 255 : 1),
             );
         }
       }
+      return ok({ width, height, data: pixels });
     } catch {
       return unsupported(
         'Texture image read; check CORS and decoded image readiness',
@@ -323,7 +328,14 @@ function readImage(
       );
     }
   }
-  return ok({ width, height, data: pixels });
+}
+
+function copyImageRows(bytes: Uint8Array, row: number, height: number, flipY: boolean): Uint8Array {
+  if (!flipY) return bytes.slice(0, row * height);
+  const pixels = new Uint8Array(row * height);
+  for (let y = 0; y < height; y++)
+    pixels.set(bytes.subarray(y * row, (y + 1) * row), (height - 1 - y) * row);
+  return pixels;
 }
 
 export function projectSampler(texture: Texture): Result<SamplerAsset, Error> {

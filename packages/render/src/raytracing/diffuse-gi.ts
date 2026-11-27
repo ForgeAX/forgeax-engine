@@ -16,6 +16,7 @@ import { DeviceScope } from '../device/device-scope';
 import { getOrCreateDirectDfgLut, materialUsesDirectDfgLut } from '../device/direct-dfg-lut';
 import type { LightSnapshot } from '../render-system-extract';
 import { captureViewProjection, type SurfaceViewProjection } from './capture-view';
+import { rebuildCardOwnerIndex } from './card-owner-index';
 import type { ResolveSurfaceTexture } from './material-bindings';
 import { packLights } from './path-input';
 import { type RayReferenceError, rayGeometryKey, rayReferenceFailure } from './scene';
@@ -23,10 +24,10 @@ import { packSdfScene, type SdfMeshInstance, sdfInstanceKey } from './sdf-query'
 import {
   CARD_PLANES,
   createSurfaceCapture,
-  packCardProjection,
   type SurfaceCapture,
   type SurfaceCardSource,
   surfaceCardKey,
+  writeCardLookupProjection,
 } from './surface-cards';
 
 export const GI_PIXEL_STRIDE = 80;
@@ -445,20 +446,18 @@ function capturesMatchTracing(
 /** Card projections tagged with their instance, at least one zero row. */
 function packGiCardProjections(cards: SurfaceCapture): { projections: Uint8Array; count: number } {
   const projections = new Uint8Array(
-      Math.max(
-        1,
-        cards.entries.reduce((n, e) => n + e.projections.length, 0),
-      ) * 80,
-    ),
-    pv = new DataView(projections.buffer);
+    Math.max(
+      1,
+      cards.entries.reduce((n, e) => n + e.projections.length, 0),
+    ) * 80,
+  );
   let count = 0;
   for (const entry of cards.entries)
     for (const projection of entry.projections) {
-      projections.set(packCardProjection(projection), count * 80);
-      pv.setUint32(count * 80 + 64, entry.instanceId, true);
-      pv.setUint32(count * 80 + 68, 1, true);
+      writeCardLookupProjection(projections, count, projection, entry.instanceId, 1);
       count++;
     }
+  rebuildCardOwnerIndex(projections, count);
   return { projections, count };
 }
 

@@ -8,7 +8,7 @@ import {
   summarizeFrame,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { deviceOptionsForAdapter } from '../../../render/src/assembly/device-feature-admission';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -22,7 +22,9 @@ import {
 import { deltaPng, luminancePng, offscreenCanvas } from './hdr-evidence.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest({ pointShadows: true }));
+const manifestUrl = shaderManifestUrl(
+  await buildEngineShaderTemplateManifest({ pointShadows: true }),
+);
 const directory = 'artifacts/contact-shadow';
 
 function writeLuminancePng(name: string, luminance: Float32Array, size: number) {

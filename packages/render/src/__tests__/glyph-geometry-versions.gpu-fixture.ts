@@ -10,7 +10,7 @@ import { GlyphSources } from '../glyph-source';
 import { worldRenderResources } from '../publication/resource-scope';
 import { nativeDeviceFixture } from './native-device-fixture';
 
-/** Actual old/new Font layouts coexist in one submission, including cache eviction before submit. */
+/** Actual old/new Font layouts coexist in one submission, including Font replacement before submit. */
 export async function verifyGlyphGeometryVersions() {
   const { device, native } = await nativeDeviceFixture();
   native.pushErrorScope('validation');
@@ -58,8 +58,8 @@ export async function verifyGlyphGeometryVersions() {
     })
     .unwrap();
   const sources = new GlyphSources();
-  const source = { font, text: 'A', size: 1, color: [1, 0, 0, 1] as const };
-  const old = sources.resolve(worldRenderResources(world), source, assets).mesh;
+  const source = { font, text: 'A', size: 1, worldOriented: false, color: [1, 0, 0, 1] as const };
+  const old = sources.resolve(worldRenderResources(world), 1, source, assets).mesh;
   const oldGpu = store.ensureGeneratedMesh(old).unwrap();
   const observer = runtimeAssets(assets).observe().unwrap();
   observer.read().unwrap().accept();
@@ -67,7 +67,7 @@ export async function verifyGlyphGeometryVersions() {
   const change = observer.read().unwrap();
   sources.adopt(worldRenderResources(world), change.changes);
   change.accept();
-  const next = sources.resolve(worldRenderResources(world), source, assets).mesh;
+  const next = sources.resolve(worldRenderResources(world), 1, source, assets).mesh;
   const nextGpu = store.ensureGeneratedMesh(next).unwrap();
   expect(Object.is(nextGpu.vertexBuffer, oldGpu.vertexBuffer)).toBe(false);
   const shader = (

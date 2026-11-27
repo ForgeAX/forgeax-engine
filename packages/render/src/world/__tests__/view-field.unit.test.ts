@@ -18,6 +18,7 @@ it('reads a staged view through its live scalar handle without a component snaps
   };
   const handle = world.allocUniqueRef('ViewFrame', state);
   const entity = world.spawn({ component: ViewFrame, data: { state: handle } }).unwrap();
+  const membership = vi.spyOn(world, 'hasComponent');
   const snapshot = vi.spyOn(world, 'get').mockImplementation(() => {
     throw new Error('a staged view must not materialize a component snapshot');
   });
@@ -27,8 +28,11 @@ it('reads a staged view through its live scalar handle without a component snaps
     expect(viewFrameOf(world, entity)?.mode).toBe('capture');
     state.frame = 1;
     expect(viewFrameOf(world, entity)).toBeUndefined();
+    expect(viewFrameOf(world, undefined)).toBeUndefined();
+    expect(membership).not.toHaveBeenCalled();
     expect(snapshot).not.toHaveBeenCalled();
   } finally {
+    membership.mockRestore();
     snapshot.mockRestore();
   }
 });

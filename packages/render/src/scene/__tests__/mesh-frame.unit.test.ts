@@ -92,3 +92,81 @@ it('detaches GUID default bytes and compares their complete values before bindin
   const changed = equal.with(1, { ...BUILTIN_CUBE, materialSlots: slots });
   expect(changed.get(1)?.materialSlots).not.toBe(equal.get(1)?.materialSlots);
 });
+
+it('publishes ordered edits across occupied, empty and distant mesh pages while old frames draw', () => {
+  const geometry = new MeshFrame().with(1, BUILTIN_CUBE).get(1);
+  if (!geometry) throw new Error('Missing geometry');
+  const handles = [0, 7, 31, 32, 63, 64, 2 ** 32 + 31, Number.MAX_SAFE_INTEGER];
+  const entries = handles.map((handle) => ({ ...geometry, handle, scale: 0.5 }));
+  let original = new MeshFrame();
+  for (const entry of entries) original = original.withGeometry(entry);
+  let next = original;
+  for (const handle of [31, 32, 63, Number.MAX_SAFE_INTEGER]) next = next.without(handle);
+  next = next.withGeometry({ ...geometry, handle: 30 }).withGeometry({ ...geometry, handle: 64 });
+  const forward: number[] = [];
+  next.changesSince(original, (before, after) => {
+    const handle = (before ?? after)?.handle;
+    if (handle === undefined) throw new Error('Missing changed handle');
+    forward.push(handle);
+    expect(original.get(handle)).toBe(before);
+    expect(next.get(handle)).toBe(after);
+  });
+  expect(forward).toEqual([30, 31, 32, 63, 64, Number.MAX_SAFE_INTEGER]);
+  const reverse: (number | undefined)[] = [];
+  original.changesSince(next, (before, after) => reverse.push((before ?? after)?.handle));
+  expect(reverse).toEqual(forward);
+  for (const entry of entries) expect(original.get(entry.handle)).toBe(entry);
+  expect(next.get(2 ** 32 + 31)).toBe(entries[6]);
+  expect(next.without(31)).toBe(next);
+});
+
+it('diffs independent geometry publications across compressed prefixes in handle order', () => {
+  const seed = new MeshFrame().with(1, BUILTIN_CUBE).get(1);
+  if (seed === undefined) throw new Error('Missing geometry');
+  const handles = [
+    -Number.MAX_SAFE_INTEGER,
+    -(2 ** 32),
+    -257,
+    -16,
+    -1,
+    0,
+    1,
+    15,
+    16,
+    255,
+    256,
+    4097,
+    65536,
+    2 ** 32,
+    2 ** 40 + 31,
+    Number.MAX_SAFE_INTEGER,
+  ];
+  const geometry = handles.map((handle) => ({ ...seed, handle }));
+  for (let round = 1; round <= 64; round++) {
+    const before = new Map<number, typeof seed>(),
+      after = new Map<number, typeof seed>();
+    let left = new MeshFrame(),
+      right = new MeshFrame();
+    for (let i = 0; i < geometry.length; i++) {
+      const value = geometry[(i * 5 + round) % geometry.length] as typeof seed;
+      if ((i + round) % 3 !== 0) {
+        before.set(value.handle, value);
+        left = left.withGeometry(value);
+      }
+      if ((i + round) % 4 !== 0) {
+        const next = (i + round) % 5 === 0 ? { ...value } : value;
+        after.set(value.handle, next);
+        right = right.withGeometry(next);
+      }
+    }
+    const changed: number[] = [];
+    right.changesSince(left, (old, next) => {
+      const key = (old ?? next)?.handle;
+      if (key === undefined) throw new Error('Missing change');
+      expect(old).toBe(before.get(key));
+      expect(next).toBe(after.get(key));
+      changed.push(key);
+    });
+    expect(changed).toEqual(handles.filter((key) => before.get(key) !== after.get(key)));
+  }
+});

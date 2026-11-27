@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import type { TextureShape } from '../texture/asset.js';
 import { validateTextureShape } from '../texture/errors.js';
+import { validateTextureLayout } from '../texture/layout.js';
 
 describe('texture rejection matrix', () => {
   it.each([
@@ -25,6 +27,30 @@ describe('texture rejection matrix', () => {
       error: { code, expected: expect.any(String), hint: expect.any(String) },
     });
     if (!result.ok) expect(result.error.detail.code).toBe(code);
+  });
+
+  it.each([
+    ['2d', { height: 2 }, 'width'],
+    ['2d', { width: 2 }, 'height'],
+    ['2d-array', { width: 2, height: 2 }, 'layers'],
+    ['3d', { width: 2, height: 2 }, 'depth'],
+  ] as const)('rejects a missing %s extent axis', (viewDimension, extent, field) => {
+    const shape = { viewDimension, extent } as TextureShape;
+    expect(validateTextureShape(shape)).toMatchObject({
+      ok: false,
+      error: { code: 'texture-shape-invalid', detail: { field } },
+    });
+  });
+
+  it('reads all enumerable extent values before reporting the first invalid axis', () => {
+    const error = new Error('extent read interrupted');
+    const extent = {
+      width: 0,
+      get height(): number {
+        throw error;
+      },
+    };
+    expect(() => validateTextureShape({ viewDimension: '2d', extent })).toThrow(error);
   });
 
   it('rejects incompatible mip policies and unsupported authored formats', () => {
@@ -53,5 +79,31 @@ describe('texture rejection matrix', () => {
       ok: false,
       error: { code: 'texture-format-dimension-unsupported' },
     });
+  });
+
+  it('uses the same generated mip bounds for shape and layout admission', () => {
+    const shape = {
+      viewDimension: '2d-array',
+      extent: { width: 8, height: 4, layers: 24 },
+    } as const;
+    const format = 'rgba8unorm';
+    const mips = { kind: 'custom', levelCount: 4 } as const;
+    const volume = { viewDimension: '3d', extent: { width: 8, height: 4, depth: 2 } } as const;
+    const cases = [
+      { shape, mips, expected: true },
+      { shape, mips: { ...mips, levelCount: 5 }, expected: false },
+      { shape, mips: { ...mips, levelCount: 1.5 }, expected: false },
+      { shape: volume, mips, expected: false },
+    ];
+    for (const sample of cases) {
+      const received = validateTextureShape(sample.shape, sample.mips, format);
+      expect(received).toEqual(validateTextureLayout({ ...sample, format }));
+      expect(received.ok).toBe(sample.expected);
+      if (!received.ok)
+        expect(received.error.detail).toMatchObject({
+          code: 'texture-mip-policy-invalid',
+          policy: 'custom',
+        });
+    }
   });
 });

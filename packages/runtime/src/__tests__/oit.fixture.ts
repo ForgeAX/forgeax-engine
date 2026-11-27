@@ -215,7 +215,13 @@ export async function createOitScene(renderer: Renderer, options: OitSceneOption
     )
     .unwrap();
   const profile = renderer.inspect().profile;
-  unwrap(renderer.setProfile({ ...profile, renderPath: options.renderPath, ssao: false }));
+  unwrap(
+    renderer.setProfile({
+      ...profile,
+      renderPath: options.renderPath,
+      ambientOcclusion: { enabled: false },
+    }),
+  );
   const setTransparency = (mode: 'sorted' | 'weighted-blended') =>
     world
       .set(camera, Camera, {

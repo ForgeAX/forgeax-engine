@@ -3,6 +3,7 @@ import { err, type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { BatchTopology } from '../gpu-driven/batch-topology';
+import type { GpuInputDescriptorReservation } from '../gpu-input-arena';
 import { GpuInputArena } from '../gpu-input-arena';
 import { GpuScene } from '../gpu-scene';
 import { GpuSceneInputs } from '../gpu-scene-inputs';
@@ -14,6 +15,94 @@ import { receiptRow } from './gpu-draw-selection-fixture';
 async function device(): Promise<RhiDevice> {
   return (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
 }
+
+it('owns private descriptor words without changing active bytes, dirty work or ordinary capacity', async () => {
+  const target = await device();
+  const arena = new GpuInputArena(65536);
+  const address = arena.allocateDescriptor(4);
+  arena.writeDescriptorWord(address, 4, 0, 7);
+  const upload = arena.connect();
+  upload.activate();
+  const buffer = target
+    .createBuffer({ size: 65536, usage: 128 | 8, mappedAtCreation: false })
+    .unwrap();
+  upload.flush(target.queue, buffer, true).unwrap();
+  const bytes = arena.byteLength;
+  const before = Array.from({ length: bytes / 4 }, (_, index) => arena.readWord(index));
+  let borrowed: DataView | undefined;
+  const row = arena.reserveDescriptor(512, (physical, scratch) => {
+    borrowed = scratch;
+    scratch.setUint32(0, physical, true);
+    scratch.setUint32(4, 91, true);
+  });
+  borrowed?.setUint32(4, 17, true);
+  const writes = vi.spyOn(target.queue, 'writeBuffer');
+  try {
+    expect(arena.byteLength).toBe(bytes);
+    expect(Array.from({ length: bytes / 4 }, (_, index) => arena.readWord(index))).toEqual(before);
+    expect(row.readWord(0)).toBe(row.address);
+    expect(row.readWord(1)).toBe(91);
+    upload.flush(target.queue, buffer, false).unwrap();
+    expect(writes).not.toHaveBeenCalled();
+    row.release();
+    expect(row.isCurrent()).toBe(false);
+    expect(() => row.readWord(0)).toThrow();
+    expect(arena.allocateDescriptor(512)).toBe(row.address);
+  } finally {
+    row.release();
+    upload.release();
+    arena.dispose();
+    target.destroyBuffer(buffer).unwrap();
+    writes.mockRestore();
+  }
+});
+
+it('rolls back an initializer failure and refuses descriptor resurrection after disposal', () => {
+  const arena = new GpuInputArena(4096);
+  expect(() =>
+    arena.reserveDescriptor(4, () => {
+      throw new Error('initializer');
+    }),
+  ).toThrow('initializer');
+  const first = arena.reserveDescriptor(4, () => undefined);
+  expect(first.address).toBe(1);
+  first.release();
+  expect(() => arena.reserveDescriptor(4, () => arena.dispose())).toThrow();
+  expect(first.isCurrent()).toBe(false);
+});
+
+it('transfers descriptor custody before initialization and retains an unknown rollback without retry', () => {
+  const arena = new GpuInputArena(4096);
+  const ranges = (arena as unknown as { ranges: StableRangeAllocator }).ranges;
+  const release = ranges.release.bind(ranges);
+  const failure = new Error('unknown private range release');
+  const retire = vi.spyOn(ranges, 'release').mockImplementation((start, count) => {
+    release(start, count);
+    throw failure;
+  });
+  let captured: GpuInputDescriptorReservation | undefined;
+  try {
+    expect(() =>
+      arena.reserveDescriptor(
+        4,
+        () => {
+          throw new Error('initializer');
+        },
+        (value) => {
+          captured = value;
+        },
+      ),
+    ).toThrow('rollback failed');
+    expect(captured).toBeDefined();
+    expect(captured?.isCurrent()).toBe(false);
+    expect(arena.live).toBe(false);
+    expect(() => captured?.release()).toThrow(failure);
+    expect(retire).toHaveBeenCalledOnce();
+  } finally {
+    retire.mockRestore();
+    arena.dispose();
+  }
+});
 
 it('serves complete CPU Skin demand without a device, upload or GPU Scene', () => {
   const arena = new GpuInputArena(65536),
@@ -279,11 +368,13 @@ it('continues page and buffer retirement after a held read releases a failed ran
     expect(() => arena.allocateDescriptor(1)).toThrow();
     await dev.queue.onSubmittedWorkDone();
     expect(destroy).toHaveBeenCalledTimes(1);
+    expect(() => inputs.capture()).toThrow(AggregateError);
+    expect(() => inputs.dispose()).toThrow(AggregateError);
   } finally {
     release.mockRestore();
     destroy.mockRestore();
     frame.release();
-    inputs.dispose();
+    expect(() => inputs.dispose()).toThrow(AggregateError);
     arena.dispose();
   }
 });
@@ -327,8 +418,9 @@ it('retires all independent Scene owners exactly once after one Version release 
     expect(() => scene.dispose()).toThrow(expect.objectContaining({ cause, errors: [cause] }));
     expect(disposeInputs).toHaveBeenCalledTimes(1);
     expect(failures).toBe(1);
-    scene.dispose();
+    expect(() => scene.dispose()).toThrow(expect.objectContaining({ cause, errors: [cause] }));
     expect(failures).toBe(1);
+    expect(disposeInputs).toHaveBeenCalledTimes(1);
     expect(() => arena.allocateDescriptor(1)).toThrow();
     await dev.queue.onSubmittedWorkDone();
     for (const buffer of buffers)
@@ -340,7 +432,7 @@ it('retires all independent Scene owners exactly once after one Version release 
     release.mockRestore();
     disposeInputs.mockRestore();
     destroy.mockRestore();
-    scene.dispose();
+    expect(() => scene.dispose()).toThrow(AggregateError);
     arena.dispose();
   }
 });
@@ -432,6 +524,12 @@ it('writes a checked suffix under its full allocation owner and rejects partial 
     expect(writes.mock.calls[0]?.[1]).toBe((address + 2) * 4);
     expect(writes.mock.calls[0]?.[4]).toBe(8);
     writes.mockClear();
+    arena.writeDescriptorWord(address, 4, 1, 97);
+    upload.flush(gpu.queue, created, false).unwrap();
+    expect(writes).toHaveBeenCalledTimes(1);
+    expect(writes.mock.calls[0]?.[1]).toBe((address + 1) * 4);
+    expect(writes.mock.calls[0]?.[4]).toBe(4);
+    writes.mockClear();
     data.setUint32(0, 17, true);
     arena.writeDescriptor(address, data, 4, 2);
     arena.releaseDescriptor(address, 4);
@@ -466,8 +564,8 @@ it('coalesces nearby known changes into address-ordered queue writes of current 
     frame.buffer().unwrap();
     frame.seal().unwrap();
     expect(write.mock.calls.map((call) => [call[1], call[4]])).toEqual([
-      [(rows[0] as number) * 4, ((rows[5] as number) + 17 - (rows[0] as number)) * 4],
-      [far * 4, 17 * 4],
+      [((rows[0] as number) + 4) * 4, ((rows[5] as number) - (rows[0] as number) + 1) * 4],
+      [(far + 4) * 4, 4],
     ]);
   } finally {
     write.mockRestore();

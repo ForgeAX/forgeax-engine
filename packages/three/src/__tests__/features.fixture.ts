@@ -194,11 +194,13 @@ export function featureCases(THREE: typeof ThreeCore & { ClippingGroup: typeof C
       );
       for (let i = 0; i < 3; i++)
         mesh.setMatrixAt(i, new THREE.Matrix4().makeTranslation(i - 1, (i % 2) * 0.6, 0));
+      mesh.setMatrixAt(1, new THREE.Matrix4().makeScale(0, 0, 0));
       mesh.instanceMatrix.needsUpdate = true;
       scene.add(mesh);
       return () => {
         mesh.count = 2;
         mesh.setMatrixAt(0, new THREE.Matrix4().makeTranslation(-0.8, -0.7, 0));
+        mesh.setMatrixAt(1, new THREE.Matrix4().makeTranslation(1, 0.6, 0));
         mesh.instanceMatrix.needsUpdate = true;
       };
     },
@@ -231,12 +233,15 @@ export function featureCases(THREE: typeof ThreeCore & { ClippingGroup: typeof C
         required(pose.morphTargetInfluences)[0] = i * 0.4;
         mesh.setMorphAt(i, pose);
       }
+      mesh.setMatrixAt(1, new THREE.Matrix4().makeScale(0, 0, 0));
       mesh.instanceMatrix.needsUpdate = true;
       required(mesh.instanceColor).needsUpdate = true;
       required(mesh.morphTexture).needsUpdate = true;
       scene.add(mesh);
       return () => {
         mesh.count = 2;
+        mesh.setMatrixAt(1, new THREE.Matrix4().makeTranslation(0, 0, 0));
+        mesh.instanceMatrix.needsUpdate = true;
         mesh.setColorAt(0, new THREE.Color(0x7090e0));
         required(mesh.instanceColor).needsUpdate = true;
         required(pose.morphTargetInfluences)[0] = 1;
@@ -613,45 +618,7 @@ export function featureCases(THREE: typeof ThreeCore & { ClippingGroup: typeof C
         required(mesh.morphTargetInfluences)[0] = 0.8;
       };
     },
-    'skin-lit': (scene) => {
-      const geometry = new THREE.BoxGeometry(1.1, 1.5, 0.6),
-        position = geometry.getAttribute('position');
-      geometry.setAttribute(
-        'skinIndex',
-        new THREE.Uint16BufferAttribute(
-          Array.from({ length: position.count * 4 }, (_, i) =>
-            i % 4 === 0 && position.getY(Math.floor(i / 4)) > 0 ? 1 : 0,
-          ),
-          4,
-        ),
-      );
-      geometry.setAttribute(
-        'skinWeight',
-        new THREE.Float32BufferAttribute(
-          Array.from({ length: position.count * 4 }, (_, i) => (i % 4 === 0 ? 1 : 0)),
-          4,
-        ),
-      );
-      const mesh = new THREE.SkinnedMesh(
-        geometry,
-        new THREE.MeshStandardMaterial({ color: 0xc0a060, roughness: 0.7 }),
-      );
-      const root = new THREE.Bone(),
-        tip = new THREE.Bone();
-      root.add(tip);
-      mesh.add(root);
-      mesh.bind(new THREE.Skeleton([root, tip]));
-      mesh.scale.set(1.2, 1.2, 1.2);
-      scene.add(mesh);
-      const sun = new THREE.DirectionalLight(0xffffff, 3);
-      sun.position.set(2, 3, 5);
-      scene.add(sun);
-      return () => {
-        tip.rotation.z = 0.55;
-        mesh.position.x = 0.3;
-        mesh.rotation.y = 0.2;
-      };
-    },
+    'skin-lit': (scene) => litSkin(THREE, scene, false),
     'transparent-order': (scene) => {
       const group = new THREE.Group();
       group.renderOrder = 3;
@@ -719,5 +686,99 @@ export function featureCases(THREE: typeof ThreeCore & { ClippingGroup: typeof C
         material.opacity = 0.75;
       };
     },
+    'skin-lit-rigid': (scene) => litSkin(THREE, scene, true),
+    'physical-stock-map': (scene) => {
+      const material = new THREE.MeshPhysicalMaterial({
+        clearcoat: 0.8,
+        color: 0x60b080,
+        roughness: 0.7,
+      });
+      const map = new THREE.DataTexture(
+        new Uint8Array([200, 50, 30, 255, 30, 120, 180, 255, 105, 180, 70, 255, 220, 180, 80, 255]),
+        2,
+        2,
+      );
+      map.needsUpdate = true;
+      scene.add(
+        new THREE.Mesh(
+          new THREE.SphereGeometry(
+            1,
+            testQuality.geometry.sphereWidth,
+            testQuality.geometry.sphereHeight,
+          ),
+          material,
+        ),
+      );
+      const sun = new THREE.DirectionalLight(0xffffff, 3);
+      sun.position.set(2, 3, 5);
+      scene.add(sun);
+      return () => {
+        material.map = map;
+      };
+    },
   } satisfies Readonly<Record<string, (scene: ThreeCore.Scene) => () => void>>;
+}
+
+function litSkin(THREE: typeof ThreeCore, scene: ThreeCore.Scene, rigid: boolean) {
+  const geometry = new THREE.BoxGeometry(1.1, 1.5, 0.6),
+    position = geometry.getAttribute('position');
+  geometry.setAttribute(
+    'skinIndex',
+    new THREE.Uint16BufferAttribute(
+      Array.from({ length: position.count * 4 }, (_, i) =>
+        i % 4 === 0 && position.getY(Math.floor(i / 4)) > 0 ? 1 : 0,
+      ),
+      4,
+    ),
+  );
+  geometry.setAttribute(
+    'skinWeight',
+    rigid
+      ? new THREE.Float32BufferAttribute(
+          Array.from({ length: position.count * 4 }, (_, i) => Number(i % 4 === 0)),
+          4,
+        )
+      : new THREE.Uint8BufferAttribute(
+          Array.from({ length: position.count * 4 }, (_, i) => [159, 55, 0, 0][i % 4] as number),
+          4,
+          true,
+        ),
+  );
+  const mesh = new THREE.SkinnedMesh(
+    geometry,
+    new THREE.MeshStandardMaterial({ color: 0xc0a060, roughness: 0.7 }),
+  );
+  const root = new THREE.Bone(),
+    tip = new THREE.Bone();
+  root.add(tip);
+  mesh.add(root);
+  mesh.position.x = -0.25;
+  mesh.bind(new THREE.Skeleton([root, tip]));
+  mesh.scale.set(1.2, 1.2, 1.2);
+  scene.add(mesh);
+  const sun = new THREE.DirectionalLight(0xffffff, 3);
+  sun.position.set(2, 3, 5);
+  scene.add(sun);
+  return () => {
+    if (!rigid) {
+      const weights = [0.68, 0.5, 0, 0] as const;
+      geometry.setAttribute(
+        'skinWeight',
+        new THREE.Float32BufferAttribute(
+          Array.from({ length: position.count * 4 }, (_, i) => weights[i % 4] as number),
+          4,
+        ),
+      );
+    }
+    tip.rotation.z = 0.55;
+    mesh.position.x = 0.3;
+    mesh.rotation.y = 0.2;
+  };
+}
+
+export function physicalSlotsForFeature(name: string) {
+  if (name === 'physical-clearcoat-map') return ['clearcoatMap'] as const;
+  if (name === 'physical-map-combination')
+    return ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'clearcoatMap'] as const;
+  return undefined;
 }

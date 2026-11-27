@@ -20,9 +20,11 @@ export class SkinJointReferences {
     this.healthy();
     return this.counts.has(joint);
   }
-  mark(joint: number): void {
+  mark(joint: number): boolean {
     this.healthy();
-    if (this.counts.has(joint)) this.pending.add(joint);
+    if (!this.counts.has(joint)) return false;
+    this.pending.add(joint);
+    return true;
   }
   get changes(): ReadonlySet<number> {
     this.healthy();

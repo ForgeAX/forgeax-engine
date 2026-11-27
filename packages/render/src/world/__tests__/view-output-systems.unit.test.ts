@@ -131,7 +131,7 @@ function fixture(options: FixtureOptions = {}) {
       output: undefined,
       viewport,
       captureSize: { width: 1, height: 1 },
-      picture: { texture: undefined, viewport, channels: 'all' },
+      picture: { source: undefined, viewport, channels: 'all' },
       renderedFrames: 0,
       lastFrame: Number.NEGATIVE_INFINITY,
       rendered: false,
@@ -323,7 +323,7 @@ describe('view output systems', () => {
     end();
     await settled();
     expect(view?.output?.texture).toBe(first);
-    expect(view?.picture.texture).toBe(first);
+    expect(view?.picture.source?.texture).toBe(first);
     expect(destroyed).toEqual([second]);
   });
 

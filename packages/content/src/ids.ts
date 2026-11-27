@@ -16,6 +16,7 @@ export const CONTENT_PACKAGE_IDS = Object.freeze({
   water: packageId('019fc0e7-1000-7000-8000-000000000004'),
   waterVolume: packageId('019fc0e7-1000-7000-8000-000000000005'),
   waterImpulse: packageId('019fc0e7-1000-7000-8000-000000000006'),
+  waterSurface: packageId('019fc0e7-1000-7000-8000-000000000007'),
 });
 
 /** Unit primitives, each fitting the [-0.5, 0.5] cube unless its name says otherwise. */
@@ -66,7 +67,7 @@ export function contentWaterTextureGuid(name: ContentWaterTextureName): AssetGui
       ? CONTENT_PACKAGE_IDS.waterVolume
       : name === 'impulse-noise'
         ? CONTENT_PACKAGE_IDS.waterImpulse
-        : CONTENT_PACKAGE_IDS.textures,
+        : CONTENT_PACKAGE_IDS.waterSurface,
     CONTENT_SOURCE_KEYS.waterTexture(name),
   );
 }

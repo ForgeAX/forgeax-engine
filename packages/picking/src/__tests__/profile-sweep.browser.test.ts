@@ -26,7 +26,7 @@ it('renders distance UV on uneven and closed transported profiles for 60 complet
       host.renderer.setProfile({
         ...host.renderer.inspect().profile,
         renderPath: 'forward',
-        ssao: false,
+        ambientOcclusion: { enabled: false },
       }),
     );
     const shape = {

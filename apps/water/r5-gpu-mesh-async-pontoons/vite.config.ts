@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine/types';
 import { assetLibrarySourceIdentity, readProjectFacts } from '@forgeax/engine-devkit';
 import { imageImporter } from '@forgeax/engine-image/image-importer';
-import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
+import { createMaterialPackCooker, createTextureGeneratorPackCooker } from '@forgeax/engine-shader-compiler';
 import { pluginPack } from '@forgeax/engine-vite-plugin-pack';
 import { vitePluginRhiDebug } from '@forgeax/engine-vite-plugin-rhi-debug';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
@@ -36,7 +36,7 @@ export default defineConfig(async ({ command }) => {
           relative(project.root, path).replaceAll('\\', '/'),
         runtimeBinding: createStandaloneRuntimeAssetBinding('water-r5-gpu-mesh-async-pontoons'),
         ddc: { projectDdcRoot: resolve(here, '.forgeax/ddc/v2') },
-        cookers: [createMaterialPackCooker()],
+        cookers: [createMaterialPackCooker(), createTextureGeneratorPackCooker()],
         importers: [imageImporter],
       }),
       ...(command === 'serve'

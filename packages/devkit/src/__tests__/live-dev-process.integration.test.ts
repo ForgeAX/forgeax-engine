@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 import { readLiveProjectInputs } from '../live-project-inputs.js';
-import { allocateLoopbackPort } from '../tools/browser-host.js';
+import { materializeViteDevPort } from '../loopback.js';
 
 it.each([
   'embedded',
@@ -15,7 +15,7 @@ it.each([
 ] as const)('keeps process ownership at the %s caller after project startup fails', async (mode) => {
   // An invalid project exercises the real child startup and stop paths without a browser.
   const root = await mkdtemp(join(tmpdir(), 'forgeax-live-process-'));
-  const port = await allocateLoopbackPort();
+  const port = await materializeViteDevPort();
   const cli = fileURLToPath(new URL('../../dist/cli.mjs', import.meta.url));
   const library = new URL('../../dist/index.mjs', import.meta.url).href;
   const entry = join(root, 'consumer.mjs');

@@ -7,20 +7,22 @@ description: >-
 
 # forgeax-engine-assets
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 ## Engine Content textures
 
-Author procedural textures as ordinary ScriptablePack sources returning
-`TextureAsset` outputs, following Content's checker texture. Fixed seeds and
-source parameters own the pixels; the standard Pack producer owns cooking,
-content identity, caching and publication. Water textures use this same route.
-Publish their Pack sources and imported source modules through the normal
-Content package source closure.
+Use ordinary Scriptable Packs for Engine Content textures. The checker publishes
+a deterministic byte texture. Water surface, volume and impulse Packs publish
+`texture-generator` and independent `gpu-texture` outputs. The Pack cooker
+publishes programs and descriptors. Renderer generates pixels at residency.
 
-Preserve declared GUIDs, dimensions, color spaces, mip policies and sampler
-contracts when editing texture fields. Review generated appearance and decoded
-pixel changes through ordinary Pack cooking. Do not introduce a Water-specific
-prebuild generator, raw-image staging step, SDK resource whitelist or fallback
-asset loader. See the [Content contract](../../packages/content/README.md).
+For mip selection and authoring, use the [GPU texture Pack contract](../../packages/pack/README.md#runtime-gpu-texture-declarations).
+The impulse recipe reads an unsharpened transient pyramid and writes all nine custom levels.
+
+Retain output dimensions, color spaces, mip policies and sampler contracts when
+changing generation. Check stored pixels, mip filtering and the actual material
+consumer. Follow the [Content contract](../../packages/content/README.md) when
+upgrading saved Water surface GUIDs.
 
 ## River Bake Publication
 
@@ -53,13 +55,11 @@ Choose the owner by when the content is known, not by how it is computed:
   seed parameter through `rng.create(seed)` (`@forgeax/engine/math`), in place of
   `Math.random()` or `Date.now()`. Runtime generation takes a gameplay seed so
   playthroughs and tests reproduce.
-- Use `createMeshBuilder` for custom geometry; it derives packed layout and bounds and completes omitted triangle surface channels. Factories and `meshFromInterleaved` also emit the vec4 tangent stock materials need. See the [geometry contract](../../packages/geometry/README.md#meshbuilder).
+- For independent indexed triangle batches, pass `createMeshBuilder({ materialSlots, sections })`. Each section carries its own `attributes`, local `indices` and destination `materialSlot`; the builder rebases indices and creates draw ranges. For an already assembled stream or vertices shared across submeshes, pass mesh-global buffers. See the [geometry contract](../../packages/geometry/README.md#meshbuilder).
 - Mesh authoring inputs carry complete matching channels; runtime admission and decoding keep only `vertices` with `attributeStorage: 'interleaved'` and empty typed layout declarations. Use `meshAttributeWindow` for zero-copy CPU reads; take cardinality from its count or the canonical stride. `copyMeshAttribute` and uncached `meshAttributeChannels` are explicit temporary conversions, not retained mirrors. Producers with validated packed rows can use `interleavedMesh` or construct the marked form; never unpack merely to discard channels again. See the geometry README for validation and mixed integer skin lanes.
 - For compact Standard terrain, `packMeshTangentFrame32(validatedMesh)` replaces normal/tangent with one `uint32` and retains UV bits. Raster reads packed rows directly. `meshAttributeWindow(mesh, 'tangentFrame')` exposes physical words; `copyMeshAttribute(mesh, 'normal' | 'tangent')` explicitly decodes temporary CPU channels. See the geometry README for the versioned format and custom-entry requirement.
 - Runtime meshes can use Pack materials. Material `values` edits never move vertices.
 - For runtime GPU textures, declare `texture-generator` and independent `gpu-texture` outputs (`GpuTextureAsset`) with `gpuTextureOutputs(packageId, name, recipe)` from `@forgeax/engine/pack/source`. Build prepares programs; Renderer generates pixels and mips. Reuse prepared `programs` in a Runtime Pack; do not cook raw WGSL or read pixels back implicitly. Open either kind in View's native texture preview. See the [Pack contract](../../packages/pack/README.md#runtime-gpu-texture-declarations).
-- Incremental vertex batches share one global index space; follow the [MeshBuilder append contract](../../packages/geometry/README.md#meshbuilder), without assuming implicit index rebasing.
-- Compiled recipes: procedural props and runtime meshes.
 
 When authorized to adapt a copied author source to a different SDK, retain immutable originals and work outside active asset roots. Update real dependencies and APIs, regenerate locks with the package manager, compile and cook against the target SDK, then export/import the verified source closure with its identities and provenance. A locked-version rejection is not proof that adaptation is unsupported; changing only version labels or cloning GUIDs is not a migration.
 
@@ -125,6 +125,11 @@ Use the App/Engine `assets` owner. `assets.create(content)` and
 `await assets.load(guid, kind)` return caller-owned `AssetHandle` references;
 bind those directly to ECS `asset(kind)` fields. A standalone World uses
 `new World({ assets })`. `assets.read(handle)` returns detached content.
+Use `assets.read(handle, ['field'])` to copy selected top-level fields. For a
+Mesh loaded with `{ usage: 'render' }`, read `['materialSlots']` to bind materials
+without restoring CPU geometry. The same form reads texture `['shape', 'format']`
+and other asset fields from their original types. A request for transferred Mesh
+geometry reports `asset-cpu-data-unavailable` with `detail.fields`.
 Commit changes through `update`, `replace`, or `writeRange`; treat a read as immutable
 and leave revisions to the runtime. Release the caller reference after a successful
 binding; ECS retains its own reference.
@@ -154,13 +159,12 @@ not copied Body state. Read the [Water material entry](../../packages/water/READ
 for the source and binding contracts. Distribute their Pack and helper sources
 under Content's Apache-2.0 license.
 
-Local fluid recipes use the same ordinary closure: `impulseNoiseGuid` is a
-required texture reference, including cold Pack/Catalog loading. Reference
-`EngineContent.water.textures['impulse-noise']` for the default producer.
-Its ordinary Pack generates the seeded grayscale field, applies gamma/brightness
-and publishes the complete packed mip chain as a `TextureAsset`. Pixel hashes
-and mip contracts are covered by Content's tests. See the
-[Content contract](../../packages/content/README.md#guids).
+Local fluid recipes require a sampled 2D `impulseNoiseGuid` dependency.
+Use `EngineContent.water.textures['impulse-noise']` for the default generated
+brush. Cold Pack/Catalog loading admits the same GUID and Renderer waits
+for the complete custom chain before consuming an impulse. Authored
+byte-backed 2D brushes remain supported. See the
+[Content contract](../../packages/content/README.md#volume-and-impulse).
 
 Basic meshes (`cube`, `sphere`, `cylinder`, `cone`, `torus`, `capsule`,
 `plane`, `quad`, `nine-slice-quad`, `triangle`), a mipmapped checker
@@ -285,9 +289,8 @@ When the source is not configured, keep the structured failure instead of
 inventing a fallback row.
 
 The Vite boundary has one producer and one Catalog projection. `pluginPack`
-publishes the scoped dev/build result; `createCatalogClient` subscribes to the
-dev delta stream and enumerates the initial snapshot without moving Vite into the
-runtime. `runtimeBinding` carries the active scope and `generation`, so a late
+publishes the scoped dev/build result. Use `createCatalogHotSubscription` for
+dev deltas and `enumerateCatalog()` for the initial snapshot. `runtimeBinding` carries the active scope and `generation`, so a late
 publication from an old host is rejected. Preserve `sourceKey` as the semantic
 source identity in Catalog facts; it is not a URL, filename, or GUID fallback.
 
@@ -362,7 +365,8 @@ producer, outside asset loading and the ECS frame.
 > executes `build` to derive a payload.
 
 Runtime-capable generators declare their complete `runtime.dependencies`, including
-non-default parameter branches. Admission preserves verified JS artifacts and
+non-default parameter branches. Declare `execution: 'task-worker'` only when the
+generator requires a separate realm. Admission preserves verified JS artifacts and
 fixed asset dependencies without evaluating the generator. Persist the original
 Pack/program/instance closure before clearing derived caches; DDC is not a save
 store. Recovery may replay generators and does not install plugin Fibers. View
@@ -380,12 +384,9 @@ For generated `material` and `mesh` outputs, register
 self-contained; provide the host snapshot source before using
 `reader.readByGuid`.
 
-For ordinary prebuilt `.pack.json` dependencies, create the source in the
-build-time owner with `createScriptablePackFileAssetSnapshotSource({
-assetRoots })` from `@forgeax/engine-import`. It validates and indexes GUIDs
-once, returns private Asset snapshots with deterministic generation/digest
-evidence, and keeps missing, malformed, unreadable, and colliding files as
-structured `Result` errors.
+For external Pack and Meta dependencies, pass the current inventory
+declarations, native cookers, and available GUIDs to
+`createDeclaredPackAssetSnapshotSource` from `@forgeax/engine-import`.
 
 ## MaterialAsset catalog recovery
 
@@ -431,6 +432,17 @@ prepared target for complete capture. Restore may expose a foreign definition
 as metadata; mounting it without membership in the current target's tools map fails.
 
 ### Runtime Pack validation route
+
+For native desktop delivery, build and launch the packaged game on fresh project
+data, then relaunch against the same data. Check the generated asset's load and
+verify that the second process uses the cached output. Use the
+[DevKit native build entry](../../packages/devkit/README.md#native-desktop-development-build).
+
+For a generator that can run in a separate realm, declare
+`runtime: { dependencies, execution: 'task-worker' }`. Use the App Engine
+Worker's task pool and yield through `context.task` in long loops. All asset
+reads must belong to the fixed dependency closure. See the
+[Runtime Pack execution contract](../../packages/import/README.md#runtime-pack-production-and-durable-content).
 
 Run `pnpm --filter @forgeax/engine-devkit test:runtime-browser` under an owned
 Xvfb display for the real Worker JS/TS x dev/build paths. The same gate belongs

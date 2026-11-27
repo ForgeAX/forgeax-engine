@@ -1,11 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "5899e609-2ca7-4282-92c5-606224443ccf",
+  "schemaVersion": "3.0.0",
+  "packageId": "5899e609-2ca7-4282-92c5-606224443ccf",
+  "assets": {
+    "layered-target.wgsl": {
       "kind": "material",
-      "sourceKey": "layered-target.wgsl",
       "payload": {
         "kind": "material",
         "passes": [
@@ -28,5 +26,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

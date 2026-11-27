@@ -11,6 +11,10 @@ import {
   TONEMAP_REINHARD,
 } from '@forgeax/engine-render';
 import {
+  assertCameraProjectionOffset,
+  validateCameraPerspectiveFov,
+} from '@forgeax/engine-render/internal';
+import {
   ACESFilmicToneMapping,
   AgXToneMapping,
   type Camera,
@@ -47,7 +51,35 @@ export function writeSceneClearColor(
   return output;
 }
 
-export function cameraData(camera: Camera, toneMapping: number, exposure: number): CameraData {
+const modes: Readonly<Record<number, number>> = {
+  [NoToneMapping]: TONEMAP_NONE,
+  [LinearToneMapping]: TONEMAP_LINEAR,
+  [ReinhardToneMapping]: TONEMAP_REINHARD,
+  [CineonToneMapping]: TONEMAP_CINEON,
+  [ACESFilmicToneMapping]: TONEMAP_ACES_FILMIC,
+  [AgXToneMapping]: TONEMAP_AGX,
+  [NeutralToneMapping]: TONEMAP_NEUTRAL,
+};
+
+type SourceCameraData = { -readonly [K in keyof CameraData]: CameraData[K] };
+
+const perspectiveRow = (): SourceCameraData =>
+  perspective({ fov: 1, aspect: 1, autoAspect: false });
+const orthographicRow = (): SourceCameraData =>
+  orthographic({ left: -1, right: 1, bottom: -1, top: 1 });
+
+/** One synchronous consumer owns the current camera columns and their writable arrays. */
+export class SourceCameraRows {
+  readonly perspective = perspectiveRow();
+  readonly orthographic = orthographicRow();
+}
+
+export function cameraData(
+  camera: Camera,
+  toneMapping: number,
+  exposure: number,
+  rows?: SourceCameraRows,
+): SourceCameraData {
   if (!(camera instanceof PerspectiveCamera || camera instanceof OrthographicCamera))
     return unsupported(camera.type, camera.uuid).unwrap();
   if (
@@ -55,26 +87,15 @@ export function cameraData(camera: Camera, toneMapping: number, exposure: number
     camera.coordinateSystem !== WebGPUCoordinateSystem
   )
     return unsupported('Camera.coordinateSystem', camera.uuid).unwrap();
-  const modes: Readonly<Record<number, number>> = {
-    [NoToneMapping]: TONEMAP_NONE,
-    [LinearToneMapping]: TONEMAP_LINEAR,
-    [ReinhardToneMapping]: TONEMAP_REINHARD,
-    [CineonToneMapping]: TONEMAP_CINEON,
-    [ACESFilmicToneMapping]: TONEMAP_ACES_FILMIC,
-    [AgXToneMapping]: TONEMAP_AGX,
-    [NeutralToneMapping]: TONEMAP_NEUTRAL,
-  };
   const tonemap = modes[toneMapping];
   if (tonemap === undefined) return unsupported('Renderer.toneMapping').unwrap();
   if (!Number.isFinite(exposure) || exposure < 0)
     return invalid('Renderer.toneMappingExposure').unwrap();
-  if (exposure === 0)
-    return unsupported('Zero exposure requires native Camera exposure to admit zero').unwrap();
   // Read the cached projection: changing fov/zoom without updateProjectionMatrix must stay stale.
   const e = camera.projectionMatrix.elements;
   if (!e.every(Number.isFinite) || e[0] <= 0 || e[5] <= 0)
     return invalid('Camera.projectionMatrix', camera.uuid).unwrap();
-  if ([1, 2, 3, 4, 6, 7].some((i) => e[i] !== 0))
+  if (e[1] !== 0 || e[2] !== 0 || e[3] !== 0 || e[4] !== 0 || e[6] !== 0 || e[7] !== 0)
     return unsupported('Camera off-axis/custom projection', camera.uuid).unwrap();
   const isPerspective = camera instanceof PerspectiveCamera;
   if (
@@ -102,25 +123,25 @@ export function cameraData(camera: Camera, toneMapping: number, exposure: number
       'Camera near/far: requires finite near < far; near > 0 for perspective, near >= 0 for orthographic',
       camera.uuid,
     ).unwrap();
-  return {
-    ...(isPerspective
-      ? perspective({
-          fov: 2 * Math.atan(1 / e[5]),
-          aspect: e[5] / e[0],
-          near,
-          far,
-          autoAspect: false,
-          projectionOffset: [-e[8], -e[9]],
-        })
-      : orthographic({
-          left: (-1 - e[12]) / e[0],
-          right: (1 - e[12]) / e[0],
-          bottom: (-1 - e[13]) / e[5],
-          top: (1 - e[13]) / e[5],
-          near,
-          far,
-        })),
-    tonemap,
-    exposure,
-  };
+  const data = isPerspective
+    ? (rows?.perspective ?? perspectiveRow())
+    : (rows?.orthographic ?? orthographicRow());
+  if (isPerspective) {
+    data.fov = validateCameraPerspectiveFov(2 * Math.atan(1 / e[5]));
+    data.aspect = e[5] / e[0];
+    data.projectionOffset[0] = -e[8];
+    data.projectionOffset[1] = -e[9];
+    assertCameraProjectionOffset(data.projectionOffset);
+  } else {
+    data.left = (-1 - e[12]) / e[0];
+    data.right = (1 - e[12]) / e[0];
+    data.bottom = (-1 - e[13]) / e[5];
+    data.top = (1 - e[13]) / e[5];
+  }
+  data.near = near;
+  data.far = far;
+  data.cullMask = camera.layers.mask >>> 0;
+  data.tonemap = tonemap;
+  data.exposure = exposure;
+  return data;
 }

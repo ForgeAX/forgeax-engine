@@ -309,7 +309,7 @@ export type ResolveMeshMaterialBindingsResult =
  * their materialSlot index onto the returned table.
  */
 export function resolveMeshMaterialBindings(
-  mesh: MeshAsset,
+  mesh: Pick<MeshAsset, 'materialSlots'>,
   rendererOverrides: ArrayLike<number>,
   deps: {
     readonly isValidOverride: (handle: number) => boolean;

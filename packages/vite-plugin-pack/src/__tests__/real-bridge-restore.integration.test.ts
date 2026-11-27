@@ -6,9 +6,10 @@ import { DdcEntryStore, DdcLifecycle } from '@forgeax/engine-ddc';
 import { imageImporter } from '@forgeax/engine-image/image-importer';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { type CatalogEntry, createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
-import { createServer, type ViteDevServer } from 'vite';
+import type { ViteDevServer } from 'vite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { pluginPack } from '../plugin-pack.js';
+import { createPackTestServer } from './vite-fixtures.js';
 
 const GUID = '019e4a26-3c29-7420-af5d-20f2724a16b0';
 const SCOPE_ID = 'real-bridge-restore';
@@ -128,6 +129,32 @@ async function readJson(path: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
 }
 
+async function waitForFailedPublication(
+  lifecycle: DdcLifecycle,
+  headPath: string,
+  acceptedKey: string,
+  state: 'failed' | 'stale',
+) {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    const raw = await readJson(headPath).catch(() => undefined);
+    const desiredKey = typeof raw?.desiredKey === 'string' ? raw.desiredKey : '';
+    if (raw !== undefined && raw.active === undefined && desiredKey !== '') {
+      const candidate = await lifecycle.inspect(GUID, desiredKey);
+      // A committed B head can briefly look stable before the failed
+      // transport restores A. Wait for that terminal restore itself.
+      if (
+        candidate.desiredKey !== acceptedKey &&
+        candidate.state === state &&
+        candidate.currentKey === acceptedKey
+      ) {
+        return candidate;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('live B transport failure did not settle');
+}
+
 describe('real Vite/pluginPack import restore bridge', () => {
   let root: string | undefined;
   let server: ViteDevServer | undefined;
@@ -139,7 +166,10 @@ describe('real Vite/pluginPack import restore bridge', () => {
     root = undefined;
   });
 
-  it('restores the accepted DDC head after a live transport failure and retries on the same plugin', async () => {
+  it.each([
+    'DDC staging',
+    'route commit',
+  ] as const)('serves the accepted HDR closure through a failed %s and retries on the same plugin', async (phase) => {
     root = await mkdtemp(join(tmpdir(), 'forgeax-real-bridge-restore-'));
     const projectRoot = join(root, 'project');
     const assetsRoot = join(projectRoot, 'assets');
@@ -147,8 +177,10 @@ describe('real Vite/pluginPack import restore bridge', () => {
     const ddcRoot = join(ddcProjectRoot, 'runtime', `${SCOPE_ID}-1`);
     const sourcePath = join(assetsRoot, SOURCE_NAME);
     const metaPath = join(assetsRoot, META_NAME);
+    const failStaging = phase === 'DDC staging';
     const binding = createStandaloneRuntimeAssetBinding(GAME_ID, SCOPE_ID);
-    const transportPath = join(ddcRoot, `${GUID}.pack.json`);
+    const bindingsDirectory = join(projectRoot, '.forgeax', 'generated');
+    const blockedPath = failStaging ? join(ddcRoot, 'staging') : bindingsDirectory;
     const headPath = join(ddcRoot, 'heads', `${encodeURIComponent(GUID)}.json`);
     const sourceA = tinyHdr(11, 1);
     const sourceB = tinyHdr(97, 2);
@@ -166,13 +198,7 @@ describe('real Vite/pluginPack import restore bridge', () => {
         runtimeBinding: binding,
         ddc: { projectDdcRoot: ddcProjectRoot },
       });
-      server = await createServer({
-        root: projectRoot,
-        configFile: false,
-        logLevel: 'silent',
-        plugins: [plugin],
-        server: { host: '127.0.0.1', port: 0 },
-      });
+      server = await createPackTestServer(projectRoot, plugin);
       await server.listen();
       const baseUrl = server.resolvedUrls?.local?.[0];
       if (baseUrl === undefined) throw new Error('Vite did not expose a loopback URL');
@@ -185,57 +211,57 @@ describe('real Vite/pluginPack import restore bridge', () => {
       if (typeof acceptedDesiredKey !== 'string') {
         throw new Error('healthy control did not publish a DDC head');
       }
-      const acceptedKey = (await new DdcLifecycle(ddcRoot).inspect(GUID, acceptedDesiredKey))
-        .currentKey;
+      const lifecycle = new DdcLifecycle(ddcRoot);
+      const store = new DdcEntryStore(ddcRoot);
+      const acceptedHead = await lifecycle.inspect(GUID, acceptedDesiredKey);
+      const acceptedKey = acceptedHead.currentKey;
       if (acceptedKey === undefined) throw new Error('healthy control did not commit a DDC key');
       const acceptedBytes = accepted.artifact.bytes;
+      const descriptor = accepted.pack.assets[0]?.artifacts?.body;
+      if (descriptor === undefined) throw new Error('expected HDR body');
+      expect(descriptor).toMatchObject({
+        path: `${GUID}/body.bin`,
+        mediaType: 'application/x-forgeax-rgba16f',
+        byteLength: 64,
+      });
+      expect(await store.read(acceptedKey)).toMatchObject({
+        artifacts: { [descriptor.path]: { bytes: acceptedBytes, mediaType: descriptor.mediaType } },
+        payload: { assets: accepted.pack.assets },
+      });
 
-      await rm(transportPath, { force: true });
-      await mkdir(transportPath, { recursive: true });
+      await rm(blockedPath, { recursive: true });
+      await writeFile(blockedPath, `block ${phase}`);
       await writeFile(sourcePath, sourceB);
 
-      let failedHead: Awaited<ReturnType<DdcLifecycle['inspect']>> | undefined;
-      for (let attempt = 0; attempt < 600; attempt += 1) {
-        const raw = await readJson(headPath).catch(() => undefined);
-        const desiredKey = typeof raw?.desiredKey === 'string' ? raw.desiredKey : '';
-        if (raw !== undefined && raw.active === undefined && desiredKey !== '') {
-          const candidate = await new DdcLifecycle(ddcRoot).inspect(GUID, desiredKey);
-          // A committed B head can briefly look stable before the failed
-          // transport restores A. Wait for that terminal restore itself.
-          if (
-            candidate.desiredKey !== acceptedKey &&
-            candidate.state === 'stale' &&
-            candidate.currentKey === acceptedKey
-          ) {
-            failedHead = candidate;
-            break;
-          }
-        }
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      if (failedHead === undefined) throw new Error('live B transport failure did not settle');
+      const failedHead = await waitForFailedPublication(
+        lifecycle,
+        headPath,
+        acceptedKey,
+        failStaging ? 'failed' : 'stale',
+      );
 
-      const entryKeysAfterFailure = await new DdcEntryStore(ddcRoot).listKeys();
-      const candidateKey = entryKeysAfterFailure.find((key) => key !== acceptedKey);
+      const candidateKey = failedHead.desiredKey;
       if (candidateKey === undefined)
-        throw new Error('failed B publication did not retain its DDC entry');
-      // The accepted head must remain A even though the B DDC entry committed.
-      // The transport fault leaves B immutable for a later retry while the
-      // repaired restore fence returns the live head to A.
-      expect(failedHead.state).toBe('stale');
+        throw new Error('failed publication lacked a candidate identity');
       expect(failedHead.currentKey).toBe(acceptedKey);
-      expect(failedHead.desiredKey).toBe(candidateKey);
-      expect(failedHead.revision).toBe(3);
+      expect(failedHead.revision).toBeGreaterThan(acceptedHead.revision ?? 0);
       expect(failedHead.generation).toBe(2);
-      expect(entryKeysAfterFailure).toContain(acceptedKey);
-      expect(entryKeysAfterFailure).toContain(candidateKey);
+      if (!failStaging) expect(failedHead.revision).toBe(3);
+      expect([...(await store.listKeys())].sort()).toEqual(
+        (failStaging ? [acceptedKey] : [acceptedKey, candidateKey]).sort(),
+      );
       const failed = await closure(baseUrl, binding.catalogUrl);
       expect(failed.row.revision).toMatchObject({ digest: acceptedKey });
+      expect(failed.pack).toEqual(accepted.pack);
       expect(failed.artifact.status).toBe(200);
       expect(sha256(failed.artifact.bytes)).toBe(sha256(acceptedBytes));
-      expect((await stat(transportPath)).isDirectory()).toBe(true);
+      expect((await stat(blockedPath)).isFile()).toBe(true);
+      expect((await store.read(acceptedKey))?.artifacts[descriptor.path]?.bytes).toEqual(
+        acceptedBytes,
+      );
 
-      await rm(transportPath, { recursive: true, force: true });
+      await rm(blockedPath);
+      if (failStaging) await mkdir(blockedPath);
       const retry = await request(baseUrl, `${binding.importUrlBase}/${GUID}`, {
         method: 'POST',
         headers: { 'x-forgeax-import-mode': 'rebuild' },
@@ -245,10 +271,14 @@ describe('real Vite/pluginPack import restore bridge', () => {
       expect(retried.artifact.status).toBe(200);
       expect(retried.artifact.bytes.byteLength).toBeGreaterThan(acceptedBytes.byteLength);
       expect(sha256(retried.artifact.bytes)).not.toBe(sha256(acceptedBytes));
-      const retryHead = await new DdcLifecycle(ddcRoot).inspect(GUID, candidateKey);
+      const retryHead = await lifecycle.inspect(GUID, candidateKey);
       expect(retryHead.state).toBe('current');
       expect(retryHead.currentKey).toBe(candidateKey);
       expect(retryHead.generation).toBe(3);
+      expect(retryHead.revision).toBeGreaterThan(failedHead.revision ?? 0);
+      expect((await store.read(candidateKey))?.artifacts[descriptor.path]?.bytes).toEqual(
+        retried.artifact.bytes,
+      );
     } finally {
       process.chdir(originalCwd);
     }

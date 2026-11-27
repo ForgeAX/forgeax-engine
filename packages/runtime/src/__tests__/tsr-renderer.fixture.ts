@@ -1,12 +1,20 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { encodePng } from '@forgeax/engine-image/png';
+import { halfFloat } from '@forgeax/engine-math';
 import type { Renderer } from '@forgeax/engine-render';
 import {
   ANTIALIAS_TAA,
   ANTIALIAS_TSR,
+  BLOOM_DISABLED,
+  BLOOM_ENABLED,
+  BLOOM_QUALITY_LOW,
+  BLOOM_QUALITY_MEDIUM,
+  CAMERA_EXPOSURE_MODE_AUTO_UE,
+  CAMERA_EXPOSURE_MODE_MANUAL,
   Camera,
   CameraView,
   DynamicResolution,
+  LensFlare,
 } from '@forgeax/engine-render';
 import type { RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import {
@@ -16,6 +24,7 @@ import {
   openReplay,
   replayDeviceRequest,
   summarizeFrame,
+  summarizePasses,
   tapeDigest,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
@@ -32,9 +41,28 @@ function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }
 type EvidenceWriter = (name: string, bytes: Uint8Array | string) => Promise<void>;
 const preview = (rgba: Uint8Array) => encodePng(64, 64, rgba);
 
+function verifySeededTsrHistory(
+  model: ReturnType<typeof buildFrameModel>,
+  tape: ReturnType<ReturnType<typeof decodeTape>['unwrap']>,
+): void {
+  const retained = model.resources.filter(
+    (r) =>
+      r.kind === 'texture' && /tsr-(?:history|guide|moire)-/.test(JSON.stringify(r.descriptor)),
+  );
+  expect(retained).toHaveLength(10);
+  for (const resource of retained) {
+    expect(model.unseededResources.some((r) => r.resourceId === resource.resourceId)).toBe(false);
+    expect(
+      tape.bootstrap
+        .find((r) => r.handleId === resource.resourceId)
+        ?.initialData.some((b) => b.byteLength > 0),
+    ).toBe(true);
+  }
+}
+
 /** Both physical carriers execute exactly the same lifecycle and replay oracle. */
 export async function verifyTsrRenderer(
-  canvas: Parameters<typeof constructRuntimeRendererHost>[0],
+  canvas: { width: number; height: number },
   shaderManifestUrl?: string,
   save?: EvidenceWriter,
   renderPath: 'forward' | 'deferred' = 'forward',
@@ -66,6 +94,41 @@ export async function verifyTsrRenderer(
   scene.world
     .addComponent(camera, { component: DynamicResolution, data: { minScale: 0.5, maxScale: 0.5 } })
     .unwrap();
+  const verifyDisocclusion = async () => {
+    // Disocclusion must remove old radiance immediately, even after settling.
+    const mesh = scene.meshes[0];
+    if (mesh === undefined) throw new Error('missing moving surface');
+    scene.world.set(mesh, Transform, { pos: [5, 5, 0] }).unwrap();
+    const uncoveredAlpha = 0.37;
+    scene.world.set(camera, Camera, { clearColor: [0, 0, 0, uncoveredAlpha] }).unwrap();
+    const uncoveredPending = recorder.captureFrame();
+    (await recorder.frameBoundary()).unwrap();
+    const uncovered = await scene.readFinal();
+    (await recorder.frameBoundary()).unwrap();
+    const uncoveredArtifact = (await uncoveredPending).unwrap();
+    const uncoveredModel = buildFrameModel(decodeTape(uncoveredArtifact.bytes).unwrap());
+    if (save) {
+      await save(`uncovered.rhitape`, uncoveredArtifact.bytes);
+      await save(`uncovered-live.png`, preview(uncovered.rgba));
+      await save(`uncovered-model.json`, JSON.stringify({ mesh, model: uncoveredModel }, null, 2));
+    }
+
+    const uncoveredPixel = (16 * 64 + 16) * 4;
+    const alphaByte = Math.round(uncoveredAlpha * 255);
+    expect([...uncovered.rgba.slice(uncoveredPixel, uncoveredPixel + 4)]).toEqual([
+      0,
+      0,
+      0,
+      alphaByte,
+    ]);
+    const history = uncoveredModel.resources.find(
+      (r) => r.kind === 'texture' && /tsr-history-color-[ab]/.test(JSON.stringify(r.descriptor)),
+    );
+    expect(history?.descriptor).toMatchObject({ desc: { format: 'rgba16float' } });
+    scene.world.set(camera, Camera, { clearColor: [0, 0, 0, 1] }).unwrap();
+    scene.world.set(mesh, Transform, { pos: [-1, 1, 0] }).unwrap();
+    await scene.drawReady();
+  };
   try {
     const startup = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
@@ -117,19 +180,7 @@ export async function verifyTsrRenderer(
       ),
     );
     if (raster) expect(model.works.some((work) => work.kind === 'dispatchWorkgroups')).toBe(false);
-    const retained = model.resources.filter(
-      (r) =>
-        r.kind === 'texture' && /tsr-(?:history|guide|moire)-/.test(JSON.stringify(r.descriptor)),
-    );
-    expect(retained).toHaveLength(10);
-    for (const resource of retained) {
-      expect(model.unseededResources.some((r) => r.resourceId === resource.resourceId)).toBe(false);
-      expect(
-        tape.bootstrap
-          .find((r) => r.handleId === resource.resourceId)
-          ?.initialData.some((b) => b.byteLength > 0),
-      ).toBe(true);
-    }
+    verifySeededTsrHistory(model, tape);
     expect(checkPixels(live.rgba, 'srgb').every((c) => c.error <= 3)).toBe(true);
     const temporal = renderer.inspect().temporal;
     expect(temporal.mode).toBe('tsr');
@@ -146,27 +197,7 @@ export async function verifyTsrRenderer(
       replayCanvas,
       save,
     });
-    // Disocclusion must remove old radiance immediately, even after settling.
-    const mesh = scene.meshes[0];
-    if (mesh === undefined) throw new Error('missing moving surface');
-    scene.world.set(mesh, Transform, { pos: [5, 5, 0] }).unwrap();
-    const uncoveredPending = recorder.captureFrame();
-    (await recorder.frameBoundary()).unwrap();
-    const uncovered = await scene.readFinal();
-    (await recorder.frameBoundary()).unwrap();
-    const uncoveredArtifact = (await uncoveredPending).unwrap();
-    const uncoveredModel = buildFrameModel(decodeTape(uncoveredArtifact.bytes).unwrap());
-    if (save) {
-      await save(`uncovered.rhitape`, uncoveredArtifact.bytes);
-      await save(`uncovered-live.png`, preview(uncovered.rgba));
-      await save(`uncovered-model.json`, JSON.stringify({ mesh, model: uncoveredModel }, null, 2));
-    }
-
-    expect([...uncovered.rgba.slice((16 * 64 + 16) * 4, (16 * 64 + 16) * 4 + 3)]).toEqual([
-      0, 0, 0,
-    ]);
-    scene.world.set(mesh, Transform, { pos: [-1, 1, 0] }).unwrap();
-    await scene.drawReady();
+    await verifyDisocclusion();
     // Fixed-input changes retain a valid color owner while rebuilding Guide capacity.
     scene.world.set(camera, DynamicResolution, { minScale: 0.75, maxScale: 0.75 }).unwrap();
     await scene.drawReady();
@@ -196,6 +227,91 @@ export async function verifyTsrRenderer(
     scene.world.set(camera, Camera, { antialias: ANTIALIAS_TSR }).unwrap();
     await scene.drawReady();
     expect(renderer.inspect().temporal.mode).toBe('tsr');
+    const originalSize = [canvas.width, canvas.height] as const;
+    canvas.width += 1;
+    canvas.height += 1;
+    // A second journey enables two consumers of the same post-TSR image.
+    // Portable TSR writes its usual MRTs and the graph supplies a raster downsample.
+    scene.world
+      .set(camera, Camera, {
+        bloom: BLOOM_ENABLED,
+        bloomIntensity: 0.5,
+        exposureMode: CAMERA_EXPOSURE_MODE_AUTO_UE,
+      })
+      .unwrap();
+    for (let frame = 0; frame < 4; frame++) await scene.drawReady();
+    const postPending = recorder.captureFrame();
+    (await recorder.frameBoundary()).unwrap();
+    const post = await scene.readFinal();
+    (await recorder.frameBoundary()).unwrap();
+    const postBytes = (await postPending).unwrap().bytes;
+    const postTape = decodeTape(postBytes).unwrap();
+    const postModel = buildFrameModel(postTape);
+    const postInspection = renderer.inspect().output;
+    expect(postInspection.autoExposure?.receipt.committed).toBe(true);
+    expect(postInspection.graphPassNames.includes('post-scene-color-half')).toBe(raster);
+    expect(
+      postModel.works.flatMap(({ pipeline }) =>
+        pipeline.shaders.map(({ entryPoint }) => entryPoint),
+      ),
+    ).toContain(raster ? 'auto_exposure_classify_half' : 'auto_exposure_histogram_half');
+    await verifyPostDownsampleReplay(
+      postTape,
+      postModel,
+      backend,
+      replayCanvas,
+      raster,
+      canvas.width,
+      canvas.height,
+      () => save?.('shared-exposure-bloom-failure.rhitape', postBytes),
+    );
+    expect(post.rgba.some((value, index) => index % 4 !== 3 && value > 0)).toBe(true);
+    expect(post.rgba.some((value, index) => index % 4 !== 3 && value !== live.rgba[index])).toBe(
+      true,
+    );
+    if (save) await save('shared-exposure-bloom.png', preview(post.rgba));
+    for (const quality of [BLOOM_QUALITY_LOW, BLOOM_QUALITY_MEDIUM]) {
+      scene.world.set(camera, Camera, { bloomQuality: quality }).unwrap();
+      await scene.drawReady();
+      expect(renderer.inspect().bloom).toMatchObject({
+        graphStatus: 'valid',
+        levelCount: quality,
+        passCount: raster ? 3 * quality : 2 * quality + 1,
+      });
+    }
+    scene.world.set(camera, Camera, { bloom: BLOOM_DISABLED }).unwrap();
+    scene.world.addComponent(camera, { component: LensFlare, data: { threshold: 0.01 } }).unwrap();
+    await scene.drawReady();
+    const flarePending = recorder.captureFrame();
+    (await recorder.frameBoundary()).unwrap();
+    await scene.drawReady();
+    (await recorder.frameBoundary()).unwrap();
+    const flareModel = buildFrameModel(decodeTape((await flarePending).unwrap().bytes).unwrap());
+    const flarePass = summarizePasses(flareModel).find(
+      ({ label }) => label === 'standard-lens-flare-prefilter',
+    );
+    expect(flarePass?.workCounts.draw).toBe(1);
+    const flareWork = flareModel.works.find(({ passIndex }) => passIndex === flarePass?.passIndex);
+    const flareSource = flareWork?.bindings.find(
+      ({ groupIndex, binding }) => groupIndex === 1 && binding === 0,
+    )?.resourceId;
+    // The flare threshold consumes the already reduced HDR source.
+    const halfPass = summarizePasses(flareModel).find(
+      ({ label }) => label === 'post-scene-color-half' || label === 'post-scene-color-half-lens',
+    );
+    const halfDraw = flareModel.works.find(({ passIndex }) => passIndex === halfPass?.passIndex);
+    const fusedHalf = flareModel.works
+      .find(({ pipeline }) =>
+        pipeline.shaders.some(({ entryPoint }) => entryPoint === 'tsr_reconstruct'),
+      )
+      ?.bindings.find(({ groupIndex, binding }) => groupIndex === 0 && binding === 13);
+    expect(flareSource).toBeDefined();
+    expect(flareSource).toBe(halfDraw?.attachments?.colorViewHandleIds[0] ?? fusedHalf?.resourceId);
+    scene.world.removeComponent(camera, LensFlare).unwrap();
+    scene.world.set(camera, Camera, { exposureMode: CAMERA_EXPOSURE_MODE_MANUAL }).unwrap();
+    await scene.drawReady();
+    [canvas.width, canvas.height] = originalSize;
+    await scene.drawReady();
     await verifyTsrViews(
       scene,
       renderer,
@@ -325,6 +441,114 @@ async function verifyTsrViews(
   expect(switched?.[1]?.temporal.frameIndex).toBeGreaterThan(
     views?.[1]?.temporal.frameIndex ?? Infinity,
   );
+}
+
+async function verifyPostDownsampleReplay(
+  tape: Parameters<typeof openReplay>[0],
+  model: ReturnType<typeof buildFrameModel>,
+  backend: Parameters<typeof attachRecorder>[0],
+  replayCanvas: Parameters<typeof backend.rhi.requestAdapter>[1],
+  raster: boolean,
+  width: number,
+  height: number,
+  saveFailure: () => Promise<void> | undefined,
+) {
+  const adapter = (await backend.rhi.requestAdapter({}, replayCanvas)).unwrap();
+  const device = (
+    await adapter.requestDevice(replayDeviceRequest(tape, adapter.features, adapter.limits))
+  ).unwrap();
+  const replay = (
+    await openReplay(tape, { device, createShaderModule: backend.createShaderModule })
+  ).unwrap();
+  try {
+    const reconstruct = model.works.find(({ pipeline }) =>
+      pipeline.shaders.some(
+        ({ entryPoint }) =>
+          entryPoint === (raster ? 'tsr_reconstruct_fragment' : 'tsr_reconstruct'),
+      ),
+    );
+    if (!reconstruct) throw new Error('missing captured TSR reconstruction');
+    const result = (await replay.inspectWork(reconstruct.workIndex, ['outputs'])).unwrap();
+    const full = result.outputs
+      ?.find(({ name }) => name === (raster ? 'color0' : '@group(0)@binding(10)'))
+      ?.result.unwrap();
+    const halfPass = raster
+      ? summarizePasses(model).find(({ label }) => label === 'post-scene-color-half')
+      : undefined;
+    const filtered =
+      halfPass === undefined
+        ? undefined
+        : model.works.find(({ passIndex }) => passIndex === halfPass.passIndex);
+    const half =
+      filtered === undefined
+        ? result.outputs?.find(({ name }) => name === '@group(0)@binding(13)')?.result.unwrap()
+        : (await replay.inspectWork(filtered.workIndex, ['pixels'])).unwrap().attachment;
+    expect(full?.width).toBe(width);
+    expect(full?.height).toBe(height);
+    verifyBoxReduction(full, half, 'post-scene-color-half');
+    const passes = summarizePasses(model);
+    let prior = half;
+    for (let level = 1; level <= 4; level++) {
+      const label = raster ? `bloom-downsample-${level}` : 'bloom-downsample';
+      const pass = passes.find((entry) => entry.label === label);
+      const work = model.works.find(({ passIndex }) => passIndex === pass?.passIndex);
+      if (!work) throw new Error(`missing captured ${label}`);
+      const reduced = (await replay.inspectWork(work.workIndex, ['outputs'])).unwrap();
+      const target = reduced.outputs
+        ?.find(({ name }) => name === (raster ? 'color0' : `@group(0)@binding(${level})`))
+        ?.result.unwrap();
+      verifyBoxReduction(prior, target, `bloom-downsample-${level}`);
+      prior = target;
+    }
+  } catch (error) {
+    await saveFailure();
+    throw error;
+  } finally {
+    (await replay.dispose()).unwrap();
+  }
+}
+
+function verifyBoxReduction(
+  full: ReplayReadbackResult | undefined,
+  half: ReplayReadbackResult | undefined,
+  label: string,
+) {
+  if (!full || !half || !full.width || !full.height || !half.width || !half.height)
+    throw new Error('missing post-processing HDR readback');
+  expect(half.width).toBe(Math.ceil(full.width / 2));
+  expect(half.height).toBe(Math.ceil(full.height / 2));
+  const from = new DataView(full.bytes.buffer, full.bytes.byteOffset, full.bytes.byteLength);
+  const to = new DataView(half.bytes.buffer, half.bytes.byteOffset, half.bytes.byteLength);
+  const row = full.bytes.byteLength / full.height;
+  const halfRow = half.bytes.byteLength / half.height;
+  const texel = (x: number, y: number, c: number) =>
+    halfFloat.f16ToF32(from.getUint16(y * row + x * 8 + c * 2, true));
+  let maxUlp = 0;
+  let worst:
+    | { x: number; y: number; channel: number; expected: number; actual: number }
+    | undefined;
+  for (let y = 0; y < half.height; y++) {
+    for (let x = 0; x < half.width; x++) {
+      const right = Math.min(2 * x + 1, full.width - 1);
+      const bottom = Math.min(2 * y + 1, full.height - 1);
+      for (let c = 0; c < 4; c++) {
+        const reference =
+          (texel(2 * x, 2 * y, c) +
+            texel(right, 2 * y, c) +
+            texel(2 * x, bottom, c) +
+            texel(right, bottom, c)) *
+          0.25;
+        const actual = to.getUint16(y * halfRow + x * 8 + c * 2, true);
+        const expected = halfFloat.f32ToF16(reference);
+        const difference = Math.abs(actual - expected);
+        if (difference > maxUlp) {
+          maxUlp = difference;
+          worst = { x, y, channel: c, expected, actual };
+        }
+      }
+    }
+  }
+  expect(maxUlp, JSON.stringify({ label, worst })).toBeLessThanOrEqual(1);
 }
 
 async function verifyTsrReplay(input: {

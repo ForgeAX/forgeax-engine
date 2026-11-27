@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { bufferWriteRange } from '../buffer-write-range';
+import { bufferWriteRange, readBufferWriteRange } from '../buffer-write-range';
 
 it.each([
   [new Uint8Array(16), 4, 8, 4, 8],
@@ -33,4 +33,15 @@ it('requires a multiple of four bytes and preserves a zero-length end range', ()
     byteOffset: 16,
     byteLength: 0,
   });
+});
+
+it('publishes each range into reusable queue storage and keeps prior results on rejection', () => {
+  const range = { byteOffset: -1, byteLength: -1 };
+  const src = new Uint16Array(16).subarray(4, 12);
+  const first = readBufferWriteRange(range, src, 2, 4);
+  expect(range).toEqual({ byteOffset: 4, byteLength: 8 });
+  expect(readBufferWriteRange(range, src, 1, 1).ok).toBe(false);
+  expect(range).toEqual({ byteOffset: 4, byteLength: 8 });
+  expect(readBufferWriteRange(range, src, 8, 0)).toBe(first);
+  expect(range).toEqual({ byteOffset: 16, byteLength: 0 });
 });

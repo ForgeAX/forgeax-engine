@@ -142,7 +142,7 @@ async function fixture() {
   const update = (camera?: GpuDrivenOcclusionCamera) =>
     updateGpuView(
       view,
-      topology.query(topology.sourcePlan(), undefined),
+      topology.query(topology.sourcePlan(), undefined).active,
       scene.scene,
       planes,
       undefined,

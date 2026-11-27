@@ -3,6 +3,8 @@ import {
   buildWaterMeshView,
   type WaterMeshBuildInput,
   type WaterMeshTileInstance,
+  WaterMeshViewBuilder,
+  type WaterMeshViewInput,
 } from '../water-mesh.js';
 
 function requiredFixtureValue<T>(value: T | null | undefined): T {
@@ -46,6 +48,54 @@ const zone = (
 });
 
 describe('WaterMesh LOD selection', () => {
+  it('retains geometry preparation while matching fresh builds for changing views', () => {
+    const input = zone([256, 256], 4);
+    const builder = new WaterMeshViewBuilder(input);
+    const views: WaterMeshViewInput[] = [
+      { viewId: 'moving', observerM: [0, 8, 1000] },
+      { viewId: 'moving', observerM: [0, 8, 8] },
+      {
+        viewId: 'moving',
+        observerM: [32, 8, -32],
+        frustumPlanes: [{ normal: [1, 0, 0], distance: 0 }],
+        occluded: (bounds) => bounds.minM[2] > 0,
+      },
+      { viewId: 'moving', observerM: [0, 8, 1000] },
+    ];
+    for (const view of views) {
+      const retained = builder.build(view);
+      expect(retained).toEqual(buildWaterMeshView(input, view));
+    }
+    const first = builder.build(requiredFixtureValue(views[0]));
+    const next = builder.build(requiredFixtureValue(views[0]));
+    if (!first.ok || !next.ok) throw new Error('Expected valid mesh builds');
+    expect(first.value.buckets[0]?.mesh).toBe(next.value.buckets[0]?.mesh);
+    expect(first.value.instanceBytes).not.toBe(next.value.instanceBytes);
+  });
+
+  it('owns a detached geometry snapshot across caller edits', () => {
+    const input = structuredClone(zone([256, 256], 4));
+    const expected = structuredClone(input);
+    const builder = new WaterMeshViewBuilder(input);
+    Object.assign(input, { originXZ: [512, 512], tessellationFactor: 2 });
+    Object.assign(requiredFixtureValue(input.bodies[0]), { visible: false });
+    const view = { viewId: 'snapshot', observerM: [0, 8, 8] as const };
+    expect(builder.build(view)).toEqual(buildWaterMeshView(expected, view));
+    expect(builder.build(view)).not.toEqual(buildWaterMeshView(input, view));
+  });
+
+  it.each([0, 1])('retains leaf tiles for the two-quad grid budget %s', (tessellationFactor) => {
+    const result = buildWaterMeshView(zone([16, 16], tessellationFactor), {
+      viewId: 'minimum-density',
+      observerM: [32, 1000, 8],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.instances).toHaveLength(4);
+    for (const tile of result.value.instances)
+      expect(tile).toMatchObject({ lod0: 0, maxMorphLod: 0, quadsPerEdge: 2, shouldMorph: false });
+  });
+
   it('selects logical LOD one at the two-scale nearest-distance threshold', () => {
     const input = zone([16, 16], 2);
     const result = buildWaterMeshView(input, { viewId: 'threshold', observerM: [32, 0, 8] });
@@ -65,10 +115,11 @@ describe('WaterMesh LOD selection', () => {
     const distant = buildWaterMeshView(input, { viewId: 'distant', observerM: [0, 8, 1000] });
     expect(distant.ok).toBe(true);
     if (!distant.ok) return;
-    expect(distant.value.instances).toHaveLength(1);
+    expect(distant.value.instances).toHaveLength(16);
     expect(distant.value.instances[0]).toMatchObject({
-      extentXZ: [256, 256],
-      lod0: 5,
+      extentXZ: [64, 64],
+      lod0: 3,
+      maxMorphLod: 3,
       densityIndex: 0,
       quadsPerEdge: 16,
     });
@@ -88,11 +139,46 @@ describe('WaterMesh LOD selection', () => {
     }
   });
 
-  it('keeps every shared edge continuous at the minimum LOD scale', () => {
-    const input = { ...zone([256, 256], 8), lodScale: 0.5 };
+  it.each([
+    'minimum-scale',
+    'exhausted-density',
+    'distant-density',
+  ] as const)('keeps every shared edge continuous: %s', (scenario) => {
+    const exhausted = scenario !== 'minimum-scale';
+    const input: WaterMeshBuildInput = exhausted
+      ? {
+          ...zone([1024, 1024], 5),
+          originXZ: [-512, -512],
+          tileSizeM: 16,
+          lodScale: 2,
+          bodies: [
+            {
+              ...body,
+              polygon: {
+                outer: [
+                  [-512, -512],
+                  [512, -512],
+                  [512, 512],
+                  [-512, 512],
+                ],
+                holes: [
+                  [
+                    [-170, -115],
+                    [170, -100],
+                    [135, 160],
+                    [-130, 140],
+                  ],
+                ],
+              },
+            },
+          ],
+        }
+      : { ...zone([256, 256], 8), lodScale: 0.5 };
     const result = buildWaterMeshView(input, {
-      viewId: 'minimum-scale',
-      observerM: [3.7, 8, 20.3],
+      viewId: scenario,
+      observerM: exhausted
+        ? [410, scenario === 'distant-density' ? 4096 : 380, 440]
+        : [3.7, 8, 20.3],
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -117,10 +203,11 @@ describe('WaterMesh LOD selection', () => {
               f(requiredFixtureValue(position[1]) - tile.cameraRelativeXZ[1]),
             );
             const height = lod === tile.lod0 ? Math.round(tile.heightMorph01 * 8191) / 8191 : 0;
-            const factor = Math.min(
+            const distanceFactor = Math.min(
               1,
-              Math.max(0, height + distance / (tile.lodScaleM * 2 ** lod) - 1),
+              Math.max(0, distance / (tile.lodScaleM * 2 ** lod) - 1),
             );
+            const factor = Math.min(1, height + distanceFactor);
             for (const axis of [0, 1] as const) {
               const grid4 = f(requiredFixtureValue(quadSize[axis]) * 4);
               const offset = f(fract(f(requiredFixtureValue(position[axis]) / grid4)) - 0.5);
@@ -200,8 +287,8 @@ describe('WaterMesh LOD selection', () => {
         }
       }
     }
-    expect(segments).toBeGreaterThan(100);
+    expect(segments).toBeGreaterThan(exhausted ? 0 : 100);
     expect(crossSize).toBeGreaterThan(0);
-    expect(mixedLod).toBeGreaterThan(0);
+    if (!exhausted) expect(mixedLod).toBeGreaterThan(0);
   });
 });

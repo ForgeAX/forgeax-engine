@@ -5,7 +5,6 @@ import {
   declaredFragmentEntry,
   declaresStandardOpaqueEntry,
   type ForwardFragmentEntryInput,
-  lacksSurfaceDataEntry,
   materialProgramSource,
   STANDARD_OPAQUE_FRAGMENT_ENTRY,
   selectForwardFragmentEntry,
@@ -86,6 +85,9 @@ it('keeps the opaque screen-data entry explicit and falls back for unlit or olde
   expect(declaredFragmentEntry(entry, '@fragment fn fs_forward_screen() {}')).toBe(entry);
   expect(declaredFragmentEntry(entry, '@fragment fn fs_main() {}')).toBeUndefined();
   expect(declaredFragmentEntry('fs_custom', '@fragment fn fs_main() {}')).toBe('fs_custom');
+  const shadowEntry = 'fs_forward_sun_shadow';
+  expect(declaredFragmentEntry(shadowEntry, '@fragment fn fs_main() {}')).toBeUndefined();
+  expect(declaredFragmentEntry(shadowEntry, `@fragment fn ${shadowEntry}() {}`)).toBe(shadowEntry);
 });
 
 it('keeps authored fragment entries when admitting the Standard screen receiver', () => {
@@ -97,30 +99,4 @@ it('keeps authored fragment entries when admitting the Standard screen receiver'
     'fs_forward_screen',
   );
   expect(selectStandardForwardScreenEntry(undefined, 'fs_custom')).toBe('fs_custom');
-});
-
-describe('lacksSurfaceDataEntry', () => {
-  const program = (source: string) =>
-    ({ source }) as unknown as Parameters<typeof lacksSurfaceDataEntry>[2];
-
-  it('keeps hand-written WGSL without fs_ao_input out of the surface-data prepass', () => {
-    const custom = program('@vertex fn vs_main() {}\n@fragment fn fs_main() {}');
-    expect(lacksSurfaceDataEntry('fs_ao_input', 'app::parallax', custom, false)).toBe(true);
-    expect(lacksSurfaceDataEntry('fs_ao_input', 'app::parallax', undefined, false)).toBe(true);
-  });
-
-  it('admits programs that declare the entry and built-ins without an artifact', () => {
-    const cooked = program('@fragment fn fs_ao_input() {}');
-    expect(lacksSurfaceDataEntry('fs_ao_input', 'app::surface', cooked, false)).toBe(false);
-    expect(lacksSurfaceDataEntry('fs_ao_input', 'forgeax::default-unlit', undefined, true)).toBe(
-      false,
-    );
-    expect(lacksSurfaceDataEntry('fs_ao_input', undefined, undefined, true)).toBe(false);
-  });
-
-  it('only gates the surface-data entry', () => {
-    const custom = program('@fragment fn fs_main() {}');
-    expect(lacksSurfaceDataEntry('fs_main', 'app::parallax', custom, false)).toBe(false);
-    expect(lacksSurfaceDataEntry(undefined, 'app::parallax', undefined, false)).toBe(false);
-  });
 });

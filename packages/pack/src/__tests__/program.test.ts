@@ -71,14 +71,32 @@ describe('portable Pack programs', () => {
   it('loads a published native module and refuses source outside that code package', async () => {
     const modules = { 'entry.js': 'export const value = 7;' };
     const namespace = { value: 7 };
-    const host = createStaticPackProgramHost([{ modules, load: async () => namespace }], {});
+    let loaded = false;
+    const host = createStaticPackProgramHost(
+      [
+        {
+          modules,
+          taskUrl: () => 'forgeax-resource:///assets/entry.js',
+          load: async () => {
+            loaded = true;
+            return namespace;
+          },
+        },
+      ],
+      {},
+    );
     const program = preparePackProgram({ entry: 'entry.js', export: 'value', modules }).unwrap();
+    expect(await host.publishForTask?.(program, {})).toBe('forgeax-resource:///assets/entry.js');
+    expect(loaded).toBe(false);
     expect((await loadPackProgram(program, {}, host)).unwrap()).toBe(7);
     const changed = preparePackProgram({
       entry: program.entry,
       export: program.export,
       modules: { 'entry.js': 'export const value = 8;' },
     }).unwrap();
+    await expect(host.publishForTask?.(changed, {})).rejects.toThrow(
+      'Program modules are not in the published code package',
+    );
     expect(await loadPackProgram(changed, {}, host)).toMatchObject({
       ok: false,
       error: { code: 'pack-program-load-failed' },

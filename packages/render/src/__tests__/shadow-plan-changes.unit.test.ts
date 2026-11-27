@@ -119,4 +119,23 @@ describe('shadow plan-pair changes', () => {
     expect(other.state.reads).toBe(1);
     expect(state.reads).toBe(3);
   });
+
+  it('shares complete bounds across budgets and allows a wider query after a capped read', () => {
+    const { changes } = countingChanges();
+    const { state } = fakeScene();
+    const history = Float32Array.of(1, 0, 0, 2, 1, 1, 2, 0, 0, 3, 1, 1);
+    const scene = {
+      contentCursor: state.cursor,
+      slotBoundsSince(_since: SceneContentCursor, _slots: Iterable<number>, limit: number) {
+        state.reads++;
+        return limit < 2 ? 'unbounded' : history;
+      },
+    } as unknown as GpuScene;
+    const changed = new Set([1]);
+    expect(changes.boundsSince(scene, state.cursor, changed, 1)).toBe('unbounded');
+    expect(changes.boundsSince(scene, state.cursor, changed)).toBe(history);
+    expect(changes.boundsSince(scene, state.cursor, changed, 1)).toBe('unbounded');
+    expect(changes.boundsSince(scene, state.cursor, changed, 2)).toBe(history);
+    expect(state.reads).toBe(2);
+  });
 });

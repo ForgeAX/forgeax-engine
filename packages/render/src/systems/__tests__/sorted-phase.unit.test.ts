@@ -181,3 +181,16 @@ describe('SortedPhase', () => {
     expect(large.compared / small.compared).toBeLessThan(96);
   });
 });
+
+it('bounds displacement from individually submitted depth changes in a reversed frame', () => {
+  const count = 4096;
+  const phase = new SortedPhase('distance');
+  for (let key = 0; key < count; key++) phase.enter(key, 0, key, 0, 0);
+  phase.commit();
+  const before = { ...phase.work };
+  for (let key = 0; key < count; key++) phase.update(key, 0, -key, 0, 0);
+  expect(phase.commit()).toBe(true);
+  expect(keys(phase)).toEqual(Array.from({ length: count }, (_, index) => count - 1 - index));
+  expect(phase.work.sorts - before.sorts).toBe(1);
+  expect(phase.work.moved - before.moved).toBeLessThan(20 * count);
+});

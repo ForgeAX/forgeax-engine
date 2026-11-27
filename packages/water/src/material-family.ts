@@ -86,6 +86,7 @@ export const WATER_SURFACE_PARAMETERS: readonly MaterialParameter[] = Object.fre
   numeric('normalFarStartM', 'f32', 50),
   numeric('normalFarRangeM', 'f32', 100),
   numeric('foamTilingM', 'f32', 15.36),
+  numeric('foamVelocityMPerSec', 'vec2', [0, 0]),
   numeric('foamDepthMinimumM', 'f32', 0.64),
   numeric('foamContrast', 'f32', 1),
   numeric('foamAmount', 'f32', 1),

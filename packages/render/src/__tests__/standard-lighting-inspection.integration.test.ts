@@ -1,6 +1,7 @@
 import { mat4, vec3 } from '@forgeax/engine-math';
 import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
 import { describe, expect, it } from 'vitest';
+import { measureClusterOccupancy } from '../cluster-binner';
 import {
   inspectStandardClusterTransport,
   inspectStandardLighting,
@@ -38,67 +39,61 @@ function aoGraph(): CompiledRenderGraphInfo {
     generation: 41,
     passes: [
       {
-        name: 'standard-scene-surface-data',
+        name: 'gbuffer',
         kind: 'raster',
         executionIndex: 0,
         dependencies: [],
         accesses: [
-          { resource: 'standard-scene-surface-normal', usage: 'color-attachment' },
-          { resource: 'standard-scene-surface-depth', usage: 'depth-attachment' },
+          { resource: 'gbuffer-a', usage: 'color-attachment' },
+          { resource: 'scene-depth', usage: 'depth-attachment' },
         ],
       },
       {
         name: 'gtao-calc-compute',
         kind: 'compute',
         executionIndex: 1,
-        dependencies: ['standard-scene-surface-data'],
+        dependencies: ['gbuffer'],
         accesses: [
-          { resource: 'standard-scene-surface-normal', usage: 'sampled-read' },
-          { resource: 'standard-scene-surface-depth', usage: 'sampled-read' },
-          { resource: 'ssao-raw', usage: 'storage-write' },
+          { resource: 'gbuffer-a', usage: 'sampled-read' },
+          { resource: 'scene-depth', usage: 'sampled-read' },
+          { resource: 'gtao-calc', usage: 'storage-write' },
         ],
       },
       {
-        name: 'ssao-blur',
+        name: 'gtao-resolve',
         kind: 'raster',
         executionIndex: 2,
         dependencies: ['gtao-calc-compute'],
         accesses: [
-          { resource: 'ssao-raw', usage: 'sampled-read' },
-          { resource: 'ssao-blurred', usage: 'color-attachment' },
-        ],
-      },
-      {
-        name: 'ssao-cluster-pack',
-        kind: 'raster',
-        executionIndex: 3,
-        dependencies: ['ssao-blur'],
-        accesses: [
-          { resource: 'ssao-blurred', usage: 'sampled-read' },
-          { resource: 'standard-cluster-tables', usage: 'color-attachment' },
+          { resource: 'gtao-calc', usage: 'sampled-read' },
+          { resource: 'gtao-resolve', usage: 'color-attachment' },
         ],
       },
     ],
     resources: [
       {
-        label: 'standard-scene-surface-normal',
+        label: 'gbuffer-a',
+        format: 'r32uint',
         extent: { width: 128, height: 128, depthOrArrayLayers: 1 },
         byteSize: 128 * 128 * 4,
       },
       {
-        label: 'standard-scene-surface-depth',
+        label: 'scene-depth',
+        format: 'depth32float-stencil8',
         extent: { width: 128, height: 128, depthOrArrayLayers: 1 },
         byteSize: 128 * 128 * 8,
       },
       {
-        label: 'ssao-raw',
+        label: 'gtao-calc',
+        format: 'rgba8unorm',
         extent: { width: 64, height: 64, depthOrArrayLayers: 1 },
         byteSize: 64 * 64 * 4,
       },
       {
-        label: 'ssao-blurred',
-        extent: { width: 64, height: 64, depthOrArrayLayers: 1 },
-        byteSize: 64 * 64,
+        label: 'gtao-resolve',
+        format: 'r8unorm',
+        extent: { width: 128, height: 128, depthOrArrayLayers: 1 },
+        byteSize: 128 * 128,
       },
     ],
   } as unknown as CompiledRenderGraphInfo;
@@ -143,6 +138,51 @@ describe('Standard lighting inspection provenance', () => {
     });
   });
 
+  it('keeps submitted occupancy and shadow admission when the next frame reuses camera and layout inputs', () => {
+    const source = prepared(3);
+    if (source.camera === undefined) throw new Error('expected a prepared camera');
+    const shadows = source.local.map((light, index) => ({ ...light, shadowed: index === 1 }));
+    const grid = { ...source.layout.grid };
+    const layout = { ...source.layout, grid };
+    const camera = { ...source.camera };
+    const frame = { ...source, local: shadows, layout, camera };
+    const selected = selectStandardClusterTransport(
+      { compute: true, storageBuffer: true, membershipPipelineReady: true },
+      frame,
+    ).unwrap();
+    let graphReads = 0;
+    const expected = measureClusterOccupancy(
+      shadows.length,
+      source.lightBounds,
+      grid,
+      camera.near,
+      camera.far,
+    );
+    const report = inspectStandardLighting(
+      { kind: 'clustered', transport: selected, prepared: frame },
+      {
+        config: undefined,
+        get graph() {
+          graphReads++;
+          return undefined;
+        },
+        deviceGeneration: 1,
+      },
+    );
+    grid.x = 1;
+    camera.near = 30;
+    camera.far = 31;
+    shadows.length = 0;
+    if (report.transport === 'not-required') throw new Error('expected a clustered report');
+    expect(report.grid.x).toBe(4);
+    expect(report.shadowed).toBe(1);
+    expect(report.lightsPerCluster).toEqual(expected);
+    expect(report.lightsPerCluster).toBe(report.lightsPerCluster);
+    expect(graphReads).toBe(0);
+    expect(report.ambientOcclusion.status).toBe('off');
+    expect(graphReads).toBe(1);
+  });
+
   it('publishes an explicit not-required inspection for a successful zero-local frame', () => {
     const result = prepareStandardLighting({
       directional: undefined,
@@ -179,7 +219,7 @@ describe('Standard lighting inspection provenance', () => {
       ambientOcclusion: {
         requested: false,
         status: 'off',
-        algorithm: 'gtao',
+        algorithm: 'ssao',
         execution: 'none',
         reason: 'disabled',
       },
@@ -194,21 +234,19 @@ describe('Standard lighting inspection provenance', () => {
   });
 
   it('projects AO inputs, costs, bindings and execution from the active graph', () => {
-    const input = prepared(0);
+    const input = { ...prepared(0), renderPath: 'deferred' as const };
     const inspected = inspectStandardLighting(
       { kind: 'no-local-lights', prepared: input },
       {
         config: {
           enabled: true,
-          algorithm: 'gtao',
-          quality: 'high',
-          directLightingStrength: 0.4,
-          resolutionScale: 0.5,
+          method: 'gtao',
+          quality: 100,
+          gtao: { useNormals: true, downsample: true },
         },
         graph: aoGraph(),
         installedGraphGeneration: 52,
         deviceGeneration: 7,
-        clusterAoExtent: { width: 64, height: 64 },
       },
     );
 
@@ -219,9 +257,9 @@ describe('Standard lighting inspection provenance', () => {
       execution: 'compute',
       producerId: 'forgeax::standard::surface-data',
       input: {
-        normalSchema: 'forgeax::scene-data::standard-surface-normal-v1',
+        normalSchema: 'standard-gbuffer/4',
         normalSpace: 'world',
-        normalEncoding: 'octahedral-normal-x12-y12-roughness-u8',
+        normalEncoding: 'xyz10',
         normalFormat: 'r32uint',
         depthSchema: 'forgeax::scene-data::standard-surface-depth-v1',
         depthSpace: 'camera-device-depth',
@@ -230,41 +268,35 @@ describe('Standard lighting inspection provenance', () => {
         coverage: 'opaque-alpha-mask',
         extent: { width: 128, height: 128 },
         bytes: 128 * 128 * 12,
-        additionalBytes: 128 * 128 * 12,
+        additionalBytes: 0,
       },
       numerical: {
-        radius: 0.25,
-        bias: 0,
-        intensity: 1,
+        radius: 2,
+        bias: 3,
+        intensity: 0.5,
         thickness: 1,
         distanceExponent: 1,
         distanceFallOff: 1,
-        resolutionScale: 0.5,
-        quality: 'high',
-        sampleBudget: 16,
-        directLightingStrength: 0.4,
-        rawIntensityApplication: 'once-before-filter',
-        filter: '5x5-depth-normal-bilateral',
+        resolutionScale: 1,
+        quality: 100,
+        sampleBudget: 20,
+        rawIntensityApplication: 'gtao-spatial',
+        filter: 'gtao-depth-plane',
       },
       output: {
         rawFormat: 'rgba8unorm',
         filteredFormat: 'r8unorm',
-        extent: { width: 64, height: 64 },
+        extent: { width: 128, height: 128 },
         rawBytes: 64 * 64 * 4,
-        filteredBytes: 64 * 64,
-        clusterRegionBytes: 16 * 64 * 16,
+        filteredBytes: 128 * 128,
+        clusterRegionBytes: 0,
       },
       work: {
         rawPixels: 64 * 64,
         filterTapBudget: 64 * 64 * 25,
-        depthCandidateBudget: 64 * 64 * 36,
+        depthCandidateBudget: 64 * 64 * 80,
       },
-      passes: [
-        'standard-scene-surface-data',
-        'gtao-calc-compute',
-        'ssao-blur',
-        'ssao-cluster-pack',
-      ],
+      passes: ['gtao-calc-compute', 'gtao-resolve'],
       graphGeneration: 52,
       deviceGeneration: 7,
     });
@@ -278,7 +310,7 @@ describe('Standard lighting inspection provenance', () => {
     const inspected = inspectStandardLighting(
       { kind: 'no-local-lights', prepared: prepared(0) },
       {
-        config: { enabled: true, algorithm: 'ssao' },
+        config: { enabled: true, method: 'ssao' },
         graph: { generation: 5, passes: [], resources: [] } as unknown as CompiledRenderGraphInfo,
         deviceGeneration: 3,
         clusterAoExtent: { width: 16, height: 16 },

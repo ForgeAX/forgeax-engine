@@ -2,6 +2,7 @@ import { createApp } from '@forgeax/engine-app/browser';
 import { expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import type {} from '../../../render/src/__tests__/texture-generators.commands';
+import { observeReadyPictures } from '../../__tests__/ready-picture-count';
 import localBootstrap from './gpu-texture-worker-bootstrap';
 
 async function color(canvas: HTMLCanvasElement) {
@@ -49,11 +50,10 @@ it('transports GPU-only texture recipes through real Engine and Render Workers a
   );
   if (!result.ok) throw new Error(JSON.stringify({ startup: result.error, messages }));
   const app = result.value;
+  const readyPictures = observeReadyPictures(canvas);
   try {
     app.start().unwrap();
-    await expect
-      .poll(() => app.execution.report().render?.completedFrame, { timeout: 60_000 })
-      .toBeGreaterThanOrEqual(60);
+    await expect.poll(() => readyPictures.count, { timeout: 60_000 }).toBeGreaterThanOrEqual(60);
     expect(messages).toContainEqual({ ready: true, cpuPixels: false });
     const initial = await color(canvas);
     expect(initial[0]).toBeGreaterThan(240);
@@ -69,6 +69,7 @@ it('transports GPU-only texture recipes through real Engine and Render Workers a
     expect(messages).toContainEqual({ updated: true, cpuPixels: false });
     expect(app.execution.report().fault).toBeNull();
   } finally {
+    readyPictures.dispose();
     (await app.dispose()).unwrap();
     channel.port1.close();
     canvas.remove();
@@ -81,11 +82,7 @@ it('samples GPU textures for 60 completed local frames using the native bootstra
   canvas.width = canvas.height = 128;
   canvas.style.width = canvas.style.height = '128px';
   document.body.append(canvas);
-  const frames = new Set<number>();
-  canvas.addEventListener('forgeax:frame-completed', (event) => {
-    const receipt = (event as CustomEvent).detail;
-    if (receipt.presentation === 'ready') frames.add(receipt.frameId);
-  });
+  const readyPictures = observeReadyPictures(canvas);
   const channel = new MessageChannel();
   const messages: { ready?: boolean; updated?: boolean; cpuPixels: boolean }[] = [];
   channel.port1.onmessage = (event) => messages.push(event.data);
@@ -107,7 +104,7 @@ it('samples GPU textures for 60 completed local frames using the native bootstra
   const app = result.value;
   try {
     app.start().unwrap();
-    await expect.poll(() => frames.size, { timeout: 60000 }).toBeGreaterThanOrEqual(60);
+    await expect.poll(() => readyPictures.count, { timeout: 60_000 }).toBeGreaterThanOrEqual(60);
     expect(messages).toContainEqual({ ready: true, cpuPixels: false });
     const initial = await color(canvas);
     expect(initial[0]).toBeGreaterThan(240);
@@ -119,6 +116,7 @@ it('samples GPU textures for 60 completed local frames using the native bootstra
     expect(messages).toContainEqual({ updated: true, cpuPixels: false });
     expect(app.execution.report().fault).toBeNull();
   } finally {
+    readyPictures.dispose();
     (await app.dispose()).unwrap();
     channel.port1.close();
     canvas.remove();

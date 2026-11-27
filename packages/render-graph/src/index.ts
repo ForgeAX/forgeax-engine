@@ -8,8 +8,12 @@
 
 export { RenderGraphBuilder, renderGraphCompileCount } from './builder.js';
 export {
+  appendCompiledRenderGraphPassNames,
+  compiledRenderGraphAllocation,
   compiledRenderGraphGeneration,
+  compiledRenderGraphHasPass,
   compiledRenderGraphPassDeclarations,
+  compiledRenderGraphResourceDeclarations,
 } from './compiled-graph.js';
 export {
   err,
@@ -46,6 +50,8 @@ export type {
   ResourceLifetime,
 } from './graph.js';
 export { RenderGraph } from './graph.js';
+export { sameGraphTexture } from './kernel-internal.js';
+export { allocateRenderPassGeneration, encodeNativeRenderPass } from './native-pass.js';
 export {
   type CurrentFrameObservationDescriptor,
   type CurrentFrameObservationLease,
@@ -81,6 +87,9 @@ export type {
   GraphExtent,
   GraphPass,
   GraphPassKind,
+  GraphPassPreparation,
+  GraphPreparationResources,
+  GraphPreparationStep,
   GraphResourceKind,
   GraphResourceOrigin,
   GraphResourceResolver,
@@ -93,6 +102,7 @@ export type {
   ImportedBufferDescriptor,
   ImportedTextureDescriptor,
   ImportedTextureViewResolver,
+  NativeTextureImport,
   RasterColorAttachment,
   RasterDepthStencilAttachment,
   RasterGraphPass,
@@ -100,6 +110,8 @@ export type {
   RenderGraphFrame,
   RenderGraphGenerationAllocationEntry,
   RenderGraphGenerationAllocationInspection,
+  RenderGraphNativeCommands,
+  RenderGraphNativeIssue,
   RenderGraphNativePass,
   RenderGraphPassExecution,
   RenderGraphPassInstrumentation,

@@ -1,8 +1,7 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { scanEntries } from '../cli-asset.js';
 import { scanInventory } from '../scanner.js';
 
 const SOURCE_PACKAGE = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -69,32 +68,32 @@ describe('ScriptablePack and Pack source scanner', () => {
     );
 
     const result = await scanInventory([root]);
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.inventory).toMatchObject([
+    if (!result.ok) throw result.error;
+    const inventory = result.value;
+    expect(inventory.inventory).toMatchObject([
       {
+        guid: expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        ),
         kind: 'scene',
         sourcePath: path,
         sourceKey: 'scene/main',
+        name: 'scene/main',
         sourceIndex: 0,
       },
     ]);
-    expect(result.value.inventory[0]?.guid).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-    );
-
-    const stdout: string[] = [];
-    const stderr: string[] = [];
-    const listed = await scanEntries([root], {
-      stdoutWrite: (line) => stdout.push(line),
-      stderrWrite: (line) => stderr.push(line),
-    });
-    expect(listed).toMatchObject({
-      ok: true,
-      value: [{ guid: result.value.inventory[0]?.guid, name: 'scene/main' }],
-    });
-    expect(stderr).toEqual([]);
+    const renamed = join(root, 'renamed.pack.json');
+    await rename(path, renamed);
+    const after = await scanInventory([root]);
+    if (!after.ok) throw after.error;
+    expect(after.value.inventory).toMatchObject([
+      {
+        guid: inventory.inventory[0]?.guid,
+        kind: 'scene',
+        sourceKey: 'scene/main',
+        sourcePath: renamed,
+      },
+    ]);
   });
 
   it('captures a ScriptablePack source as metadata and resolves an instance parent', async () => {
@@ -108,7 +107,7 @@ describe('ScriptablePack and Pack source scanner', () => {
         'export default {',
         "  schemaVersion: '2.0.0',",
         '  packageId,',
-        "  parameters: [{ name: 'count', type: 'u32', default: 1 }],",
+        "  parameters: [{ name: 'count', type: 'u32', default: 1 }, { name: 'label', type: 'string', default: 'base' }],",
         "  build: ({ values }) => ({ ok: true, value: { ['mesh/' + values.count]: { kind: 'mesh', materialSlots: [] } } }),",
         '};',
       ].join('\n'),
@@ -134,12 +133,22 @@ describe('ScriptablePack and Pack source scanner', () => {
 
     const result = await scanInventory([root]);
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    const declaration = result.value.declarations.get(join(root, 'source.pack.ts'));
-    expect(declaration?.format).toBe('pack.ts');
-    expect(result.value.inventory).toEqual([]);
+    if (!result.ok) throw result.error;
     const rootSourcePath = join(root, 'source.pack.ts');
+    const declaration = result.value.declarations.get(rootSourcePath);
+    expect(declaration).toMatchObject({
+      format: 'pack.ts',
+      sourcePath: rootSourcePath,
+      value: {
+        schemaVersion: '2.0.0',
+        packageId: SOURCE_PACKAGE,
+        kind: 'scriptable-pack-source',
+        source: rootSourcePath,
+      },
+      definition: { schemaVersion: '2.0.0', packageId: expect.any(Uint8Array) },
+      sourceClosure: [{ path: await realpath(rootSourcePath) }],
+    });
+    expect(result.value.inventory).toEqual([]);
     expect(result.value.instances.get(join(root, 'instance.pack.json'))).toMatchObject({
       root: { sourcePath: rootSourcePath },
       values: { count: 2, label: 'parent' },

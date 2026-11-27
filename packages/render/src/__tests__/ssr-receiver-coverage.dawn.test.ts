@@ -17,7 +17,7 @@ import {
   GPU_BUFFER_USAGE_MAP_READ,
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
-import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
+import { VIEW_UNIFORM_BYTES, writeSsrQualityLanes } from '../record/view-ubo';
 import { gbufferSource, writePackedNormals } from './standard-gbuffer.fixture';
 
 // The trace publishes reflection radiance weighted by 1 / (1 + luminance)
@@ -35,6 +35,7 @@ async function composePixels(
   options: {
     mips?: number[][];
     enabled?: number;
+    temporal?: boolean;
     roughnessLimit?: number;
     coverage?: number;
     source?: string;
@@ -122,6 +123,7 @@ async function composePixels(
   const viewData = new Float32Array(VIEW_UNIFORM_BYTES / Float32Array.BYTES_PER_ELEMENT);
   viewData[238] = options.roughnessLimit ?? 1;
   viewData[239] = options.enabled ?? 1;
+  writeSsrQualityLanes(viewData, undefined, (options.temporal ?? true) ? 1 : 0);
   device.queue.writeBuffer(view, 0, viewData).unwrap();
   const output = device
     .createTexture({
@@ -266,6 +268,7 @@ it('keeps the rough reflected lobe beyond a mirror miss without admitting disabl
   );
   expect(pixels[5], 'weighted fallback replacement').toBeCloseTo(-confidence * fallback, 4);
   for (const options of [
+    { temporal: false }, // Mirror-only roughness fade has already reached zero.
     { enabled: 0 },
     { enabled: Number.NaN },
     { enabled: Infinity },

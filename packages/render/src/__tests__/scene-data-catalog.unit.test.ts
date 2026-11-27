@@ -60,7 +60,7 @@ describe('SceneDataCatalog authorization', () => {
     expect(catalog.inspect().status).toBe('unavailable');
   });
 
-  it('admits current-view normal and depth only with a faithful producer and coverage', () => {
+  it('admits current-view depth and reports the retired material normal producer missing', () => {
     const unavailable = createSceneDataCatalog({
       featureIdentity: 'ambient-occlusion',
       generation: 9,
@@ -95,15 +95,11 @@ describe('SceneDataCatalog authorization', () => {
         contributors: [],
       }),
     });
-    const normal = admitted.require(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA);
-    const depth = admitted.require(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA);
-    expect(normal).toMatchObject({
-      schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
-      format: 'r32uint',
-      space: 'world',
-      encoding: 'octahedral-normal-x12-y12-roughness-u8',
-      coverage: 'opaque-alpha-mask',
+    expect(admitted.availabilityFor(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA)).toEqual({
+      status: 'unavailable',
+      reason: 'producer-missing',
     });
+    const depth = admitted.require(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA);
     expect(depth).toMatchObject({
       schema: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
       format: 'depth32float-stencil8',
@@ -112,7 +108,6 @@ describe('SceneDataCatalog authorization', () => {
       reconstruction: 'current-camera-inverse-projection',
       coverage: 'opaque-alpha-mask',
     });
-    expect(admitted.validate(normal).ok).toBe(true);
     expect(admitted.validate(depth).ok).toBe(true);
   });
 

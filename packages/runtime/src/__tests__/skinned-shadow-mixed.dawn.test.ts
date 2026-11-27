@@ -13,7 +13,14 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { World } from '@forgeax/engine-ecs';
 import { packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import type { Renderer } from '@forgeax/engine-render';
-import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
+import {
+  Camera,
+  ClippingPlanes,
+  clippingPlanesData,
+  DirectionalLight,
+  MeshFilter,
+  MeshRenderer,
+} from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { describe, expect, it } from 'vitest';
@@ -30,8 +37,8 @@ const BUFFER_USAGE_COPY_DST = 0x0008;
 const MAP_MODE_READ = 0x0001;
 
 const ENGINE_MANIFEST = await (async () => {
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-  return buildEngineShaderManifest();
+  const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  return buildEngineShaderTemplateManifest();
 })();
 const ENGINE_MANIFEST_URL = shaderManifestUrl(ENGINE_MANIFEST);
 
@@ -128,7 +135,7 @@ function floorMaterial(world: World): AssetHandle<'material'> {
     .unwrap();
 }
 
-function skinnedMesh(world: World): AssetHandle<'mesh'> {
+function skinnedMesh(world: World, affinePoint: boolean): AssetHandle<'mesh'> {
   // Canonical interleaved order: position, normal, uv, tangent, skinIndex,
   // skinWeight (72 bytes / vertex). All vertices use joint zero.
   const attributes = {
@@ -137,7 +144,9 @@ function skinnedMesh(world: World): AssetHandle<'mesh'> {
     uv: new Float32Array([0, 0, 1, 0, 0.5, 1]),
     tangent: new Float32Array([1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1]),
     skinIndex: new Uint16Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-    skinWeight: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
+    skinWeight: affinePoint
+      ? new Uint16Array([32768, 0, 0, 0, 32768, 0, 0, 0, 32768, 0, 0, 0])
+      : new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
   };
   const packed = packInterleavedVertexAttributes(attributes, 3);
   if (!packed.ok) throw packed.error;
@@ -188,11 +197,12 @@ function spawnMixedScene(
   castShadow: boolean,
   maskedSkin: boolean,
   omitSkin: boolean,
+  affinePoint: boolean,
 ) {
   const staticMat = staticMaterial(world);
   const skinMat = skinnedMaterial(world, maskedSkin);
   const floorMat = floorMaterial(world);
-  const skinMesh = skinnedMesh(world);
+  const skinMesh = skinnedMesh(world, affinePoint);
   const skinSkeleton = skeleton(world, maskedSkin);
 
   world.spawn(
@@ -205,7 +215,7 @@ function spawnMixedScene(
     },
     { component: MeshRenderer, data: { materials: [floorMat] } },
   );
-  world.spawn(
+  const camera = world.spawn(
     { component: Transform, data: identityTransform([0, 8, 18]) },
     {
       component: Camera,
@@ -218,6 +228,15 @@ function spawnMixedScene(
       },
     },
   );
+  // Keep the rigid receiver identical when the masked skin is removed.
+  if (maskedSkin) {
+    world
+      .addComponent(camera.unwrap(), {
+        component: ClippingPlanes,
+        data: clippingPlanesData({ planes: [[1, 0, 0, 100]] }),
+      })
+      .unwrap();
+  }
   world.spawn({
     component: DirectionalLight,
     data: {
@@ -253,13 +272,14 @@ function spawnMixedScene(
   const joint = world.spawn({ component: Transform, data: identityTransform([0, 7, 5]) }).unwrap();
   if (!omitSkin)
     world.spawn(
-      { component: Transform, data: identityTransform() },
+      { component: Transform, data: identityTransform(affinePoint ? [0, 7, 5] : undefined) },
       { component: MeshFilter, data: { assetHandle: skinMesh } },
       { component: MeshRenderer, data: { materials: [skinMat] } },
       {
         component: Skin,
         data: {
           skeleton: skinSkeleton,
+          affinePoint,
           joints: new Uint32Array([joint as unknown as number]),
         },
       },
@@ -311,7 +331,10 @@ function assertSkinShadowRefresh(renderer: Renderer, frame: number): void {
  * comparison and makes the Dawn test's startup cost proportional to one
  * renderer initialization.
  */
-async function renderMixedPair(maskedSkin = false): Promise<{
+async function renderMixedPair(
+  maskedSkin = false,
+  affinePoint = false,
+): Promise<{
   readonly shadow: MixedCapture;
   readonly baseline: MixedCapture;
 }> {
@@ -377,7 +400,7 @@ async function renderMixedPair(maskedSkin = false): Promise<{
     });
     const renderWorld = async (castShadow: boolean, omitSkin = false): Promise<MixedCapture> => {
       const world = new World();
-      const joint = spawnMixedScene(world, castShadow, maskedSkin, omitSkin);
+      const joint = spawnMixedScene(world, castShadow, maskedSkin, omitSkin, affinePoint);
       const attached = activeRenderer.attach(world);
       if (!attached.ok) throw attached.error;
       const checkpoints: Uint8Array[] = [];
@@ -397,6 +420,12 @@ async function renderMixedPair(maskedSkin = false): Promise<{
           if (device === undefined || target === undefined) throw new Error('Missing Dawn target');
           checkpoints.push(await readPixels(device, target));
         }
+      }
+      if (maskedSkin) {
+        expect(
+          activeRenderer.inspect({ fields: ['directionalShadow'] }).directionalShadow
+            .forwardReceiver,
+        ).toEqual({ mode: 'raw', reason: 'coverage' });
       }
       if (device === undefined || target === undefined)
         throw new Error('Dawn target not initialized');
@@ -450,11 +479,16 @@ describe('mixed static/skinned shadow pipeline (Dawn)', () => {
     expect(changed).toBe(0);
   }, 120000);
 
-  it('submits static → skinned → static casters with zero validation errors', async () => {
+  it.each([
+    { name: 'float homogeneous', affinePoint: false },
+    { name: 'UNORM16 affine point', affinePoint: true },
+  ])('submits static → $name skinned → static casters with zero validation errors', async ({
+    affinePoint,
+  }) => {
     if (typeof globalThis.navigator?.gpu?.requestAdapter !== 'function') {
       throw new Error('dawn-node navigator.gpu not injected');
     }
-    const { shadow, baseline } = await renderMixedPair();
+    const { shadow, baseline } = await renderMixedPair(false, affinePoint);
     expect(shadow.errors).toEqual([]);
     expect(baseline.errors).toEqual([]);
     expect(shadow.pixels.length).toBeGreaterThan(0);

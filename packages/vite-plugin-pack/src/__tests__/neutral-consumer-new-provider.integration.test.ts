@@ -2,8 +2,12 @@ import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCatalogSource } from '@forgeax/engine-assets-runtime';
-import { buildCatalogResult } from '@forgeax/engine-import';
-import { calculateCatalogDelta } from '@forgeax/engine-pack/build';
+import { catalogImporterPolicyFor } from '@forgeax/engine-import';
+import {
+  buildCatalogProjection,
+  calculateCatalogDelta,
+  projectExternalCatalogEntries,
+} from '@forgeax/engine-pack/build';
 import type { CatalogEntry, CookProduct } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createProductionSession } from '../production/session.js';
@@ -40,7 +44,10 @@ afterEach(async () => {
 function hostPackage() {
   return {
     schemaVersion: '1.0.0',
-    kind: 'internal-text-package',
+    kind: 'external-asset-package',
+    importer: 'nebula-host',
+    source: 'nebula.source',
+    importSettings: {},
     packageId: 'pkg/nebula-host',
     provenance: { provider: 'nebula-host', version: '3.2.1', source: 'host-fixture' },
     revision: { digest: 'sha256:nebula', observedAt: 42, rootId: 'root-nebula' },
@@ -53,22 +60,18 @@ function hostPackage() {
         hint: 'keep provider-owned fields unchanged in the consumer',
       },
     ],
-    assets: [
+    subAssets: [
       {
         guid: MAIN_GUID,
         kind: HOST_KIND,
         sourceKey: 'fragment/main',
         sourceIndex: 0,
-        payload: {},
-        refs: [DETAIL_GUID],
       },
       {
         guid: DETAIL_GUID,
         kind: HOST_KIND,
         sourceKey: 'fragment/detail',
         sourceIndex: 1,
-        payload: {},
-        refs: [],
       },
     ],
   };
@@ -77,11 +80,26 @@ function hostPackage() {
 async function buildHostCatalog(): Promise<readonly CatalogEntry[]> {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-neutral-consumer-'));
   fixtureRoots.push(root);
-  await writeFile(join(root, 'nebula.pack.json'), JSON.stringify(hostPackage()));
-  const result = await buildCatalogResult([root]);
+  await writeFile(join(root, 'nebula.source'), 'host source');
+  const meta = hostPackage();
+  await writeFile(join(root, 'nebula.source.meta.json'), JSON.stringify(meta));
+  const result = await buildCatalogProjection([root], {
+    importerPolicy: catalogImporterPolicyFor(new Set([meta.importer])),
+  });
   expect(result.authority).toBe('authoritative');
   expect(result.diagnostics).toEqual([]);
-  return result.entries;
+  const [first] = result.entries;
+  expect(result.entries.map((entry) => entry.guid)).toEqual([MAIN_GUID, DETAIL_GUID]);
+  if (first === undefined) throw new Error('Missing host declaration');
+  return projectExternalCatalogEntries(
+    first,
+    first.sourcePath,
+    first.packageUrl,
+    meta.subAssets.map((row) => ({
+      ...row,
+      refs: row.guid === MAIN_GUID ? [DETAIL_GUID] : [],
+    })),
+  );
 }
 
 function topologyEntries(entries: readonly CatalogEntry[]): CatalogEntry[] {
@@ -97,7 +115,7 @@ function topologyEntries(entries: readonly CatalogEntry[]): CatalogEntry[] {
       guid: EXTRA_GUID,
       packageUrl: '/nebula/extra.bin',
       kind: HOST_KIND,
-      sourcePath: 'nebula.pack.json',
+      sourcePath: 'nebula.source',
       packageId: 'pkg/nebula-host',
       provenance: { provider: 'nebula-host', version: '3.2.1', source: 'host-fixture' },
       revision: { digest: 'sha256:nebula', observedAt: 42, rootId: 'root-nebula' },

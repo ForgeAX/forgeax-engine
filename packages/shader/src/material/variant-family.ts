@@ -4,8 +4,16 @@ import type {
   ShaderEntryPointReads,
   ShaderSource,
 } from '@forgeax/engine-types';
-import { bindManifestShaderSource } from '../manifest-publication.js';
-import type { MaterialShaderManifestEntry, MaterialShaderManifestVariant } from '../types.js';
+import {
+  bindManifestShaderSource,
+  manifestShaderSourcePrepared,
+  materialShaderSource,
+} from '../manifest-publication.js';
+import {
+  type MaterialShaderManifestEntry,
+  type MaterialShaderManifestVariant,
+  sealMaterialShaderVariants,
+} from '../types.js';
 
 /** References to already cooked programs, never another source or compiler recipe. */
 export interface MaterialShaderVariantReference {
@@ -63,9 +71,77 @@ export function ownMaterialVariantReferences(
 export interface MaterialVariantSource {
   readonly forwardFog?: 'height-vertex/1';
   readonly read: () => ShaderSource;
+  readonly prepared?: () => boolean;
   readonly paramSchema: readonly ParamSchemaEntry[];
   readonly receipt?: MaterialProgramAbi;
   readonly entryPoints?: readonly ShaderEntryPointReads[];
+}
+
+const runtimeVariantFamilies = new WeakSet<MaterialShaderManifestEntry>();
+
+/** Reflection for a dormant runtime variant is part of its deferred compilation. */
+export function isRuntimeMaterialVariantFamily(entry: MaterialShaderManifestEntry): boolean {
+  return runtimeVariantFamilies.has(entry);
+}
+
+/** Runtime variants own their program only after a draw reads that selection. */
+export function materialTemplateVariantFamily(
+  identifier: string,
+  paramSchema: readonly ParamSchemaEntry[],
+  selections: readonly {
+    readonly defines: Readonly<Record<string, boolean>>;
+    readonly resolve: () => MaterialVariantSource;
+  }[],
+): MaterialShaderManifestEntry {
+  const variants = selections.map(({ defines: selection, resolve }) => {
+    let source: MaterialVariantSource | undefined;
+    const program = () => (source ??= resolve());
+    const readSource = () => program().read();
+    const entries = Object.entries(selection).sort(([a], [b]) => a.localeCompare(b));
+    const defines = Object.freeze(Object.fromEntries(entries));
+    const row = {
+      defines,
+      definesKey: entries.every(([, value]) => value)
+        ? ''
+        : entries.map(([axis, value]) => `${axis}=${value}`).join('+'),
+      get composedWgsl() {
+        return readSource().read();
+      },
+      get receipt() {
+        return program().receipt;
+      },
+      get entryPoints() {
+        return program().entryPoints;
+      },
+      get forwardFog() {
+        return program().forwardFog;
+      },
+    } as MaterialShaderManifestVariant;
+    bindManifestShaderSource(row, readSource);
+    return Object.freeze(row);
+  });
+  const primary = variants[0];
+  if (primary === undefined) throw new Error('ShaderRegistry: empty material variant family');
+  const family = Object.freeze({
+    identifier,
+    sourcePath: identifier,
+    paramSchema: JSON.stringify(paramSchema),
+    variants: Object.freeze(variants),
+    get composedWgsl() {
+      return primary.composedWgsl;
+    },
+  });
+  sealMaterialShaderVariants(family);
+  runtimeVariantFamilies.add(family);
+  return family;
+}
+
+const packedSource = Symbol('packed material variant source');
+
+export function packedVariantIdentifier(row: MaterialShaderManifestVariant): string | undefined {
+  return (row as MaterialShaderManifestVariant & { readonly [packedSource]?: string })[
+    packedSource
+  ];
 }
 
 /** Project immutable program owners into the existing manifest selection contract. */
@@ -89,13 +165,14 @@ export function materialVariantFamily(
       ...(program.forwardFog === undefined ? {} : { forwardFog: program.forwardFog }),
       definesKey,
       defines: reference.defines,
+      [packedSource]: reference.identifier,
       get composedWgsl() {
         return program.read().read();
       },
       ...(program.receipt === undefined ? {} : { receipt: program.receipt }),
       ...(program.entryPoints === undefined ? {} : { entryPoints: program.entryPoints }),
     };
-    bindManifestShaderSource(row, program.read);
+    bindManifestShaderSource(row, program.read, program.prepared);
     return Object.freeze(row);
   });
   const primary = variants.find((row) => row.definesKey === '') ?? variants[0];
@@ -109,5 +186,11 @@ export function materialVariantFamily(
     },
     variants: Object.freeze(variants),
   };
-  return Object.freeze(entry);
+  bindManifestShaderSource(
+    entry,
+    () => materialShaderSource(primary),
+    () => manifestShaderSourcePrepared(primary),
+  );
+  sealMaterialShaderVariants(entry);
+  return entry;
 }

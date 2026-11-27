@@ -196,6 +196,8 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
               return 'asset budget exceeded';
             case 'asset-not-ready':
               return 'asset not ready';
+            case 'asset-cpu-data-unavailable':
+              return 'asset CPU data unavailable';
             case 'asset-not-found':
               return 'not found';
             case 'asset-parse-failed':
@@ -222,45 +224,51 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
               return 'mesh vertex stride mismatch';
             case 'material-shader-ref-broken':
               return 'shader ref broken';
-            case 'material-circular-inheritance':
-              return 'circular inheritance';
-            // === 2 new codes (feat-20260603-asset-import-loader-injection M1 / w1) ===
-            case 'loader-not-registered':
-              return 'loader not registered';
-            case 'asset-not-imported':
-              return 'asset not imported';
-            // === 1 new code (feat-20260604-hdr-equirect-cube-importer-loader M2 / w4) ===
-            case 'texture-source-not-imported':
-              return 'texture source not imported';
-            case 'source-not-imported':
-              return 'source not imported';
-            // === 3 new codes (feat-20260608-mesh-multi-section-primitive-multi-material-slot M1 / w2) ===
-            case 'mesh-renderer-material-override-invalid':
-              return 'mesh renderer material override invalid';
-            case 'mesh-renderer-material-override-overflow':
-              return 'mesh renderer material override overflow';
-            case 'mesh-asset-submeshes-empty':
-              return 'mesh asset submeshes empty';
-            case 'mesh-asset-material-slot-index-out-of-range':
-              return 'mesh asset material slot index out of range';
-            case 'mesh-submesh-index-range-out-of-bounds':
-              return 'mesh submesh index range out of bounds';
-            // === 1 new code (feat-20260608-tilemap-object-layer-rendering M0 baseline rebuild) ===
-            case 'tileset-region-index-out-of-range':
-              return 'tileset region index out of range';
-            // === 1 new code (feat-20260608-tilemap-object-layer-rendering M1 schema extension) ===
-            case 'tileset-tile-entry-malformed':
-              return 'tileset tile entry malformed';
-            // === 1 new code (feat-20260621-asset-registry-robustness-invalidate-inflight-cach M2 / w4) ===
-            case 'asset-invalidated':
-              return 'asset invalidated';
-            // === 1 new code (feat-20260629-multi-uv-set-support M2 / m2-w5) ===
-            case 'mesh-bin-contract-violation':
-              return 'mesh bin contract violation';
-            // === 1 new code (feat-20260707-texture-block-compression M5 / w35) ===
-            case 'mipgen-unsupported-compressed-format':
-              return 'mipgen unsupported compressed format';
           }
+          const remainingCode = code;
+          function describePayloadError(): string {
+            switch (remainingCode) {
+              case 'material-circular-inheritance':
+                return 'circular inheritance';
+              // === 2 new codes (feat-20260603-asset-import-loader-injection M1 / w1) ===
+              case 'loader-not-registered':
+                return 'loader not registered';
+              case 'asset-not-imported':
+                return 'asset not imported';
+              // === 1 new code (feat-20260604-hdr-equirect-cube-importer-loader M2 / w4) ===
+              case 'texture-source-not-imported':
+                return 'texture source not imported';
+              case 'source-not-imported':
+                return 'source not imported';
+              // === 3 new codes (feat-20260608-mesh-multi-section-primitive-multi-material-slot M1 / w2) ===
+              case 'mesh-renderer-material-override-invalid':
+                return 'mesh renderer material override invalid';
+              case 'mesh-renderer-material-override-overflow':
+                return 'mesh renderer material override overflow';
+              case 'mesh-asset-submeshes-empty':
+                return 'mesh asset submeshes empty';
+              case 'mesh-asset-material-slot-index-out-of-range':
+                return 'mesh asset material slot index out of range';
+              case 'mesh-submesh-index-range-out-of-bounds':
+                return 'mesh submesh index range out of bounds';
+              // === 1 new code (feat-20260608-tilemap-object-layer-rendering M0 baseline rebuild) ===
+              case 'tileset-region-index-out-of-range':
+                return 'tileset region index out of range';
+              // === 1 new code (feat-20260608-tilemap-object-layer-rendering M1 schema extension) ===
+              case 'tileset-tile-entry-malformed':
+                return 'tileset tile entry malformed';
+              // === 1 new code (feat-20260621-asset-registry-robustness-invalidate-inflight-cach M2 / w4) ===
+              case 'asset-invalidated':
+                return 'asset invalidated';
+              // === 1 new code (feat-20260629-multi-uv-set-support M2 / m2-w5) ===
+              case 'mesh-bin-contract-violation':
+                return 'mesh bin contract violation';
+              // === 1 new code (feat-20260707-texture-block-compression M5 / w35) ===
+              case 'mipgen-unsupported-compressed-format':
+                return 'mipgen unsupported compressed format';
+            }
+          }
+          return describePayloadError();
         }
         expect(exhaustive('asset-not-found')).toBe('not found');
         expect(exhaustive('texture-source-not-imported')).toBe('texture source not imported');

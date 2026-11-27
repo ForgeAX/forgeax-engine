@@ -1,4 +1,4 @@
-import { interleavedMesh, prepareMeshData } from '@forgeax/engine-geometry';
+import { interleavedMesh, meshAssetDecoder, prepareMeshData } from '@forgeax/engine-geometry';
 import { validateArtifactPath } from '@forgeax/engine-pack/artifact-path';
 import type { RuntimePackEnvelope } from '@forgeax/engine-pack/runtime';
 import type {
@@ -37,8 +37,11 @@ import type { DecoderRegistry } from './decoder-registry.js';
 import { freezeRuntimePayload } from './immutable-payload.js';
 import { PackReader, type VerifiedPack } from './pack-reader.js';
 import { bytesOf, readPackage } from './package-read.js';
-import { validatePublicationReferences } from './publication-references.js';
-import { realmRetention } from './retention-budget.js';
+import {
+  validatePublicationReferenceRoots,
+  validatePublicationReferences,
+} from './publication-references.js';
+import { type RetentionBudget, realmRetention } from './retention-budget.js';
 import type { RuntimeCatalogRow } from './validate-runtime-row.js';
 import { validateRuntimeRow } from './validate-runtime-row.js';
 import { assetLoadCancelled, waitForAsset } from './wait-for-asset.js';
@@ -54,6 +57,8 @@ export interface AssetSourceOptions {
 
 export interface AssetLoadOptions {
   readonly signal?: AbortSignal;
+  /** Prefer split Render residency for a static Mesh or a scene's draw-only Mesh references. */
+  readonly usage?: 'render';
 }
 
 interface SourceLoadOptions extends AssetLoadOptions {
@@ -75,13 +80,17 @@ interface OpenedPack {
 /** Packs opened by one closure load, keyed by package URL and publication. */
 type PackScope = Map<string, Promise<Result<OpenedPack, AssetLoadError>>>;
 
-interface SourceEntry {
+export interface SourceEntry {
+  readonly identity: symbol;
   readonly value: unknown;
   readonly kind: string;
   readonly refs: readonly string[];
   readonly references: 'eager' | 'deferred';
   readonly publication: AssetPublicationTuple & AssetPublicationEnvelope;
   readonly digest: string;
+  readonly decoderIdentity: symbol | undefined;
+  readonly meshBody?: PackEnvelope;
+  readonly nativeMesh?: true;
 }
 
 export interface AdoptedAssetSource {
@@ -91,12 +100,60 @@ export interface AdoptedAssetSource {
   readonly source: AssetSource | undefined;
   readonly publication: (AssetPublicationTuple & AssetPublicationEnvelope) | undefined;
   readonly contentKey: string | undefined;
+  readonly decoderIdentity?: symbol | undefined;
+}
+
+export type MeshArtifactStorage = 'publication' | 'retained-bytes';
+export type MeshArtifactFailure = 'source-unavailable' | 'recovery-budget-exceeded';
+
+interface FixedMeshArtifact {
+  readonly bytes: number;
+  readonly storage: MeshArtifactStorage;
+  read(): Promise<MeshAsset>;
+  release(): void;
+  releaseDecodedSource(): void;
+}
+
+export function standaloneMeshBody(envelope: PackEnvelope): { readonly meshBody?: PackEnvelope } {
+  return envelope.kind === 'mesh' &&
+    envelope.artifacts.body?.integrity !== undefined &&
+    Object.keys(envelope.artifacts).length === 1
+    ? { meshBody: envelope }
+    : {};
+}
+
+/** The Geometry decoder receives a private view of this verified standalone body. */
+export async function decodeStandaloneMeshBody(
+  envelope: PackEnvelope,
+  bytes: Uint8Array,
+): Promise<MeshAsset> {
+  return (
+    await meshAssetDecoder.decode({
+      envelope: envelope as AssetDecoderInput<MeshAsset>['envelope'],
+      artifacts: {
+        read: async () => ok(bytes),
+        program: async () => err(artifactError(envelope.guid, 'mesh program')),
+        locate: () => undefined,
+      },
+      signal: new AbortController().signal,
+    })
+  ).unwrap();
+}
+
+function nativeMeshProjection(envelope: RuntimePackEnvelope['assets'][number]): {
+  readonly nativeMesh?: true;
+} {
+  const payload = envelope.payload as Partial<MeshAsset> | null;
+  return envelope.kind === 'mesh' && payload?.vertices instanceof Float32Array
+    ? { nativeMesh: true }
+    : {};
 }
 
 export interface AssetSource {
   readonly catalog: CatalogReplica;
   readonly catalogSource: CatalogSource;
   openLoadScope(): PackScope;
+  withDecodedClosure<T>(guid: string, read: () => Promise<T>): Promise<T>;
   readPack(
     row: CatalogEntry,
     signal: AbortSignal,
@@ -111,8 +168,19 @@ export interface AssetSource {
     pack: RuntimePackEnvelope,
     rows: readonly CatalogEntry[],
     values: ReadonlyMap<string, Asset>,
+    standaloneMeshes: ReadonlySet<string>,
+    decoderIdentities: ReadonlyMap<string, symbol | undefined>,
   ): void;
   trimReadCache(): void;
+  canTakeMesh(root: string, guid: string, entry: SourceEntry): boolean;
+  takeMesh(guid: string): void;
+  retainMeshArtifact(
+    guid: string,
+    expected: AssetPublicationTuple,
+    decoderIdentity: symbol | undefined,
+    signal?: AbortSignal,
+    bodyEnvelope?: SourceEntry['meshBody'],
+  ): Promise<Result<FixedMeshArtifact, MeshArtifactFailure>>;
   invalidate(guid: string): void;
   revision(guid: string): number;
   readPluginDefinition(guid: string): Promise<Result<PluginAssetDefinition, AssetLoadError>>;
@@ -136,9 +204,36 @@ export interface AssetSource {
   ): Promise<Result<P, AssetLoadError>>;
   entry(guid: string): SourceEntry | undefined;
   checkCurrent(guid: string): Result<void, AssetLoadError>;
+  checkCurrentMany(guids: Iterable<string>): Result<void, AssetLoadError>;
   snapshot(): AssetSourceSnapshot;
   subscribe(listener: (snapshot: AssetGraphSnapshot) => void): () => void;
   dispose(): void;
+}
+
+/** A fixed body is deliberately independent of the Catalog and decoder scope. */
+function pinMeshArtifact(
+  budget: RetentionBudget,
+  size: number,
+  storage: MeshArtifactStorage,
+  read: () => Promise<MeshAsset>,
+): Result<Omit<FixedMeshArtifact, 'releaseDecodedSource'>, 'recovery-budget-exceeded'> {
+  budget.settle(Number.POSITIVE_INFINITY, size);
+  if (!budget.fits(size)) return err('recovery-budget-exceeded');
+  let retained: (() => Promise<MeshAsset>) | undefined = read;
+  budget.add(size);
+  return ok({
+    bytes: size,
+    storage,
+    async read() {
+      if (retained === undefined) throw new Error('fixed Mesh artifact was released');
+      return retained();
+    },
+    release() {
+      if (retained === undefined) return;
+      retained = undefined;
+      budget.add(-size);
+    },
+  });
 }
 
 function missing(guid: string): AssetLoadError {
@@ -313,10 +408,10 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     const validated = validateRuntimeRow(row);
     if (!validated.ok) return validated;
     const publication = validated.value.publication;
-    const tuple = {
+    const tuple = freezeRuntimePayload({
       ...publication,
       scopeId: session.scopeId,
-    };
+    });
     const packKey = `${row.packageUrl}\u0000${tuple.scopeId}\u0000${tuple.generation}\u0000${tuple.digest}\u0000${tuple.outputSetDigest}`;
     let opened = scope.get(packKey);
     if (opened === undefined) {
@@ -368,6 +463,8 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       read,
     };
     const input: AssetDecoderInput<unknown> = { envelope, artifacts, signal };
+    const decoderIdentity = decoders.identity(envelope.kind);
+    const references = decoders.referencePolicy(envelope.kind);
     const decoded = await decoders.loadByKind(envelope.kind, input);
     if (!decoded.ok) return decoded;
     if (
@@ -403,14 +500,24 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
           },
         });
     }
+    if (decoders.identity(envelope.kind) !== decoderIdentity)
+      return err({
+        code: 'asset-superseded',
+        expected: 'the decoder used by this source read',
+        hint: 'load with the current decoder lease',
+        detail: { guid, generation: tuple.generation },
+      });
     return ok({
+      identity: Symbol(guid),
       value: freezeRuntimePayload(decoded.value),
       kind: envelope.kind,
+      decoderIdentity,
       // The graph decodes this output's references. The publication fence owns package evidence.
       refs: [...new Set(envelope.refs)],
       publication: tuple,
       digest: output.digest,
-      references: decoders.referencePolicy(envelope.kind),
+      references,
+      ...standaloneMeshBody(envelope),
     });
   };
   const graph = new AssetGraph<SourceEntry, PackScope>({
@@ -456,6 +563,7 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
     catalog: session,
     catalogSource: options.catalog,
     openLoadScope: () => new Map(),
+    withDecodedClosure: (guid, read) => graph.withDecodedClosure(guid, read),
     readPack: (row, signal, fetcher = sourceFetcher(row.packageUrl)) => {
       const validated = validateRuntimeRow(row);
       return validated.ok
@@ -468,6 +576,64 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
         : Promise.resolve(validated);
     },
     readArtifact: storedArtifact,
+    canTakeMesh: (root, guid, entry) =>
+      entry.meshBody !== undefined &&
+      decoders.uses('mesh', meshAssetDecoder) &&
+      entry.decoderIdentity === decoders.identity('mesh') &&
+      graph.canTakeReady(root, guid, entry),
+    takeMesh: (guid) => graph.takeReady(guid),
+    retainMeshArtifact: async (
+      guid,
+      expected,
+      decoderIdentity,
+      signal = lifetime.signal,
+      bodyEnvelope,
+    ) => {
+      if (
+        signal.aborted ||
+        !decoders.uses('mesh', meshAssetDecoder) ||
+        decoderIdentity !== decoders.identity('mesh')
+      )
+        return err('source-unavailable');
+      const row = session.get(guid);
+      const decoded = graph.entry(guid);
+      if (
+        row === undefined ||
+        (bodyEnvelope === undefined &&
+          (decoded === undefined || decoded.decoderIdentity !== decoderIdentity)) ||
+        !checkCurrent(guid, expected).ok
+      )
+        return err('source-unavailable');
+      const fetcher = sourceFetcher(row.packageUrl);
+      const envelope =
+        bodyEnvelope ??
+        decoded?.meshBody ??
+        (decoded && (await generatedMeshBody(row, decoded, guid, signal, fetcher)));
+      const body = envelope?.artifacts.body;
+      if (envelope === undefined || body === undefined) return err('source-unavailable');
+      const pinned = await retainStandaloneMeshBody(
+        row.packageUrl,
+        envelope,
+        body,
+        signal,
+        fetcher,
+      );
+      if (!pinned.ok) return pinned;
+      if (
+        signal.aborted ||
+        decoderIdentity !== decoders.identity('mesh') ||
+        !checkCurrent(guid, expected).ok
+      ) {
+        pinned.value.release();
+        return err('source-unavailable');
+      }
+      return ok({
+        ...pinned.value,
+        releaseDecodedSource: () => {
+          if (decoded) graph.discardReady(guid, decoded);
+        },
+      });
+    },
     trimReadCache: () => {
       bundles.trim();
     },
@@ -475,80 +641,82 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       graph.invalidate(guid);
     },
     revision: (guid) => graph.revision(guid),
-    preparePublication: (pack, rows, values) => {
+    preparePublication: (pack, rows, values, standaloneMeshes, decoderIdentities) => {
       if (pack.scopeId !== session.scopeId)
         throw new TypeError('prepared publication must belong to the configured Catalog scope');
       const prepared = new Map<string, SourceEntry>();
       for (const row of rows) {
+        // The immutable artifact is already prepared and remains available
+        // to a first consumer. Keep no decoded cache for unconsumed meshes.
+        if (standaloneMeshes.has(row.guid)) continue;
         const envelope = pack.assets.find((asset) => asset.guid === row.guid);
         const output = row.publication?.outputs.find((output) => output.guid === row.guid);
         const value = values.get(row.guid);
         if (!envelope || !output || !value || !row.publication)
           throw new TypeError(`missing prepared publication output ${row.guid}`);
         prepared.set(row.guid.toLowerCase(), {
+          identity: Symbol(row.guid),
           value,
           kind: row.kind,
+          decoderIdentity: decoderIdentities.get(row.kind),
           refs: [...new Set(envelope.refs)],
           references: decoders.referencePolicy(row.kind),
-          publication: { ...row.publication, scopeId: session.scopeId },
+          // Prepared rows are the Registry's private captured copies, not caller rows.
+          publication: freezeRuntimePayload({ ...row.publication, scopeId: session.scopeId }),
           digest: output.digest,
+          ...standaloneMeshBody(envelope as PackEnvelope),
+          ...nativeMeshProjection(envelope),
         });
       }
       graph.prepare(prepared);
     },
-    readMeshGeometry: async (guid, loadOptions = {}) => {
-      if (!isValidAssetGuidString(guid)) return err(invalidGuid(guid));
-      const signal = loadOptions.signal ?? lifetime.signal;
-      if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(guid));
-      const started = await startCatalog(guid);
-      if (!started.ok) return started;
-      // Demand only this published output's metadata. References remain checked,
-      // but a CPU source read never admits their render dependency closures.
-      const admitted = await session.require(guid);
-      if (!admitted.ok) return admitted;
-      if (admitted.value.kind !== 'mesh') return err(mismatch(guid, 'mesh', admitted.value.kind));
-      const before = validatePublicationReferences(guid, admitted.value, (key) => session.get(key));
-      if (!before.ok) return before;
-      // First demand may publish the declared output. Capture invalidation only
-      // after that admission, just as ordinary source loads do.
-      const revision = graph.revision(guid);
-      const decoded = await decodeRoot(guid, signal, new Map());
-      if (!decoded.ok) return decoded;
-      if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(guid));
-      const current = checkCurrent(guid, {
-        ...admitted.value.publication,
-        scopeId: session.scopeId,
-      });
-      if (!current.ok) return current;
-      if (graph.revision(guid) !== revision)
-        return err({
-          code: 'asset-superseded',
-          expected: 'the source read to remain current until completion',
-          hint: 'retry the current Mesh publication',
-          detail: { guid, generation: revision },
-        });
-      // Only the CPU geometry leaves; no graph Ready entry or runtime handle is made.
-      const decodedMesh = decoded.value.value as MeshAsset;
-      if (decodedMesh?.kind !== 'mesh')
-        return err(sourceFailure(guid, 'decoder returned another payload kind'));
-      const geometry = prepareMeshData(decodedMesh, guid);
-      if (!geometry.ok) return err(sourceFailure(guid, geometry.error.actual));
-      const mesh = interleavedMesh(decodedMesh);
-      // The decoder handed its output over, but a custom decoder may still hold
-      // its buffers; the public CPU read gives the caller private storage.
-      return ok(
-        copyAssetData({
-          vertices: mesh.vertices,
-          attributes: mesh.attributes,
-          ...(mesh.attributeStorage === undefined
-            ? {}
-            : { attributeStorage: mesh.attributeStorage }),
-          submeshes: mesh.submeshes,
-          ...(mesh.indices === undefined ? {} : { indices: mesh.indices }),
-          ...(mesh.aabb === undefined ? {} : { aabb: mesh.aabb }),
-        }),
-      );
-    },
+    readMeshGeometry: (guid, loadOptions = {}) =>
+      graph.withDecodedClosure(guid, async () => {
+        if (!isValidAssetGuidString(guid)) return err(invalidGuid(guid));
+        const signal = loadOptions.signal ?? lifetime.signal;
+        if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(guid));
+        const started = await startCatalog(guid);
+        if (!started.ok) return started;
+        // Demand only this published output's metadata. References remain checked,
+        // but a CPU source read never admits their render dependency closures.
+        const admitted = await session.require(guid);
+        if (!admitted.ok) return admitted;
+        if (admitted.value.kind !== 'mesh') return err(mismatch(guid, 'mesh', admitted.value.kind));
+        const before = validatePublicationReferences(guid, admitted.value, (key) =>
+          session.get(key),
+        );
+        if (!before.ok) return before;
+        // First demand may publish the declared output. Capture invalidation only
+        // after that admission, just as ordinary source loads do.
+        const revision = graph.revision(guid);
+        const decoderIdentity = decoders.identity('mesh');
+        const decoded = await graph.readOutput(
+          guid,
+          signal,
+          (entry) => decoderIdentity !== undefined && entry.decoderIdentity === decoderIdentity,
+        );
+        if (!decoded.ok) return decoded;
+        if (signal.aborted || lifetime.signal.aborted) return err(assetLoadCancelled(guid));
+        const requested = admitted.value.publication;
+        const actual = decoded.value.publication;
+        if (
+          graph.revision(guid) !== revision ||
+          decoded.value.decoderIdentity !== decoders.identity('mesh') ||
+          actual.generation !== requested.generation ||
+          actual.digest !== requested.digest ||
+          actual.outputSetDigest !== requested.outputSetDigest
+        )
+          return err({
+            code: 'asset-superseded',
+            expected: 'the source read to remain current until completion',
+            hint: 'retry the current Mesh publication',
+            detail: { guid, generation: revision },
+          });
+        const current = checkCurrent(guid, actual);
+        if (!current.ok) return current;
+        // Only the CPU geometry leaves; no graph Ready entry or runtime handle is made.
+        return copyCpuMeshGeometry(guid, decoded.value.value);
+      }),
     readPluginDefinition: async (guid) => {
       const loaded = await registry.load(guid, 'plugin');
       if (!loaded.ok) return loaded;
@@ -588,8 +756,16 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
           graph.invalidate(guid);
           return before;
         }
+        invalidateRetiredDecoders(guid);
         const result = await graph.load(guid, loadOptions.signal, loadOptions.readScope);
         if (!result.ok) return result;
+        if (invalidateRetiredDecoders(guid))
+          return err({
+            code: 'asset-superseded' as const,
+            expected: 'the decoded closure to keep its exact owner leases',
+            hint: 'load the closure with current decoders',
+            detail: { guid, generation: graph.revision(guid) },
+          });
         const current = checkCurrent(guid, result.value.publication);
         if (!current.ok) return current;
         const after = validatePublicationReferences(guid, row, (guid) => session.get(guid));
@@ -608,6 +784,20 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       const entry = graph.entry(guid);
       return entry === undefined ? err(missing(guid)) : checkCurrent(guid, entry.publication);
     },
+    checkCurrentMany: (guids) => {
+      const rows: [string, CatalogEntry | undefined][] = [];
+      for (const guid of guids) {
+        const entry = graph.entry(guid);
+        if (entry === undefined) return err(missing(guid));
+        const current = checkCurrentIdentity(guid, entry.publication);
+        if (!current.ok) return current;
+        rows.push([guid, current.value]);
+      }
+      const references = validatePublicationReferenceRoots(rows, (guid) => session.get(guid));
+      if (!references.ok && references.error.code === 'asset-dependency-failed')
+        graph.invalidate(references.error.detail.guid);
+      return references;
+    },
     snapshot: () => snapshot(),
     subscribe: (listener) => graph.subscribe(listener),
     dispose: () => {
@@ -622,6 +812,46 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       session.dispose();
     },
   };
+  // Native Runtime Pack meshes have a producer-owned cooked transport
+  // projection under the same immutable publication as their verified value.
+  async function generatedMeshBody(
+    row: CatalogEntry,
+    decoded: SourceEntry,
+    guid: string,
+    signal: AbortSignal,
+    fetcher: PackageFetcher,
+  ): Promise<PackEnvelope | undefined> {
+    if (!decoded.nativeMesh) return undefined;
+    const pack = await reader.read(row.packageUrl, decoded.publication, signal, fetcher);
+    if (!pack.ok) return undefined;
+    const envelope = pack.value.assets.find((output) => output.guid.toLowerCase() === guid);
+    return envelope && standaloneMeshBody(envelope).meshBody;
+  }
+
+  async function retainStandaloneMeshBody(
+    packageUrl: string,
+    envelope: PackEnvelope,
+    descriptor: ArtifactDescriptor,
+    signal: AbortSignal,
+    fetcher: PackageFetcher,
+  ): Promise<Result<Omit<FixedMeshArtifact, 'releaseDecodedSource'>, MeshArtifactFailure>> {
+    const request = { packageUrl, guid: envelope.guid, artifactKey: descriptor.path, descriptor };
+    if (descriptor.byteRange === undefined && descriptor.byteLength !== undefined) {
+      const fixed = options.catalog.retainArtifact?.(packageUrl, descriptor.path);
+      if (fixed !== undefined)
+        return pinMeshArtifact(retained, descriptor.byteLength, 'publication', async () => {
+          const bytes = (await readArtifact(request, fixed)).unwrap();
+          return decodeStandaloneMeshBody(envelope, bytes);
+        });
+    }
+    const result = await storedArtifact(request, signal, fetcher);
+    if (!result.ok) return err('source-unavailable');
+    const bytes = result.value.decoded;
+    return pinMeshArtifact(retained, bytes.byteLength, 'retained-bytes', () =>
+      decodeStandaloneMeshBody(envelope, bytes.slice()),
+    );
+  }
+
   function snapshot(): AssetSourceSnapshot {
     return {
       ...graph.snapshot(),
@@ -631,16 +861,48 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       bundleTransfers: bundles.transfers.snapshot(),
     };
   }
+
+  /** A cached payload must not be relabelled as the result of a newly installed decoder. */
+  function invalidateRetiredDecoders(root: string): boolean {
+    const visited = new Set<string>(),
+      retired: string[] = [],
+      pending = [root];
+    while (pending.length > 0) {
+      const key = pending.pop() as string;
+      if (visited.has(key)) continue;
+      visited.add(key);
+      const entry = graph.entry(key);
+      if (entry === undefined) continue;
+      if (entry.decoderIdentity !== decoders.identity(entry.kind)) retired.push(key);
+      if (entry.references === 'eager') for (const child of entry.refs) pending.push(child);
+    }
+    for (const key of retired) graph.invalidate(key);
+    return retired.length > 0;
+  }
   function checkCurrent(
     guid: string,
     expected: AssetPublicationTuple,
   ): Result<void, AssetLoadError> {
+    const current = checkCurrentIdentity(guid, expected);
+    if (!current.ok) return current;
+    const references = validatePublicationReferences(guid, current.value, (guid) =>
+      session.get(guid),
+    );
+    if (!references.ok) graph.invalidate(guid);
+    return references;
+  }
+  function checkCurrentIdentity(
+    guid: string,
+    expected: AssetPublicationTuple,
+  ): Result<CatalogEntry, AssetLoadError> {
     const row = session.get(guid);
     const actual = row?.publication;
     if (
       session.isStale ||
       expected.scopeId !== session.scopeId ||
-      actual?.generation !== expected.generation ||
+      row === undefined ||
+      actual === undefined ||
+      actual.generation !== expected.generation ||
       actual.digest !== expected.digest ||
       actual.outputSetDigest !== expected.outputSetDigest
     ) {
@@ -652,11 +914,31 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
         detail: { guid, generation: expected.generation },
       });
     }
-    const references = validatePublicationReferences(guid, row, (guid) => session.get(guid));
-    if (!references.ok) graph.invalidate(guid);
-    return references;
+    return ok(row);
   }
   return registry;
+}
+
+function copyCpuMeshGeometry(guid: string, payload: unknown): Result<MeshGeometry, AssetLoadError> {
+  const decodedMesh = payload as MeshAsset;
+  if (decodedMesh?.kind !== 'mesh')
+    return err(sourceFailure(guid, 'decoder returned another payload kind'));
+  const geometry = prepareMeshData(decodedMesh, guid);
+  if (!geometry.ok) return err(sourceFailure(guid, geometry.error.actual));
+  const mesh = interleavedMesh(decodedMesh);
+  // A custom decoder can retain its buffers. Reuse only storage just created
+  // by the physical-to-canonical projection.
+  const details = copyAssetData({
+    attributes: mesh.attributes,
+    attributeStorage: 'interleaved' as const,
+    submeshes: mesh.submeshes,
+    ...(mesh.indices === undefined ? {} : { indices: mesh.indices }),
+    ...(mesh.aabb === undefined ? {} : { aabb: mesh.aabb }),
+  });
+  return ok({
+    ...details,
+    vertices: mesh.vertices === decodedMesh.vertices ? copyAssetData(mesh.vertices) : mesh.vertices,
+  });
 }
 
 function resolveArtifactUrl(packageUrl: string, path: string): string {

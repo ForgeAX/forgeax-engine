@@ -7,10 +7,17 @@ const viewDeclaration = source('common.wgsl').match(
   /struct AtmosphereMedium \{[\s\S]*?\n\};\nstruct View \{[\s\S]*?\n\};/,
 )?.[0];
 if (viewDeclaration === undefined) throw Error('Missing production View declaration');
-const aerialEnabled = source('common.wgsl').match(
-  /fn view_atmosphere_aerial_enabled\([\s\S]*?\n\}/,
-)?.[0];
-if (aerialEnabled === undefined) throw Error('Missing production aerial admission function');
+const atmosphereFlags = [
+  'view_atmosphere_aerial_enabled',
+  'view_atmosphere_fast_ap',
+  'view_atmosphere_affects_height_fog',
+]
+  .map((name) => {
+    const body = source('common.wgsl').match(new RegExp(`fn ${name}\\([\\s\\S]*?\\n\\}`))?.[0];
+    if (body === undefined) throw Error(`Missing production View helper ${name}`);
+    return body;
+  })
+  .join('\n');
 
 const width = 32;
 const height = 8;
@@ -49,7 +56,7 @@ struct Vertex { @builtin(position) clip: vec4f, @location(0) fog: f32 }
   return vec4f(forward_fog(frame(),vec3f(0,0,-10),in.fog,vec3f(0),1),1);
 }`,
     {
-      'forgeax_view::common': `#define_import_path forgeax_view::common\n${viewDeclaration}\n${aerialEnabled}`,
+      'forgeax_view::common': `#define_import_path forgeax_view::common\n${viewDeclaration}\n${atmosphereFlags}`,
       'forgeax_view::fog': source('fog.wgsl'),
       'forgeax_view::atmosphere': `#define_import_path forgeax_view::atmosphere
 #import forgeax_view::common::{View}
@@ -261,7 +268,7 @@ struct Output { @builtin(position) clip: vec4<f32>, @location(0) transmittance: 
   }
 }`,
       {
-        'forgeax_view::common': `#define_import_path forgeax_view::common\n${viewDeclaration}\n${aerialEnabled}`,
+        'forgeax_view::common': `#define_import_path forgeax_view::common\n${viewDeclaration}\n${atmosphereFlags}`,
         'forgeax_view::fog': source('fog.wgsl'),
         // This owner tests ordinary height fog only. Full atmosphere has its
         // maintained transport owners and is deliberately not evaluated here.

@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { it } from 'vitest';
 import { shaderManifestUrl } from '../../../../runtime/src/__tests__/shader-manifest-url.fixture';
 import { prepareDiffuseReconstructionFixture } from './diffuse-reconstruction.commands';
@@ -7,7 +7,7 @@ import { verifyDiffuseReconstruction } from './diffuse-reconstruction.fixture';
 import { loadPublishedRayKernels } from './published-kernels.fixture';
 
 const published = await loadPublishedRayKernels(
-  shaderManifestUrl(await buildEngineShaderManifest()),
+  shaderManifestUrl(await buildEngineShaderTemplateManifest()),
 );
 
 it('rejects incompatible history and reconstructs raw diffuse with exact history replay', async () => {

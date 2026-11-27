@@ -4,6 +4,7 @@ import { materialShaderSource } from '../manifest-publication.js';
 import { publishShaderProgramTemplates, type ShaderProgramCompiler } from '../program-template.js';
 import {
   materialShaderPreparedSourceRows,
+  prepareMaterialShaderTemplateVariant,
   type ShaderTemplateManifest,
   shaderTemplateVariantEntry,
 } from '../program-template-manifest.js';
@@ -68,6 +69,41 @@ function compiler() {
   );
   return { profile, compile };
 }
+
+it('requests one exact source selection and shares the in-flight result through device forks', async () => {
+  const reference = compiler();
+  const compile = vi.fn<ShaderProgramCompiler['compile']>();
+  const compileAsync = vi.fn(async (...args: Parameters<ShaderProgramCompiler['compile']>) =>
+    reference.compile(...args),
+  );
+  const registry = new ShaderRegistry({
+    manifestUrl: '/worker-materials',
+    readText: async () => JSON.stringify(wire()),
+    programCompiler: { profile, compile, compileAsync },
+  });
+  (await registry.loadManifest()).unwrap();
+  const fork = registry.forkForDevice({} as never);
+  const family = registry.materialShaderManifestEntry('test::compute');
+  const receiving = fork.materialShaderManifestEntry('test::compute');
+  if (family === undefined || receiving === undefined) throw new Error('Missing program family');
+  const row = findVariantByDefines(family, { RED: true });
+  const forkRow = findVariantByDefines(receiving, { RED: true });
+  if (row === undefined || forkRow === undefined) throw new Error('Missing selected program');
+  expect(prepareMaterialShaderTemplateVariant(row).unwrap()).toBe(false);
+  expect(compileAsync).toHaveBeenCalledExactlyOnceWith(expect.anything(), { RED: true });
+  expect(prepareMaterialShaderTemplateVariant(forkRow).unwrap()).toBe(false);
+  expect(fork.resolveProgramTemplate('test::compute', { RED: true })).toMatchObject({
+    ok: false,
+    error: { code: 'shader-not-found', hint: expect.stringContaining('preparation is pending') },
+  });
+  (await fork.pendingTemplatePreparations())?.unwrap();
+  expect(prepareMaterialShaderTemplateVariant(row).unwrap()).toBe(true);
+  expect(materialShaderSource(row)).toBe(materialShaderSource(forkRow));
+  expect(materialShaderSource(row).read()).toContain('1u');
+  expect(compile).not.toHaveBeenCalled();
+  expect(compileAsync).toHaveBeenCalledExactlyOnceWith(expect.anything(), { RED: true });
+  expect(registry.pendingTemplatePreparations()).toBeUndefined();
+});
 
 it('admits material selections without composition and transfers their CPU recipes independently of the original registry', async () => {
   const service = compiler();
@@ -193,6 +229,24 @@ it('loads source declarations atomically, selects exact keys and keeps per-devic
   expect(childDevice.createShaderModule).toHaveBeenCalledTimes(1);
   expect(service.compile).toHaveBeenCalledTimes(2);
   expect(registry.programTemplateInspection().requests).toBe(requests + 1);
+});
+
+it('selects a native shader template when performance is absent', async () => {
+  const service = compiler();
+  const registry = new ShaderRegistry({
+    manifestUrl: '/native-no-performance',
+    readText: async () => JSON.stringify(wire()),
+    programCompiler: service,
+  });
+  (await registry.loadManifest()).unwrap();
+  registry.installMaterialManifestTemplate('test::compute', 'RED=false').unwrap();
+
+  vi.stubGlobal('performance', undefined);
+  try {
+    expect(registry.findMaterialArtifact('test::compute').unwrap().source).toContain('2u');
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 it('keeps the compiled publication at a shared URL when another host loads templates', async () => {

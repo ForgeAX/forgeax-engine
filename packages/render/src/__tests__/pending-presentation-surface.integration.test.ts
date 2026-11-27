@@ -31,7 +31,7 @@ it.each(
 }) => {
   const device: RhiDevice = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const releases: (() => void)[] = [];
-  let hold = domain === 'display';
+  let hold = false;
   let compileFailure: RhiError | undefined;
   const create = device.createRenderPipeline.bind(device);
   device.createRenderPipelineAsync = vi.fn(async (descriptor: RenderPipelineDescriptor) => {
@@ -73,6 +73,8 @@ it.each(
     { shaderManifestUrl: renderLifecycleManifestUrl() },
   );
   expect((await host.initialization).ok).toBe(true);
+  // The controlled gate owns frame preparation, after initialization has settled.
+  hold = domain === 'display';
   const renderer = exposeRenderer(host);
   try {
     const assets = host.assetRegistry;
@@ -191,6 +193,33 @@ it.each(
       expect(acquisitions - before).toBe(ready ? 1 : drawnWhilePending);
     }
     expect(ready).toBe(true);
+    // Optional GI can still compile while the ordinary direct picture is ready.
+    // Keep drawing non-blocking, but retain the actual backend wait signal.
+    let finishRuntime!: () => void;
+    const runtimeCompilation = new Promise<ReturnType<typeof ok<void>>>((resolve) => {
+      finishRuntime = () => resolve(ok(undefined));
+    });
+    Object.assign(device, {
+      pipelineLibrary: { pendingRuntimeCompilation: () => runtimeCompilation },
+    });
+    try {
+      const direct = await draw();
+      expect(direct.presentation).toBe('ready');
+      const completion = direct.preparationCompleted;
+      expect(completion, 'ready picture retains pending GI/native compilation').toBeDefined();
+      let settled = false;
+      void completion?.then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      finishRuntime();
+      expect((await completion)?.ok).toBe(true);
+      expect(direct.presentation).toBe('ready');
+    } finally {
+      finishRuntime();
+      Reflect.deleteProperty(device, 'pipelineLibrary');
+    }
   } finally {
     hold = false;
     for (const resolve of releases.splice(0)) resolve();

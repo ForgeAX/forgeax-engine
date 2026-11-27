@@ -14,8 +14,8 @@ import { createMaterialShaderProgram } from '../material/program';
 import { DEFAULT_STANDARD_PBR_PARAM_SCHEMA } from '../material-schemas.js';
 
 const builtinSources = [
-  'default-standard-pbr.wgsl',
-  'default-standard-pbr-skin.wgsl',
+  'material/standard-surface-maps.wgsl',
+  'standard-displacement.wgsl',
   'unlit.wgsl',
   'sprite.wgsl',
   'sprite-lit.wgsl',
@@ -97,41 +97,13 @@ describe('built-in MaterialAsset sources', () => {
   it.each([
     'default-standard-pbr.wgsl',
     'default-standard-pbr-skin.wgsl',
-  ] as const)('keeps the Standard user-region ABI before Skylight in %s', (file) => {
+  ] as const)('keeps texture availability out of the Standard pass template %s', (file) => {
     const text = source(file);
-    const bindings = [
-      'baseColorTexture_sampler',
-      'baseColorTexture',
-      'metallicRoughnessTexture_sampler',
-      'metallicRoughnessTexture',
-      'normalTexture_sampler',
-      'normalTexture',
-      'emissiveTexture_sampler',
-      'emissiveTexture',
-      'occlusionTexture_sampler',
-      'occlusionTexture',
-      'transmissionSampler',
-      'transmissionTexture',
-      'thicknessSampler',
-      'thicknessTexture',
-      'irradianceMap',
-    ];
-    let previous = -1;
-    for (const name of bindings) {
-      const index = new RegExp(`\\bvar\\s+${name}\\s*:`).exec(text)?.index ?? -1;
-      expect(index, `${file} must declare ${name}`).toBeGreaterThan(previous);
-      previous = index;
-    }
-    expect(text).toContain('@binding(13) var transmissionSampler');
-    expect(text).toContain('@binding(16) var thicknessTexture');
-    expect(text).toContain('@binding(17) var irradianceMap');
-    expect(text).toMatch(
-      /#ifdef SPECULAR_COLOR_TEXTURE_AVAILABLE\s+@group\(1\) @binding\(44\) var specularColorSampler/u,
-    );
-    expect(text).toMatch(
-      /#ifdef SPECULAR_COLOR_TEXTURE_AVAILABLE[\s\S]*?@group\(1\) @binding\(45\) var specularColorTexture/u,
-    );
-    expect(text).not.toMatch(/@binding\((?:7|8)\) var specularColorTexture/u);
+    expect(text).not.toMatch(/^#if(?:n?def)?\s+\w+_TEXTURE_AVAILABLE\b/m);
+    expect(text).not.toMatch(/var\s+displacementTexture(?:_sampler)?\s*:/);
+    expect(text).toContain('#import forgeax_material::standard_physical_inputs');
+    expect(text).toContain('@group(0) @binding(34) var<uniform> skySh');
+    expect(text).toMatch(/@group\(2\) @binding\(32\) var prefilterMap\s*:/);
   });
 });
 

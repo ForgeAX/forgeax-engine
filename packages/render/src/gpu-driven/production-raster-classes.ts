@@ -18,10 +18,12 @@ import {
   GPU_BUFFER_USAGE_VERTEX,
 } from '../gpu-usage';
 import { artifactAlphaMask, maskedInEarlyPassVariantSet } from '../material-alpha-mask';
+import { requireStandardGBufferReceipt } from '../material-program-inputs';
 import { seededDepthRenderState } from '../material-render-state';
 import { rasterColorFormat } from '../material-stage-constants';
 import { SKIN_UNCOVERED_GBUFFER_ENTRY } from '../pbr-pipeline';
-import { PREDEPTH_FRAGMENT_ENTRY, predepthFragmentEntry } from '../predepth-coverage';
+import { isForwardShadowColorEntry } from '../pipeline/forward-shadow-admission';
+import { PREDEPTH_FRAGMENT_ENTRY } from '../predepth-coverage';
 import {
   geometryRenderStateForPass,
   variantSetForCoveragePass,
@@ -37,7 +39,11 @@ import type { LiveRasterBatch } from './live-raster';
 import { withFrameLighting } from './pbr-program';
 import type { MaterialAbiRasterAdapter } from './production-raster-material';
 import type { PreparedBatch } from './production-raster-prepare';
-import { gpuRasterFilterMatches, gpuTemporalEligible } from './raster-selection';
+import {
+  gpuRasterFilterMatches,
+  gpuTemporalEligible,
+  isVelocityRasterEntry,
+} from './raster-selection';
 
 type MaterialPipelineFactory = NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>;
 
@@ -51,12 +57,13 @@ export type RasterPipelineFor = (
 
 export interface ProjectedRasterPipelines {
   readonly pipelineFor: RasterPipelineFor;
-  readonly aoInputPipelineFor: RasterPipelineFor;
   readonly predepthPipelineFor: RasterPipelineFor;
-  readonly aoInputMsaaPipelineFor: RasterPipelineFor;
   readonly temporalPipelineFor: RasterPipelineFor;
+  readonly sceneVelocityPipelineFor: RasterPipelineFor;
+  readonly temporalDepthPipelineFor: RasterPipelineFor;
   readonly coveragePipelineFor: RasterPipelineFor;
   readonly gbufferPipelineFor: RasterPipelineFor;
+  readonly compactGbufferPipelineFor: RasterPipelineFor;
   /** Forward entry for the unfogged base View slot; equals `pipelineFor` for authored entries. */
   readonly opaquePipelineFor: RasterPipelineFor;
   /** Forward colour entries over a prepass-seeded depth (see seededDepthRenderState). */
@@ -76,7 +83,9 @@ export interface ProjectedRasterClass {
   renderState: MaterialRenderState | undefined;
   diagnosticSourceDigest?: string;
   readonly artifact: MaterialShaderArtifact;
-  readonly mesh: MeshGpuHandles;
+  /** Raw authored graphs import this mesh. A stock command binds its live draw row. */
+  readonly mesh?: MeshGpuHandles;
+  cameraVisit?: boolean;
   readonly vertex?: GraphBuffer;
   readonly index?: GraphBuffer;
   readonly meshBindGroup: BindGroup;
@@ -95,7 +104,7 @@ export interface ProjectedRasterClass {
 export interface RasterPipelineShape {
   readonly predepthCovered: boolean;
   readonly raster: MaterialAbiRasterAdapter;
-  readonly prepared: PreparedBatch;
+  readonly prepared: PreparedBatch | undefined;
   readonly artifact: MaterialShaderArtifact;
   readonly deformation: 'rigid' | 'skin';
   readonly format: TextureFormat;
@@ -112,6 +121,7 @@ export interface RasterPipelineShape {
   readonly visibleSurface: boolean;
   readonly directionalShadowSimple?: boolean;
   readonly leanLighting?: boolean;
+  readonly forwardInlineSsr?: boolean;
 }
 
 export function isSingleLayerMediumArtifact(artifact: MaterialShaderArtifact): boolean {
@@ -130,6 +140,7 @@ export function rasterPipelineShapeKey(shape: RasterPipelineShape): string | und
     shape.topology,
     shape.directionalShadowSimple === true,
     shape.leanLighting === true,
+    shape.forwardInlineSsr === true,
     shape.stripIndexFormat ?? '',
     shape.renderState ?? null,
     shape.standardTextureMask ?? -1,
@@ -160,7 +171,7 @@ function fragmentArtifact(
   return {
     ...artifact,
     fragmentEntry,
-    ...(fragmentEntry === 'fs_temporal' ? { vertexEntry: 'vs_temporal' } : {}),
+    ...(isVelocityRasterEntry(fragmentEntry) ? { vertexEntry: 'vs_temporal' } : {}),
     ...(coverageOnly
       ? { variantSet: variantSetForCoveragePass(artifact.variantSet, true) ?? '' }
       : {}),
@@ -179,7 +190,7 @@ function shapeRenderState(
     return seededDepthRenderState(renderState, artifactAlphaMask(shape.artifact.variantSet));
   return geometryRenderStateForPass(
     renderState,
-    selected.fragmentEntry === 'fs_temporal' ? 'temporal' : 'forward',
+    isVelocityRasterEntry(selected.fragmentEntry) ? 'temporal' : 'forward',
     coverageOnly,
     undefined,
     selected.fragmentEntry,
@@ -221,7 +232,8 @@ function pipelineForFragment(
   forwardColorPass = false,
   seededDepth = false,
 ): RasterPipelineFor {
-  let projectedPipelines: Map<string, ResultOk<RenderPipeline>> | undefined;
+  // At most four variants per actual attachment tuple (samples x primed depth).
+  let projectedPipelines: Map<string, (ResultOk<RenderPipeline> | undefined)[]> | undefined;
   let generalArtifact: MaterialShaderArtifact | undefined;
   let selectedArtifact: MaterialShaderArtifact | undefined;
   let renderState: MaterialRenderState | undefined;
@@ -231,19 +243,22 @@ function pipelineForFragment(
     preparation: boolean,
     sampleCount: 1 | 4,
   ) => {
-    const { prepared } = shape;
+    const layout = shape.layoutProjection ?? shape.prepared?.mesh.layoutProjection;
+    const topology = shape.topology ?? shape.prepared?.batch.key.topology;
+    if (layout === undefined || topology === undefined)
+      throw new Error('A raster pipeline needs its admitted vertex layout and topology');
     return shape.raster.pipeline(
       rasterColorFormat(formats, shape.format),
       sampleCount,
-      shape.layoutProjection ?? prepared.mesh.layoutProjection,
+      layout,
       // The producer receipt owns the selected shader's UV ABI.
       shape.shaderUvSetCount,
-      shape.topology ?? prepared.batch.key.topology,
+      topology,
       shape.stripIndexFormat,
       renderState,
       artifact,
       formats.slice(1),
-      shape.rendererRecording ? shape.standardTextureMask : prepared.standardTextureMask,
+      shape.rendererRecording ? shape.standardTextureMask : shape.prepared?.standardTextureMask,
       forwardColorPass,
       preparation ? shape.preparationFactory : undefined,
       shape.standardSurfaceDiscards,
@@ -256,8 +271,10 @@ function pipelineForFragment(
     sampleCount = shape.sampleCount,
     opaqueDepthPrimed = false,
   ) => {
-    const key = `${formatKey ?? formats.join(',')}|${sampleCount}|${opaqueDepthPrimed ? 1 : 0}`;
-    const projected = projectedPipelines?.get(key);
+    const key = formatKey ?? formats.join(',');
+    const variant = (sampleCount === 4 ? 2 : 0) + Number(opaqueDepthPrimed);
+    let variants = projectedPipelines?.get(key);
+    const projected = variants?.[variant];
     if (projected !== undefined) return shape.rendererRecording ? projected : ok(projected.value);
     // Unused G-buffer, temporal and coverage entries need no artifact copy.
     if (generalArtifact === undefined) {
@@ -279,6 +296,7 @@ function pipelineForFragment(
           generalArtifact,
           shape.directionalShadowSimple === true,
           shape.leanLighting === true,
+          shape.forwardInlineSsr === true,
         )
       : generalArtifact;
     const selected = build(selectedArtifact, formats, preparation, sampleCount);
@@ -287,12 +305,16 @@ function pipelineForFragment(
     // the fallback is not retained, so the selected PSO takes over once ready.
     if (!selected.ok && selectedArtifact !== generalArtifact) {
       const general = build(generalArtifact, formats, preparation, sampleCount);
-      if (general.ok) return shape.rendererRecording ? general : ok(general.value);
+      if (general.ok && !preparation) return shape.rendererRecording ? general : ok(general.value);
     }
     if (selected.ok) {
       projectedPipelines ??= new Map();
       // Retain an owned result; an RHI result may observe value reads.
-      projectedPipelines.set(key, ok(selected.value));
+      if (variants === undefined) {
+        variants = [];
+        projectedPipelines.set(key, variants);
+      }
+      variants[variant] = ok(selected.value);
     }
     return selected;
   };
@@ -301,14 +323,7 @@ function pipelineForFragment(
 export function createRasterPipelines(shape: RasterPipelineShape): ProjectedRasterPipelines {
   const { artifact } = shape;
   const pipelineFor = pipelineForFragment(shape, undefined, false, true);
-  const aoInputPipelineFor = pipelineForFragment(shape, 'fs_ao_input');
-  const depthOnlyPipelineFor = pipelineForFragment(shape, predepthFragmentEntry(artifact));
-  // A single-sample normal reader shares the same primary depth rasterization.
-  // The dedicated depth fragment has no color output, so select the coverage
-  // equivalent AO entry when this pass declares its normal attachment.
-  const predepthPipelineFor: RasterPipelineFor = (formats, ...args) =>
-    (formats.length === 0 ? depthOnlyPipelineFor : aoInputPipelineFor)(formats, ...args);
-  const aoInputMsaaPipelineFor = pipelineForFragment(shape, 'fs_ao_input_msaa');
+  const predepthPipelineFor = pipelineForFragment(shape, PREDEPTH_FRAGMENT_ENTRY);
   // Only the template forward entry has an fs_opaque twin; an authored
   // fragment entry keeps its own pipeline.
   const templateEntry =
@@ -322,7 +337,8 @@ export function createRasterPipelines(shape: RasterPipelineShape): ProjectedRast
     const entry =
       templateEntry &&
       (fragmentEntryPoint === STANDARD_OPAQUE_FRAGMENT_ENTRY ||
-        fragmentEntryPoint === STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY)
+        fragmentEntryPoint === STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY ||
+        isForwardShadowColorEntry(fragmentEntryPoint))
         ? fragmentEntryPoint
         : undefined;
     let pipeline = seeded.get(entry);
@@ -338,22 +354,28 @@ export function createRasterPipelines(shape: RasterPipelineShape): ProjectedRast
       ? SKIN_UNCOVERED_GBUFFER_ENTRY
       : 'fs_gbuffer',
   );
+  const compact = pipelineForFragment(shape, 'fs_gbuffer_compact');
+  const compactGbufferPipelineFor: RasterPipelineFor = (...args) => {
+    requireStandardGBufferReceipt(artifact.receipt, true);
+    return compact(...args);
+  };
   const temporalPipelineFor = pipelineForFragment(shape, 'fs_temporal');
   // Output-domain TAAU coverage reuses the culled/LOD-selected indirect rows;
   // only the binary variant and depth writes differ.
   const coveragePipelineFor = pipelineForFragment(shape, 'fs_temporal', true);
   const pipelines = {
     pipelineFor,
-    aoInputPipelineFor,
     predepthPipelineFor,
-    aoInputMsaaPipelineFor,
     opaquePipelineFor,
     seededPipelineFor,
     screenPipelineFor: templateEntry
       ? pipelineForFragment(shape, STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY, false, true)
       : pipelineFor,
     gbufferPipelineFor,
+    compactGbufferPipelineFor,
     temporalPipelineFor,
+    sceneVelocityPipelineFor: pipelineForFragment(shape, 'fs_scene_velocity'),
+    temporalDepthPipelineFor: pipelineForFragment(shape, 'fs_temporal_depth'),
     coveragePipelineFor,
   };
   if (!isSingleLayerMediumArtifact(artifact)) return pipelines;
@@ -373,16 +395,18 @@ export function selectRasterPipeline(
   const { pipelines } = batch;
   if (seededDepth) return pipelines.seededPipelineFor(fragmentEntryPoint);
   switch (fragmentEntryPoint) {
+    case 'fs_scene_velocity':
+      return pipelines.sceneVelocityPipelineFor;
+    case 'fs_temporal_depth':
+      return pipelines.temporalDepthPipelineFor;
     case 'fs_temporal':
       return coverageOnly ? pipelines.coveragePipelineFor : pipelines.temporalPipelineFor;
     case 'fs_gbuffer':
       return pipelines.gbufferPipelineFor;
+    case 'fs_gbuffer_compact':
+      return pipelines.compactGbufferPipelineFor;
     case PREDEPTH_FRAGMENT_ENTRY:
       return pipelines.predepthPipelineFor;
-    case 'fs_ao_input':
-      return pipelines.aoInputPipelineFor;
-    case 'fs_ao_input_msaa':
-      return pipelines.aoInputMsaaPipelineFor;
     case 'fs_nearest_layer':
       return pipelines.nearestPipelineFor ?? pipelines.pipelineFor;
     case 'fs_color':
@@ -458,12 +482,15 @@ export function rasterClassFor(
   }
   if (hasNoForwardOutput(batch, rendererRecording, fragmentEntryPoint, coverageOnly))
     return undefined;
+  if (rendererRecording && fragmentEntryPoint === PREDEPTH_FRAGMENT_ENTRY && !batch.predepthCovered)
+    return undefined;
   if (
-    fragmentEntryPoint === 'fs_temporal' &&
+    isVelocityRasterEntry(fragmentEntryPoint) &&
     !gpuTemporalEligible(
       batch.artifact.material,
       batch.deformation,
       live.batch.lod?.coverages.length ?? 0,
+      filter,
     )
   )
     return undefined;

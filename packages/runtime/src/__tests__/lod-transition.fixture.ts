@@ -48,7 +48,11 @@ export async function verifyLodTransition(
   const lease = value(renderer.attach(world));
   const profile = renderer.inspect().profile;
   value(
-    renderer.setProfile({ ...profile, renderPath: options.renderPath ?? 'forward', ssao: false }),
+    renderer.setProfile({
+      ...profile,
+      renderPath: options.renderPath ?? 'forward',
+      ambientOcclusion: { enabled: false },
+    }),
   );
   const errors: unknown[] = [];
   const off = renderer.subscribe((event) => {

@@ -7,6 +7,7 @@ import type {
 } from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-types';
 import { RAY_ACCUMULATION_STRIDE } from './path-tracer';
+import { prepareRenderPipeline } from './prepare-pipeline';
 import { rayReferenceFailure } from './scene';
 
 /** One raster frame's G-buffer, response and the matching world radiance. */
@@ -18,6 +19,7 @@ interface RayReflectionCompositeInputs {
   readonly depth: TextureView;
   readonly normal: TextureView;
   readonly response: TextureView;
+  readonly previous: TextureView;
 }
 
 const ADDITIVE = {
@@ -29,7 +31,7 @@ const ADDITIVE = {
 };
 
 /** Adds world specular into linear HDR and the SSR-replaceable reflection fallback. */
-export function createRayReflectionComposite(
+export async function createRayReflectionComposite(
   device: RhiDevice,
   module: ShaderModule,
   signal: 'raw' | 'reconstructed' | 'field',
@@ -41,30 +43,40 @@ export function createRayReflectionComposite(
       { binding: 2, visibility: 2, texture: { sampleType: 'depth' } },
       { binding: 3, visibility: 2, texture: { sampleType: 'uint' } },
       { binding: 4, visibility: 2, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 5, visibility: 2, texture: { sampleType: 'unfilterable-float' } },
     ],
   });
   if (!layout.ok) return layout;
   const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
   if (!pipelineLayout.ok) return pipelineLayout;
-  const pipeline = device.createRenderPipeline({
-    label: 'ray-reflection.composite',
-    layout: pipelineLayout.value,
-    vertex: { module, entryPoint: 'vs_ray_reflection', buffers: [] },
-    fragment: {
-      module,
-      entryPoint:
-        signal === 'raw'
-          ? 'fs_ray_reflection'
-          : signal === 'field'
-            ? 'fs_ray_reflection_field'
-            : 'fs_ray_reflection_reconstructed',
-      targets: [ADDITIVE, ADDITIVE],
-    },
-    primitive: { topology: 'triangle-list' },
-  });
-  if (!pipeline.ok) return pipeline;
+  const prepare = (writeScene: boolean) =>
+    prepareRenderPipeline(device, {
+      label: 'ray-reflection.composite',
+      layout: pipelineLayout.value,
+      vertex: { module, entryPoint: 'vs_ray_reflection', buffers: [] },
+      fragment: {
+        module,
+        entryPoint:
+          signal === 'raw'
+            ? 'fs_ray_reflection'
+            : signal === 'field'
+              ? 'fs_ray_reflection_field'
+              : 'fs_ray_reflection_reconstructed',
+        targets: [writeScene ? ADDITIVE : { ...ADDITIVE, writeMask: 0 }, ADDITIVE],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+  const sceneAndFallback = await prepare(true);
+  if (!sceneAndFallback.ok) return sceneAndFallback;
+  const fallbackOnly = await prepare(false);
+  if (!fallbackOnly.ok) return fallbackOnly;
   return ok({
-    record(pass: RhiRenderPassEncoder, input: RayReflectionCompositeInputs, pixelCount: number) {
+    record(
+      pass: RhiRenderPassEncoder,
+      input: RayReflectionCompositeInputs,
+      pixelCount: number,
+      deferScene = false,
+    ) {
       if (
         !Number.isInteger(pixelCount) ||
         pixelCount < 1 ||
@@ -98,14 +110,14 @@ export function createRayReflectionComposite(
               value: filtered ?? raw,
             },
           },
-          ...[input.depth, input.normal, input.response].map((value, i) => ({
+          ...[input.depth, input.normal, input.response, input.previous].map((value, i) => ({
             binding: i + 2,
             resource: { kind: 'textureView' as const, value },
           })),
         ],
       });
       if (!bindings.ok) return bindings;
-      pass.setPipeline(pipeline.value);
+      pass.setPipeline(deferScene ? fallbackOnly.value : sceneAndFallback.value);
       pass.setBindGroup(0, bindings.value);
       pass.draw(3);
       return ok(undefined);

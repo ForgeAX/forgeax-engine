@@ -12,7 +12,7 @@ import {
 import { TransparentSort } from '@forgeax/engine-render/authoring';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -31,7 +31,7 @@ async function createCompositionHost() {
     await constructRuntimeRendererHost(
       surface.canvas as unknown as HTMLCanvasElement,
       { rhi: webgpu.rhi },
-      { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderManifest()) },
+      { shaderManifestUrl: shaderManifestUrl(await buildEngineShaderTemplateManifest()) },
     ),
   );
   return { surface, host };

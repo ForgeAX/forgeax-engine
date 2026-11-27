@@ -12,6 +12,7 @@ import {
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
 } from '../gpu-texture-usage';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
+import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import {
   createRenderPipelineTarget,
   type RenderPipelineFrame,
@@ -130,6 +131,7 @@ export function addTsrPasses(
   opaqueGuide: RenderPipelineTarget,
   capacity: { readonly width: number; readonly height: number },
   compute = true,
+  writeHalf?: RenderPipelineTarget,
 ): Result<void, RenderGraphError> {
   const guideRead = analysisTarget(
     graph,
@@ -172,6 +174,9 @@ export function addTsrPasses(
     size: { width: capacity.width, height: capacity.height },
   });
   if (!decision.ok) return decision;
+  const { sceneVelocity } = targets;
+  const temporalPlaceholder =
+    sceneVelocity === undefined ? targets.currentTemporal : targets.historyTemporal;
   const analysisReads = [
     targets.scene,
     targets.currentTemporal,
@@ -179,9 +184,9 @@ export function addTsrPasses(
     moireRead.value,
     targets.historyTemporal,
     opaqueGuide,
-    targets.coverage ?? targets.currentTemporal,
+    targets.coverage ?? temporalPlaceholder,
   ];
-  const secondary = targets.secondaryReactivity?.view ?? targets.currentTemporal.view;
+  const secondary = targets.secondaryReactivity?.view ?? temporalPlaceholder.view;
   const reconstructionReads = [
     targets.scene.view,
     targets.currentTemporal.view,
@@ -190,7 +195,7 @@ export function addTsrPasses(
     targets.historyStability.view,
     decision.value.view,
     secondary,
-    targets.coverage?.view ?? targets.currentTemporal.view,
+    targets.coverage?.view ?? temporalPlaceholder.view,
   ];
   const stages = [
     {
@@ -203,7 +208,12 @@ export function addTsrPasses(
       name: 'tsr-reconstruct',
       analyze: false,
       reads: reconstructionReads,
-      writes: [targets.writeColor, targets.writeTemporal, targets.writeStability],
+      writes: [
+        targets.writeColor,
+        targets.writeTemporal,
+        targets.writeStability,
+        ...(compute && writeHalf !== undefined ? [writeHalf] : []),
+      ],
     },
   ];
   for (const stage of stages) {
@@ -225,7 +235,13 @@ export function addTsrPasses(
       const views = [...stage.reads, ...(compute ? stage.writes.map((t) => t.view) : [])].map(
         (view) => resources.textureView(view).unwrap(),
       );
-      const keys = [state, ...views];
+      const depth =
+        sceneVelocity === undefined
+          ? undefined
+          : resources.textureView(sceneVelocity.depth).unwrap();
+      const view =
+        sceneVelocity === undefined ? undefined : resources.buffer(sceneVelocity.view).unwrap();
+      const keys = [state, ...views, depth, view];
       let group = cached.find((c) => c.keys.every((v, i) => v === keys[i]))?.value;
       if (group === undefined) {
         const count = stage.reads.length;
@@ -247,6 +263,18 @@ export function addTsrPasses(
                 binding: count + 2 + i,
                 resource: { kind: 'textureView' as const, value },
               })),
+              ...(depth === undefined || view === undefined
+                ? []
+                : [
+                    { binding: 14, resource: { kind: 'textureView' as const, value: depth } },
+                    {
+                      binding: 15,
+                      resource: {
+                        kind: 'buffer' as const,
+                        value: { buffer: view, size: VIEW_UNIFORM_BYTES },
+                      },
+                    },
+                  ]),
             ],
           })
           .unwrap();
@@ -263,6 +291,12 @@ export function addTsrPasses(
     };
     const accesses = [
       ...stage.reads.map((resource) => ({ resource, usage: 'sampled-read' as const })),
+      ...(sceneVelocity === undefined
+        ? []
+        : [
+            { resource: sceneVelocity.depth, usage: 'sampled-read' as const },
+            { resource: sceneVelocity.view, usage: 'uniform-read' as const },
+          ]),
       ...stage.writes.map((t) => ({
         resource: t.view,
         usage: compute ? ('storage-write' as const) : ('color-attachment' as const),
@@ -272,7 +306,12 @@ export function addTsrPasses(
       ? graph.addComputePass(stage.name, {
           accesses,
           encodeDirect(pass, frame, resources) {
-            native ??= createTsrProgram(frame, stage.analyze);
+            native ??= createTsrProgram(
+              frame,
+              stage.analyze,
+              sceneVelocity !== undefined,
+              !stage.analyze && writeHalf !== undefined,
+            );
             const ready = prepare(frame, resources, native);
             pass.setPipeline(native.pipeline);
             pass.setBindGroup(0, ready.group);
@@ -292,7 +331,7 @@ export function addTsrPasses(
             storeOp: 'store',
           })),
           encodeDirect(pass, frame, resources) {
-            raster ??= createTsrRasterProgram(frame, stage.analyze);
+            raster ??= createTsrRasterProgram(frame, stage.analyze, sceneVelocity !== undefined);
             const ready = prepare(frame, resources, raster);
             pass.setPipeline(raster.pipeline);
             pass.setBindGroup(0, ready.group);

@@ -7,6 +7,7 @@ import {
   cp,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -25,6 +26,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pnpmCommand } from '../../lib/pnpm-command.mjs';
 import { sdkLauncherSource } from '../sdk-launcher.mjs';
 import {
+  artifact,
   assertNoRetiredPackageFiles,
   detectPnpmStoreFormat,
   fetchWithRetry,
@@ -38,6 +40,7 @@ import {
   prepareWasmPackageForPack,
   SDK_TEMPLATES,
   stable,
+  verifySdkArchiveInventory,
   waitForNpmPublications,
   writePackageArchive,
 } from '../sdk-lib.mjs';
@@ -129,28 +132,23 @@ describe('SDK verifier artifact integrity admission', () => {
       isPnpmSqliteStoreArtifact,
     });
   }
-  it('rehashes every archive artifact with bounded overlapping I/O', async () => {
-    const entries = Array.from({ length: 65 }, (_, index) => ({
-      path: `store/file-${index}`,
-      bytes: index,
-      sha256: `hash-${index}`,
-    }));
-    const byPath = new Map(entries.map((entry) => [resolve('/fixture', entry.path), entry]));
-    let active = 0,
-      peak = 0;
-    const visited = [];
-    await verifier('sdk-artifact-mismatch:', { artifacts: entries }, async (_root, path) => {
-      active++;
-      peak = Math.max(peak, active);
-      visited.push(path);
-      await new Promise(setImmediate);
-      active--;
-      return byPath.get(path);
-    });
-    expect(visited.sort()).toEqual([...byPath.keys()].sort());
-    expect(peak).toBeGreaterThan(1);
-    expect(peak).toBeLessThanOrEqual(32);
-    expect(active).toBe(0);
+  it('rehashes the physical artifact used by a package and source archive alias', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-sdk-inventory-'));
+    try {
+      const path = 'packages/engine/dist/index.mjs';
+      const sourcePath = resolve(root, 'source/engine', path);
+      await mkdir(dirname(sourcePath), { recursive: true });
+      await writeFile(sourcePath, 'original');
+      const sourceEntry = await artifact(root, sourcePath);
+      const entries = [sourceEntry, { ...sourceEntry, path, sourceCopy: true }];
+      await expect(verifySdkArchiveInventory(root, entries)).resolves.toBeUndefined();
+      await writeFile(sourcePath, 'modified');
+      await expect(verifySdkArchiveInventory(root, entries)).rejects.toThrow(
+        `sdk-artifact-mismatch: ${sourceEntry.path}`,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
   it.each([
     'bytes',
@@ -421,7 +419,7 @@ describe('ignoresProjectState', () => {
 });
 
 describe('normalizePnpmStore', () => {
-  it('drops pnpm SQLite shared-memory state while preserving the store index and WAL', async () => {
+  it('drops pnpm install projections and shared memory while preserving the content store', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-sdk-sqlite-store-'));
     tempRoots.push(root);
     const store = join(root, 'v11');
@@ -429,12 +427,20 @@ describe('normalizePnpmStore', () => {
     await writeFile(join(store, 'index.db'), 'database');
     await writeFile(join(store, 'index.db-shm'), 'shared memory');
     await writeFile(join(store, 'index.db-wal'), 'write ahead log');
+    await mkdir(join(store, 'files', '00'), { recursive: true });
+    await writeFile(join(store, 'files', '00', 'content'), 'package bytes');
+    await mkdir(join(store, 'links', 'dependency'), { recursive: true });
+    await writeFile(join(store, 'links', 'dependency', 'package.json'), '{}');
 
     await normalizePnpmStore(root);
 
     await expect(readFile(join(store, 'index.db'), 'utf8')).resolves.toBe('database');
     await expect(readFile(join(store, 'index.db-wal'), 'utf8')).resolves.toBe('write ahead log');
     await expect(readFile(join(store, 'index.db-shm'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(store, 'files', '00', 'content'), 'utf8')).resolves.toBe(
+      'package bytes',
+    );
+    await expect(readdir(join(store, 'links'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('rejects a legacy JSON store instead of adapting it', async () => {
@@ -854,6 +860,22 @@ describe('SDK verifier template contract', () => {
 
     const launcher = join(sdk, 'bin', 'forgeax.mjs');
     await writeFile(launcher, sdkLauncherSource('pnpm@12.10.1'));
+    const bootstrap = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `
+        import { pathToFileURL } from 'node:url';
+        const { ensureSdkRuntime } = await import(pathToFileURL(${JSON.stringify(launcher)}));
+        console.log(await ensureSdkRuntime());
+      `,
+      ],
+      { cwd: root, env: { ...process.env, PATH: toolBin }, encoding: 'utf8' },
+    );
+    expect(bootstrap.status).toBe(0);
+    expect(bootstrap.stdout.trim()).toBe(await realpath(join(sdk, '.forgeax', 'cli-runtime')));
+    expect(bootstrap.stdout).not.toContain('engine-bin-ok');
     const result = spawnSync(process.execPath, [launcher], {
       cwd: sdk,
       env: {
@@ -952,8 +974,18 @@ describe('SDK verifier template contract', () => {
       join(repositoryRoot, 'packages/devkit/src/importers.ts'),
       'utf8',
     );
-    expect(host).toContain("import { DEFAULT_IMPORTERS } from './importers.js';");
-    expect(host).toContain('importers: [...DEFAULT_IMPORTERS, ...cookerSession.importers]');
+    const importerNames = host
+      .match(/import\s*\{([^}]+)\}\s*from ['"]\.\/importers\.js['"]/s)?.[1]
+      .split(',')
+      .map((name) => name.trim())
+      .sort();
+    expect(importerNames).toEqual(['DEFAULT_IMPORTERS', 'createSessionImporters']);
+    expect(importers).toContain('importers: readonly Importer[] = DEFAULT_IMPORTERS');
+    expect(host).toContain('const importerSession = createSessionImporters();');
+    expect(host).toContain('importers: [...importerSession.importers, ...cookerSession.importers]');
+    expect(host).toContain('await importerSession.dispose();');
+    expect(host).toContain('disposePreparation = disposeSession;');
+    expect(host).toContain('await disposeSession();');
     expect(importers).toContain("import { createUiImporter } from '@forgeax/engine-ui/importer';");
     expect(importers).toContain('  createUiImporter(),');
     const html = await readFile(
@@ -1029,9 +1061,7 @@ describe('SDK verifier template contract', () => {
     );
     const layoutCheck = source.slice(
       source.indexOf('const projectManifestPath ='),
-      source.indexOf(
-        "await readFile(resolve(project, 'assets', 'world', 'world.scene.pack.json'))",
-      ),
+      source.indexOf("resolve(project, 'assets', 'world', 'world.scene.pack.json')"),
     );
     expect(template).toMatchObject({
       schemaVersion: '3.0.0',
@@ -1056,6 +1086,7 @@ describe('SDK verifier template contract', () => {
     expect(projectLayout).toContain("starterTest: 'assets/__tests__/empty-project.test.ts'");
     expect(projectLayout).not.toContain('entry: projectManifest.entry');
     expect(source).toContain('sdk-empty-authored-scene-not-empty');
+    expect(source).toMatch(/world\.scene\.pack\.json'\),\s*'direct-pack'/);
     expect(source).not.toContain('sdk-empty-authored-camera-missing');
     expect(source).toContain("retiredPath of ['src', 'src/main.ts', 'src/__tests__']");
   });
@@ -1130,10 +1161,21 @@ describe('SDK verifier template contract', () => {
     ).replaceAll(`\${gameProjectionSource}`, gameProjectionSource);
     expect(source).toContain('const gameProjectionDefinitions = new Map();');
     expect(source).toMatch(/globalThis\.__forgeaxGameInspection\s*=/);
-    // Release builds keep a read-only projection for `project play --release`;
-    // the clock and time scale stay development-only.
+    // Release builds share the inspection owner while keeping game projections
+    // readable and leaving time controls to development hosts.
     expect(source).toMatch(/\n\s+gameProjection,\n/);
-    expect(source).toContain('globalThis.__forgeaxGameInspection = releaseInspection;');
+    const ownerStart = source.indexOf(
+      'const localInspection = globalThis.__forgeaxGameInspection;',
+    );
+    const ownerEnd = source.indexOf("'devkit/host-release-inspection');", ownerStart);
+    expect(ownerStart).toBeGreaterThanOrEqual(0);
+    expect(ownerEnd).toBeGreaterThan(ownerStart);
+    const owner = source.slice(ownerStart, ownerEnd);
+    expect(owner).toContain('const inspection = createGameInspection(app, {');
+    expect(owner).toContain('list: async () => {');
+    expect(owner).toContain('read: (id: string) => {');
+    expect(owner).toContain('}, rendererErrors === undefined ? undefined : {');
+    expect(owner).toContain('globalThis.__forgeaxGameInspection = inspection;');
     expect(source).toContain(
       "if (!import.meta.env.DEV) return { running: false, error: 'the time scale runs only on a development host' };",
     );

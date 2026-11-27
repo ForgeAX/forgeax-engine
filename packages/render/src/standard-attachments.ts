@@ -2,6 +2,10 @@ import { textureFormatBlock } from '@forgeax/engine-types';
 
 /** Native specialization shared by consumers of the full v2 normal surface. */
 export const STANDARD_GBUFFER_V2_PIPELINE_CONSTANTS = Object.freeze({ '64003': 1 });
+export const STANDARD_GBUFFER_COMPACT_PIPELINE_CONSTANTS = Object.freeze({ '64003': 2 });
+
+/** Enables the split only on the Deferred PSO with an additive diffuse target. */
+export const STANDARD_DEFERRED_SUBSURFACE_CONSTANTS = Object.freeze({ '64004': 1 });
 
 export const DEFERRED_COLOR_FORMATS = [
   'rgba16float',
@@ -12,12 +16,20 @@ export const DEFERRED_COLOR_FORMATS = [
   'rg32uint',
 ] as const satisfies readonly GPUTextureFormat[];
 
+export const COMPACT_DEFERRED_COLOR_FORMATS = [
+  'rgba16float',
+  'r32uint',
+  'r32uint',
+  'r32uint',
+  'r32uint',
+] as const satisfies readonly GPUTextureFormat[];
+
 export const STANDARD_TEMPORAL_FORMAT = 'rgba16float' as const;
 export const STANDARD_VISIBLE_SURFACE_FORMAT = 'rgba32uint' as const;
 
 // The active subsurface lane retains every ordinary receiver attachment.
 export const SUBSURFACE_DEFERRED_COLOR_FORMATS = [
-  'rgba32float',
+  DEFERRED_COLOR_FORMATS[0],
   DEFERRED_COLOR_FORMATS[1],
   DEFERRED_COLOR_FORMATS[2],
   DEFERRED_COLOR_FORMATS[3],
@@ -43,3 +55,4 @@ function attachmentBytes(formats: readonly GPUTextureFormat[]) {
 // Format blocks own graph targets, device requests and temporal MRT admission.
 export const DEFERRED_ATTACHMENT_BYTES = attachmentBytes(DEFERRED_COLOR_FORMATS);
 export const SUBSURFACE_ATTACHMENT_BYTES = attachmentBytes(SUBSURFACE_DEFERRED_COLOR_FORMATS);
+export const COMPACT_DEFERRED_ATTACHMENT_BYTES = attachmentBytes(COMPACT_DEFERRED_COLOR_FORMATS);

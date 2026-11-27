@@ -16,4 +16,12 @@ const gameProjection = {
   registerAction: (definition) => registerGameProjection('action', definition),
   registerRead: (definition) => registerGameProjection('read', definition),
 };
+function listGameProjection() {
+  return { reads: Array.from(gameProjectionDefinitions.entries()).filter(([, entry]) => entry.kind === 'read').map(([id]) => id) };
+}
+async function readGameProjection(id) {
+  const entry = gameProjectionDefinitions.get(id);
+  if (entry?.kind !== 'read') throw new Error('forgeax: game read projection not found ' + id);
+  return entry.definition.read();
+}
 `;

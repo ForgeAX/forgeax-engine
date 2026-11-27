@@ -12,6 +12,7 @@ import {
   hasUnavailableOrSkipped,
   parseObservedFrameReceipt,
   partitionRunnableEntries,
+  preflightRunEntries,
   readRoster,
   resolveRunnableEntries,
   resultStatus,
@@ -59,6 +60,23 @@ function fixtureRepo() {
   );
   return repoRoot;
 }
+
+test('Smoke preflight leaves deferred apps with their own inputs and checks built app shaders', () => {
+  const repoRoot = fixtureRepo();
+  const gi = { path: 'apps/hello/gi/package.json' };
+  const direct = { path: 'apps/hello/direct/package.json' };
+  const buildGraph = [
+    { relativeDirectory: 'apps/hello/gi' },
+    { relativeDirectory: 'apps/hello/direct' },
+  ];
+  const options = { repoRoot, buildGraph };
+  assert.deepEqual(preflightRunEntries([gi], options), [gi]);
+  assert.throws(() => preflightRunEntries([direct], options), /missing .*dist.*shaders/);
+  const shaders = join(repoRoot, 'apps/hello/direct/dist/shaders');
+  mkdirSync(shaders, { recursive: true });
+  writeFileSync(join(shaders, 'manifest.json'), '{}');
+  assert.deepEqual(preflightRunEntries([gi, direct], options), [gi, direct]);
+});
 
 function rosterEntries() {
   return [

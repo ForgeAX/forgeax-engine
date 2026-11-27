@@ -36,14 +36,11 @@ it('uses current source imports with explicit shared rows instead of mixing a pa
     writeFileSync(
       material,
       JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'internal-text-package',
-        assets: [
-          {
-            guid: '019fb7ce-1000-4000-8000-000000000078',
+        schemaVersion: '3.0.0',
+        packageId: '019fb7ce-1000-4000-8000-000000000078',
+        assets: {
+          'custom.wgsl': {
             kind: 'material',
-            execution: 'cooked',
-            sourceKey: 'custom.wgsl',
             payload: {
               kind: 'material',
               passes: [{ name: 'Forward', program: { module: 'game::current' } }],
@@ -52,7 +49,7 @@ it('uses current source imports with explicit shared rows instead of mixing a pa
             },
             refs: [],
           },
-        ],
+        },
       }),
     );
     const manifest = join(shared, 'manifest.json');
@@ -64,6 +61,7 @@ it('uses current source imports with explicit shared rows instead of mixing a pa
     process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST = manifest;
     const { forgeaxShader } = await import('../index.js');
     const plugin = forgeaxShader({
+      publication: 'compiled',
       engineEntries: { pointShadows: true },
       engineShaderRoots: [sources],
       materialPackages: [material],

@@ -8,6 +8,8 @@ import {
 } from '@forgeax/engine-platform';
 import { ok, type Result } from '@forgeax/engine-types';
 
+export { createBrowserRuntimePackCache } from './runtime-pack-cache.js';
+
 export interface BrowserPlatform extends Platform {
   readonly canvas: HTMLCanvasElement;
 }
@@ -156,3 +158,13 @@ export function createBrowserPlatform(
     dispose: lifetime.dispose,
   });
 }
+
+export { createBrowserFileStore } from './file-storage.js';
+export { createBrowserRecordStore, createBrowserSaveRecords } from './record-storage.js';
+export { createBrowserRuntimePackRecords } from './runtime-pack-cache.js';
+export {
+  createTauriFileStore,
+  createTauriRecordStore,
+  createTauriRuntimePackCache,
+  serveTauriStorage,
+} from './tauri-storage.js';

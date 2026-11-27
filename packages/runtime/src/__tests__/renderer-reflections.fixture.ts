@@ -38,6 +38,16 @@ type Rgb = readonly [number, number, number];
 const SIZE = 32;
 const CENTER = SIZE / 2;
 
+function centerColor(bytes: Uint8Array): Rgb {
+  const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const offset = CENTER * (bytes.byteLength / SIZE + 8);
+  return [
+    halfFloat.f16ToF32(data.getUint16(offset, true)),
+    halfFloat.f16ToF32(data.getUint16(offset + 2, true)),
+    halfFloat.f16ToF32(data.getUint16(offset + 4, true)),
+  ];
+}
+
 /** Directional albedo E(F0, NoV=1, alpha) of Schlick-GGX with height-correlated Smith,
  * by midpoint quadrature over the half-vector polar angle. Independent of the LUT. */
 function ggxAlbedoAtNormalIncidence(f0: number, roughness: number): number {
@@ -226,7 +236,7 @@ export async function verifyRendererReflections(
     ...renderer.inspect().profile,
     renderPath: 'deferred' as const,
     ibl: false,
-    ssao: false,
+    ambientOcclusion: { enabled: false },
     visibleSurface: true,
   };
   const gi = {
@@ -408,8 +418,7 @@ export async function verifyRendererReflections(
     // Scene-color producers before the composite: deferred direct lighting, then the
     // diffuse-GI composite. With reflections the latter also adds the inter-microfacet
     // (multi-scattering) GI term d * multi, which is nonzero wherever the DFG lookup
-    // reports missing GGX energy and a 1 spp GI path found radiance (host-dependent:
-    // a few grazing pixels on Apple Metal, none on the Linux CI runner).
+    // reports missing GGX energy and a 1 spp GI path found radiance.
     const { lighting, beforeComposite } = sceneProducers(model, composite, sceneHandle);
     const exact = await replayOf(tape);
     let fallbackCenter: Rgb;
@@ -435,21 +444,15 @@ export async function verifyRendererReflections(
       preComposite = before.bytes;
       expect(equalBytes(composed.bytes, captured.bytes)).toBe(true);
       await save('reflection-fallback.rgba16float', fallback.bytes);
-      const data = new DataView(
-        fallback.bytes.buffer,
-        fallback.bytes.byteOffset,
-        fallback.bytes.byteLength,
-      );
-      const row = fallback.bytes.byteLength / SIZE;
-      fallbackCenter = [0, 1, 2].map((c) =>
-        halfFloat.f16ToF32(data.getUint16(CENTER * row + CENTER * 8 + c * 2, true)),
-      ) as never;
+      fallbackCenter = centerColor(fallback.bytes);
+      // Only the directional reflection is replaceable by SSR. Compare its
+      // fallback with the reflection pass delta in this same captured frame.
+      const reflectionDelta = minus(centerColor(composed.bytes), centerColor(before.bytes));
+      for (const [channel, fallbackValue] of fallbackCenter.entries())
+        expect(fallbackValue).toBeCloseTo(reflectionDelta[channel] ?? NaN, 2);
     } finally {
       await exact.dispose();
     }
-    // The SSR-replaceable fallback carries exactly the specular that scene color gained.
-    for (let channel = 0; channel < 3; channel++)
-      expect(fallbackCenter[channel]).toBeCloseTo(mirrorDelta[channel] ?? NaN, 2);
     const omitted = {
       ...tape,
       events: tape.events.filter((_, index) => index !== composite.eventIndex),

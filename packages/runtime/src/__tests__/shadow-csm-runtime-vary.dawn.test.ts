@@ -28,8 +28,8 @@ import { constructRuntimeRendererHost } from '../renderer-host';
 import { drawPublished } from './draw-published';
 
 const ENGINE_MANIFEST = await (async () => {
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-  return buildEngineShaderManifest();
+  const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  return buildEngineShaderTemplateManifest();
 })();
 const ENGINE_MANIFEST_URL = shaderManifestUrl(ENGINE_MANIFEST);
 
@@ -204,6 +204,31 @@ describe('CSM runtime cascade + mapSize variation (M5/w26)', () => {
       cascadeCount: 4,
     });
     expect((await drawPublished(renderer, world)).ok).toBe(true);
+  });
+
+  it('fits and resizes all four directional cascade counts on one display program across 60 changes', async () => {
+    if (!dawnReady) return;
+    const renderer = await createRenderer();
+    const { world, shadowEntity } = buildScene(1, MAP_SIZE);
+    let generation: number | undefined;
+    const counts = [1, 2, 4, 3, 2];
+    for (let frame = 0; frame < 60; frame++) {
+      const count = counts[frame % counts.length] as number;
+      const size = frame % 3 === 1 ? MAP_SIZE / 2 : MAP_SIZE;
+      world.set(shadowEntity, DirectionalLight, {
+        mapSize: size,
+        shadowDistance: 48 + (frame % 5),
+        cascadeCount: count,
+      });
+      expect((await drawPublished(renderer, world)).ok).toBe(true);
+      const result = renderer.inspect().directionalShadow;
+      expect(result?.writerPasses).toBe(count);
+      expect(result?.cascadeCount).toBe(count);
+      expect(result?.mapSize).toBe(size);
+      expect(result?.shadowMapBytes).toBe(size * size * Math.max(2, count) * 4);
+      generation ??= result?.graphGeneration;
+      expect(result?.graphGeneration).toBe(generation);
+    }
   });
 
   it('rebuilds a smaller shadow atlas and restores its dimensions and allocation', async () => {

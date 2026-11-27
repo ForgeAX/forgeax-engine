@@ -29,6 +29,7 @@ const PORTABLE_SHADER_PROGRAM_EXPORTS = new Set([
 ]);
 
 export const HOST_ENVIRONMENT_ENTRIES = new Map([
+  ['packages/image/src/node-encode-pool.ts', 'Node-only offline image encoder process host'],
   ['packages/pack/src/catalog-builder.ts', 'Node offline catalog producer'],
   ['packages/pack/src/scriptable-pack-node.ts', 'Node scriptable Pack process host'],
   ['packages/pack/src/scriptable-pack-worker.ts', 'Node isolated authoring worker'],
@@ -60,7 +61,25 @@ export const SOURCE_ASSET_PRODUCERS = new Map([
     'Render tsup text loader owns Terrain WGSL inlining',
   ],
   ['packages/shader/src/auto-exposure-source.ts', 'Shader tsup text loader owns WGSL inlining'],
+  [
+    'packages/shader/src/bloom-source.ts',
+    'Shader tsup text loader owns HDR post-process WGSL inlining',
+  ],
+  [
+    'packages/shader/src/depth-of-field-tiles-source.ts',
+    'Shader tsup text loader owns depth-of-field tile compute WGSL inlining',
+  ],
+  ['packages/shader/src/smaa-blend-source.ts', 'Shader tsup text loader owns SMAA WGSL inlining'],
+  ['packages/shader/src/sky-sh-source.ts', 'Shader tsup text loader owns Sky SH WGSL inlining'],
+  [
+    'packages/shader/src/scene-velocity-source.ts',
+    'Shader tsup text loader owns velocity WGSL inlining',
+  ],
   ['packages/shader/src/tsr-source.ts', 'Shader tsup text loader owns TSR WGSL inlining'],
+  [
+    'packages/shader/src/screen-probe-candidate-source.ts',
+    'Shader tsup text loader owns shared Screen candidate WGSL inlining',
+  ],
 ]);
 
 export const TOOL_SOURCE_SCOPES = new Map([
@@ -68,6 +87,7 @@ export const TOOL_SOURCE_SCOPES = new Map([
 ]);
 
 export const TOOL_SOURCE_ENTRIES = new Map([
+  ['packages/image/src/node-encode-pool.ts', 'Node-only offline image encoder process host'],
   ['packages/pack/src/author-closure.ts', 'Offline Pack source closure analyzer'],
   ['packages/pack/src/build.ts', 'Node-only Pack authoring and build entry'],
   ['packages/pack/src/catalog-builder.ts', 'Node offline catalog producer'],
@@ -77,9 +97,8 @@ export const TOOL_SOURCE_ENTRIES = new Map([
   ['packages/pack/src/pack-authoring-drafts-node.ts', 'Node Pack authoring draft manager'],
   ['packages/pack/src/pack-authoring-literals.ts', 'Pack authoring declaration AST reader'],
   ['packages/pack/src/pack-authoring-node.ts', 'Node Pack authoring process entry'],
-  ['packages/pack/src/pack-authoring-parent.ts', 'Node Pack authoring parent resolver'],
   ['packages/pack/src/pack-generation-projection.ts', 'Pack authoring AST projection'],
-  ['packages/pack/src/pack-source-index.ts', 'Node Pack source index producer'],
+  ['packages/pack/src/pack-source-index.ts', 'Node Pack source index and static parent resolver'],
   ['packages/pack/src/scanner.ts', 'Filesystem Pack scanner entry'],
   ['packages/pack/src/scriptable-pack-node.ts', 'Node scriptable Pack process host'],
   ['packages/pack/src/scriptable-pack-source-snapshot.ts', 'Scriptable Pack source AST snapshot'],
@@ -178,6 +197,7 @@ export function isBuildTool(specifier) {
     /^@(?:vitejs|vitest|esbuild|rollup|rolldown|webpack|parcel)\//.test(specifier) ||
     /^@(?:babel|swc|rspack|rsbuild)\/core(?:\/|$)/.test(specifier) ||
     isPackToolSpecifier(specifier) ||
+    /^@forgeax\/engine(?:-|\/)image\/encode-pool(?:\/|$)/.test(specifier) ||
     /^@forgeax\/engine-vite-plugin-/.test(specifier) ||
     TOOL_OWNERS.has(engineOwner) ||
     (engineOwner === 'shader-compiler' && !PORTABLE_SHADER_PROGRAM_EXPORTS.has(specifier)) ||

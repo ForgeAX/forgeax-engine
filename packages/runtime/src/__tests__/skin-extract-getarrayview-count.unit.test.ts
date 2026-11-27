@@ -23,14 +23,15 @@ describe('_getArrayView count (AC-03 gate)', () => {
     expect(readFileSync(join(renderSource, 'publication', 'publisher.ts'), 'utf8')).toContain(
       'readPresentationWorldMatrix(world, joint as EntityHandle)',
     );
-    expect(readFileSync(join(renderSource, 'scene', 'composition-skin.ts'), 'utf8')).toContain(
-      'copyPresentationWorldMatrix(world, entity as EntityHandle, this.jointScratch)',
-    );
+    const composition = readFileSync(join(renderSource, 'scene', 'composition-skin.ts'), 'utf8');
+    expect(composition).toContain('createPresentationMatrixReader(world)');
+    expect(composition).toContain('entry.jointMatrices.visit(entities, skin.hasJoint, skin.joint)');
+    expect(composition).toContain('skin.joint(entities[index] as number, transforms, index * 16)');
     const presentation = readFileSync(
       join(dirname(extractPaths[0]), '..', '..', 'scene', 'src', 'presentation.ts'),
       'utf8',
     );
-    expect(presentation).toContain('return readRenderArrayView(');
+    expect(presentation).toContain('readRenderArrayView(world, entity, GlobalTransform, source)');
     expect(presentation).toContain("state.active.has(entity) ? 'presentation' : 'world'");
     expect(src).toContain("_getArrayView(entity, Instances, 'transforms')");
     expect(src).toContain("_getArrayView(entity, SpriteInstances, 'transforms')");

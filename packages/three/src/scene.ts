@@ -1,5 +1,5 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import { adoptWithMeshRanges, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import {
   type Component,
   type ComponentSchema,
@@ -7,12 +7,15 @@ import {
   type InputShapeOf,
   World,
 } from '@forgeax/engine-ecs';
+import { observeStateChanges } from '@forgeax/engine-ecs/projection';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
+import { interleavedMesh } from '@forgeax/engine-geometry';
 import { mat4, quat, vec3 } from '@forgeax/engine-math';
 import {
+  BLOOM_ENABLED,
   type CameraData,
   ClippingPlanes,
   clippingPlanesData,
-  FogModeValue,
   Instances,
   Layer,
   MeshFilter,
@@ -26,20 +29,25 @@ import {
   Points as NativePoints,
   RectAreaLight as NativeRectAreaLight,
   SpotLight as NativeSpotLight,
-  PointSizeUnitsValue,
   RenderTargetEnvironment,
-  type RenderTargetEnvironmentSource,
   ShadowParticipation,
   SkyboxBackground,
   Skylight,
 } from '@forgeax/engine-render';
+import { setViewDrawOrder } from '@forgeax/engine-render/internal';
 import {
+  ChildOf,
   Children,
+  GlobalTransform,
   MorphWeights,
   Name,
   propagateTransforms,
   Transform,
 } from '@forgeax/engine-scene';
+import {
+  createLocalPoseWriter,
+  createPresentationMatrixReader,
+} from '@forgeax/engine-scene/internal';
 import { Skin } from '@forgeax/engine-skinning';
 import {
   type AssetHandle,
@@ -47,154 +55,248 @@ import {
   type EquirectAsset,
   type MaterialAsset,
   type MaterialTextureValue,
+  type MaterialValue,
   type MeshAsset,
   ok,
   type ResolvedMaterialTextureCoordinates,
   type SamplerAsset,
   type SkeletonAsset,
   type TextureAsset,
+  unpackSlot,
   withClipping,
 } from '@forgeax/engine-types';
-import IESSpotLight from 'three/src/lights/webgpu/IESSpotLight.js';
-import ProjectorLight from 'three/src/lights/webgpu/ProjectorLight.js';
-import type { RenderItem } from 'three/src/renderers/common/Renderer.js';
+import { ClippingGroup } from 'three/src/objects/ClippingGroup.js';
 import {
   AmbientLight,
+  AttachedBindMode,
   BatchedMesh,
+  Bone,
   type BufferGeometry,
   Camera,
   Color,
   DirectionalLight,
   Fog,
   FogExp2,
-  Frustum,
   Group,
   InstancedMesh,
   Line,
-  LineSegments,
   LOD,
   type Material,
   Matrix4,
   Mesh,
+  MeshBasicMaterial,
+  type MeshStandardMaterial,
   Object3D,
   PointLight,
   Points,
-  PointsMaterial,
   Quaternion,
   RectAreaLight,
-  RedFormat,
   Scene,
   type Skeleton,
   SkinnedMesh,
   SpotLight,
   Sprite,
+  SpriteMaterial,
   type Texture,
   Vector3,
-  Vector4,
-  VSMShadowMap,
 } from 'three/src/Three.Core.js';
+import { cameraData, SourceCameraRows, writeSceneClearColor } from './camera';
+import { CanvasTextures } from './canvas-textures';
 import { objectClipping, projectClipping, type SourceClipping } from './clipping';
 import { projectEnvironment, scaleEnvironment } from './environment';
 import { invalid, ThreeCompatibilityError, unsupported } from './errors';
 import { type ExternalTextures, isExternalTexture } from './external-textures';
-import { projectFlatNormals } from './flat-normals';
-import { type GeometryMaterial, geometryValues, projectGeometry } from './geometry';
-import { instanceGeometryValues, projectInstanceGeometry } from './instance-geometry';
-import { lineStyle } from './lines';
 import {
-  materialTextures,
+  type GeometryMaterial,
+  hasPlainPointGeometry,
+  type PointContentChannels,
+  pointContentEdit,
+  projectGeometry,
+  readPointContent,
+  recordGeometryRanges,
+  repackPointContent,
+  restoreRigidVertexEdits,
+  rigidVertexEdits,
+} from './geometry';
+import { InstanceTints, instanceGeometryValues, tintInstanceGeometry } from './instance-geometry';
+import {
+  type materialTextures,
   materialValues,
   projectMaterial,
-  type SupportedMaterial,
-  usesFlatShading,
+  readStockMaterialEdit,
+  stockMaterialParameterPatch,
   validateMaterial,
 } from './material';
+import { isMatcapMaterial, isNormalMaterial, isSpriteMaterial } from './material-kinds';
+import { surfaceInput } from './node-inputs';
 import {
-  isBasicMaterial,
-  isLineMaterial,
-  isMatcapMaterial,
-  isNormalMaterial,
-  isPointsMaterial,
-  isSpriteMaterial,
-} from './material-kinds';
-import { admitSurfaceInput, surfaceInput, usesTransmission } from './node-inputs';
-import { threeSurfaceUvSets, validateThreeSurfaceGeometry } from './node-surface';
+  hasSurfaceBinding,
+  observeThreeSurfaceInputs,
+  readThreeSurfaceInput,
+  type SurfaceInputObservation,
+  threeSurfaceUvSets,
+  validateThreeSurfaceGeometry,
+} from './node-surface';
+import {
+  cameraPoseChain,
+  canPublishLocalPose,
+  decomposeSourceMatrix,
+  hasPositiveUniformSourceBasis,
+  hasSourceShear,
+  POSE_LANES,
+  readLocalPose,
+  SourcePosePage,
+  stockCameraView,
+  writePose,
+} from './pose';
 import type { RenderTargets } from './render-targets';
 import { expandScalarTexture } from './scalar-texture';
-import { type ShadowMapSettings, ShadowUpdates } from './shadow';
-import { SharedAssets, sameValues } from './shared-assets';
 import {
+  NO_EQUIRECT,
+  projectFog,
+  type SceneLighting,
+  sceneAmbientIrradiance,
+  validateLight,
+} from './scene-lighting';
+import {
+  type AssetTexturePlan,
+  allowsSharedMeshPlan,
+  appendBindingValues,
+  type CanvasTexturePlan,
+  canvasBindingSource,
+  compactNativeInstances,
+  effectiveMaterial,
+  finishMeshGeometry,
+  flatMatcapSlots,
+  type GeometryShape,
+  type GeometrySourceData,
+  geometryCacheValues,
+  geometryVariant,
+  instanceSourceValues,
+  isBlended,
+  isRenderable,
+  isWireframe,
+  type MaterialDependencies,
+  type MaterialUse,
+  type MeshGeometryAsset,
+  type MeshGeometryPlan,
+  type MeshGeometryProjection,
+  type MeshMaterialResidency,
+  type MeshPlan,
+  matchesGeometrySelection,
+  matchesGeometryStructure,
+  matchesMaterialRoster,
+  materialParameterPatch,
+  meshLineStyle,
+  meshMaterialPublication,
+  meshMorphWeights,
+  type NativeInstanceChange,
+  nativeSkinMaterial,
+  observeGeometry,
+  observeMaterial,
+  ordinaryGeometryReads,
+  ordinaryMeshMaterial,
+  ordinaryMeshSurface,
+  overrideMaterial,
+  POINT_CONTENT,
+  plainStockMaterial,
+  pointStyle,
+  projectLinePointMaterial,
+  projectNativeInstanceTransforms,
+  projectSourceMesh,
+  projectsMorphColor,
+  type Renderable,
+  recordUpload,
+  registerOrdinaryMeshPlan,
+  rejectOrderedOpaque,
+  resolveMaterialBindings,
+  reuseOrdinaryMaterial,
+  sameBindingValues,
+  sameMaterialCoordinates,
+  sameTextureSlots,
+  selectMaterials,
+  sharedMaterialReads,
+  sourceTopology,
+  sparseInstanceTransforms,
+  surfaceParameterSlots,
+  type TextureBindings,
+  type TextureProjection,
+  textureProjection,
+  textureProjectionSlots,
+  trackableViewDraw,
+  useTextures,
+  uvTextures,
+  watchDrawMaterials,
+} from './scene-mesh-planning';
+import {
+  createScenePreparation,
+  EMPTY_SOURCE_TRANSFORM,
+  type NodeRecord,
+  type PoseRecord,
+  type SceneBuffers,
+  type ScenePreparation,
+  ScenePreparationLists,
+  type SourceTransform,
+} from './scene-state';
+import {
+  clippingCandidates,
+  MixedTransparentOrder,
+  outsideThreeFrustum,
+  rankOpaqueMeshes,
+  rankTransparentMeshes,
+  sourceDepth,
+  sourceSortCenter,
+  unclippedWitness,
+} from './scene-view';
+import {
+  type MutableWalkMembers,
+  SceneMeshPlans,
+  SceneWalkRows,
+  SourcePoseEdits,
+  type WalkMembers,
+} from './scene-walk';
+import { type ShadowLight, ShadowUpdates, shadowCasterChannels } from './shadow';
+import { SharedAssets, sameValues } from './shared-assets';
+import type { SkinCursor } from './skeleton-changes';
+import {
+  canProjectAffinePoint,
+  canProjectLitSkin,
+  cpuSkinGeometry,
   cpuSkinValues,
+  type JointSnapshots,
   projectCpuSkin,
   projectJoints,
+  projectLitJoints,
   projectSkeleton,
   skinValues,
 } from './skinning';
-import { spriteMatrix } from './sprite';
+import {
+  localTransparentOrder,
+  NodeStateFields,
+  SceneChanges,
+  separateDrawPose,
+  trackingSelected,
+} from './source-changes';
+import { publishWorldMatrix, sourceCollectionStorage } from './source-collections';
+import { ownSourceValue } from './source-fields';
+import {
+  reflectSourceWorldPose,
+  resolveSourceLocalPose,
+  sourceWorldMatrixRow,
+  sourceWorldRevision,
+} from './source-world-pose';
+import { SpritePoseReader, spriteMatrix } from './sprite';
 import {
   projectSampler,
   projectTextureUpload,
   samplerValues,
-  textureCoordinates,
   textureUploadPending,
   textureValues,
   validateTexture,
 } from './texture';
-import { projectUvs, type UvProjection } from './uv-projection';
+import { TextureStorage } from './texture-storage';
+import { MeshUvs, type UvProjection } from './uv-projection';
 
-interface NodeRecord {
-  readonly entity: EntityHandle;
-  transform: readonly number[];
-  instances?: readonly unknown[];
-  disposeSource?: () => void;
-  joints?: EntityHandle[];
-}
-type Renderable = Mesh | Line | Points | Sprite;
-function isRenderable(object: Object3D): object is Renderable {
-  return (
-    object instanceof Mesh ||
-    object instanceof Line ||
-    object instanceof Points ||
-    object instanceof Sprite
-  );
-}
-
-interface MaterialUse {
-  readonly source: Material;
-  readonly effective: SupportedMaterial;
-  variant: string;
-  queue?: number;
-  readonly clipping?: ClippingOptions;
-  readonly shading: 0 | 1;
-  readonly skinned: boolean;
-  readonly shadowOnly: boolean;
-  readonly coordinates: Map<Texture, ResolvedMaterialTextureCoordinates>;
-}
-interface MeshPlan {
-  readonly source: Renderable;
-  readonly variant: string;
-  readonly materials: readonly MaterialUse[];
-  readonly values: unknown[];
-  readonly payload: MeshAsset;
-  readonly instanceValues: readonly unknown[] | undefined;
-  readonly instances: Float32Array | undefined;
-  readonly nativeInstances: boolean;
-  readonly morphWeights: Float32Array | undefined;
-  readonly pointStyle: ReturnType<typeof pointStyle> | undefined;
-  readonly lineStyle: NonNullable<ReturnType<typeof lineStyle>> | undefined;
-  readonly skin:
-    | { skeleton: AssetHandle<'skeleton'>; joints: ReturnType<typeof projectJoints> }
-    | undefined;
-}
-interface TexturePlan {
-  readonly orientation: 0 | 1;
-  readonly variant: '' | 'scalar-color' | 'scalar-data';
-  readonly source: Texture;
-  readonly values: unknown[];
-  readonly payload: TextureAsset;
-  readonly sampler: SamplerAsset;
-  readonly samplerValues: unknown[];
-}
 export interface ThreeSourceIdentity {
   readonly uuid: string;
   readonly name: string;
@@ -202,34 +304,20 @@ export interface ThreeSourceIdentity {
   readonly entityKey: number;
 }
 
-interface SceneBuffers {
-  pixelRatio?: number;
-  /** Keep leases observed by preceding offscreen passes in this composition. */
-  deferResourceSweep?: boolean;
-  depth: boolean;
-  stencil: boolean;
-  sortObjects: boolean;
-  transparentSort?: ((a: RenderItem, b: RenderItem) => number) | null;
-  opaqueOrder?: boolean;
-  opaqueSort?: ((a: RenderItem, b: RenderItem) => number) | null;
-  opaque: boolean;
-  transparent: boolean;
-  updateMatrices: boolean;
-  shadowMap?: ShadowMapSettings;
-}
-
 interface SceneProjectionOptions {
   readonly targets?: RenderTargets;
+  readonly canvasTextures?: boolean;
   readonly world?: World;
+  readonly validateComponents?: readonly Component[];
   readonly validateSource?: (object: Object3D, entity: EntityHandle | undefined) => void;
   /** A mixed host owns its existing Scene/Physics propagation schedule. */
   readonly propagate?: boolean;
 }
 
-/** Cached source world matrices author flat native affine transforms; Scene derives the GPU-facing matrices. */
+/** Projects ordinary source hierarchy and local transforms into Scene-owned native propagation. */
 export class SceneProjection {
   constructor(
-    assets: AssetRegistry,
+    private readonly assets: AssetRegistry,
     private readonly external?: ExternalTextures,
     private readonly prepareMaterialPrograms?: (
       material: MaterialAsset,
@@ -238,15 +326,35 @@ export class SceneProjection {
     private readonly options: SceneProjectionOptions = {},
   ) {
     this.world = options.world ?? new World({ assets });
+    this.writePoseColumns = createLocalPoseWriter(this.world);
+    this.presentationReader = createPresentationMatrixReader(this.world);
+    this.nativeOwners = options.world ? new Map() : undefined;
+    this.canvasTextures = options.canvasTextures ? new CanvasTextures() : undefined;
     this.geometry = new SharedAssets(assets);
     this.materials = [new SharedAssets(assets), new SharedAssets(assets)];
-    this.textures = [new SharedAssets(assets), new SharedAssets(assets)];
+    this.textures = [
+      new SharedAssets(assets, new TextureStorage(assets)),
+      new SharedAssets(assets, new TextureStorage(assets)),
+    ];
     this.samplers = new SharedAssets(assets);
     this.environments = new SharedAssets(assets);
     this.skeletons = new SharedAssets(assets);
+    this.resourceStores = [
+      this.geometry,
+      ...this.materials,
+      ...this.textures,
+      this.samplers,
+      this.environments,
+      this.skeletons,
+    ];
   }
 
   readonly world: World;
+  private readonly resourceStores: readonly Pick<
+    SharedAssets<BufferGeometry, MeshAsset>,
+    'begin' | 'commit' | 'abort' | 'dispose'
+  >[];
+  private readonly canvasTextures: CanvasTextures | undefined;
   readonly shadowUpdates = new ShadowUpdates();
   private readonly textureUpdates = new Set<Texture>();
 
@@ -258,11 +366,98 @@ export class SceneProjection {
   }
 
   private readonly nodes = new Map<Object3D, NodeRecord>();
-  private readonly geometry: SharedAssets<BufferGeometry, MeshAsset>;
+  private readonly sourceWalk = new SceneWalkRows(this.nodes, 'sourceWalkSlot');
+  private readonly visibleWalk = new SceneWalkRows(this.nodes, 'visibleWalkSlot');
+  private readonly poseWalk = new SceneWalkRows(this.nodes, 'poseWalkSlot');
+  private readonly meshPlans = new SceneMeshPlans(this.nodes);
+  private readonly reusedDraws = new SceneWalkRows<Renderable>(this.nodes, 'reusedDrawSlot');
+  private readonly preparationLists = new ScenePreparationLists();
+  private walking = false;
+  private readonly orderedDraws = new Map<number, NodeRecord>();
+  private viewOrderCamera: Camera | undefined;
+  private readonly viewOrderMatrix: number[] = [];
+  private readonly stockDefinitions: {
+    source: WeakRef<Material>;
+    variant: string;
+    shading: 0 | 1;
+  }[] = [];
+  private mixedOrder?: MixedTransparentOrder | undefined;
+  private readonly sortCenter = new Vector3();
+  private readonly poseScratch: number[] = [];
+  private readonly poseMatrix = new Matrix4();
+  private readonly poseExpectedWorld = new Matrix4();
+  private readonly writePoseColumns: ReturnType<typeof createLocalPoseWriter>;
+  private readonly presentationReader: ReturnType<typeof createPresentationMatrixReader>;
+  private readonly spritePose = new SpritePoseReader();
+  private readonly presentationMatrix = new Matrix4();
+  private readonly poseOwners = new Map<number, NodeRecord>();
+  private readonly sourcePoses = new SourcePosePage();
+  private readonly localMatrixPosition = new Vector3();
+  private readonly localMatrixRotation = new Quaternion();
+  private readonly localMatrixScale = new Vector3();
+  private ecsPoseChanges?: ReturnType<typeof observeStateChanges> | undefined;
+  private readonly readWorld = (object: Object3D): Matrix4 | undefined => {
+    const record = this.nodes.get(object);
+    const entity = record?.sourcePose?.entity ?? record?.entity;
+    if (entity !== undefined && this.presentationReader.locate(entity))
+      return this.presentationMatrix.fromArray(
+        this.presentationReader.values,
+        this.presentationReader.offset,
+      );
+    return undefined;
+  };
+
+  private readonly lightDirection = new Vector3();
+  private readonly lightOrigin = new Vector3();
+  private readonly meshUvs = new WeakMap<Renderable, MeshUvs>();
+  private readonly instanceTints = new InstanceTints();
+  private readonly cameraRows = new SourceCameraRows();
+  private projectingCamera = false;
+
+  syncCamera(
+    scene: Object3D,
+    camera: Camera,
+    input: {
+      readonly toneMapping: number;
+      readonly exposure: number;
+      readonly clearColor: Color;
+      readonly clearAlpha: number;
+      readonly antialias?: number;
+      readonly bloom?: import('./post-processing').ThreePostProcessing['bloom'];
+    },
+    buffers: SceneBuffers,
+  ): EntityHandle {
+    const nested = this.projectingCamera;
+    this.projectingCamera = true;
+    try {
+      const data = cameraData(
+        camera,
+        input.toneMapping,
+        input.exposure,
+        nested ? new SourceCameraRows() : this.cameraRows,
+      );
+      const fields = NativeCamera.fields;
+      data.bloom = input.bloom === undefined ? (fields.bloom.default as number) : BLOOM_ENABLED;
+      data.bloomIntensity = input.bloom?.intensity ?? (fields.bloomIntensity.default as number);
+      data.bloomRadius = input.bloom?.radius ?? (fields.bloomRadius.default as number);
+      data.bloomThreshold = input.bloom?.threshold ?? (fields.bloomThreshold.default as number);
+      data.antialias = input.antialias ?? (fields.antialias.default as number);
+      writeSceneClearColor(data.clearColor, scene, input.clearColor, input.clearAlpha);
+      return this.sync(scene, camera, data, buffers);
+    } finally {
+      this.projectingCamera = nested;
+    }
+  }
+  private plainLighting: { signature: readonly unknown[]; data: SceneLighting } | undefined;
+  private committedLighting: { data: SceneLighting; ambient: readonly number[] } | undefined;
+  private readonly jointSnapshots: JointSnapshots = new WeakMap();
+  private readonly batchRosters = new WeakMap<BatchedMesh, Uint32Array>();
+  private readonly maximumJointIndices = new WeakMap<Uint16Array, number>();
+  private readonly geometry: SharedAssets<BufferGeometry, MeshAsset, GeometrySourceData>;
   // Geometry can require flat shading while another mesh shares this source material.
   private readonly materials: readonly [
-    SharedAssets<Material, MaterialAsset>,
-    SharedAssets<Material, MaterialAsset>,
+    SharedAssets<Material, MaterialAsset, MaterialDependencies>,
+    SharedAssets<Material, MaterialAsset, MaterialDependencies>,
   ];
   // Native matcap coordinates already invert V. Keep its image projection separate
   // when the same Three texture is also used in an ordinary UV slot.
@@ -273,6 +468,102 @@ export class SceneProjection {
   private readonly skeletons: SharedAssets<Skeleton, SkeletonAsset>;
   private readonly environments: SharedAssets<Texture, EquirectAsset>;
   private readonly samplers: SharedAssets<Texture, SamplerAsset>;
+
+  private lastWork:
+    | {
+        mode: 'full' | 'tracked';
+        poseAuthority: 'ecs' | 'three';
+        sourceNodes: number;
+        meshPlans: number;
+        materialUses: number;
+        poseChanges: number;
+        residentNodes: number;
+        viewBindings: number;
+        viewPoseChecks: number;
+        retainedRankUpdates: number;
+        jointReads: number;
+        foreignInputChecks: number;
+        rosterEntries: number;
+      }
+    | undefined;
+
+  sourceWork() {
+    return this.lastWork && { ...this.lastWork };
+  }
+
+  private nodeRecord(object: Object3D): NodeRecord {
+    const record = this.nodes.get(object);
+    if (!record) throw new Error('Admitted Three object has no native entity');
+    return record;
+  }
+
+  private changes: SceneChanges | undefined;
+  private readonly nativeOwners: Map<number, Object3D> | undefined;
+  private readonly nativeRepairs = new Set<Object3D>();
+  private nativeChanges?: ReturnType<typeof observeStateChanges> | undefined;
+
+  private reconcileNativeChanges(changes: SceneChanges): void {
+    const cursor = this.nativeChanges;
+    if (!cursor || cursor.isCurrent()) return;
+    const batch = cursor.read();
+    for (const index of batch.indices) {
+      const object = this.nativeOwners?.get(index);
+      if (!object) continue;
+      const record = this.nodeRecord(object);
+      this.assertRetirableNode(record);
+      this.validateTransformParent(record);
+      this.options.validateSource?.(object, record.entity);
+      record.skinBinding = undefined;
+      record.jointPoses = undefined;
+      record.transform = EMPTY_SOURCE_TRANSFORM;
+      record.localVersion = undefined;
+      record.instances = [];
+      if (object === changes.root) {
+        this.committedLighting = undefined;
+      }
+      this.nativeRepairs.add(object);
+    }
+    batch.accept();
+  }
+  private previousCamera: Camera | undefined;
+
+  updateMatrices(scene: Object3D, camera: Camera, reconciled = false): void {
+    const changes = this.changes;
+    if (
+      changes?.root === scene &&
+      !scene.parent &&
+      scene.matrixAutoUpdate &&
+      scene.matrixWorldAutoUpdate &&
+      trackingSelected(scene) &&
+      !changes.invalid
+    ) {
+      try {
+        if (!reconciled) changes.reconcile();
+        if (!changes.invalid) {
+          changes.updateMatrices(camera);
+          return;
+        }
+      } catch (error) {
+        this.releaseTracking();
+        throw error;
+      }
+    }
+    if (scene.matrixWorldAutoUpdate) scene.updateMatrixWorld();
+    if (camera.parent === null && camera.matrixWorldAutoUpdate) camera.updateMatrixWorld();
+  }
+
+  private releaseTracking(): void {
+    if (this.changes) {
+      this.changes.dispose();
+      for (const record of this.nodes.values()) releaseMeshCache(record);
+    }
+    this.changes = undefined;
+    this.mixedOrder = undefined;
+    this.nativeChanges = undefined;
+    this.nativeRepairs.clear();
+    this.plainLighting = undefined;
+    this.committedLighting = undefined;
+  }
 
   sync(
     scene: Object3D,
@@ -287,71 +578,937 @@ export class SceneProjection {
       updateMatrices: true,
     },
   ): EntityHandle {
-    const caches = [
-      this.geometry,
-      ...this.materials,
-      ...this.textures,
-      this.samplers,
-      this.environments,
-      this.skeletons,
-    ];
-    for (const cache of caches) cache.begin();
+    if (this.walking)
+      return this.syncScene(
+        scene,
+        camera,
+        cameraData,
+        buffers,
+        new Set(),
+        new Set(),
+        new Set(),
+        new Map(),
+        new Set(),
+        new SourcePosePage(),
+        new ScenePreparationLists(),
+      );
+    this.walking = true;
     try {
-      const commitScene = runtimeAssets(this.world.assets)
-        .adoptClosure(() => ok(this.prepare(scene, camera, cameraData, buffers)))
-        .unwrap();
-      for (const cache of caches) cache.commit(!buffers.deferResourceSweep);
-      return commitScene();
-    } catch (error) {
-      for (const cache of caches) cache.abort();
-      throw error;
+      return this.syncScene(
+        scene,
+        camera,
+        cameraData,
+        buffers,
+        this.sourceWalk,
+        this.visibleWalk,
+        this.poseWalk,
+        this.meshPlans,
+        this.reusedDraws,
+        this.sourcePoses,
+        this.preparationLists,
+      );
+    } finally {
+      this.preparationLists.release();
+      this.walking = false;
+      this.sourceWalk.release();
+      this.visibleWalk.release();
+      this.poseWalk.release();
+      this.meshPlans.release();
+      this.reusedDraws.release();
+      this.nodeName.value = '';
+      this.sourcePoses.release(this.nodes.size);
     }
   }
 
-  private prepare(
+  private syncScene(
     scene: Object3D,
     camera: Camera,
     cameraData: CameraData,
     buffers: SceneBuffers,
-  ): () => EntityHandle {
-    if (this.options.validateSource !== undefined) {
-      for (const [object, record] of this.nodes) {
-        this.assertRetirableNode(record);
-        this.options.validateSource(object, record.entity);
+    nodes: MutableWalkMembers,
+    visible: MutableWalkMembers,
+    poses: MutableWalkMembers,
+    meshes: ScenePreparation['meshes'],
+    reusedDraws: ScenePreparation['reusedDraws'],
+    sourcePoses: SourcePosePage,
+    lists: ScenePreparationLists,
+  ): EntityHandle {
+    const tracked = trackingSelected(scene);
+    if (tracked && this.changes?.root === scene) {
+      try {
+        this.changes.reconcile();
+      } catch (error) {
+        this.releaseTracking();
+        throw error;
       }
-      if (!this.nodes.has(camera)) this.options.validateSource(camera, undefined);
+    }
+    const settings = lists.trackingSettings;
+    if (tracked) {
+      let slot = 0;
+      settings[slot++] = buffers.depth;
+      settings[slot++] = buffers.stencil;
+      settings[slot++] = buffers.opaque;
+      settings[slot++] = buffers.transparent;
+      settings[slot++] = buffers.sortObjects;
+      settings[slot++] = buffers.nativeTransparentOrder;
+      settings[slot++] = buffers.opaqueSort;
+      settings[slot++] = buffers.transparentSort;
+      settings[slot++] = buffers.opaqueOrder;
+      settings[slot++] = buffers.shadowMap?.enabled;
+      settings[slot++] = buffers.shadowMap?.type;
+      settings[slot++] = overrideMaterial(scene);
+      settings[slot++] = scene.parent;
+      settings[slot++] = scene.matrixAutoUpdate;
+      settings[slot++] = scene.matrixWorldAutoUpdate;
+      settings[slot++] = buffers.ecsPoses;
+    }
+    if (
+      this.changes &&
+      (!tracked ||
+        this.changes.invalid ||
+        (this.changes.unclipped !== undefined &&
+          !unclippedWitness(this.changes.unclipped, scene, camera)) ||
+        this.changes.root !== scene ||
+        !sameValues(this.changes.settings, settings))
+    )
+      this.releaseTracking();
+    const ecsPoseNodes = buffers.ecsPoses
+      ? this.ecsPoseNodes(scene, camera, poses, sourcePoses)
+      : undefined;
+    const ecsPoses = ecsPoseNodes !== undefined;
+    if (ecsPoses !== (this.ecsPoseChanges !== undefined)) this.switchPoseOwner(ecsPoses);
+    if (!ecsPoses && buffers.updateMatrices) this.updateMatrices(scene, camera, true);
+    let opened = 0;
+    try {
+      for (const store of this.resourceStores) {
+        store.begin();
+        opened++;
+      }
+      this.canvasTextures?.begin();
+    } catch (error) {
+      // An outer source callback can already own a later store. Close only
+      // the stores opened here and keep earlier offscreen usage intact.
+      while (opened > 0) this.resourceStores[--opened]?.abort(true);
+      throw error;
+    }
+    try {
+      if (this.changes) this.reconcileNativeChanges(this.changes);
+      const frame = createScenePreparation(
+        scene,
+        camera,
+        buffers,
+        nodes,
+        visible,
+        meshes,
+        reusedDraws,
+        lists,
+      );
+      frame.changes = this.changes;
+      if (ecsPoseNodes !== undefined) {
+        frame.ecsPoses = true;
+        this.publishEcsPoses(frame, ecsPoseNodes, sourcePoses);
+        frame.readWorld = this.readWorld;
+      }
+      const geometryContentEdits = this.prepareTransforms(frame);
+      if (ecsPoses) this.publishDrawPoses(frame);
+      else this.publishTransforms(frame);
+      this.previousCamera = camera;
+      if (!ecsPoses && this.options.propagate !== false) {
+        frame.readWorld = this.readWorld;
+        frame.frustum = undefined;
+      }
+      const commitScene = adoptWithMeshRanges(
+        this.assets,
+        () => ok(this.prepareDraws(frame, cameraData, geometryContentEdits)),
+        () => frame.meshRanges,
+      ).unwrap();
+      for (const store of this.resourceStores) store.commit(!buffers.deferResourceSweep);
+      commitScene();
+      if (frame.geometryRangeReceipts)
+        for (const consume of frame.geometryRangeReceipts.values()) consume();
+      this.publishViewDrawOrder(frame);
+      if (
+        tracked &&
+        !this.changes &&
+        !scene.parent &&
+        scene.matrixAutoUpdate &&
+        scene.matrixWorldAutoUpdate &&
+        buffers.opaque &&
+        buffers.sortObjects &&
+        !buffers.opaqueSort &&
+        !frame.orderedOpaque &&
+        !overrideMaterial(scene)
+      )
+        this.trackFrame(frame, settings);
+      else if (frame.changes) {
+        const changes = frame.changes;
+        changes.promote((node, hidden) => this.trackNode(frame, changes, node, hidden));
+      }
+      if (this.nativeOwners && this.changes) {
+        this.nativeChanges ??= observeStateChanges(
+          this.world,
+          [
+            Transform,
+            Name,
+            ChildOf,
+            Children,
+            MeshFilter,
+            MeshRenderer,
+            Layer,
+            ShadowParticipation,
+            NativeCamera,
+            NativeLines,
+            NativePoints,
+            Instances,
+            MorphWeights,
+            Skin,
+            NativeDirectionalLight,
+            NativePointLight,
+            NativePointLightShadow,
+            NativeSpotLight,
+            NativeRectAreaLight,
+            ClippingPlanes,
+            NativeFog,
+            RenderTargetEnvironment,
+            Skylight,
+            SkyboxBackground,
+            ...(this.options.validateComponents ?? []),
+          ],
+          this.nativeOwners,
+        );
+        this.nativeChanges.resetBaseline();
+      }
+      this.lastWork = {
+        mode: frame.changes ? 'tracked' : 'full',
+        poseAuthority: ecsPoses ? 'ecs' : 'three',
+        sourceNodes:
+          frame.nodes.size -
+          Number(frame.nodes.has(scene)) -
+          Number(camera !== scene && frame.nodes.has(camera)),
+        meshPlans: frame.planCalls,
+        viewPoseChecks: frame.viewPoseChecks,
+        retainedRankUpdates: frame.retainedRankUpdates,
+        jointReads: frame.changes?.jointReads ?? 0,
+        materialUses: frame.lists.usedMaterials[0].size + frame.lists.usedMaterials[1].size,
+        poseChanges: frame.sourcePoseWrites + frame.lists.transforms.size,
+        residentNodes: this.changes?.residents.size ?? 0,
+        viewBindings: this.changes?.viewDraws.size ?? 0,
+        foreignInputChecks: frame.changes?.checkedInputs ?? 0,
+        rosterEntries: frame.changes?.rosterEntries ?? 0,
+      };
+      if (frame.changes) {
+        frame.changes.jointReads = 0;
+        frame.changes.checkedInputs = 0;
+        frame.changes.rosterEntries = 0;
+      }
+      this.canvasTextures?.commit(!buffers.deferResourceSweep);
+      return this.nodeRecord(camera).entity;
+    } catch (error) {
+      this.releaseTracking();
+      this.canvasTextures?.abort();
+      for (const store of this.resourceStores)
+        store.abort(error !== undefined && error === buffers.externalDemand);
+      throw error;
+    }
+  }
+
+  /** Only the authored TRS lane is eligible for the shared Scene hierarchy. */
+  private ecsPoseNodes(
+    scene: Object3D,
+    camera: Camera,
+    walk: MutableWalkMembers,
+    page: SourcePosePage,
+  ): WalkMembers | undefined {
+    if (this.options.propagate === false || scene.parent !== null) return;
+    const changes = this.ecsPoseChanges === undefined ? undefined : this.changes;
+    const nodes = changes === undefined ? walk : page.takeEdits(changes);
+    if (changes === undefined) scene.traverse((node) => nodes.add(node));
+    else for (const node of changes.unobservedNativePoses) nodes.add(node);
+    const members = changes?.members ?? nodes;
+    if (camera.parent !== null && !members.has(camera)) return;
+    nodes.add(camera);
+    const manualCameraChain = cameraPoseChain(camera);
+    if (manualCameraChain === null) return;
+    let values = page.reserve(nodes.size);
+    let offset = 0;
+    for (const node of nodes) {
+      if (!canPublishLocalPose(node)) return;
+      const parent = node.parent;
+      if (parent && !members.has(parent)) return;
+      if (offset + POSE_LANES > values.length)
+        values = page.reserve(Math.max(nodes.size, offset / POSE_LANES + 1), true);
+      if (!this.readEcsLocalPose(node, values, offset, manualCameraChain?.has(node))) return;
+      offset += POSE_LANES;
+    }
+    page.used = offset;
+    return nodes;
+  }
+
+  private readonly localPosition = vec3.create();
+  private readonly localRotation = quat.create();
+  private readonly localScale = vec3.create();
+  private readonly localShear = vec3.create();
+
+  private readEcsLocalPose(
+    object: Object3D,
+    pose: Float64Array,
+    offset: number,
+    rigid?: boolean,
+  ): boolean {
+    if (object.matrixAutoUpdate) return readLocalPose(object, pose, true, offset);
+    const p = this.localPosition,
+      q = this.localRotation,
+      s = this.localScale;
+    if (!mat4.decomposeAffine(p, q, s, this.localShear, object.matrix.elements)) return false;
+    // A source-owned manual matrix must retain shear in Three's world cache.
+    if (hasSourceShear(this.localShear)) return false;
+    if (rigid && (s[0] !== 1 || s[1] !== 1 || s[2] !== 1)) return false;
+    return writePose(
+      pose,
+      p[0] as number,
+      p[1] as number,
+      p[2] as number,
+      q[0] as number,
+      q[1] as number,
+      q[2] as number,
+      q[3] as number,
+      s[0] as number,
+      s[1] as number,
+      s[2] as number,
+      false,
+      offset,
+    );
+  }
+
+  private switchPoseOwner(ecsPoses: boolean): void {
+    this.releaseTracking();
+    for (const record of this.nodes.values()) {
+      this.detachTransformParent(record.sourcePose ?? record);
+      record.transform = EMPTY_SOURCE_TRANSFORM;
+      record.localVersion = undefined;
+    }
+    this.poseOwners.clear();
+    for (const [object, record] of this.nodes) {
+      if (record.sourcePose !== undefined) {
+        this.world.despawn(record.sourcePose.entity).unwrap();
+        record.sourcePose = undefined;
+      }
+      if (ecsPoses && !separateDrawPose(object))
+        this.poseOwners.set(unpackSlot(record.entity), record);
+    }
+    this.ecsPoseChanges = ecsPoses
+      ? observeStateChanges(this.world, [GlobalTransform], this.poseOwners)
+      : undefined;
+  }
+
+  private publishEcsPoses(frame: ScenePreparation, nodes: WalkMembers, page: SourcePosePage): void {
+    const { changes, camera } = frame;
+    const topology = page.capturedTopology;
+    if (topology && camera.parent === null) {
+      const record = this.nodes.get(camera);
+      if (!record || record.parent !== undefined) topology.add(camera);
+    }
+    this.commitSourceTopology(frame.scene, topology ?? nodes, page);
+    this.commitSourcePoses(frame, nodes, page);
+    this.retireEcsSources(changes, camera, nodes);
+    propagateTransforms(this.world).unwrap();
+    frame.sourceWorldChanged = this.reflectWorldPoses(frame, nodes);
+    this.reflectCameraView(camera);
+    for (const node of changes?.stockSkins ?? nodes)
+      if (node instanceof SkinnedMesh)
+        node.bindMatrixInverse
+          .copy(node.bindMode === AttachedBindMode ? node.matrixWorld : node.bindMatrix)
+          .invert();
+    changes?.reconcileBindings();
+  }
+
+  private commitSourceTopology(scene: Object3D, nodes: WalkMembers, page: SourcePosePage): void {
+    for (const object of nodes) {
+      const record = this.nodes.get(object) ?? this.spawnNode(object);
+      if (record.sourcePose === undefined && separateDrawPose(object)) {
+        record.sourcePose = {
+          entity: this.world.spawn({ component: Transform, data: {} }).unwrap(),
+          transform: EMPTY_SOURCE_TRANSFORM,
+        };
+        this.poseOwners.set(unpackSlot(record.sourcePose.entity), record);
+      }
+      const pose = record.sourcePose ?? record;
+      const parent = object === scene ? null : object.parent;
+      if (parent === null) {
+        this.detachTransformParent(pose);
+        continue;
+      }
+      // Tracked edges can arrive child-first. A missing parent gets its normal spawn
+      // position during this walk, before any replacement relationship is installed.
+      const parentRecord = this.nodes.get(parent);
+      if (
+        pose.parent !== undefined &&
+        pose.parent === (parentRecord?.sourcePose ?? parentRecord)?.entity
+      )
+        continue;
+      this.detachTransformParent(pose);
+      page.pendingParents[page.parentCount++] = object;
+    }
+    // All obsolete edges are detached. A valid reversal can now attach either end first.
+    for (let i = 0; i < page.parentCount; i++) {
+      const object = page.pendingParents[i] as Object3D;
+      const parent = object.parent;
+      if (parent === null) continue;
+      const pose = this.sourcePose(object);
+      if (pose.parent !== undefined) continue;
+      const parentEntity = this.sourcePose(parent).entity;
+      this.world
+        .addComponent(pose.entity, { component: ChildOf, data: { parent: parentEntity } })
+        .unwrap();
+      pose.parent = parentEntity;
+    }
+  }
+
+  private commitSourcePoses(
+    frame: ScenePreparation,
+    nodes: WalkMembers,
+    page: SourcePosePage,
+  ): void {
+    const values = page.values;
+    const repairs = nodes instanceof SourcePoseEdits ? nodes.matrixRepairs : undefined;
+    let offset = 0;
+    for (const object of nodes) {
+      if (offset >= page.used) throw new Error('Source pose did not pass validation');
+      const record = this.sourcePose(object);
+      const previous = record.transform;
+      const changed = !page.matchesRecord(previous, offset);
+      if (changed) {
+        this.writePoseColumns(record.entity, values, offset);
+        const accepted = previous instanceof Float64Array ? previous : page.issueRecord();
+        page.writeRecord(accepted, offset);
+        record.transform = accepted;
+        record.localVersion = undefined;
+        frame.sourcePoseWrites++;
+      }
+      if (
+        object.matrixAutoUpdate &&
+        (changed || repairs === undefined || repairs.get(object) === 'local')
+      )
+        this.writeSourceLocalMatrix(object, values, offset);
+      offset += POSE_LANES;
+    }
+  }
+
+  private retireEcsSources(
+    changes: SceneChanges | undefined,
+    camera: Camera,
+    nodes: WalkMembers,
+  ): void {
+    if (changes) {
+      for (const object of changes.retired)
+        if (!changes.members.has(object) && object !== camera) this.retireSource(object);
+      const previous = this.previousCamera;
+      if (previous && previous !== camera && !changes.members.has(previous))
+        this.retireSource(previous);
+    } else if (this.nodes.size !== nodes.size) {
+      // Every distinct current source now has a record. Only surplus records can retire.
+      for (const object of this.nodes.keys()) if (!nodes.has(object)) this.retireSource(object);
+    }
+  }
+
+  private sourcePose(object: Object3D): PoseRecord {
+    const record = this.nodeRecord(object);
+    return record.sourcePose ?? record;
+  }
+
+  private retireSource(object: Object3D): void {
+    const record = this.nodes.get(object);
+    if (record === undefined) return;
+    this.detachTransformParent(record.sourcePose ?? record);
+    this.releaseNode(record);
+    this.nodes.delete(object);
+    if (isRenderable(object)) this.meshUvs.delete(object);
+  }
+
+  private writeSourceLocalMatrix(object: Object3D, source: Float64Array, offset: number): void {
+    if (resolveSourceLocalPose(object)) return;
+    const target = sourceCollectionStorage(object.matrix.elements);
+    const elements = this.poseMatrix.compose(
+      this.localMatrixPosition.fromArray(source, offset),
+      this.localMatrixRotation.fromArray(source, offset + 3),
+      this.localMatrixScale.fromArray(source, offset + 7),
+    ).elements;
+    for (let i = 0; i < 16; i++) target[i] = elements[i] as number;
+  }
+
+  private reflectWorldPoses(frame: ScenePreparation, nodes: WalkMembers): boolean {
+    const { camera } = frame;
+    const cursor = this.ecsPoseChanges;
+    if (cursor === undefined) return false;
+    if (!(nodes instanceof SourcePoseEdits)) {
+      for (const object of nodes) this.reflectWorldPose(this.nodes.get(object), camera);
+      cursor.resetBaseline();
+      return true;
+    }
+    // Stock automatic updates overwrite external edits to the cached matrices.
+    // A cache-only edit still needs repair if Scene's derived pose was unchanged.
+    const edits = nodes.matrixRepairs;
+    let changed = edits.size !== 0;
+    for (const object of edits.keys()) this.reflectWorldPose(this.nodes.get(object), camera);
+    if (!cursor.isCurrent()) {
+      const batch = cursor.read();
+      for (const slot of batch.indices) {
+        const record = this.poseOwners.get(slot);
+        if (record === undefined || edits.has(record.object)) continue;
+        this.reflectWorldPose(record, camera);
+        changed = true;
+      }
+      batch.accept();
+    }
+    return changed;
+  }
+
+  private reflectWorldPose(record: NodeRecord | undefined, camera: Camera): void {
+    if (record === undefined) return;
+    const object = record.object;
+    const elements = object.matrixWorld.elements;
+    const row = sourceWorldMatrixRow(object, elements);
+    const target = row?.view ?? sourceCollectionStorage(elements);
+    if ((row?.dense ?? target).length < 16) target.length = 16;
+    const entity = record.sourcePose?.entity ?? record.entity;
+    if (!this.presentationReader.locate(entity)) return;
+    const { values, offset } = this.presentationReader;
+    if (row !== undefined) row.writePresentation(values, offset);
+    else for (let i = 0; i < 16; i++) target[i] = values[offset + i] as number;
+    object.matrixWorldNeedsUpdate = false;
+    if (object !== camera && object instanceof Camera) this.reflectCameraView(object);
+    reflectSourceWorldPose(object);
+    publishWorldMatrix(elements);
+  }
+
+  private reflectCameraView(camera: Camera): void {
+    stockCameraView(camera, camera.matrixWorldInverse);
+  }
+
+  private publishDrawPoses(frame: ScenePreparation): void {
+    if (frame.lists.transforms.size === 0) return;
+    for (const [object, transform] of frame.lists.transforms)
+      this.commitTransform(this.nodeRecord(object), transform);
+    // Draw poses are flat output entities independent of the source tree.
+    propagateTransforms(this.world).unwrap();
+  }
+
+  private prepareTransforms(
+    frame: ScenePreparation,
+  ): ReadonlyMap<BufferGeometry, PointContentChannels> | undefined {
+    const { camera, changes } = frame;
+    let geometryContentEdits: ReadonlyMap<BufferGeometry, PointContentChannels> | undefined;
+    this.walkScene(frame);
+    this.spritePose.begin();
+    if (changes) {
+      for (const object of this.nativeRepairs) {
+        if (frame.nodes.has(object)) continue;
+        const draw = isRenderable(object) ? changes.viewDraws.get(object) : undefined;
+        if (draw && isRenderable(object)) {
+          frame.nodes.add(object);
+          if (draw.live) frame.visible.add(object);
+          if (draw.blended && draw.live) {
+            frame.repairRanks ??= new Map();
+            frame.repairRanks.set(object, draw.rank);
+          }
+        } else if (changes.residents.has(object)) {
+          frame.nodes.add(object);
+          if (object.visible && (isRenderable(object) || object.layers.test(camera.layers)))
+            frame.visible.add(object);
+        }
+      }
+      const geometries = changes.changedGeometry;
+      if (geometries.size) {
+        geometryContentEdits = geometries;
+        changes.changedGeometry = new Map();
+      }
+      for (const geometry of geometries.keys()) {
+        for (const mesh of changes.geometry.get(geometry) ?? []) {
+          frame.nodes.add(mesh);
+          frame.visible.add(mesh);
+        }
+      }
+      const poses = changes.projectedPose;
+      changes.consumeLights(
+        camera.layers.mask,
+        frame.buffers.shadowMap?.cameraLayers ?? 1,
+        this.shadowUpdates.pendingLights,
+        poses,
+        (light) => {
+          frame.nodes.add(light);
+          if (light.layers.test(camera.layers)) {
+            this.validateObject(light);
+            frame.visible.add(light);
+          }
+        },
+      );
+      const spriteDemand = frame.buffers.nativeTransparentOrder && this.options.world === undefined;
+      if (spriteDemand) this.updateTrackedSprites(frame, changes, poses);
+      for (const sprite of changes.spritePoses)
+        if (!spriteDemand || changes.viewDraws.get(sprite)?.live) poses.add(sprite);
+      changes.spritePoses.clear();
+      if (poses.size) changes.projectedPose = new Set();
+      for (const object of poses) {
+        if (
+          object.visible &&
+          !frame.nodes.has(object) &&
+          (changes.residents.has(object) ||
+            (isRenderable(object) && changes.viewDraws.has(object))) &&
+          (!frame.ecsPoses || separateDrawPose(object))
+        )
+          this.projectTransform(frame, object);
+      }
     }
     this.shadowUpdates.begin();
-    const uploadedTextures = new Set<Texture>();
-    const lighting = this.prepareSceneLighting(scene, uploadedTextures);
-    const frame = createScenePreparation(scene, camera, buffers, uploadedTextures);
-    updateSourceMatrices(scene, camera, buffers);
-    const frustum = new Frustum().setFromProjectionMatrix(
-      new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse),
-      camera.coordinateSystem,
-      camera.reversedDepth,
-    );
-    this.walkScene(frame);
-    const { camera: cameraClipping, local: localClipping } = projectClipping(
-      clippingCandidates(frame.visible),
-      frame.clipping,
-    );
-    frame.cameraClipping = cameraClipping;
     this.projectTransforms(frame);
-    for (const object of frame.nodes) {
-      if (frame.visible.has(object) && isRenderable(object))
-        this.planMesh(frame, object, frustum, localClipping.get(object));
+    return geometryContentEdits;
+  }
+
+  private updateTrackedSprites(
+    frame: ScenePreparation,
+    changes: SceneChanges,
+    poses: Set<Object3D>,
+  ): void {
+    if (changes.spriteViewChanged) {
+      const movedInPerspective = changes.cameraMoved && 'isPerspectiveCamera' in frame.camera;
+      for (const sprite of changes.retainedSprites) {
+        if (
+          this.updateSpriteBinding(frame, changes, sprite, poses) &&
+          (changes.cameraBasisMoved || (movedInPerspective && !sprite.material.sizeAttenuation))
+        )
+          poses.add(sprite);
+      }
+    } else {
+      for (const sprite of changes.spriteVisibility)
+        this.updateSpriteBinding(frame, changes, sprite, poses);
+      for (const object of poses)
+        if (
+          object instanceof Sprite &&
+          changes.retainedSprites.has(object) &&
+          !changes.spriteVisibility.has(object)
+        )
+          this.updateSpriteBinding(frame, changes, object, poses);
     }
-    const ambientIrradiance = sceneAmbientIrradiance(scene, frame.visible);
+    changes.spriteVisibility.clear();
+  }
+
+  /** Keep source material and geometry bound across view-demand changes. */
+  private updateSpriteBinding(
+    frame: ScenePreparation,
+    changes: SceneChanges,
+    sprite: Sprite,
+    poses: Set<Object3D>,
+  ): boolean {
+    const draw = changes.viewDraws.get(sprite);
+    const live =
+      sprite.visible &&
+      sprite.layers.test(frame.camera.layers) &&
+      !outsideThreeFrustum(frame, sprite);
+    if (!live) poses.delete(sprite);
+    if (!draw) {
+      if (live) {
+        changes.retainedSprites.delete(sprite);
+        changes.promoteBinding(sprite);
+        frame.nodes.add(sprite);
+        frame.visible.add(sprite);
+        frame.spriteAdmissions ??= new Map();
+        frame.spriteAdmissions.set(sprite, true);
+      } else frame.visible.delete(sprite);
+      return false;
+    }
+    if (live === draw.live) return live;
+    const record = this.nodeRecord(sprite);
+    const geometry = record.meshGeometry;
+    if (geometry === undefined) throw new Error('Tracked Sprite lost its geometry binding');
+    const handle = live
+      ? this.geometry.previous(geometry.source, geometry.variant)?.handle
+      : (0 as AssetHandle<'mesh'>);
+    if (handle === undefined) {
+      // A disposed source is admitted again using its current layout.
+      frame.nodes.add(sprite);
+      frame.visible.add(sprite);
+      this.nativeRepairs.add(sprite);
+      return true;
+    }
+    draw.live = live;
+    frame.spriteFilters ??= new Map();
+    frame.spriteFilters.set(record, handle);
+    if (live) {
+      poses.add(sprite);
+      changes.materials.add(sprite.material);
+    }
+    return live;
+  }
+
+  private prepareDraws(
+    frame: ScenePreparation,
+    cameraData: CameraData,
+    geometryContentEdits: ReadonlyMap<BufferGeometry, PointContentChannels> | undefined,
+  ): () => void {
+    const { scene, camera, buffers, changes } = frame;
+    const lighting = this.sceneLighting(scene, frame.lists.uploadedTextures, changes);
+    if (changes) {
+      const materials = changes.materials;
+      if (materials.size) changes.materials = new Set();
+      for (const source of materials) {
+        for (const use of changes.uses.get(source)?.values() ?? []) {
+          if (use.view && !use.direct) continue;
+          let mesh = use.meshes.values().next().value;
+          if (use.view && mesh && !changes.viewDraws.get(mesh)?.live) {
+            // An inactive source has no draw binding. Publish shared material
+            // edits through a consumer with an active binding.
+            mesh = undefined;
+            for (const candidate of use.meshes) {
+              if (changes.viewDraws.get(candidate)?.live) {
+                mesh = candidate;
+                break;
+              }
+            }
+          }
+          if (!mesh) continue;
+          const observation = observeMaterial(frame, source, source, false);
+          if (!use.view && !observation)
+            throw new Error('Tracked material lost its ordinary projection');
+          const layout = this.nodes.get(mesh)?.ordinaryMesh;
+          this.admitMaterialUse(frame, mesh, {
+            source,
+            effective:
+              observation?.material ??
+              validateMaterial(
+                hasSurfaceBinding(source)
+                  ? effectiveMaterial(source, source, frame.buffers)
+                  : source,
+              ).unwrap(),
+            ...(observation ? { observation } : {}),
+            shading: use.shading,
+            variant: use.variant,
+            coordinates: new Map(use.coordinates ?? layout?.uv.coordinates),
+            skinProgram: use.skinProgram,
+          });
+        }
+      }
+    }
+    const clipping =
+      frame.lists.clipping.size === 0
+        ? undefined
+        : projectClipping(
+            clippingCandidates(frame.visible),
+            frame.lists.clipping,
+            !changes?.unclipped,
+          );
+    frame.cameraClipping = clipping?.camera;
+    for (const object of frame.nodes) {
+      if (!isRenderable(object)) continue;
+      if (
+        buffers.nativeTransparentOrder &&
+        this.options.world === undefined &&
+        object instanceof Sprite &&
+        changes?.viewDraws.has(object) &&
+        !this.nativeRepairs.has(object)
+      ) {
+        frame.reusedDraws.add(object);
+        continue;
+      }
+      if (frame.visible.has(object)) {
+        const draw = changes?.viewDraws.get(object);
+        const geometryEdit = geometryContentEdits?.get(object.geometry);
+        if (
+          draw?.live &&
+          !this.nativeRepairs.has(object) &&
+          (!(object instanceof Points) ||
+            (draw.zoom === camera.projectionMatrix.elements[5] &&
+              draw.perspective === camera.projectionMatrix.elements[11] &&
+              draw.pixelRatio === (buffers.pixelRatio ?? 1))) &&
+          (!draw.republishPointContent ||
+            geometryEdit === undefined ||
+            this.preparePointRevision(frame, object, geometryEdit))
+        ) {
+          frame.reusedDraws.add(object);
+          if (!buffers.nativeTransparentOrder && draw.blended && object.layers.test(camera.layers))
+            frame.lists.transparentObjects.push(object);
+          continue;
+        }
+        this.planMesh(frame, object, clipping?.local.get(object));
+      }
+      if (!frame.meshes.has(object)) {
+        const record = this.nodes.get(object);
+        const mesh = record?.meshCachePins === undefined ? record?.meshGeometry : undefined;
+        if (mesh !== undefined && object.geometry === mesh.source) {
+          this.geometry.markUsed(mesh.source, mesh.variant);
+          if (matchesMaterialRoster(frame.scene, object, record?.meshMaterials))
+            this.useCachedMaterials(record.meshMaterials);
+        }
+      }
+    }
+    this.nativeRepairs.clear();
+    if (buffers.externalDemand?.size) throw buffers.externalDemand;
+    const ambientIrradiance = sceneAmbientIrradiance(
+      scene,
+      frame.visible,
+      changes,
+      camera.layers.mask,
+    );
     // New resource leases stay provisional until all material preparation succeeds.
     rankOpaqueMeshes(frame);
-    this.publishMaterials(frame, this.publishTextures(frame));
-    this.publishGeometry(frame);
-    rankTransparentMeshes(frame);
-    return () => this.commit(frame, lighting, ambientIrradiance, cameraData);
+    if (frame.lists.usedMaterials[0].size || frame.lists.usedMaterials[1].size)
+      this.publishMaterials(frame, this.publishTextures(frame));
+    if (changes?.materialEdits.size) this.publishMaterialEdits(changes);
+    if (frame.meshes.size || frame.pointRevisions?.length) this.publishGeometry(frame);
+    if (buffers.nativeTransparentOrder) {
+      this.mixedOrder = undefined;
+    } else if (changes?.hasResiduals && changes.viewDraws.size) {
+      this.mixedOrder ??= new MixedTransparentOrder();
+      this.mixedOrder.rank(frame, this.sortCenter);
+    } else {
+      this.mixedOrder = undefined;
+      rankTransparentMeshes(frame, this.sortCenter);
+    }
+    if (frame.repairRanks && !buffers.nativeTransparentOrder)
+      for (const [object, rank] of frame.repairRanks) {
+        if (!frame.lists.transparentRanks.has(object))
+          frame.lists.transparentRanks.set(object, rank);
+      }
+    for (const validate of frame.borrowedInstanceWindows ?? []) validate();
+    return () => this.commitDraws(frame, lighting, ambientIrradiance, cameraData);
+  }
+
+  /** Keep the admitted source assets when this view cannot draw the attached mesh. */
+  /** Publish the local view facts before Render admits and orders its visible draws. */
+  private publishViewDrawOrder(frame: ScenePreparation): void {
+    if (!frame.buffers.nativeTransparentOrder) {
+      if (this.viewOrderCamera !== undefined) {
+        setViewDrawOrder(this.world, undefined);
+        this.viewOrderCamera = undefined;
+      }
+      return;
+    }
+    const camera = frame.camera;
+    const view = sourceCollectionStorage(camera.matrixWorldInverse.elements);
+    if (
+      frame.changes &&
+      camera === this.viewOrderCamera &&
+      frame.meshes.size === 0 &&
+      !frame.pointRevisions?.length &&
+      frame.lists.transforms.size === 0 &&
+      !frame.sourceWorldChanged &&
+      sameValues(view, this.viewOrderMatrix)
+    )
+      return;
+    this.viewOrderCamera = camera;
+    for (let i = 0; i < view.length; i++) this.viewOrderMatrix[i] = view[i] as number;
+    const nativePoses = frame.ecsPoses;
+    setViewDrawOrder(this.world, {
+      view: view.slice(),
+      readLocal: (entity, out) => {
+        const record = this.orderedDraws.get(entity);
+        if (!record || !isRenderable(record.object)) return false;
+        const object = record.object;
+        const sprite = object instanceof Sprite;
+        const center = sprite ? undefined : sourceSortCenter(object);
+        // A source getter can render recursively. Read all inputs before filling the phase's output.
+        const group = record.groupOrder ?? 0;
+        const priority = object.renderOrder;
+        const tie = object.id;
+        const x = center?.x ?? 0;
+        const y = center?.y ?? 0;
+        const z = center?.z ?? 0;
+        const world =
+          !nativePoses || sprite ? sourceCollectionStorage(object.matrixWorld.elements) : undefined;
+        out.group = group;
+        out.priority = priority;
+        out.tie = tie;
+        out.x = x;
+        out.y = y;
+        out.z = z;
+        out.authoredWorld = world;
+        return true;
+      },
+    });
+  }
+
+  private pinMeshCache(record: NodeRecord): void {
+    const geometry = record.meshGeometry;
+    if (geometry === undefined) return;
+    const pin = this.geometry.pin(geometry.source, geometry.variant);
+    if (pin === undefined) return;
+    const pins = [pin];
+    if (record.meshMaterials !== undefined) this.useCachedMaterials(record.meshMaterials, pins);
+    releaseMeshCache(record);
+    record.meshCachePins = pins;
+  }
+
+  /** Strict draws discover resource usage each frame; tracked bindings own the same dependencies. */
+  private useCachedMaterials(materials: MeshMaterialResidency, pins?: (() => void)[]): void {
+    const hold = (pin: (() => void) | undefined) => {
+      if (pin !== undefined) pins?.push(pin);
+    };
+    for (const address of materials.addresses) {
+      const cache = this.materials[address.shading];
+      if (pins) hold(cache.pin(address.source, address.variant));
+      const dependencies = pins
+        ? cache.sourceData(address.source, address.variant)
+        : cache.markUsed(address.source, address.variant);
+      if (dependencies === undefined) continue;
+      for (const { source, projection, canvas } of dependencies.textures) {
+        if (canvas !== undefined) {
+          hold(this.canvasTextures?.retain(canvas, pins !== undefined));
+        }
+        if (projection !== undefined) {
+          const [orientation, variant] = textureProjectionSlots[projection];
+          if (pins) hold(this.textures[orientation].pin(source, variant));
+          else this.textures[orientation].markUsed(source, variant);
+        }
+        if (pins) hold(this.samplers.pin(source, ''));
+        else this.samplers.markUsed(source);
+      }
+    }
   }
 
   /** Scene-owned image lighting and backdrop; validates the Scene-level Three features first. */
+  private sceneLighting(
+    scene: Object3D,
+    uploads: Set<Texture>,
+    changes: SceneChanges | undefined,
+  ): SceneLighting {
+    if (
+      !changes ||
+      !(scene instanceof Scene) ||
+      scene.environment ||
+      (scene.fog !== null && !(scene.fog instanceof Fog) && !(scene.fog instanceof FogExp2)) ||
+      (scene.background !== null && !(scene.background instanceof Color))
+    ) {
+      this.plainLighting = undefined;
+      return this.prepareSceneLighting(scene, uploads);
+    }
+    const fog = scene.fog;
+    const sky = scene.environmentRotation,
+      backdrop = scene.backgroundRotation;
+    const signature = [
+      scene,
+      scene.environmentIntensity,
+      sky.x,
+      sky.y,
+      sky.z,
+      sky.order,
+      backdrop.x,
+      backdrop.y,
+      backdrop.z,
+      backdrop.order,
+      fog,
+      fog?.color.r,
+      fog?.color.g,
+      fog?.color.b,
+      fog instanceof Fog ? fog.near : undefined,
+      fog instanceof Fog ? fog.far : undefined,
+      fog instanceof FogExp2 ? fog.density : undefined,
+    ];
+    if (this.plainLighting && sameValues(this.plainLighting.signature, signature))
+      return this.plainLighting.data;
+    const data = this.prepareSceneLighting(scene, uploads);
+    this.plainLighting = { signature, data };
+    return data;
+  }
+
   private prepareSceneLighting(scene: Object3D, uploadedTextures: Set<Texture>): SceneLighting {
     if (!(scene instanceof Scene))
       return {
@@ -442,14 +1599,215 @@ export class SceneProjection {
     ).handle;
   }
 
+  private trackFrame(frame: ScenePreparation, settings: readonly unknown[]): void {
+    let hasClipping = false;
+    for (const node of frame.nodes) {
+      if (node instanceof ClippingGroup) hasClipping = true;
+      if (
+        (node.renderOrder !== 0 && !localTransparentOrder(node)) ||
+        node.children.some((child) => child.parent !== node)
+      )
+        return;
+    }
+    const witness = hasClipping
+      ? clippingCandidates(frame.visible).find((object) =>
+          unclippedWitness(object, frame.scene, frame.camera),
+        )
+      : undefined;
+    if (hasClipping && !witness) return;
+    const changes = new SceneChanges(
+      frame.scene,
+      settings.slice(),
+      frame.camera.layers.mask,
+      witness,
+      frame.ecsPoses,
+      frame.buffers.nativeTransparentOrder === true,
+    );
+    this.changes = changes;
+    changes.index(frame.scene, (node, hidden) => this.trackNode(frame, changes, node, hidden));
+  }
+
+  private trackNode(
+    frame: ScenePreparation,
+    changes: SceneChanges,
+    node: Object3D,
+    hidden: boolean,
+  ): boolean | 'view' {
+    if (changes.unobservedNodeState.has(node)) return false;
+    if (hidden) {
+      // The ECS hierarchy still owns names and poses. Once the draw was withdrawn,
+      // the hidden source needs no mesh/material lease until it becomes visible again.
+      const record = this.nodes.get(node);
+      if (
+        !frame.ecsPoses ||
+        this.options.world ||
+        this.options.validateSource ||
+        !record?.renderReady ||
+        record.binding !== undefined
+      )
+        return false;
+      if (changes.ordinaryGroup(node)) return true;
+      if (!(node instanceof Mesh) || Object.getPrototypeOf(node) !== Mesh.prototype) return false;
+      releaseMeshCache(record);
+      record.meshGeometry = undefined;
+      record.ordinaryMesh = undefined;
+      record.meshMaterials = undefined;
+      this.meshUvs.delete(node);
+      return true;
+    }
+    if (!node.visible) {
+      if (!isRenderable(node) || !changes.watchDormant(node)) return false;
+      const record = this.nodes.get(node);
+      if (record && !record.meshCachePins) this.pinMeshCache(record);
+      return true;
+    }
+    if (
+      node instanceof AmbientLight ||
+      node instanceof PointLight ||
+      node instanceof SpotLight ||
+      node instanceof RectAreaLight ||
+      node instanceof DirectionalLight
+    )
+      return changes.watchLight(node, frame.buffers.shadowMap?.enabled === true);
+    if (!isRenderable(node)) return changes.ordinaryGroup(node);
+    if (
+      node instanceof Sprite &&
+      Object.getPrototypeOf(node) === Sprite.prototype &&
+      Object.getPrototypeOf(node.material) === SpriteMaterial.prototype &&
+      frame.buffers.nativeTransparentOrder &&
+      this.options.world === undefined &&
+      frame.spriteAdmissions?.get(node) === false &&
+      changes.watchDeferredSprite(node)
+    ) {
+      changes.retainedSprites.add(node);
+      return 'view';
+    }
+    const plan = frame.meshes.get(node);
+    if (
+      !plan?.materials.length ||
+      !ordinaryGeometryReads(frame, node.geometry) ||
+      frame.lists.clipping.has(node)
+    )
+      return false;
+    const nativeSkin =
+      node instanceof SkinnedMesh &&
+      plan.skin?.kind === 'source' &&
+      frame.ecsPoses &&
+      frame.buffers.nativeTransparentOrder &&
+      !frame.buffers.opaqueSort &&
+      !frame.lists.groupOrders.has(node)
+        ? plan.skin
+        : undefined;
+    if (plan.skin && !nativeSkin) return false;
+    const layout = this.nodes.get(node)?.ordinaryMesh;
+    const native =
+      nativeSkin !== undefined || (!!layout && this.nativeViewMesh(frame, node, layout.source));
+    if (!native && !trackableViewDraw(frame, node, plan)) return false;
+    if (!changes.watchDraw(node, !native)) return false;
+    if (nativeSkin && node instanceof SkinnedMesh) {
+      if (
+        !changes.watchNativeSkin(
+          node,
+          plan.materials.some((use) => use.skinProgram === 'standard'),
+        )
+      )
+        return false;
+      const release = this.skeletons.pin(node.skeleton, nativeSkin.variant);
+      if (!release) return false;
+      changes.hold(release);
+    }
+    if (!watchDrawMaterials(changes, node, plan, native, nativeSkin !== undefined)) return false;
+    this.pinMeshCache(this.nodeRecord(node));
+    if (native) return true;
+    if (
+      node instanceof Sprite &&
+      frame.buffers.nativeTransparentOrder &&
+      this.options.world === undefined
+    )
+      changes.retainedSprites.add(node);
+    changes.viewDraws.set(node, {
+      blended: plan.blended === true,
+      rank: frame.lists.transparentRanks.get(node) ?? 0,
+      depth:
+        plan.blended && frame.buffers.sortObjects && !frame.buffers.nativeTransparentOrder
+          ? sourceDepth(node, frame.camera, this.sortCenter)
+          : undefined,
+      live: true,
+      zoom: frame.camera.projectionMatrix.elements[5],
+      perspective: frame.camera.projectionMatrix.elements[11],
+      pixelRatio: frame.buffers.pixelRatio ?? 1,
+      // A point list with a fixed layout keeps its observed draw across content edits.
+      republishPointContent:
+        this.options.world === undefined &&
+        frame.buffers.nativeTransparentOrder === true &&
+        Object.getPrototypeOf(node) === Points.prototype &&
+        hasPlainPointGeometry(node.geometry) &&
+        plan.materials.length === 1,
+    });
+    return 'view';
+  }
+
+  private canReuseDrawView(frame: ScenePreparation): boolean {
+    const changes = frame.changes;
+    const nativeOrder = frame.buffers.nativeTransparentOrder === true;
+    if (!changes?.reuseView(frame.camera, frame.buffers.pixelRatio ?? 1, nativeOrder)) return false;
+    if (nativeOrder) return true;
+    for (const object of changes.projectedPose) {
+      if (!isRenderable(object)) continue;
+      const draw = changes.viewDraws.get(object);
+      if (!draw) continue;
+      frame.viewPoseChecks++;
+      if (!draw.live || !object.layers.test(frame.camera.layers)) return false;
+      if (
+        draw.blended &&
+        frame.buffers.sortObjects &&
+        draw.depth !== sourceDepth(object, frame.camera, this.sortCenter)
+      )
+        return false;
+    }
+    return true;
+  }
+
   private walkScene(frame: ScenePreparation): void {
+    if (frame.changes && this.canReuseDrawView(frame))
+      frame.residualChildren = frame.changes.residualChildren();
     this.visit(frame, frame.scene, true, undefined, 0);
-    for (const object of frame.visible) frame.displayVisible.add(object);
-    if (frame.buffers.shadowMap?.enabled) this.admitShadowCasters(frame);
+    if (frame.lists.pendingCasters.length && frame.changes)
+      frame.shadowMask |= frame.changes.shadowCasterMask(frame.camera.layers.mask);
+    for (const caster of frame.lists.pendingCasters) {
+      if ((caster.layers.mask & frame.shadowMask) === 0) continue;
+      this.validateObject(caster);
+      frame.visible.add(caster);
+    }
     // Scene owns ambient state even when its own layer does not match the camera.
     frame.nodes.add(frame.scene);
     this.validateObject(frame.camera);
-    frame.nodes.add(frame.camera);
+    if (!frame.nodes.has(frame.camera)) {
+      if (this.options.validateSource !== undefined) this.validateMountedNode(frame, frame.camera);
+      frame.nodes.add(frame.camera);
+    }
+    if (
+      !frame.changes &&
+      this.options.validateSource !== undefined &&
+      frame.visitedMounted < this.nodes.size
+    ) {
+      for (const [object, record] of this.nodes) {
+        if (frame.nodes.has(object)) continue;
+        this.assertRetirableNode(record);
+        this.validateTransformParent(record);
+        this.options.validateSource(object, record.entity);
+      }
+    }
+  }
+
+  private validateMountedNode(frame: ScenePreparation, object: Object3D): void {
+    const record = this.nodes.get(object);
+    if (record !== undefined) {
+      this.assertRetirableNode(record);
+      this.validateTransformParent(record);
+      frame.visitedMounted++;
+    }
+    this.options.validateSource?.(object, record?.entity);
   }
 
   private visit(
@@ -459,105 +1817,449 @@ export class SceneProjection {
     parentClipping: SourceClipping | undefined,
     groupOrder: number,
   ): void {
-    if (!this.nodes.has(object)) this.options.validateSource?.(object, undefined);
+    if (this.options.validateSource !== undefined) this.validateMountedNode(frame, object);
     frame.nodes.add(object);
     const active = parentVisible && object.visible;
-    if (active) frame.active.add(object);
     const matched = active && object.layers.test(frame.camera.layers);
     const planes = matched ? objectClipping(object, parentClipping) : parentClipping;
     const order = matched && object instanceof Group ? object.renderOrder : groupOrder;
-    frame.groupOrders.set(object, order);
-    frame.clipping.set(object, planes);
+    if (order !== 0) frame.lists.groupOrders.set(object, order);
+    if (planes !== undefined) frame.lists.clipping.set(object, planes);
     if (matched) {
-      if (object instanceof LOD && object.autoUpdate) object.update(frame.camera);
+      if (object instanceof LOD && object.autoUpdate) {
+        const update = frame.changes?.lodUpdates.get(object);
+        if (update) update(frame.camera);
+        else object.update(frame.camera);
+      }
       this.validateObject(object);
-      frame.visible.add(object);
-    }
-    for (const child of object.children) this.visit(frame, child, active, planes, order);
-  }
-
-  /** Active renderables outside the camera layers still draw into a matching light's shadow map. */
-  private admitShadowCasters(frame: ScenePreparation): void {
-    const shadowMasks = shadowCameraMasks(frame.visible, frame.camera);
-    for (const object of frame.active) {
       if (
-        !isRenderable(object) ||
-        !castsShadow(object, frame.varianceShadow) ||
-        !shadowMasks.some((mask) => (object.layers.mask & mask) !== 0)
+        frame.buffers.shadowMap?.enabled &&
+        object.castShadow &&
+        (object instanceof DirectionalLight ||
+          object instanceof SpotLight ||
+          object instanceof PointLight)
+      ) {
+        frame.shadowMask |= shadowCasterChannels(object, frame.camera.layers.mask);
+      }
+      frame.visible.add(object);
+    } else if (
+      active &&
+      isRenderable(object) &&
+      this.nativeViewMesh(
+        frame,
+        object,
+        planes === undefined ? ordinaryMeshMaterial(frame, object, undefined) : undefined,
       )
-        continue;
+    ) {
       this.validateObject(object);
       frame.visible.add(object);
+    } else if (
+      active &&
+      frame.buffers.shadowMap?.enabled &&
+      isRenderable(object) &&
+      object.castShadow
+    ) {
+      frame.lists.pendingCasters.push(object);
     }
+    const children = frame.changes
+      ? (frame.residualChildren ?? frame.changes.children).get(object)
+      : object.children;
+    if (children) for (const child of children) this.visit(frame, child, active, planes, order);
   }
 
   private projectTransforms(frame: ScenePreparation): void {
-    const camera = frame.camera;
     for (const object of frame.nodes) {
-      if (object !== camera && !frame.visible.has(object)) continue;
-      const values = sourceMatrix(object, camera, frame.scene);
-      if (sameValues(this.nodes.get(object)?.transform ?? [], values)) continue;
-      frame.transforms.set(object, {
-        values: [...values],
-        data: decomposeSourceMatrix(object, camera, values),
-      });
+      if (frame.ecsPoses && !separateDrawPose(object)) continue;
+      if (
+        frame.buffers.nativeTransparentOrder &&
+        this.options.world === undefined &&
+        object instanceof Sprite &&
+        frame.changes?.viewDraws.get(object)?.live === false &&
+        !this.nativeRepairs.has(object)
+      )
+        continue;
+      if (object !== frame.camera && !frame.visible.has(object)) {
+        if (this.nodes.get(object)?.parent !== undefined)
+          this.projectTransform(frame, object, false);
+        continue;
+      }
+      this.projectTransform(frame, object);
     }
+  }
+
+  private localTransformParent(
+    frame: ScenePreparation,
+    object: Object3D,
+    localVersion: number | undefined,
+  ): Object3D | undefined {
+    const parent = object.parent;
+    if (
+      parent === null ||
+      object === frame.scene ||
+      object instanceof Camera ||
+      object instanceof Sprite ||
+      object instanceof RectAreaLight ||
+      !object.matrixAutoUpdate ||
+      !object.matrixWorldAutoUpdate ||
+      object.pivot !== null ||
+      (!frame.nodes.has(parent) &&
+        !(frame.changes?.residents.has(parent) && this.nodes.has(parent))) ||
+      !parent.visible ||
+      !parent.layers.test(frame.camera.layers)
+    )
+      return;
+    if (!this.transformAnchorMatches(frame, parent)) return;
+
+    // Tracked stock propagation already proved the source relationship. Strict
+    // reads and overridden parent updates establish the same proof from matrices.
+    if (localVersion === undefined) {
+      const local = this.poseMatrix.compose(object.position, object.quaternion, object.scale);
+      if (!sameValues(local.elements, sourceCollectionStorage(object.matrix.elements))) return;
+      const expected = this.poseExpectedWorld.multiplyMatrices(parent.matrixWorld, local).elements;
+      if (!sameValues(expected, sourceCollectionStorage(object.matrixWorld.elements))) return;
+    }
+    return parent;
+  }
+
+  private transformAnchorMatches(frame: ScenePreparation, parent: Object3D): boolean {
+    let eligible = frame.lists.transformAnchors.get(parent);
+    if (eligible === undefined) {
+      eligible =
+        !(parent instanceof Sprite || parent instanceof RectAreaLight) &&
+        hasPositiveUniformSourceBasis(parent, parent === frame.camera);
+      if (eligible && parent === frame.camera)
+        eligible = stockCameraView(frame.camera, this.poseExpectedWorld).equals(
+          frame.camera.matrixWorldInverse,
+        );
+      frame.lists.transformAnchors.set(parent, eligible);
+    }
+    return eligible;
+  }
+
+  private projectTransform(frame: ScenePreparation, object: Object3D, useWorld = true): void {
+    const record = this.nodes.get(object);
+    const localVersion = frame.changes?.resolvedLocalVersion(object);
+    const sourceParent = object.parent;
+    if (
+      localVersion !== undefined &&
+      record?.parent !== undefined &&
+      record.localVersion === localVersion &&
+      sourceParent !== null &&
+      this.nodes.get(sourceParent)?.entity === record.parent &&
+      sourceParent.visible &&
+      sourceParent.layers.test(frame.camera.layers) &&
+      (frame.nodes.has(sourceParent) || frame.changes?.residents.has(sourceParent)) &&
+      this.transformAnchorMatches(frame, sourceParent)
+    )
+      return;
+
+    const parent =
+      frame.buffers.ecsPoses === undefined
+        ? this.localTransformParent(frame, object, localVersion)
+        : undefined;
+    if (parent !== undefined) {
+      const target = this.nodes.get(parent)?.entity;
+      const relationChanged = target === undefined || target !== record?.parent;
+      if (
+        record?.parent !== undefined &&
+        localVersion !== undefined &&
+        record.localVersion === localVersion
+      ) {
+        if (relationChanged) frame.lists.transformParents.set(object, parent);
+        return;
+      }
+      if (readLocalPose(object, this.poseScratch)) {
+        if (relationChanged) frame.lists.transformParents.set(object, parent);
+        if (record?.parent === undefined || !sameValues(record.transform, this.poseScratch))
+          frame.lists.transforms.set(object, { pose: this.poseScratch.slice(), localVersion });
+        else record.localVersion = localVersion;
+        return;
+      }
+    }
+    if (record?.parent !== undefined) frame.lists.transformParents.set(object, null);
+    if (!useWorld) return;
+    this.projectWorldTransform(frame, object, record);
+  }
+
+  private projectWorldTransform(
+    frame: ScenePreparation,
+    object: Object3D,
+    record: NodeRecord | undefined,
+  ): void {
+    const camera = frame.camera;
+    const previous = record?.parent === undefined ? record?.transform : undefined;
+    let matrix = (object === camera ? camera.matrixWorldInverse : object.matrixWorld).elements;
+    if (object instanceof Sprite) {
+      const override =
+        frame.scene instanceof Scene && object.material.allowOverride
+          ? frame.scene.overrideMaterial
+          : null;
+      const material = override !== null && isSpriteMaterial(override) ? override : object.material;
+      const positionMaterial =
+        surfaceInput(object.material, 'positionNode') !== null ? object.material : material;
+      if (this.spritePose.read(object, camera, material, positionMaterial, this.poseScratch)) {
+        if (previous === undefined || !sameValues(previous, this.poseScratch))
+          frame.lists.transforms.set(object, { pose: this.poseScratch.slice() });
+        return;
+      }
+      matrix = spriteMatrix(object, camera, material, positionMaterial).elements;
+    }
+    const values = frame.changes ? sourceCollectionStorage(matrix) : matrix;
+    const revision = object instanceof Bone ? sourceWorldRevision(object) : undefined;
+    if (
+      previous !== undefined &&
+      (revision !== undefined
+        ? record?.skinWorldRevision === revision
+        : sameValues(previous, values))
+    )
+      return;
+    frame.lists.transforms.set(object, decomposeSourceMatrix(object, camera, values, revision));
+  }
+
+  /** A published mesh keeps its native binding as cameras move. Cold or
+   * replaced assets still enter through source admission; arbitrary direct
+   * material/geometry edits continue through the normal observation path. */
+  private nativeViewMesh(
+    frame: ScenePreparation,
+    object: Renderable,
+    material: Material | undefined,
+  ): boolean {
+    const layout = this.nodes.get(object)?.ordinaryMesh;
+    if (
+      layout === undefined ||
+      material !== layout.source ||
+      frame.buffers.opaqueSort != null ||
+      !frame.buffers.sortObjects ||
+      object.renderOrder !== 0 ||
+      frame.lists.groupOrders.has(object) ||
+      frame.lists.clipping.has(object)
+    )
+      return false;
+    return (
+      ownSourceValue(object, 'geometry') === layout.geometry.source &&
+      ordinaryMeshSurface(material) &&
+      (!isBlended(material) ||
+        (frame.buffers.nativeTransparentOrder === true &&
+          (this.options.world === undefined ||
+            (material instanceof MeshBasicMaterial &&
+              material.map === null &&
+              material.alphaMap === null &&
+              !(frame.buffers.shadowMap?.enabled && object.castShadow)))))
+    );
   }
 
   private planMesh(
     frame: ScenePreparation,
     object: Renderable,
-    frustum: Frustum,
     planes: ClippingOptions | undefined,
   ): void {
-    if (isCulled(frame, object, frustum)) return;
+    frame.planCalls++;
+    if (
+      object instanceof Sprite &&
+      frame.spriteAdmissions?.get(object) !== true &&
+      outsideThreeFrustum(frame, object)
+    ) {
+      frame.spriteAdmissions ??= new Map();
+      frame.spriteAdmissions.set(object, false);
+      return;
+    }
+    const sourceMaterial = object.material;
+    const geometry = object.geometry;
+    const original = ordinaryMeshMaterial(frame, object, planes, sourceMaterial);
+    const shared = original === undefined ? undefined : frame.lists.sharedMeshPlans.get(geometry);
+    const previous = original === undefined ? undefined : shared?.get(original);
+    if (previous !== undefined) {
+      previous.shareable ??= allowsSharedMeshPlan(frame, previous, geometry);
+      if (previous.shareable) {
+        rejectOrderedOpaque(frame, object, previous.materials);
+        this.admitMesh(frame, object, previous);
+        return;
+      }
+    }
+
+    const plan =
+      original !== undefined
+        ? (this.reuseOrdinaryLayout(frame, object, original, geometry) ??
+          this.projectDrawMesh(frame, object, geometry, sourceMaterial, planes))
+        : this.projectDrawMesh(frame, object, geometry, sourceMaterial, planes);
+    if (plan === undefined) return;
+    this.admitMesh(frame, object, plan);
+    if (original !== undefined && previous === undefined)
+      registerOrdinaryMeshPlan(frame, plan, geometry, original, shared);
+  }
+
+  private admitMesh(frame: ScenePreparation, object: Renderable, plan: MeshPlan): void {
+    frame.meshes.set(object, plan);
+    plan.blended ??= plan.materials.some((use) => isBlended(use.effective));
+    if (
+      !frame.buffers.nativeTransparentOrder &&
+      plan.blended &&
+      object.layers.test(frame.camera.layers) &&
+      !frame.repairRanks?.has(object)
+    )
+      frame.lists.transparentObjects.push(object);
+  }
+
+  private reuseOrdinaryLayout(
+    frame: ScenePreparation,
+    object: Renderable,
+    material: Material,
+    geometry: BufferGeometry,
+  ): MeshPlan | undefined {
+    const layout = this.nodes.get(object)?.ordinaryMesh;
+    if (layout === undefined || frame.lists.clipping.has(object)) return undefined;
+    const observation = reuseOrdinaryMaterial(frame, material, geometry, layout);
+    if (observation === undefined) return undefined;
+    const effective = observation.material;
+    const untextured = layout.uv.coordinates.size === 0;
+    const cached = untextured ? observation.untexturedMeshUses?.[layout.shading] : undefined;
+    let materials = cached?.[0].variant === layout.variant ? cached : undefined;
+    if (materials === undefined) {
+      const coordinates = new Map<Texture, ResolvedMaterialTextureCoordinates>();
+      const use: MaterialUse = {
+        source: material,
+        effective,
+        observation,
+        variant: layout.variant,
+        shading: layout.shading,
+        coordinates,
+        skinProgram: undefined,
+      };
+      materials = [use];
+      if (!sharedMaterialReads(use, observation)) return undefined;
+      if (!untextured || useTextures(use).length !== 0) {
+        // Recheck current channels and transforms. The general path remaps
+        // and bakes UV streams when this mesh's projection changes.
+        const uv = this.readMeshUvs(object, geometry, materials, coordinates);
+        if (uv !== layout.uv) return undefined;
+      }
+    }
+    const values = observeGeometry(frame, geometry, false);
+    const asset = this.readMeshGeometry(frame, layout.geometry, values);
+    if (asset.payload === undefined) return undefined;
+    rejectOrderedOpaque(frame, object, materials);
+    if (materials !== cached) {
+      this.admitMaterialUse(frame, object, materials[0]);
+      if (untextured) {
+        observation.untexturedMeshUses ??= [];
+        observation.untexturedMeshUses[layout.shading] = materials;
+      }
+    }
+    return {
+      geometry: layout.geometry,
+      materials,
+      asset,
+      nativeInstances: false,
+      ordinaryMesh: layout,
+      shareable: true,
+    };
+  }
+
+  private projectDrawMesh(
+    frame: ScenePreparation,
+    object: Renderable,
+    sourceGeometry: BufferGeometry,
+    sourceMaterial: Renderable['material'],
+    planes: ClippingOptions | undefined,
+  ): MeshPlan | undefined {
     const selection: GeometryMaterial[] = [];
     const list: MaterialUse[] = [];
     const coordinates = new Map<Texture, ResolvedMaterialTextureCoordinates>();
-    selectMaterials(frame, object, planes, coordinates, selection, list);
-    if (list.length === 0) return;
-    const cpuSkin = object instanceof SkinnedMesh && list.some((use) => !use.skinned);
-    if (cpuSkin) for (const use of list) Object.assign(use, { skinned: false });
-    const wireframe = isWireframe(object, list);
-    rejectOrderedOpaque(frame, object, list);
-    for (const use of list) validateThreeSurfaceGeometry(use.effective, object.geometry);
-    const uv = projectUvs(
-      object.geometry,
-      object instanceof Points ? [] : uvTextures(list),
-      list.flatMap((use) => [...threeSurfaceUvSets(use.effective)]),
+    selectMaterials(
+      frame,
+      object,
+      sourceGeometry,
+      sourceMaterial,
+      planes,
+      coordinates,
+      selection,
+      list,
     );
-    for (const [texture, value] of uv.coordinates) coordinates.set(texture, value);
+    const firstUse = list[0];
+    if (firstUse === undefined) return;
+    const wireframe = isWireframe(object, list);
+    const skinned = object instanceof SkinnedMesh ? object : undefined;
+    const skinPlan =
+      skinned === undefined
+        ? undefined
+        : this.prepareSkinnedMaterialUses(frame, skinned, list, wireframe);
+    const cpuSkin = skinPlan?.cpuSkin === true;
+    rejectOrderedOpaque(frame, object, list);
+    for (const use of list) validateThreeSurfaceGeometry(use.effective, sourceGeometry);
+    const uv = this.readMeshUvs(object, sourceGeometry, list, coordinates);
+    const resident = wireframe
+      ? undefined
+      : this.reuseOrdinaryMesh(
+          frame,
+          object,
+          sourceGeometry,
+          Array.isArray(sourceMaterial),
+          list,
+          selection,
+          uv,
+        );
+    if (resident !== undefined) return resident;
+    const instanceTint =
+      object instanceof InstancedMesh && object.morphTexture === null
+        ? this.instanceTints.common(object)
+        : undefined;
     const shape: GeometryShape = {
       topology: wireframe ? 'line-list' : sourceTopology(object),
-      grouped: Array.isArray(object.material),
+      grouped: Array.isArray(sourceMaterial),
       selection,
       wireframe,
       uv,
       flatMatcap: flatMatcapSlots(list),
-      expanded: expandsInstances(object),
+      instanceTint,
+      expanded:
+        object instanceof BatchedMesh ||
+        (object instanceof InstancedMesh &&
+          (object.morphTexture !== null ||
+            (object.instanceColor !== null && instanceTint === undefined))),
       cpuSkin,
-      morphColor: projectsMorphColor(object.geometry, selection),
+      morphColor: projectsMorphColor(sourceGeometry, selection),
     };
-    const variant = geometryVariant(object, shape);
-    const values = geometryCacheValues(object, shape, frame.camera, list[0]?.effective);
-    const payload = this.readMeshGeometry(object, shape, values, variant);
-    if (payload === undefined) return;
+    const instanceValues =
+      object instanceof InstancedMesh ? instanceSourceValues(object, shape.expanded) : undefined;
+    const instances = this.nativeInstanceTransforms(frame, object, instanceValues, shape.expanded);
+    if (instances?.kind === 'replace' && instances.transforms.length === 0) return;
+    const geometry = this.geometryPlan(object, sourceGeometry, shape);
+    const sourceValues = geometryCacheValues(frame, object, sourceGeometry, shape);
+    const cpuSkinSource = cpuSkin ? skinned : undefined;
+    const values = shape.expanded
+      ? [
+          ...sourceValues,
+          ...instanceGeometryValues(
+            object as InstancedMesh | BatchedMesh,
+            frame.camera,
+            firstUse.effective,
+            this.batchRosters,
+          ),
+        ]
+      : cpuSkinSource === undefined
+        ? sourceValues
+        : [
+            ...sourceValues,
+            ...cpuSkinValues(cpuSkinSource, this.changes?.skinCursor(cpuSkinSource)),
+          ];
+    const asset = this.readMeshGeometry(frame, geometry, values, () =>
+      this.projectMeshGeometry(frame, object, shape, geometry, cpuSkinSource, sourceValues),
+    );
+    if (asset.payload === undefined) return;
+    const { payload } = asset;
     for (const use of list) this.admitMaterialUse(frame, object, use);
     const lines = meshLineStyle(object, payload, list, wireframe);
     if (lines === null) return;
-    const instanceValues =
-      object instanceof InstancedMesh ? instanceSourceValues(object, shape.expanded) : undefined;
-    const instances = this.nativeInstanceTransforms(object, instanceValues, shape.expanded);
-    if (object instanceof InstancedMesh && object.count === 0) return;
     const skin =
-      object instanceof SkinnedMesh && !cpuSkin ? this.planSkin(object, payload) : undefined;
+      skinned !== undefined && !cpuSkin
+        ? this.planSkin(skinned, payload, skinPlan?.nativeLitJoints, skinPlan?.sourceJoints)
+        : undefined;
     const morphWeights = meshMorphWeights(object, payload);
-    frame.meshes.set(object, {
-      source: object,
-      variant,
+    return {
+      geometry,
+      uv,
       materials: list,
-      values,
-      payload,
+      asset,
       nativeInstances: object instanceof InstancedMesh && !shape.expanded,
       instanceValues,
       instances,
@@ -565,53 +2267,505 @@ export class SceneProjection {
       skin,
       lineStyle: lines,
       pointStyle: object instanceof Points ? pointStyle(object, frame, list) : undefined,
+    };
+  }
+
+  private prepareSkinnedMaterialUses(
+    frame: ScenePreparation,
+    mesh: SkinnedMesh,
+    list: MaterialUse[],
+    wireframe: boolean,
+  ) {
+    const cursor = frame.ecsPoses ? undefined : this.changes?.skinCursor(mesh);
+    const needsLitSkin = list.some((use) => use.skinProgram === undefined);
+    const supportsLit = !wireframe && list.every((use) => nativeSkinMaterial(use));
+    const sourceJoints =
+      !needsLitSkin || supportsLit
+        ? this.mountedSkinJoints(frame, mesh, needsLitSkin, cursor)
+        : undefined;
+    const nativeLitJoints =
+      sourceJoints === undefined && needsLitSkin && supportsLit
+        ? projectLitJoints(mesh, this.jointSnapshots, cursor ?? this.changes?.skinCursor(mesh))
+        : undefined;
+    const cpuSkin = needsLitSkin && sourceJoints === undefined && nativeLitJoints === undefined;
+    for (const use of list) {
+      use.skinProgram = cpuSkin ? undefined : (use.skinProgram ?? 'standard');
+      use.variant += `:${use.skinProgram ?? 'cpu'}`;
+    }
+    return { cpuSkin, nativeLitJoints, sourceJoints };
+  }
+
+  private mountedSkinJoints(
+    frame: ScenePreparation,
+    mesh: SkinnedMesh,
+    lit: boolean,
+    cursor: SkinCursor | undefined,
+  ) {
+    // Attached bind cancels the mesh world transform. Detached or authored
+    // matrices need the per-mesh correction in projectJoints.
+    if (
+      this.options.world !== undefined ||
+      (!frame.ecsPoses && !frame.changes) ||
+      mesh.bindMode !== AttachedBindMode
+    )
+      return;
+    if (
+      lit
+        ? !canProjectLitSkin(mesh, cursor)
+        : !canProjectAffinePoint(mesh, cursor) || mesh.matrixWorld.determinant() === 0
+    )
+      return;
+    if (!frame.ecsPoses) {
+      // A source callback can edit the usual attached-mode cancellation.
+      if (!this.poseExpectedWorld.copy(mesh.matrixWorld).invert().equals(mesh.bindMatrixInverse))
+        return;
+    }
+    const joints: EntityHandle[] = [];
+    for (const bone of mesh.skeleton.bones) {
+      const record = this.nodes.get(bone);
+      if (!record || !(frame.changes?.members.has(bone) ?? frame.nodes.has(bone))) return;
+      if (!frame.ecsPoses) {
+        const revision = sourceWorldRevision(bone);
+        if (revision === undefined || revision !== record.skinWorldRevision) return;
+      }
+      joints.push(record.sourcePose?.entity ?? record.entity);
+    }
+    return joints;
+  }
+
+  private readMeshUvs(
+    object: Renderable,
+    geometry: BufferGeometry,
+    materials: readonly MaterialUse[],
+    coordinates: Map<Texture, ResolvedMaterialTextureCoordinates>,
+  ): UvProjection {
+    let meshUvs = this.meshUvs.get(object);
+    if (meshUvs === undefined) {
+      meshUvs = new MeshUvs();
+      this.meshUvs.set(object, meshUvs);
+    }
+    const textures = object instanceof Points ? [] : uvTextures(materials);
+    const reservedChannels: number[] = [];
+    if (textures.length > 0) {
+      for (const use of materials) {
+        for (const set of threeSurfaceUvSets(use.effective)) reservedChannels.push(set);
+      }
+    }
+    const uv = meshUvs.read(geometry, textures, reservedChannels);
+    for (const [texture, value] of uv.coordinates) coordinates.set(texture, value);
+    if (uv.values.length > 0) {
+      // Baked channels belong to the mesh's whole slot roster.
+      for (const use of materials) {
+        const remapped = useTextures(use).flatMap(([parameter, texture]) => {
+          const set = coordinates.get(texture)?.set;
+          return set !== undefined && set !== texture.channel ? [[parameter, set]] : [];
+        });
+        if (remapped.length > 0) use.variant += `:uv:${JSON.stringify(remapped)}`;
+      }
+    }
+    return uv;
+  }
+
+  /** Keep source geometry across submissions while rebuilding uses from the current view. */
+  private reuseOrdinaryMesh(
+    frame: ScenePreparation,
+    object: Renderable,
+    sourceGeometry: BufferGeometry,
+    grouped: boolean,
+    materials: readonly MaterialUse[],
+    selection: readonly GeometryMaterial[],
+    uv: UvProjection,
+  ): MeshPlan | undefined {
+    const geometry = this.nodes.get(object)?.meshGeometry;
+    const structure = geometry?.structure;
+    if (
+      geometry === undefined ||
+      !structure?.shared ||
+      structure.topology !== 'triangle-list' ||
+      Object.getPrototypeOf(object) !== Mesh.prototype ||
+      sourceGeometry !== geometry.source ||
+      (object as Mesh).morphTargetInfluences !== undefined ||
+      structure.grouped !== grouped ||
+      uv.values.length !== 0 ||
+      !sameValues(structure.generatedUvChannels, uv.generatedChannels) ||
+      !matchesGeometrySelection(structure.selection, selection) ||
+      materials.some((use) => use.shading === 1 && isMatcapMaterial(use.effective)) ||
+      projectsMorphColor(geometry.source, selection)
+    )
+      return undefined;
+    const values = observeGeometry(frame, geometry.source, structure.grouped);
+    const asset = this.readMeshGeometry(frame, geometry, values, () => {
+      const retained = this.geometry.previous(sourceGeometry, geometry.variant);
+      if (retained)
+        frame.geometryRangeReceipts = recordGeometryRanges(
+          sourceGeometry,
+          retained.values,
+          values,
+          frame.geometryRangeReceipts,
+        );
+      if (retained && !structure.generatedUvChannels.length) {
+        const records = runtimeAssets(this.assets);
+        const payload = records.resolveStoredAsset<MeshAsset>(retained.handle).unwrap();
+        const ranges = rigidVertexEdits(
+          sourceGeometry,
+          retained.values,
+          values,
+          structure.selection,
+          payload,
+          records.maxRangesPerAsset,
+        );
+        if (ranges !== undefined)
+          return {
+            payload,
+            edit: {
+              ranges,
+              base: retained.values,
+              recover: (base) => restoreRigidVertexEdits(base, ranges),
+            },
+          };
+      }
+      return {
+        payload: projectGeometry(
+          sourceGeometry,
+          structure.grouped,
+          structure.selection,
+          structure.topology,
+          uv.attributes,
+          false,
+          undefined,
+          'static-streams',
+        ).unwrap(),
+      };
     });
+    if (asset.payload === undefined || asset.payload.morphTargets !== undefined) return undefined;
+    for (const use of materials) this.admitMaterialUse(frame, object, use);
+    return {
+      geometry,
+      asset,
+      materials,
+      uv,
+      nativeInstances: false,
+    };
+  }
+
+  private geometryPlan(
+    object: Renderable,
+    source: BufferGeometry,
+    shape: GeometryShape,
+  ): MeshGeometryPlan {
+    const candidate = this.nodes.get(object)?.meshGeometry;
+    const shared =
+      !shape.expanded &&
+      !shape.cpuSkin &&
+      !shape.morphColor &&
+      shape.flatMatcap.size === 0 &&
+      shape.uv.values.length === 0;
+    const generatedUvChannels = shape.uv.generatedChannels;
+    if (
+      candidate?.source === source &&
+      matchesGeometryStructure(candidate.structure, shape, generatedUvChannels)
+    )
+      return candidate;
+    return {
+      source,
+      variant: geometryVariant(object, shape),
+      structure: {
+        topology: shape.topology,
+        grouped: shape.grouped,
+        wireframe: shape.wireframe,
+        selection: shape.selection,
+        generatedUvChannels,
+        uvValues: shape.uv.values,
+        flatMatcap: shape.flatMatcap,
+        expanded: shape.expanded,
+        instanceTint: shape.instanceTint,
+        cpuSkin: shape.cpuSkin,
+        morphColor: shape.morphColor,
+        shared,
+      },
+    };
   }
 
   private readMeshGeometry(
+    frame: ScenePreparation,
+    geometry: MeshGeometryPlan,
+    values: readonly unknown[],
+    project?: () => MeshGeometryProjection | undefined,
+  ): MeshGeometryAsset {
+    // Shared structural projections have the same immutable source observation.
+    let variants = geometry.structure.shared
+      ? frame.lists.meshAssets.get(geometry.source)
+      : undefined;
+    const prior = variants?.get(geometry.variant);
+    if (prior !== undefined && prior.values === values) return prior;
+
+    const published = this.geometry.read(geometry.source, values, geometry.variant);
+    const projection: MeshGeometryProjection | undefined = published ?? project?.();
+    const asset: MeshGeometryAsset = {
+      values,
+      acceptedValues: published?.values,
+      payload: projection?.payload,
+      sourceData: projection?.sourceData,
+      edit: projection?.edit,
+      handle: undefined,
+    };
+    if (projection !== undefined && geometry.structure.shared) {
+      if (variants === undefined) {
+        variants = new Map();
+        frame.lists.meshAssets.set(geometry.source, variants);
+      }
+      variants.set(geometry.variant, asset);
+    }
+    return asset;
+  }
+
+  /** Content changes reuse the submitted point geometry, style and material roster. */
+  private preparePointRevision(
+    frame: ScenePreparation,
+    object: Renderable,
+    channels: PointContentChannels,
+  ): boolean {
+    const record = this.nodeRecord(object);
+    const geometry = record.meshGeometry;
+    if (
+      geometry?.source !== object.geometry ||
+      !record.binding?.mesh ||
+      this.geometry.sourceData(geometry.source, geometry.variant) !== POINT_CONTENT
+    )
+      return false;
+    const content = readPointContent(
+      geometry.source,
+      geometry.structure.selection[0]?.vertexColors === true,
+    );
+    if (content === undefined) return false;
+    const accepted = this.geometry.previous(geometry.source, geometry.variant);
+    if (accepted === undefined) return false;
+    const asset = this.readMeshGeometry(
+      frame,
+      geometry,
+      observeGeometry(frame, geometry.source, false),
+      () => {
+        const payload = runtimeAssets(this.assets).borrow<MeshAsset>(accepted.handle).unwrap();
+        if (
+          payload.attributeStorage !== 'interleaved' ||
+          payload.indices?.length !== content.count ||
+          (payload.attributes.color !== undefined) !== (content.color !== undefined)
+        )
+          return;
+        const edit = pointContentEdit(content, channels);
+        return {
+          payload,
+          sourceData: POINT_CONTENT,
+          edit: {
+            ranges: edit.ranges,
+            base: accepted.values,
+            recover: (base) => repackPointContent(edit.content, base, geometry.source, channels),
+          },
+        };
+      },
+    );
+    if (asset.payload === undefined) return false;
+    frame.pointRevisions ??= [];
+    frame.pointRevisions.push({ record, geometry, asset });
+    return true;
+  }
+
+  private repackAcceptedPointContent(
+    geometry: MeshGeometryPlan,
+    content: NonNullable<ReturnType<typeof readPointContent>>,
+    channels?: PointContentChannels,
+  ): MeshAsset | undefined {
+    const accepted = this.geometry.previous(geometry.source, geometry.variant);
+    if (accepted === undefined) return undefined;
+    return repackPointContent(
+      content,
+      runtimeAssets(this.assets).borrow<MeshAsset>(accepted.handle).unwrap(),
+      geometry.source,
+      channels,
+    );
+  }
+
+  private projectMeshGeometry(
+    frame: ScenePreparation,
     object: Renderable,
     shape: GeometryShape,
-    values: ReturnType<typeof geometryCacheValues>,
-    variant: string,
-  ): MeshAsset | undefined {
-    return (
-      this.geometry.read(object.geometry, values, variant)?.payload ??
-      projectMeshGeometry(object, shape)
-    );
+    geometry: MeshGeometryPlan,
+    cpuSkin: SkinnedMesh | undefined,
+    sourceValues: readonly unknown[],
+  ): { payload: MeshAsset | undefined; sourceData?: GeometrySourceData | undefined } {
+    const previous = this.geometry.sourceData(geometry.source, geometry.variant);
+    if (
+      this.options.world === undefined &&
+      Object.getPrototypeOf(object) === Points.prototype &&
+      !shape.grouped &&
+      shape.selection.length === 1 &&
+      shape.selection[0]?.slot === 0 &&
+      shape.uv.generatedChannels.length === 0 &&
+      shape.flatMatcap.size === 0 &&
+      ordinaryGeometryReads(frame, geometry.source)
+    ) {
+      const content = readPointContent(geometry.source, shape.selection[0].vertexColors);
+      if (content !== undefined) {
+        const payload =
+          previous === POINT_CONTENT
+            ? this.repackAcceptedPointContent(geometry, content)
+            : undefined;
+        return {
+          payload: payload ?? projectSourceMesh(object, geometry.source, shape, true),
+          sourceData: POINT_CONTENT,
+        };
+      }
+    }
+    if (shape.expanded) {
+      const base =
+        previous?.kind === 'instances' && sameValues(previous.values, sourceValues)
+          ? previous.geometry
+          : projectSourceMesh(object, geometry.source, shape, false);
+      if (base === undefined) return { payload: undefined };
+      return {
+        payload: finishMeshGeometry(object, shape, base),
+        sourceData: { kind: 'instances', values: sourceValues, geometry: base },
+      };
+    }
+    if (cpuSkin === undefined) {
+      let base = projectSourceMesh(
+        object,
+        geometry.source,
+        shape,
+        shape.instanceTint !== undefined
+          ? false
+          : shape.flatMatcap.size > 0
+            ? true
+            : 'static-streams',
+      );
+      if (base !== undefined && shape.instanceTint !== undefined)
+        base = tintInstanceGeometry(base, shape.instanceTint);
+      return { payload: finishMeshGeometry(object, shape, base) };
+    }
+
+    let sourceData = previous;
+    if (sourceData?.kind !== 'skin' || !sameValues(sourceData.values, sourceValues)) {
+      const base = projectSourceMesh(object, geometry.source, shape, false);
+      if (base === undefined) return { payload: undefined };
+      sourceData = { kind: 'skin', values: sourceValues, geometry: cpuSkinGeometry(base) };
+    }
+    return {
+      sourceData,
+      payload: finishMeshGeometry(object, shape, projectCpuSkin(cpuSkin, sourceData.geometry)),
+    };
   }
 
   /** Source matrices change only with their version; undefined keeps the published transforms. */
   private nativeInstanceTransforms(
+    frame: ScenePreparation,
     object: Renderable,
     instanceValues: readonly unknown[] | undefined,
     expanded: boolean,
-  ): Float32Array | undefined {
+  ): NativeInstanceChange | undefined {
     if (!(object instanceof InstancedMesh) || instanceValues === undefined || expanded)
       return undefined;
-    if (sameValues(this.nodes.get(object)?.instances ?? [], instanceValues)) return undefined;
-    const instances = new Float32Array(object.instanceMatrix.array.slice(0, object.count * 16));
-    for (let offset = 0; offset < instances.length; offset += 16) {
-      const matrix = instances.subarray(offset, offset + 16);
-      if (!mat4.decomposeAffine(vec3.create(), quat.create(), vec3.create(), vec3.create(), matrix))
-        invalid('InstancedMesh.instanceMatrix', object.uuid).unwrap();
+    const record = this.nodes.get(object);
+    const previous = record?.instances;
+    if (previous !== undefined && sameValues(previous, instanceValues)) return undefined;
+    const attribute = object.instanceMatrix;
+    const lanes = object.count * 16;
+    if (
+      record?.nativeInstanceCount === object.count &&
+      previous?.[0] === attribute &&
+      previous[1] === attribute.array &&
+      previous[2] === attribute.version - 1 &&
+      previous[3] === object.count &&
+      previous[4] === false &&
+      attribute.array instanceof Float32Array
+    ) {
+      const backing = attribute.array.buffer;
+      const borrow =
+        this.options.world === undefined &&
+        frame.buffers.transparentSort == null &&
+        frame.buffers.opaqueSort == null &&
+        Object.getPrototypeOf(object) === InstancedMesh.prototype &&
+        backing instanceof ArrayBuffer &&
+        !('resizable' in backing && backing.resizable);
+      const ranges = sparseInstanceTransforms(object, attribute.array, lanes, borrow);
+      if (ranges !== undefined) {
+        if (!borrow) return { kind: 'patch', ranges };
+        const ticket: Extract<NativeInstanceChange, { kind: 'borrowed' }> = { kind: 'borrowed' };
+        const version = attribute.version;
+        const array = attribute.array;
+        frame.borrowedInstanceWindows ??= [];
+        frame.borrowedInstanceWindows.push(() => {
+          if (
+            object.instanceMatrix !== attribute ||
+            attribute.array !== array ||
+            attribute.version !== version ||
+            object.count * 16 !== lanes ||
+            array.length < lanes
+          )
+            invalid(
+              'InstancedMesh.instanceMatrix changed during publication',
+              object.uuid,
+            ).unwrap();
+          ticket.write = ranges.every(
+            ({ values }) => compactNativeInstances(object, values, false) === values.length,
+          )
+            ? { kind: 'patch', ranges }
+            : {
+                kind: 'replace',
+                transforms: projectNativeInstanceTransforms(object, array.subarray(0, lanes)),
+              };
+        });
+        return ticket;
+      }
     }
-    return instances;
+    return {
+      kind: 'replace',
+      transforms: projectNativeInstanceTransforms(object, attribute.array.subarray(0, lanes)),
+    };
   }
 
-  private planSkin(object: SkinnedMesh, payload: MeshAsset): NonNullable<MeshPlan['skin']> {
-    const values = skinValues(object),
+  private planSkin(
+    object: SkinnedMesh,
+    payload: MeshAsset,
+    joints?: ReturnType<typeof projectJoints>,
+    sourceJoints?: readonly EntityHandle[],
+  ): NonNullable<MeshPlan['skin']> {
+    const cursor =
+      sourceJoints === undefined || this.ecsPoseChanges === undefined
+        ? this.changes?.skinCursor(object)
+        : undefined;
+    const values = cursor?.owner.binding ? [cursor.owner.binding] : skinValues(object),
       variant = JSON.stringify(object.bindMatrix.elements);
     const skeleton =
       this.skeletons.read(object.skeleton, values, variant) ??
       this.skeletons.write(object.skeleton, values, projectSkeleton(object), variant);
     if (payload.attributes.skinIndex === undefined || payload.attributes.skinWeight === undefined)
       invalid('SkinnedMesh skinIndex/skinWeight', object.uuid).unwrap();
-    if (
-      payload.attributes.skinIndex instanceof Uint16Array &&
-      payload.attributes.skinIndex.some((joint) => joint >= object.skeleton.bones.length)
-    )
-      invalid('SkinnedMesh joint index', object.uuid).unwrap();
-    return { skeleton: skeleton.handle, joints: projectJoints(object) };
+    const indices = payload.attributes.skinIndex;
+    if (indices instanceof Uint16Array) {
+      let maximum = this.maximumJointIndices.get(indices);
+      if (maximum === undefined) {
+        maximum = 0;
+        for (const joint of indices) maximum = Math.max(maximum, joint);
+        this.maximumJointIndices.set(indices, maximum);
+      }
+      if (maximum >= object.skeleton.bones.length)
+        invalid('SkinnedMesh joint index', object.uuid).unwrap();
+    }
+    if (sourceJoints !== undefined)
+      return {
+        kind: 'source',
+        skeleton: skeleton.handle,
+        affinePoint: true,
+        joints: sourceJoints,
+        variant,
+      };
+    return {
+      kind: 'projected',
+      skeleton: skeleton.handle,
+      affinePoint: joints !== undefined || canProjectAffinePoint(object, cursor),
+      joints: joints ?? projectJoints(object, this.jointSnapshots, cursor),
+      patch: this.jointSnapshots.get(object)?.patch,
+    };
   }
 
   /** Validate one selected material against its draw and plan its source textures. */
@@ -626,7 +2780,7 @@ export class SceneProjection {
       unsupported('SpriteNodeMaterial requires a Sprite billboard', object.uuid).unwrap();
     if (use.clipping !== undefined && (object instanceof Line || object instanceof Points))
       unsupported('Native Lines/Points support camera clipping only', object.uuid).unwrap();
-    if (frame.clipping.get(object) !== undefined && source.alphaToCoverage)
+    if (frame.lists.clipping.get(object) !== undefined && source.alphaToCoverage)
       unsupported(
         'ClippingGroup alphaToCoverage requires native smooth clipping coverage',
         object.uuid,
@@ -635,16 +2789,24 @@ export class SceneProjection {
       projectLinePointMaterial(object, source, use.coordinates);
     if (isNormalMaterial(source) && !object.geometry.hasAttribute('normal'))
       unsupported('Normal/Matcap without normals requires flat shading', object.uuid).unwrap();
-    frame.usedMaterials[use.shading].add(use);
-    for (const [parameter, texture] of materialTextures(source)) {
+    frame.lists.usedMaterials[use.shading].add(use);
+    for (const [parameter, texture] of useTextures(use)) {
       const projection = textureProjection(source, parameter, texture);
-      if (isExternalTexture(texture) || texture.isRenderTargetTexture) continue;
-      let plans = frame.texturePlans[projection];
+      if (isExternalTexture(texture)) {
+        if (frame.buffers.externalDemand !== undefined && !this.external?.hasCurrent(texture))
+          frame.buffers.externalDemand.add(texture);
+        continue;
+      }
+      if (texture.isRenderTargetTexture) continue;
+      let plans = frame.lists.texturePlans[projection];
       if (plans === undefined) {
         plans = new Map();
-        frame.texturePlans[projection] = plans;
+        frame.lists.texturePlans[projection] = plans;
       }
-      if (!plans.has(texture)) plans.set(texture, this.planTexture(texture, projection));
+      if (!plans.has(texture)) {
+        const canvas = projection === 0 ? this.planCanvasTexture(texture) : undefined;
+        plans.set(texture, canvas ?? this.planTexture(texture, projection));
+      }
     }
   }
 
@@ -656,11 +2818,16 @@ export class SceneProjection {
       const result = runtimeAssets(this.world.assets)
         .adoptClosure(() => {
           const plan = this.planTexture(texture, 0);
-          const previous = cache.read(texture, plan.values);
-          const entry = previous ?? cache.write(texture, plan.values, plan.payload);
+          const previous = cache.readHandle(
+            texture,
+            plan.values,
+            plan.variant,
+            plan.acceptedTexture,
+          );
+          const handle = previous ?? cache.write(texture, plan.values, plan.payload).handle;
           cache.retain(texture);
           return ok({
-            handle: entry.handle,
+            handle,
             uploaded: previous === undefined || this.textureUpdates.has(texture),
           });
         })
@@ -681,9 +2848,25 @@ export class SceneProjection {
     }
   }
 
-  private planTexture(texture: Texture, projection: TextureProjection): TexturePlan {
-    const orientation = projection === 1 || projection === 3 ? 1 : 0;
-    const variant = projection < 2 ? '' : projection === 4 ? 'scalar-data' : 'scalar-color';
+  private readonly hasAcceptedTextureSnapshot = (texture: Texture): boolean =>
+    this.textures[0].readHandle(texture, textureValues(texture), '', undefined) !== undefined;
+
+  private planCanvasTexture(texture: Texture): CanvasTexturePlan | undefined {
+    const canvas = this.canvasTextures?.prepare(texture, this.hasAcceptedTextureSnapshot);
+    if (canvas === undefined) return;
+    const values = samplerValues(texture);
+    const previous = this.samplers.read(texture, values);
+    return {
+      source: texture,
+      canvas,
+      sampler: previous?.payload ?? projectSampler(texture).unwrap(),
+      samplerValues: values,
+      acceptedSampler: previous?.values,
+    };
+  }
+
+  private planTexture(texture: Texture, projection: TextureProjection): AssetTexturePlan {
+    const [orientation, variant] = textureProjectionSlots[projection];
     validateTexture(texture).unwrap();
     if (
       orientation === 1 &&
@@ -693,6 +2876,7 @@ export class SceneProjection {
     const values = textureValues(texture),
       samplerSignature = samplerValues(texture);
     const previous = this.textures[orientation].read(texture, values, variant);
+    const sampler = this.samplers.read(texture, samplerSignature);
     const raw =
       previous?.payload ??
       projectTextureUpload(
@@ -706,24 +2890,19 @@ export class SceneProjection {
       source: texture,
       values,
       samplerValues: samplerSignature,
+      acceptedTexture: previous?.values,
+      acceptedSampler: sampler?.values,
       payload:
         previous?.payload ??
         (variant === '' ? raw : expandScalarTexture(raw, variant === 'scalar-color')),
-      sampler:
-        this.samplers.read(texture, samplerSignature)?.payload ?? projectSampler(texture).unwrap(),
+      sampler: sampler?.payload ?? projectSampler(texture).unwrap(),
     };
   }
 
   private publishTextures(frame: ScenePreparation): TextureBindings {
-    const textureBindings: TextureBindings = [
-      new Map(),
-      new Map(),
-      undefined,
-      undefined,
-      undefined,
-    ];
-    for (let projection = 0; projection < frame.texturePlans.length; projection++) {
-      const plans = frame.texturePlans[projection];
+    const textureBindings = frame.lists.textureBindings;
+    for (let projection = 0; projection < frame.lists.texturePlans.length; projection++) {
+      const plans = frame.lists.texturePlans[projection];
       if (plans === undefined) continue;
       let bindings = textureBindings[projection];
       if (bindings === undefined) {
@@ -731,49 +2910,262 @@ export class SceneProjection {
         textureBindings[projection] = bindings;
       }
       for (const plan of plans.values()) {
-        const cache = this.textures[plan.orientation];
-        const previous = cache.read(plan.source, plan.values, plan.variant);
-        const texture =
-          previous ?? cache.write(plan.source, plan.values, plan.payload, plan.variant);
-        if (previous === undefined) recordUpload(frame.uploadedTextures, plan.source);
         const sampler =
-          this.samplers.read(plan.source, plan.samplerValues) ??
-          this.samplers.write(plan.source, plan.samplerValues, plan.sampler);
-        bindings.set(plan.source, {
-          texture: texture.handle,
-          sampler: sampler.handle,
-        });
+          this.samplers.readHandle(plan.source, plan.samplerValues, '', plan.acceptedSampler) ??
+          this.samplers.write(plan.source, plan.samplerValues, plan.sampler).handle;
+        if ('canvas' in plan) {
+          bindings.set(plan.source, { source: plan.canvas, sampler });
+          continue;
+        }
+        const cache = this.textures[plan.orientation];
+        const previous = cache.readHandle(
+          plan.source,
+          plan.values,
+          plan.variant,
+          plan.acceptedTexture,
+        );
+        const texture =
+          previous ?? cache.write(plan.source, plan.values, plan.payload, plan.variant).handle;
+        if (previous === undefined) recordUpload(frame.lists.uploadedTextures, plan.source);
+        bindings.set(plan.source, { texture, sampler });
       }
     }
     return textureBindings;
   }
 
   private publishMaterials(frame: ScenePreparation, textureBindings: TextureBindings): void {
+    const bindings: MaterialTextureValue[] = [];
+    const signature: unknown[] = [];
     for (const shading of [0, 1] as const) {
-      for (const use of frame.usedMaterials[shading]) {
+      for (const use of frame.lists.usedMaterials[shading]) {
         const source = use.effective;
-        const bindings: Record<string, MaterialTextureValue> = {};
-        const values = [...materialValues(source), frame.varianceShadow, use.queue];
-        for (const [parameter, texture] of materialTextures(source)) {
-          const binding = this.textureBinding(use, parameter, texture, textureBindings);
-          const coordinates = use.coordinates.get(texture);
-          bindings[parameter] = {
-            ...binding,
-            ...(coordinates === undefined ? {} : { coordinates }),
-          };
-          values.push(parameter, ...bindingValues(binding, coordinates));
-        }
-        const entry =
-          this.materials[shading].read(use.source, values, use.variant) ??
-          this.materials[shading].write(
-            use.source,
-            values,
-            this.projectMaterialUse(use, bindings, shading, frame.varianceShadow),
-            use.variant,
+        const observation = use.observation;
+        const textures = useTextures(use);
+        const key = `${shading}:${use.variant}`;
+        const shareable =
+          observation !== undefined &&
+          textures.every(
+            ([, texture]) => !texture.isRenderTargetTexture && !isExternalTexture(texture),
           );
-        frame.materialHandles[shading].set(use, entry.handle);
+        const priorUse = shareable ? observation.published?.get(key) : undefined;
+        if (priorUse !== undefined && sameMaterialCoordinates(priorUse.use, use)) {
+          frame.lists.materialPublications.set(use, priorUse.asset);
+          continue;
+        }
+        const expression =
+          observation === undefined ? observeThreeSurfaceInputs(source) : undefined;
+        let base = observation?.values;
+        if (base === undefined) {
+          base = materialValues(
+            source,
+            observation?.sharedMesh === true ? observation.surface : undefined,
+            expression ?? null,
+          );
+          if (observation !== undefined) observation.values = base;
+        }
+        signature.length = 0;
+        bindings.length = 0;
+        for (const [parameter, texture] of textures) {
+          const binding = this.textureBinding(use, parameter, texture, textureBindings);
+          bindings.push(binding);
+          appendBindingValues(signature, parameter, binding, use.coordinates.get(texture));
+        }
+        const cache = this.materials[shading];
+        const existing = cache.read(use.source, base, use.variant, signature);
+        const published =
+          existing ??
+          this.publishMaterialChange(cache, use, base, signature, textures, bindings, expression);
+        if (published.sourceData === undefined) throw new Error('material has no source lease');
+        const asset = { handle: published.handle, address: published.sourceData.address };
+        if (shareable) {
+          observation.published ??= new Map();
+          observation.published.set(key, { use, asset });
+        }
+        frame.lists.materialPublications.set(use, asset);
       }
     }
+  }
+
+  private publishMaterialChange(
+    cache: SharedAssets<Material, MaterialAsset, MaterialDependencies>,
+    use: MaterialUse,
+    base: readonly unknown[],
+    signature: readonly unknown[],
+    textures: ReturnType<typeof materialTextures>,
+    bindings: readonly MaterialTextureValue[],
+    expression: SurfaceInputObservation | undefined,
+  ) {
+    const values = [...base, ...signature];
+    const previous =
+      use.observation === undefined && expression === undefined
+        ? undefined
+        : cache.previous(use.source, use.variant);
+    const dependencies = cache.sourceData(use.source, use.variant);
+    const parameterPatch =
+      previous === undefined
+        ? undefined
+        : materialParameterPatch(previous.values, values, base.length, values.length, expression);
+    const stock =
+      use.observation?.sharedMesh === true &&
+      use.source === use.effective &&
+      use.skinProgram === undefined &&
+      use.clipping === undefined &&
+      textures.length === 0 &&
+      plainStockMaterial(use.source);
+    let payload: MaterialAsset;
+    let createdHandle: AssetHandle<'material'> | undefined;
+    const template =
+      stock && previous === undefined ? this.reuseStockDefinition(cache, use, values) : undefined;
+    if (template !== undefined) {
+      createdHandle = this.assets.copy(template.handle).unwrap();
+      payload =
+        Object.keys(template.patch).length === 0
+          ? runtimeAssets(this.assets).borrow<MaterialAsset>(createdHandle).unwrap()
+          : this.patchMaterialValues(createdHandle, template.patch);
+    } else if (previous !== undefined && parameterPatch !== undefined) {
+      payload = this.patchMaterialValues(previous.handle, parameterPatch);
+    } else {
+      const bindingStart = base.length + 1;
+      const bindingPatch =
+        previous !== undefined && sameTextureSlots(dependencies, textures, bindings)
+          ? materialParameterPatch(previous.values, values, base.length, bindingStart, expression)
+          : undefined;
+      const resolved = resolveMaterialBindings(
+        use,
+        textures,
+        bindings,
+        bindingPatch === undefined || previous === undefined
+          ? undefined
+          : (slot) => sameBindingValues(previous.values, values, bindingStart, slot),
+      );
+      payload =
+        previous !== undefined && bindingPatch !== undefined
+          ? this.patchMaterialValues(previous.handle, { ...bindingPatch, ...resolved })
+          : this.projectMaterialUse(use, resolved, use.shading, expression);
+    }
+    const published = cache.write(
+      use.source,
+      values,
+      payload,
+      use.variant,
+      parameterPatch !== undefined && dependencies !== undefined
+        ? dependencies
+        : {
+            address: dependencies?.address ?? {
+              source: use.source,
+              variant: use.variant,
+              shading: use.shading,
+            },
+            surfaceInputs: surfaceParameterSlots(expression, base.length),
+            textures: textures.map(([parameter, texture], index) => ({
+              parameter,
+              source: texture,
+              projection:
+                typeof bindings[index]?.texture === 'number'
+                  ? textureProjection(use.effective, parameter, texture)
+                  : undefined,
+              canvas: canvasBindingSource(bindings[index]),
+            })),
+          },
+      createdHandle,
+    );
+    if (stock && previous === undefined && template === undefined) {
+      if (this.stockDefinitions.length === 16) this.stockDefinitions.shift();
+      this.stockDefinitions.push({
+        source: new WeakRef(use.source),
+        variant: use.variant,
+        shading: use.shading,
+      });
+    }
+    return published;
+  }
+
+  private reuseStockDefinition(
+    cache: SharedAssets<Material, MaterialAsset, MaterialDependencies>,
+    use: MaterialUse,
+    values: readonly unknown[],
+  ) {
+    for (let index = this.stockDefinitions.length - 1; index >= 0; index--) {
+      const entry = this.stockDefinitions[index];
+      if (entry === undefined || entry.variant !== use.variant || entry.shading !== use.shading)
+        continue;
+      const source = entry.source.deref();
+      if (source === undefined || source === use.source) continue;
+      const accepted = cache.previous(source, entry.variant);
+      if (accepted === undefined) continue;
+      const patch = stockMaterialParameterPatch(accepted.values, values, values.length, true);
+      if (patch !== undefined) return { handle: accepted.handle, patch };
+    }
+    return undefined;
+  }
+
+  private publishMaterialEdits(changes: SceneChanges): void {
+    for (const [source, dirty] of changes.materialEdits) {
+      const uses = changes.uses.get(source);
+      if (!uses) continue;
+      const updated = uses.size > 1 ? new Set<AssetHandle<'material'>>() : undefined;
+      for (const use of uses.values()) {
+        if (use.view && !use.direct) continue;
+        if (use.view) {
+          let active = false;
+          for (const mesh of use.meshes) {
+            if (changes.viewDraws.get(mesh)?.live) {
+              active = true;
+              break;
+            }
+          }
+          if (!active) continue;
+        }
+        const cache = this.materials[use.shading];
+        const accepted = cache.previous(source, use.variant);
+        if (accepted === undefined || updated?.has(accepted.handle)) continue;
+        updated?.add(accepted.handle);
+        const inputs = cache.sourceData(source, use.variant)?.surfaceInputs;
+        const patch: Record<string, MaterialValue> = {};
+        const edits = new Map<number, unknown>();
+        for (const key of dirty) {
+          const input = typeof key === 'number' ? inputs?.[key] : { name: key };
+          if (!input) throw new Error('tracked Surface lost its parameter offset');
+          const { name } = input;
+          const { offset, value } =
+            'offset' in input
+              ? { offset: input.offset, value: readThreeSurfaceInput(source, key as number) }
+              : readStockMaterialEdit(
+                  source as MeshBasicMaterial | MeshStandardMaterial | SpriteMaterial,
+                  input.name,
+                );
+          if (typeof value === 'number') {
+            if (!Object.is(accepted.values[offset], value)) {
+              edits.set(offset, value);
+              patch[name] = value;
+            }
+            continue;
+          }
+          for (let index = 0; index < value.length; index++) {
+            const lane = offset + index;
+            if (!Object.is(accepted.values[lane], value[index])) {
+              edits.set(lane, value[index]);
+              patch[name] = value;
+            }
+          }
+        }
+        if (edits.size) {
+          this.assets
+            .update<'material', MaterialAsset>(accepted.handle, { values: patch })
+            .unwrap();
+          cache.editSignature(source, use.variant, edits);
+        }
+      }
+    }
+    changes.materialEdits.clear();
+  }
+
+  private patchMaterialValues(
+    handle: AssetHandle<'material'>,
+    values: Readonly<Record<string, MaterialValue>>,
+  ): MaterialAsset {
+    this.assets.update<'material', MaterialAsset>(handle, { values }).unwrap();
+    return runtimeAssets(this.assets).borrow<MaterialAsset>(handle).unwrap();
   }
 
   private textureBinding(
@@ -808,63 +3200,238 @@ export class SceneProjection {
     use: MaterialUse,
     bindings: Record<string, MaterialTextureValue>,
     shading: 0 | 1,
-    varianceShadow: boolean,
+    expression: SurfaceInputObservation | undefined,
   ): MaterialAsset {
     const source = use.effective;
-    let projected = projectMaterial(source, bindings, shading === 1, varianceShadow).unwrap();
+    let projected = projectMaterial(
+      source,
+      bindings,
+      shading === 1,
+      false,
+      expression,
+      use.observation?.sharedMesh ? use.observation.surface : undefined,
+    ).unwrap();
     if (use.clipping !== undefined) projected = withClipping(projected, use.clipping);
-    if (use.shadowOnly) {
-      const [first, ...rest] =
-        projected.passes?.filter((pass) => pass.name === 'shadow-caster') ?? [];
+    if (use.skinProgram === 'standard') {
+      const [first, ...rest] = projected.passes ?? [];
       if (projected.parent !== undefined || first === undefined)
-        return unsupported('Material has no shadow caster pass', source.uuid).unwrap();
-      projected = { ...projected, passes: [first, ...rest] };
+        throw new Error('Standard skin material requires root passes');
+      const skinPass = (pass: typeof first) =>
+        pass.program.module === 'forgeax_material::standard'
+          ? { ...pass, program: { ...pass.program, module: 'forgeax::pbr-skin' } }
+          : pass;
+      projected = { ...projected, passes: [skinPass(first), ...rest.map(skinPass)] };
     }
-    if (use.queue !== undefined) projected = withOpaqueQueue(projected, use.queue);
     if (this.prepareMaterialPrograms !== undefined)
-      projected = this.prepareMaterialPrograms(projected, use.skinned);
+      projected = this.prepareMaterialPrograms(projected, use.skinProgram === 'unlit');
     return projected;
   }
 
   private publishGeometry(frame: ScenePreparation): void {
-    for (const plan of frame.meshes.values()) {
-      const cache = this.geometry;
-      const entry =
-        cache.read(plan.source.geometry, plan.values, plan.variant) ??
-        cache.write(plan.source.geometry, plan.values, plan.payload, plan.variant);
-      frame.geometryHandles.set(plan.source, entry.handle);
-    }
+    frame.meshes.forEach((plan) => {
+      this.publishMeshAsset(frame, plan);
+    });
+    if (frame.pointRevisions)
+      for (const revision of frame.pointRevisions) this.publishMeshAsset(frame, revision);
   }
 
-  private commit(
+  private publishMeshAsset(
+    frame: ScenePreparation,
+    { asset, geometry }: Pick<MeshPlan, 'geometry' | 'asset'>,
+  ): void {
+    if (asset.handle !== undefined) return;
+    if (asset.payload === undefined) throw new Error('admitted mesh has no geometry');
+    const cache = this.geometry;
+    const edit = asset.edit;
+    const retained = cache.previous(geometry.source, geometry.variant);
+    if (edit !== undefined && retained?.values === edit.base) {
+      if (edit.ranges.length !== 0) {
+        frame.meshRanges ??= [];
+        frame.meshRanges.push({ handle: retained.handle, input: edit.ranges });
+      }
+      cache.editSignature(geometry.source, geometry.variant, asset.values);
+      asset.handle = retained.handle;
+      return;
+    }
+    // A disposal during later material preparation can invalidate the lease.
+    if (retained !== undefined && retained.values === asset.acceptedValues) {
+      asset.handle = retained.handle;
+      return;
+    }
+    const cached = cache.read(geometry.source, asset.values, geometry.variant);
+    if (cached !== undefined) {
+      asset.handle = cached.handle;
+      return;
+    }
+    const payload = edit === undefined ? asset.payload : edit.recover(asset.payload);
+    if (payload === undefined) throw new Error('mesh content layout changed during publication');
+    const entry = cache.write(
+      geometry.source,
+      asset.values,
+      // CPU projection is complete. Publish its packed bytes once so asset
+      // admission never captures a second vertex-sized set of source channels.
+      payload.attributeStorage === 'static-streams' ? payload : interleavedMesh(payload),
+      geometry.variant,
+      asset.sourceData,
+    );
+    asset.handle = entry.handle;
+  }
+
+  private publishTransforms(frame: ScenePreparation): void {
+    for (const object of frame.nodes) if (!this.nodes.has(object)) this.spawnNode(object);
+    this.commitTransformParents(frame);
+    const retired: Object3D[] = [];
+    if (frame.changes) {
+      for (const node of frame.changes.retired) {
+        if (!frame.changes.members.has(node) && !frame.nodes.has(node)) retired.push(node);
+      }
+      const previous = this.previousCamera;
+      if (
+        previous &&
+        previous !== frame.camera &&
+        !frame.changes.members.has(previous) &&
+        !frame.nodes.has(previous) &&
+        !frame.changes.retired.has(previous)
+      )
+        retired.push(previous);
+    } else {
+      for (const object of this.nodes.keys()) if (!frame.nodes.has(object)) retired.push(object);
+    }
+    for (const object of retired) {
+      const record = this.nodes.get(object);
+      if (record) this.detachTransformParent(record);
+    }
+    for (const object of retired) {
+      const record = this.nodes.get(object);
+      if (record === undefined) continue;
+      this.releaseNode(record);
+      this.nodes.delete(object);
+      if (isRenderable(object)) this.meshUvs.delete(object);
+    }
+    for (const [object, transform] of frame.lists.transforms)
+      this.commitTransform(this.nodeRecord(object), transform);
+    if (this.options.propagate !== false) propagateTransforms(this.world).unwrap();
+  }
+
+  private commitDraws(
     frame: ScenePreparation,
     lighting: SceneLighting,
     ambientIrradiance: [number, number, number],
     cameraData: CameraData,
-  ): EntityHandle {
-    for (const object of frame.nodes) if (!this.nodes.has(object)) this.spawnNode(object);
-    this.writeSceneLighting(frame.scene, lighting, ambientIrradiance);
-    for (const [object, record] of this.nodes) this.writeNode(frame, object, record);
-    for (const [object, record] of this.nodes) this.writeLight(frame, object, record.entity);
-    for (const plan of frame.meshes.values()) this.writeMesh(frame, plan);
+  ): void {
+    if (
+      !frame.changes ||
+      this.committedLighting?.data !== lighting ||
+      !sameValues(this.committedLighting.ambient, ambientIrradiance)
+    ) {
+      this.writeSceneLighting(frame.scene, lighting, ambientIrradiance);
+      this.committedLighting =
+        this.plainLighting?.data === lighting
+          ? { data: lighting, ambient: ambientIrradiance }
+          : undefined;
+    }
+    if (frame.changes) {
+      for (const [object, rank] of frame.lists.transparentRanks) {
+        const draw = isRenderable(object) ? frame.changes.viewDraws.get(object) : undefined;
+        if (draw) draw.rank = rank;
+        if (frame.nodes.has(object)) continue;
+        const record = this.nodeRecord(object);
+        this.write(record.entity, Layer, { value: rank });
+        if (record.binding) record.binding.layer = rank;
+      }
+    }
+    for (const [record, handle] of frame.spriteFilters ?? []) {
+      this.write(record.entity, MeshFilter, { assetHandle: handle });
+      if (record.binding) record.binding.mesh = handle;
+    }
+    for (const object of frame.nodes) this.writeNode(frame, object, this.nodeRecord(object));
+    const changes = frame.changes;
+    if (changes?.nodeState.size) {
+      for (const [object, fields] of changes.nodeState) {
+        const record = this.nodes.get(object);
+        if (record?.renderReady && changes.members.has(object))
+          this.writeNodeState(
+            object,
+            record.entity,
+            fields,
+            this.options.world === undefined && !changes.unobservedNodeState.has(object),
+          );
+      }
+      changes.nodeState.clear();
+    }
+    let skinPoseUpdated = false;
+    frame.meshes.forEach((plan, object) => {
+      const record = this.nodeRecord(object);
+      skinPoseUpdated ||= plan.skin !== undefined || (record.joints?.length ?? 0) !== 0;
+      this.writeMesh(frame, object, plan);
+    });
+    if (frame.pointRevisions)
+      for (const { record, asset } of frame.pointRevisions) {
+        const binding = record.binding;
+        if (asset.handle === undefined || binding === undefined)
+          throw new Error('Point revision lost its submitted geometry binding');
+        if (asset.handle === binding.mesh) continue;
+        this.write(record.entity, MeshFilter, { assetHandle: asset.handle });
+        binding.mesh = asset.handle;
+      }
     const cameraEntity = this.nodes.get(frame.camera)?.entity;
     if (cameraEntity === undefined) throw new Error('admitted camera missing its entity');
-    this.write(cameraEntity, NativeCamera, cameraData);
+    const orderOpaqueByLayer = frame.lists.opaqueRanks.size !== 0;
+    this.write(
+      cameraEntity,
+      NativeCamera,
+      cameraData.orderOpaqueByLayer === orderOpaqueByLayer
+        ? cameraData
+        : { ...cameraData, orderOpaqueByLayer },
+    );
     if (frame.cameraClipping !== undefined) {
       this.ensure(cameraEntity, ClippingPlanes);
       this.write(cameraEntity, ClippingPlanes, clippingPlanesData(frame.cameraClipping));
     } else this.removeIfPresent(cameraEntity, ClippingPlanes);
-    if (this.options.propagate !== false) propagateTransforms(this.world).unwrap();
-    for (const texture of frame.uploadedTextures) this.textureUpdates.add(texture);
-    return cameraEntity;
+    // Skin admission can introduce separate joint entities after source poses are published.
+    if (skinPoseUpdated && this.options.propagate !== false)
+      propagateTransforms(this.world).unwrap();
+    for (const texture of frame.lists.uploadedTextures) this.textureUpdates.add(texture);
   }
 
-  private spawnNode(object: Object3D): void {
+  private detachTransformParent(record: PoseRecord): void {
+    if (record.parent === undefined) return;
+    if (this.world.hasComponent(record.entity, ChildOf))
+      this.world.removeComponent(record.entity, ChildOf).unwrap();
+    record.parent = undefined;
+  }
+
+  private commitTransformParents(frame: ScenePreparation): void {
+    // Detach obsolete edges before attaching new ones. A valid source move can
+    // reverse an edge or keep a child whose previous parent is about to retire.
+    for (const [object, parent] of frame.lists.transformParents) {
+      const record = this.nodeRecord(object);
+      this.detachTransformParent(record);
+      if (parent === null && !frame.lists.transforms.has(object)) {
+        record.transform = EMPTY_SOURCE_TRANSFORM;
+        record.localVersion = undefined;
+      }
+    }
+    for (const [object, parent] of frame.lists.transformParents) {
+      if (parent === null) continue;
+      const record = this.nodeRecord(object);
+      const target = this.nodeRecord(parent).entity;
+      this.world
+        .addComponent(record.entity, { component: ChildOf, data: { parent: target } })
+        .unwrap();
+      record.parent = target;
+    }
+  }
+
+  private spawnNode(object: Object3D): NodeRecord {
     const entity = this.world
       .spawn({ component: Transform, data: {} }, { component: Name, data: { value: object.name } })
       .unwrap();
-    const record: NodeRecord = { entity, transform: [] };
+    const record: NodeRecord = { object, entity, transform: EMPTY_SOURCE_TRANSFORM };
     this.nodes.set(object, record);
+    if (this.ecsPoseChanges !== undefined && !separateDrawPose(object))
+      this.poseOwners.set(unpackSlot(entity), record);
+    this.nativeOwners?.set(unpackSlot(entity), object);
     if (object instanceof InstancedMesh) {
       const invalidate = () => {
         record.instances = [];
@@ -872,10 +3439,7 @@ export class SceneProjection {
       object.addEventListener('dispose', invalidate);
       record.disposeSource = () => object.removeEventListener('dispose', invalidate);
     }
-    if (object instanceof Camera)
-      this.world.addComponent(entity, { component: NativeCamera, data: {} }).unwrap();
-    if (isRenderable(object)) this.addRenderableComponents(entity, object);
-    this.addLightComponents(entity, object);
+    return record;
   }
 
   private addRenderableComponents(entity: EntityHandle, object: Renderable): void {
@@ -956,32 +3520,115 @@ export class SceneProjection {
     } else this.removeIfPresent(sceneEntity, NativeFog);
   }
 
-  /** Retire a node the source no longer reaches, or refresh its transform, name and shadow roles. */
-  private writeNode(frame: ScenePreparation, object: Object3D, record: NodeRecord): void {
-    if (!frame.nodes.has(object)) {
-      this.releaseNode(record);
-      this.nodes.delete(object);
-      return;
-    }
-    const transform = frame.transforms.get(object);
-    if (transform !== undefined) {
+  private commitTransform(record: PoseRecord, transform: SourceTransform): void {
+    if ('data' in transform) {
+      record.localVersion = undefined;
       this.write(record.entity, Transform, transform.data);
       record.transform = transform.values;
+      record.skinWorldRevision = transform.skinWorldRevision;
+    } else {
+      this.writePoseColumns(record.entity, transform.pose, 0);
+      record.transform = transform.pose;
+      record.localVersion = transform.localVersion;
+      record.skinWorldRevision = undefined;
     }
-    this.write(record.entity, Name, { value: object.name });
-    if (!isRenderable(object)) return;
-    this.write(record.entity, ShadowParticipation, {
-      channels: object.layers.mask >>> 0,
-      cast: castsShadow(object, frame.varianceShadow),
-      receive: object.receiveShadow,
-    });
+  }
+
+  private readonly nodeName = { value: '' };
+  private readonly nodeShadow = { channels: 0, cast: false, receive: false };
+
+  private writeNodeState(
+    object: Object3D,
+    entity: EntityHandle,
+    fields: NodeStateFields,
+    observed: boolean,
+  ): void {
+    if (fields & NodeStateFields.Name) {
+      const name = this.nodeName;
+      name.value = object.name;
+      if (observed) this.world.set(entity, Name, name).unwrap();
+      else this.write(entity, Name, name);
+    }
+    if (fields & NodeStateFields.Shadow && isRenderable(object)) {
+      const shadow = this.nodeShadow;
+      shadow.channels = object.layers.mask >>> 0;
+      shadow.cast = object.castShadow;
+      shadow.receive = object.receiveShadow;
+      if (observed) this.world.set(entity, ShadowParticipation, shadow).unwrap();
+      else this.write(entity, ShadowParticipation, shadow);
+    }
+  }
+
+  private writeNode(frame: ScenePreparation, object: Object3D, record: NodeRecord): void {
+    const initializing = !record.renderReady;
+    if (initializing) {
+      const { entity } = record;
+      if (object instanceof Camera)
+        this.world.addComponent(entity, { component: NativeCamera, data: {} }).unwrap();
+      if (isRenderable(object)) this.addRenderableComponents(entity, object);
+      this.addLightComponents(entity, object);
+      record.renderReady = true;
+    }
+    const changes = frame.changes;
+    const observed =
+      !!changes &&
+      this.options.world === undefined &&
+      changes.members.has(object) &&
+      !changes.unobservedNodeState.has(object);
+    if (initializing || !observed) {
+      this.writeNodeState(object, record.entity, NodeStateFields.All, false);
+      if (changes?.nodeState.size) changes.nodeState.delete(object);
+    }
+    if (frame.buffers.nativeTransparentOrder)
+      record.groupOrder = frame.lists.groupOrders.get(object) ?? 0;
+    const cached = isRenderable(object) ? frame.changes?.viewDraws.get(object) : undefined;
+    if (cached && isRenderable(object) && frame.reusedDraws.has(object)) {
+      const layer = frame.lists.transparentRanks.get(object) ?? 0;
+      if (cached?.blended && (!record.binding || record.binding.layer !== layer)) {
+        this.write(record.entity, Layer, { value: layer });
+        if (record.binding) record.binding.layer = layer;
+      }
+      return;
+    }
+    if (!isRenderable(object)) {
+      this.writeLight(frame, object, record.entity);
+      return;
+    }
+    if (cached) {
+      cached.live = frame.meshes.has(object);
+      cached.zoom = frame.camera.projectionMatrix.elements[5];
+      cached.perspective = frame.camera.projectionMatrix.elements[11];
+      cached.pixelRatio = frame.buffers.pixelRatio ?? 1;
+    }
     if (!frame.meshes.has(object)) {
-      this.write(record.entity, MeshFilter, { assetHandle: 0 as AssetHandle<'mesh'> });
-      this.write(record.entity, MeshRenderer, { materials: [] });
+      const hadBinding = record.binding !== undefined;
+      record.binding = undefined;
+      if (record.meshGeometry?.source !== object.geometry) {
+        releaseMeshCache(record);
+        record.meshGeometry = undefined;
+        record.ordinaryMesh = undefined;
+        record.meshMaterials = undefined;
+      } else if (!matchesMaterialRoster(frame.scene, object, record.meshMaterials)) {
+        releaseMeshCache(record);
+        record.meshMaterials = undefined;
+        record.ordinaryMesh = undefined;
+      }
+      if (hadBinding || this.options.world !== undefined) {
+        this.write(record.entity, MeshFilter, { assetHandle: 0 as AssetHandle<'mesh'> });
+        this.write(record.entity, MeshRenderer, { materials: [] });
+      }
     }
   }
 
   private releaseNode(record: NodeRecord): void {
+    releaseMeshCache(record);
+    const source = record.sourcePose;
+    this.poseOwners.delete(unpackSlot(source?.entity ?? record.entity));
+    if (source !== undefined && this.world.componentsOf(source.entity).ok)
+      this.world.despawn(source.entity).unwrap();
+    this.nativeOwners?.delete(unpackSlot(record.entity));
+    this.orderedDraws.delete(record.entity);
+    for (const joint of record.joints ?? []) this.nativeOwners?.delete(unpackSlot(joint));
     record.disposeSource?.();
     for (const joint of record.joints ?? [])
       if (this.world.componentsOf(joint).ok) this.world.despawn(joint).unwrap();
@@ -1018,9 +3665,9 @@ export class SceneProjection {
     object: DirectionalLight | SpotLight,
     entity: EntityHandle,
   ): void {
-    const direction = new Vector3()
+    const direction = this.lightDirection
       .setFromMatrixPosition(object.target.matrixWorld)
-      .sub(new Vector3().setFromMatrixPosition(object.matrixWorld))
+      .sub(this.lightOrigin.setFromMatrixPosition(object.matrixWorld))
       .normalize();
     const hasDirection = direction.lengthSq() > 0;
     if (!hasDirection) direction.set(0, -1, 0);
@@ -1029,7 +3676,7 @@ export class SceneProjection {
       color: object.color.toArray(),
       intensity: hasDirection ? object.intensity : 0,
     };
-    const shadow = this.shadowUpdates.project(object, frame.buffers.shadowMap) ?? {
+    const shadow = this.projectLightShadow(frame, object) ?? {
       castShadow: false,
     };
     if (object instanceof SpotLight)
@@ -1045,7 +3692,7 @@ export class SceneProjection {
   }
 
   private writePointLight(frame: ScenePreparation, object: PointLight, entity: EntityHandle): void {
-    const shadow = this.shadowUpdates.project(object, frame.buffers.shadowMap);
+    const shadow = this.projectLightShadow(frame, object);
     if (shadow !== undefined) {
       if (!this.world.hasComponent(entity, NativePointLightShadow))
         this.world
@@ -1061,64 +3708,240 @@ export class SceneProjection {
     });
   }
 
-  private writeMesh(frame: ScenePreparation, plan: MeshPlan): void {
-    const handle = frame.geometryHandles.get(plan.source);
+  private projectLightShadow(frame: ScenePreparation, light: ShadowLight) {
+    const { changes } = frame;
+    if (changes) changes.projectingShadow = light;
+    try {
+      return this.shadowUpdates.project(light, frame.buffers.shadowMap);
+    } finally {
+      if (changes) changes.projectingShadow = undefined;
+    }
+  }
+
+  private updateMeshAdmission(
+    frame: ScenePreparation,
+    object: Renderable,
+    record: NodeRecord,
+    plan: MeshPlan,
+  ): void {
+    const changes = frame.changes;
+    if (!changes) return;
+    const nativeSkin = frame.ecsPoses && plan.skin?.kind === 'source';
+    if (
+      !record.meshGeometry ||
+      (plan.ordinaryMesh && !record.ordinaryMesh) ||
+      (nativeSkin && !record.skinSourceJoints)
+    )
+      changes.promoteBinding(object);
+    if (!plan.ordinaryMesh && !nativeSkin && changes.residents.has(object))
+      changes.invalidateBinding(object);
+  }
+
+  private writeMesh(frame: ScenePreparation, object: Renderable, plan: MeshPlan): void {
+    const handle = plan.asset.handle;
     if (handle === undefined)
       throw new Error('admitted geometry missing its managed asset reference');
-    const record = this.nodes.get(plan.source);
+    const record = this.nodes.get(object);
     if (record === undefined) throw new Error('admitted mesh missing its entity');
+    if (plan.blended && frame.buffers.nativeTransparentOrder)
+      this.orderedDraws.set(record.entity, record);
+    else this.orderedDraws.delete(record.entity);
     const entity = record.entity;
-    this.write(entity, MeshFilter, { assetHandle: handle });
-    this.ensure(entity, Layer);
-    this.write(entity, Layer, { value: frame.transparentRanks.get(plan.source) ?? 0 });
+    const staysOrdinary =
+      this.options.world === undefined &&
+      record.ordinaryMesh !== undefined &&
+      plan.ordinaryMesh !== undefined;
+    this.updateMeshAdmission(frame, object, record, plan);
+    const previousGeometry = record.meshGeometry;
+    record.ordinaryMesh = plan.ordinaryMesh;
+    record.meshGeometry = plan.geometry;
+    const resident = record.meshMaterials;
+    const previous = matchesMaterialRoster(frame.scene, object, resident)
+      ? resident.addresses
+      : undefined;
+    plan.materialPublication ??= meshMaterialPublication(
+      plan.materials,
+      frame.lists.materialPublications,
+    );
+    const { handles, addresses } = plan.materialPublication;
+    if (previous !== addresses && (previous === undefined || !sameValues(addresses, previous))) {
+      const source = object.material;
+      record.meshMaterials = {
+        source: Array.isArray(source) ? source.slice() : source,
+        override: overrideMaterial(frame.scene),
+        addresses,
+      };
+    }
+    if (
+      record.meshCachePins &&
+      (previousGeometry?.source !== plan.geometry.source ||
+        previousGeometry.variant !== plan.geometry.variant ||
+        resident !== record.meshMaterials)
+    )
+      this.pinMeshCache(record);
+    const before = record.binding;
+    const renderLayers = object.layers.mask >>> 0;
+    const frustumCulled = object.frustumCulled;
+    const layer =
+      frame.lists.opaqueRanks.get(object) ?? frame.lists.transparentRanks.get(object) ?? 0;
+    if (handle !== before?.mesh) this.write(entity, MeshFilter, { assetHandle: handle });
+    if (layer !== before?.layer) {
+      this.ensure(entity, Layer);
+      this.write(entity, Layer, { value: layer });
+    }
+    if (
+      before === undefined ||
+      before.renderLayers !== renderLayers ||
+      before.frustumCulled !== frustumCulled ||
+      !sameValues(before.materials, handles)
+    ) {
+      this.write(entity, MeshRenderer, { materials: handles, renderLayers, frustumCulled });
+    }
+    if (this.options.world === undefined) {
+      if (before === undefined)
+        record.binding = { mesh: handle, materials: handles, renderLayers, frustumCulled, layer };
+      else {
+        before.mesh = handle;
+        before.materials = handles;
+        before.renderLayers = renderLayers;
+        before.frustumCulled = frustumCulled;
+        before.layer = layer;
+      }
+    }
+    if (staysOrdinary) return;
     if (plan.lineStyle !== undefined) {
       this.ensure(entity, NativeLines, { width: 1 });
       this.write(entity, NativeLines, plan.lineStyle);
-    } else if (!(plan.source instanceof Line)) this.removeIfPresent(entity, NativeLines);
-    if (plan.pointStyle !== undefined) this.write(entity, NativePoints, plan.pointStyle);
+    } else if (!(object instanceof Line)) this.removeIfPresent(entity, NativeLines);
+    if (plan.pointStyle !== undefined) {
+      this.write(entity, NativePoints, plan.pointStyle);
+      const draw = frame.changes?.viewDraws.get(object);
+      if (draw?.republishPointContent) {
+        draw.zoom = frame.camera.projectionMatrix.elements[5];
+        draw.perspective = frame.camera.projectionMatrix.elements[11];
+        draw.pixelRatio = frame.buffers.pixelRatio ?? 1;
+      }
+    }
     if (plan.nativeInstances) {
       this.ensure(entity, Instances);
-      if (plan.instances !== undefined)
-        this.write(entity, Instances, { transforms: plan.instances });
+      const planned = plan.instances;
+      const change = planned?.kind === 'borrowed' ? planned.write : planned;
+      if (change?.kind === 'replace') {
+        this.write(entity, Instances, { transforms: change.transforms });
+        record.nativeInstanceCount = change.transforms.length / 16;
+      } else if (change?.kind === 'patch') {
+        for (const { start, values } of change.ranges)
+          this.world.setArrayRange(entity, Instances, 'transforms', start, values).unwrap();
+      }
     } else this.removeIfPresent(entity, Instances);
     if (plan.instanceValues !== undefined) record.instances = plan.instanceValues;
-    this.writeSkin(record, plan.skin);
+    this.writeSkin(object, record, plan.skin, !this.options.world || !!frame.changes);
     if (plan.morphWeights !== undefined) {
       this.ensure(entity, MorphWeights);
       this.write(entity, MorphWeights, { weights: plan.morphWeights });
     } else this.removeIfPresent(entity, MorphWeights);
-    this.write(entity, MeshRenderer, {
-      materials: plan.materials.map((use) => {
-        const handle = frame.materialHandles[use.shading].get(use);
-        if (handle === undefined)
-          throw new Error('admitted material missing its managed asset reference');
-        return handle;
-      }),
-    });
   }
 
-  private writeSkin(record: NodeRecord, skin: MeshPlan['skin']): void {
+  private writeSkin(
+    object: Renderable,
+    record: NodeRecord,
+    skin: MeshPlan['skin'],
+    ownsPose: boolean,
+  ): void {
     const entity = record.entity;
     if (skin === undefined) {
       if (!this.world.hasComponent(entity, Skin)) return;
       this.world.removeComponent(entity, Skin).unwrap();
-      for (const joint of record.joints ?? []) this.world.despawn(joint).unwrap();
-      record.joints = [];
+      this.releaseProjectedJoints(record);
+      record.skinBinding = undefined;
+      record.skinSourceJoints = undefined;
       return;
     }
+    if (skin.kind === 'source') this.writeMountedSkin(record, skin);
+    else this.writeProjectedSkin(object, record, skin, ownsPose);
+  }
+
+  private writeMountedSkin(
+    record: NodeRecord,
+    skin: Extract<NonNullable<MeshPlan['skin']>, { kind: 'source' }>,
+  ): void {
+    this.releaseProjectedJoints(record);
+    if (
+      record.skinSourceJoints !== undefined &&
+      sameValues(record.skinSourceJoints, skin.joints) &&
+      record.skinBinding === skin.skeleton &&
+      record.skinAffinePoint === skin.affinePoint
+    )
+      return;
+    this.ensure(record.entity, Skin);
+    this.write(record.entity, Skin, {
+      skeleton: skin.skeleton,
+      joints: skin.joints,
+      affinePoint: skin.affinePoint,
+    });
+    record.skinBinding = skin.skeleton;
+    record.skinSourceJoints = skin.joints;
+    record.skinAffinePoint = skin.affinePoint;
+  }
+
+  private writeProjectedSkin(
+    object: Renderable,
+    record: NodeRecord,
+    skin: Extract<NonNullable<MeshPlan['skin']>, { kind: 'projected' }>,
+    ownsPose: boolean,
+  ): void {
+    const entity = record.entity;
+    record.skinSourceJoints = undefined;
     const joints = record.joints ?? [];
-    while (joints.length > skin.joints.length)
-      this.world.despawn(joints.pop() as EntityHandle).unwrap();
-    while (joints.length < skin.joints.length)
-      joints.push(this.world.spawn({ component: Transform, data: {} }).unwrap());
-    record.joints = joints;
-    for (let index = 0; index < joints.length; index++) {
-      const joint = joints[index],
-        data = skin.joints[index];
-      if (joint !== undefined && data !== undefined) this.write(joint, Transform, data);
+    const sizeChanged = joints.length !== skin.joints.length;
+    while (joints.length > skin.joints.length) {
+      const joint = joints.pop() as EntityHandle;
+      this.nativeOwners?.delete(unpackSlot(joint));
+      this.world.despawn(joint).unwrap();
     }
-    this.ensure(entity, Skin);
-    this.write(entity, Skin, { skeleton: skin.skeleton, joints });
+    while (joints.length < skin.joints.length) {
+      const joint = this.world.spawn({ component: Transform, data: {} }).unwrap();
+      joints.push(joint);
+      this.nativeOwners?.set(unpackSlot(joint), object);
+    }
+    record.joints = joints;
+    const previous = ownsPose ? record.jointPoses : undefined;
+    const patch = skin.patch;
+    if (previous !== skin.joints || record.jointVersion !== patch?.version) {
+      const indices =
+        previous === skin.joints && patch && record.jointVersion === patch.version - 1
+          ? patch.indices
+          : joints.keys();
+      for (const index of indices) {
+        const joint = joints[index],
+          data = skin.joints[index];
+        if (joint !== undefined && data && (patch || previous?.[index] !== data))
+          this.write(joint, Transform, data);
+      }
+    }
+    record.jointVersion = patch?.version;
+    record.jointPoses = skin.joints;
+    if (
+      !ownsPose ||
+      sizeChanged ||
+      record.skinBinding !== skin.skeleton ||
+      record.skinAffinePoint !== skin.affinePoint
+    ) {
+      this.ensure(entity, Skin);
+      this.write(entity, Skin, { skeleton: skin.skeleton, joints, affinePoint: skin.affinePoint });
+      record.skinBinding = skin.skeleton;
+      record.skinAffinePoint = skin.affinePoint;
+    }
+  }
+
+  private releaseProjectedJoints(record: NodeRecord): void {
+    for (const joint of record.joints ?? []) {
+      this.nativeOwners?.delete(unpackSlot(joint));
+      this.world.despawn(joint).unwrap();
+    }
+    record.joints = undefined;
+    record.jointPoses = undefined;
+    record.jointVersion = undefined;
   }
 
   private ensure<S extends ComponentSchema>(
@@ -1141,38 +3964,22 @@ export class SceneProjection {
     component: Component<string, S>,
     data: Partial<InputShapeOf<S>>,
   ): void {
-    const current: Record<string, unknown> = this.world.get(entity, component).unwrap();
-    for (const name in data) {
-      if (!Object.hasOwn(data, name)) continue;
-      const value = data[name];
-      const type = component.fields[name]?.type;
-      const f32 = type === 'f32' || type?.startsWith('array<f32') === true;
-      let changed = false;
-      if (Array.isArray(value) || (ArrayBuffer.isView(value) && !(value instanceof DataView))) {
-        const source = value as ArrayLike<number>;
-        const stored = current[name] as ArrayLike<number>;
-        changed = stored.length !== source.length;
-        for (let i = 0; !changed && i < source.length; i++)
-          changed = !Object.is(stored[i], f32 ? Math.fround(source[i] as number) : source[i]);
-      } else
-        changed = !Object.is(
-          current[name],
-          f32 && typeof value === 'number' ? Math.fround(value) : value,
-        );
-      if (changed) {
-        this.world.set(entity, component, data).unwrap();
-        return;
-      }
-    }
+    const patch = this.world[worldRead].changedFields(entity, component, data);
+    if (patch !== undefined) this.world.set(entity, component, patch).unwrap();
   }
 
-  sources(): ThreeSourceIdentity[] {
-    return [...this.nodes].map(([source, record]) => ({
-      uuid: source.uuid,
-      name: source.name,
-      type: source.type,
-      entityKey: record.entity,
-    }));
+  sources(stage: 'poses' | 'admitted' = 'poses'): ThreeSourceIdentity[] {
+    const sources: ThreeSourceIdentity[] = [];
+    for (const [source, record] of this.nodes) {
+      if (stage === 'admitted' && !record.renderReady) continue;
+      sources.push({
+        uuid: source.uuid,
+        name: source.name,
+        type: source.type,
+        entityKey: record.entity,
+      });
+    }
+    return sources;
   }
 
   /** Identity lookup never materializes the diagnostic source inventory. */
@@ -1181,17 +3988,26 @@ export class SceneProjection {
     return entity !== undefined && this.world.hasComponent(entity, Transform) ? entity : undefined;
   }
 
+  private validateTransformParent(record: NodeRecord): void {
+    if (this.world[worldRead].getFieldValue(record.entity, ChildOf, 'parent') !== record.parent)
+      throw new ThreeCompatibilityError(
+        'three-interop-invalid',
+        'Native parent of a Three-owned entity',
+        'Edit the source Object3D hierarchy before synchronizing this mount.',
+      );
+  }
+
   private assertRetirableNode(record: NodeRecord): void {
-    if (
-      this.options.world !== undefined &&
-      this.world.hasComponent(record.entity, Children) &&
-      this.world.get(record.entity, Children).unwrap().entities.length > 0
-    )
+    if (!this.options.world || !this.world.hasComponent(record.entity, Children)) return;
+    for (const child of this.world.get(record.entity, Children).unwrap().entities) {
+      const source = this.nativeOwners?.get(unpackSlot(child));
+      if (source && this.nodes.get(source)?.entity === child) continue;
       throw new ThreeCompatibilityError(
         'three-interop-invalid',
         'Native child of a Three-owned entity',
         'Detach native ChildOf relationships before synchronizing or disposing this mount; native entities must not be cascade-despawned.',
       );
+    }
   }
 
   assertRetirable(): void {
@@ -1200,17 +4016,17 @@ export class SceneProjection {
 
   dispose(): void {
     this.assertRetirable();
+    setViewDrawOrder(this.world, undefined);
+    this.releaseTracking();
+    for (const record of this.nodes.values())
+      this.detachTransformParent(record.sourcePose ?? record);
     for (const record of this.nodes.values()) this.releaseNode(record);
     this.nodes.clear();
-    for (const cache of [
-      this.geometry,
-      ...this.materials,
-      ...this.textures,
-      this.samplers,
-      this.environments,
-      this.skeletons,
-    ])
-      cache.dispose();
+    this.sourcePoses.release(0);
+    this.orderedDraws.clear();
+    this.viewOrderCamera = undefined;
+    this.canvasTextures?.dispose();
+    for (const store of this.resourceStores) store.dispose();
   }
 
   private validateObject(object: Object3D): void {
@@ -1265,898 +4081,8 @@ export class SceneProjection {
   }
 }
 
-function validateLight(
-  object: RectAreaLight | AmbientLight | DirectionalLight | PointLight | SpotLight,
-): void {
-  if (
-    ![...object.color.toArray(), object.intensity].every(
-      (value) => Number.isFinite(value) && value >= 0,
-    )
-  )
-    invalid('Light color/intensity', object.uuid).unwrap();
-  if (
-    object instanceof RectAreaLight &&
-    ![object.width, object.height].every((value) => Number.isFinite(value) && value > 0)
-  )
-    invalid('RectAreaLight width/height', object.uuid).unwrap();
-  if (
-    (object instanceof PointLight || object instanceof SpotLight) &&
-    (!Number.isFinite(object.distance) ||
-      object.distance < 0 ||
-      !Number.isFinite(Math.fround(object.decay)) ||
-      object.decay < 0)
-  )
-    invalid('Light distance/decay', object.uuid).unwrap();
-  if (object instanceof SpotLight) validateSpotLight(object);
-}
-
-function validateSpotLight(object: SpotLight): void {
-  if (
-    !Number.isFinite(object.angle) ||
-    object.angle <= 0 ||
-    object.angle > Math.PI / 2 ||
-    !Number.isFinite(object.penumbra) ||
-    object.penumbra < 0 ||
-    object.penumbra > 1
-  )
-    invalid('SpotLight angle/penumbra', object.uuid).unwrap();
-  if (object instanceof IESSpotLight && object.iesMap !== null)
-    unsupported(
-      'IESSpotLight.iesMap requires a native photometry conversion',
-      object.uuid,
-    ).unwrap();
-  if (object instanceof ProjectorLight)
-    unsupported('ProjectorLight requires native rectangular attenuation', object.uuid).unwrap();
-  if (object.map !== null)
-    unsupported('SpotLight map requires native projector texture projection', object.uuid).unwrap();
-}
-
-const NO_EQUIRECT = 0 as AssetHandle<'equirect'>;
-
-interface SceneLighting {
-  readonly targetEnvironment?: RenderTargetEnvironmentSource;
-  readonly lighting: AssetHandle<'equirect'>;
-  readonly background: AssetHandle<'equirect'>;
-  readonly lightingRotation: number[];
-  readonly backgroundRotation: number[];
-  readonly fog?: ReturnType<typeof projectFog>;
-}
-
-function projectFog(scene: Scene) {
-  const fog = scene.fog;
-  if (fog === null) return undefined;
-  if (!(fog instanceof Fog || fog instanceof FogExp2))
-    return unsupported('Scene.fog type', scene.uuid).unwrap();
-  const color = fog.color.toArray();
-  if (!color.every((value) => Number.isFinite(Math.fround(value)) && value >= 0))
-    invalid('Scene.fog.color', scene.uuid).unwrap();
-  if (fog instanceof Fog) {
-    if (
-      !Number.isFinite(Math.fround(fog.near)) ||
-      !Number.isFinite(Math.fround(fog.far)) ||
-      fog.near < 0 ||
-      fog.far <= fog.near
-    )
-      invalid('Scene.fog.near/far', scene.uuid).unwrap();
-    return {
-      color,
-      mode: FogModeValue.linear,
-      near: fog.near,
-      far: fog.far,
-      density: 0,
-      heightFalloff: 0,
-      maxOpacity: 1,
-      skyOpacity: 1,
-    };
-  }
-  if (!Number.isFinite(Math.fround(fog.density)) || fog.density < 0)
-    invalid('Scene.fog.density', scene.uuid).unwrap();
-  return {
-    color,
-    mode: FogModeValue.exp2,
-    density: fog.density,
-    near: 0,
-    far: 100,
-    heightFalloff: 0,
-    maxOpacity: 1,
-    skyOpacity: 1,
-  };
-}
-
-interface SourceTransform {
-  readonly values: number[];
-  readonly data: {
-    pos: Float32Array;
-    quat: Float32Array;
-    scale: Float32Array;
-  };
-}
-
-type TextureProjection = 0 | 1 | 2 | 3 | 4;
-type TextureBuckets<T> = [
-  Map<Texture, T>,
-  Map<Texture, T>,
-  Map<Texture, T> | undefined,
-  Map<Texture, T> | undefined,
-  Map<Texture, T> | undefined,
-];
-type TextureBindings = TextureBuckets<MaterialTextureValue>;
-
-/** One sync's source walk and plans; prepare fills it, the deferred commit publishes it. */
-interface ScenePreparation {
-  readonly scene: Object3D;
-  readonly camera: Camera;
-  readonly buffers: SceneBuffers;
-  readonly varianceShadow: boolean;
-  /** Every reached source object plus the scene and camera; other nodes retire on commit. */
-  readonly nodes: Set<Object3D>;
-  readonly active: Set<Object3D>;
-  /** Camera-layer matches plus admitted shadow casters. */
-  readonly visible: Set<Object3D>;
-  /** Camera-layer matches only. */
-  readonly displayVisible: Set<Object3D>;
-  readonly clipping: Map<Object3D, SourceClipping | undefined>;
-  readonly groupOrders: Map<Object3D, number>;
-  readonly transforms: Map<Object3D, SourceTransform>;
-  readonly meshes: Map<Renderable, MeshPlan>;
-  readonly texturePlans: TextureBuckets<TexturePlan>;
-  readonly usedMaterials: readonly [Set<MaterialUse>, Set<MaterialUse>];
-  readonly materialHandles: readonly [
-    Map<MaterialUse, AssetHandle<'material'>>,
-    Map<MaterialUse, AssetHandle<'material'>>,
-  ];
-  readonly geometryHandles: Map<Renderable, AssetHandle<'mesh'>>;
-  readonly transparentRanks: Map<Object3D, number>;
-  readonly uploadedTextures: Set<Texture>;
-  cameraClipping: ClippingOptions | undefined;
-  orderedOpaque?: boolean;
-}
-
-function createScenePreparation(
-  scene: Object3D,
-  camera: Camera,
-  buffers: SceneBuffers,
-  uploadedTextures: Set<Texture>,
-): ScenePreparation {
-  return {
-    scene,
-    camera,
-    buffers,
-    varianceShadow: buffers.shadowMap?.enabled === true && buffers.shadowMap.type === VSMShadowMap,
-    nodes: new Set(),
-    active: new Set(),
-    visible: new Set(),
-    displayVisible: new Set(),
-    clipping: new Map(),
-    groupOrders: new Map(),
-    transforms: new Map(),
-    meshes: new Map(),
-    texturePlans: [new Map(), new Map(), undefined, undefined, undefined],
-    usedMaterials: [new Set(), new Set()],
-    materialHandles: [new Map(), new Map()],
-    geometryHandles: new Map(),
-    transparentRanks: new Map(),
-    uploadedTextures,
-    cameraClipping: undefined,
-  };
-}
-
-/** Which source projection of a renderable's geometry this draw needs. */
-interface GeometryShape {
-  readonly topology: 'point-list' | 'line-list' | 'line-strip' | 'triangle-list';
-  readonly grouped: boolean;
-  readonly selection: readonly GeometryMaterial[];
-  readonly wireframe: boolean;
-  readonly uv: UvProjection;
-  readonly flatMatcap: ReadonlySet<number>;
-  readonly expanded: boolean;
-  readonly cpuSkin: boolean;
-  readonly morphColor: boolean;
-}
-
-/**
- * Match upstream's cache update boundary, including frozen matrices and cameras
- * whose parent lives outside the submitted root. Do not walk/update external parents.
- */
-function updateSourceMatrices(scene: Object3D, camera: Camera, buffers: SceneBuffers): void {
-  if (buffers.updateMatrices && scene.matrixWorldAutoUpdate) scene.updateMatrixWorld();
-  if (buffers.updateMatrices && camera.parent === null && camera.matrixWorldAutoUpdate)
-    camera.updateMatrixWorld();
-}
-
-function recordUpload(uploadedTextures: Set<Texture>, texture: Texture): void {
-  const image = texture.image as { complete?: boolean } | null | undefined;
-  if (texture.version > 0 && image != null && image.complete !== false)
-    uploadedTextures.add(texture);
-}
-
-function castsShadow(object: Object3D, varianceShadow: boolean): boolean {
-  return object.castShadow || (varianceShadow && object.receiveShadow);
-}
-
-function shadowCameraMasks(visible: ReadonlySet<Object3D>, camera: Camera): number[] {
-  return [...visible]
-    .filter(
-      (object): object is DirectionalLight | PointLight | SpotLight =>
-        (object instanceof DirectionalLight ||
-          object instanceof PointLight ||
-          object instanceof SpotLight) &&
-        object.castShadow,
-    )
-    .map((light) =>
-      (light.shadow.camera.layers.mask & 0xfffffffe) === 0
-        ? camera.layers.mask
-        : light.shadow.camera.layers.mask,
-    );
-}
-
-function clippingCandidates(visible: ReadonlySet<Object3D>): Renderable[] {
-  return [...visible]
-    .filter(isRenderable)
-    .filter((object) =>
-      (Array.isArray(object.material) ? object.material : [object.material]).some(
-        (material) => material?.visible,
-      ),
-    );
-}
-
-function sourceMatrix(object: Object3D, camera: Camera, scene: Object3D): number[] {
-  if (object === camera) return camera.matrixWorldInverse.elements;
-  if (object instanceof Sprite) {
-    const override =
-      scene instanceof Scene && object.material.allowOverride ? scene.overrideMaterial : null;
-    const material = override !== null && isSpriteMaterial(override) ? override : object.material;
-    const positionMaterial =
-      surfaceInput(object.material, 'positionNode') !== null ? object.material : material;
-    return spriteMatrix(object, camera, material, positionMaterial).elements;
-  }
-  return object.matrixWorld.elements;
-}
-
-function decomposeSourceMatrix(
-  object: Object3D,
-  camera: Camera,
-  values: readonly number[],
-): SourceTransform['data'] {
-  // r187 removes camera scale when updating its view cache; manual view edits
-  // and frozen inverses remain independent of the source world matrix.
-  const matrix =
-    object === camera ? camera.matrixWorldInverse.clone().invert().elements : [...values];
-  // Three RectAreaLight emits along local -Z; native Rect emits along +Z.
-  if (object instanceof RectAreaLight)
-    for (let lane = 4; lane < 12; lane++) matrix[lane] = -(matrix[lane] ?? 0);
-  const position = vec3.create(),
-    rotation = quat.create(),
-    scale = vec3.create(),
-    shear = vec3.create();
-  if (!mat4.decomposeAffine(position, rotation, scale, shear, matrix))
-    unsupported(
-      'Object3D matrixWorld requires a finite nonsingular affine matrix',
-      object.uuid,
-    ).unwrap();
-  if (
-    object === camera &&
-    (scale.some((value) => Math.abs(value - 1) > 1e-5) ||
-      shear.some((value) => Math.abs(value) > 1e-5))
-  )
-    unsupported(
-      'Camera.matrixWorldInverse requires a rigid view; non-rigid views need native camera support',
-      camera.uuid,
-    ).unwrap();
-  if (shear.some((value) => Math.abs(value) > 1e-5))
-    unsupported(
-      'Object3D matrixWorld with shear is not representable by Transform',
-      object.uuid,
-    ).unwrap();
-  return { pos: position, quat: rotation, scale };
-}
-
-function isCulled(frame: ScenePreparation, object: Renderable, frustum: Frustum): boolean {
-  return (
-    object.frustumCulled &&
-    !(frame.buffers.shadowMap?.enabled && castsShadow(object, frame.varianceShadow)) &&
-    !(object instanceof Sprite
-      ? frustum.intersectsSprite(object)
-      : frustum.intersectsObject(object))
-  );
-}
-
-function sourceTopology(object: Renderable): GeometryShape['topology'] {
-  if (object instanceof Points) return 'point-list';
-  if (object instanceof LineSegments) return 'line-list';
-  return object instanceof Line ? 'line-strip' : 'triangle-list';
-}
-
-function primitiveSize(topology: GeometryShape['topology']): number {
-  if (topology === 'triangle-list') return 3;
-  return topology === 'line-list' || topology === 'line-strip' ? 2 : 1;
-}
-
-/** Select each drawn material slot once, in source group order. */
-function selectMaterials(
-  frame: ScenePreparation,
-  object: Renderable,
-  planes: ClippingOptions | undefined,
-  coordinates: Map<Texture, ResolvedMaterialTextureCoordinates>,
-  selection: GeometryMaterial[],
-  list: MaterialUse[],
-): void {
-  const grouped = Array.isArray(object.material);
-  const sourceList = grouped ? (object.material as Material[]) : [object.material as Material];
-  const minimum = primitiveSize(sourceTopology(object));
-  const available =
-    object.geometry.index?.count ?? object.geometry.getAttribute('position')?.count ?? 0;
-  const ranges = grouped
-    ? object.geometry.groups
-    : [{ materialIndex: 0, start: 0, count: available }];
-  for (const range of ranges) {
-    if (drawnCount(object.geometry, range, available) < minimum) continue;
-    const slot = range.materialIndex ?? 0;
-    const original = sourceList[slot];
-    if (original === undefined || !original.visible || selection.some((item) => item.slot === slot))
-      continue;
-    const use = materialUse(frame, object, original, planes, coordinates);
-    if (use === undefined) continue;
-    selection.push({
-      slot,
-      vertexColors: use.effective.vertexColors,
-      tangentBasis: materialTangentBasis(use.effective),
-    });
-    list.push(use);
-  }
-}
-
-/** Only tangent-space consumers need a UV-derived frame; ordinary models share geometry. */
-function materialTangentBasis(material: SupportedMaterial): 'normal' | 'uv' {
-  return ('normalMap' in material && material.normalMap != null) ||
-    ('bumpMap' in material && material.bumpMap != null) ||
-    ('clearcoatNormalMap' in material && material.clearcoatNormalMap != null) ||
-    ('anisotropyMap' in material && material.anisotropyMap != null) ||
-    ('anisotropy' in material && material.anisotropy !== 0) ||
-    ('normalNode' in material && material.normalNode != null) ||
-    ('clearcoatNormalNode' in material && material.clearcoatNormalNode != null)
-    ? 'uv'
-    : 'normal';
-}
-
-/** Elements of one group that survive the geometry drawRange. */
-function drawnCount(
-  geometry: BufferGeometry,
-  range: { readonly start: number; readonly count: number },
-  available: number,
-): number {
-  const first = Math.max(0, range.start, geometry.drawRange.start);
-  const last = Math.min(
-    available,
-    range.start + range.count,
-    geometry.drawRange.start + geometry.drawRange.count,
-  );
-  return last - first;
-}
-
-/** The validated material one slot draws with, or undefined when the requested buffers skip it. */
-function materialUse(
-  frame: ScenePreparation,
-  object: Renderable,
-  original: Material,
-  planes: ClippingOptions | undefined,
-  coordinates: Map<Texture, ResolvedMaterialTextureCoordinates>,
-): MaterialUse | undefined {
-  const scene = frame.scene;
-  const material =
-    scene instanceof Scene && original.allowOverride
-      ? (scene.overrideMaterial ?? original)
-      : original;
-  const inheritedPosition = surfaceInput(original, 'positionNode');
-  if (material !== original && inheritedPosition !== null && !('isNodeMaterial' in material))
-    admitSurfaceInput(original, 'positionNode', inheritedPosition).unwrap();
-  const source = validateMaterial(effectiveMaterial(material, original, frame.buffers)).unwrap();
-  if (isBlended(source) ? !frame.buffers.transparent : !frame.buffers.opaque) return undefined;
-  const shading = Number(usesFlatShading(source, object.geometry.hasAttribute('normal'))) as 0 | 1;
-  const shadowOnly = !frame.displayVisible.has(object);
-  return {
-    source: material,
-    effective: source,
-    shading,
-    skinned: object instanceof SkinnedMesh && isBasicMaterial(source),
-    shadowOnly,
-    coordinates,
-    variant: JSON.stringify([
-      material === original ? '' : original.uuid,
-      planes,
-      object instanceof SkinnedMesh,
-      shadowOnly,
-    ]),
-    ...(planes === undefined ? {} : { clipping: planes }),
-  };
-}
-
-/** r187 inherits alpha coverage and transparency from each source draw when overriding. */
-function effectiveMaterial(
-  material: Material,
-  original: Material,
-  buffers: SceneBuffers,
-): Material {
-  if (material !== original && 'isNodeMaterialInstance' in material)
-    unsupported('NodeMaterialInstance scene override', material.uuid).unwrap();
-  return Object.assign(
-    Object.create(material),
-    material === original
-      ? {}
-      : {
-          // r187 inherits source position nodes, but keeps override rotation/scale.
-          positionNode:
-            surfaceInput(original, 'positionNode') ?? surfaceInput(material, 'positionNode'),
-          alphaTest: original.alphaTest,
-          alphaMap: 'alphaMap' in original ? original.alphaMap : null,
-          transparent: isBlended(original),
-        },
-    buffers.depth ? {} : { depthTest: false, depthWrite: false },
-    buffers.stencil ? {} : { stencilWrite: false },
-  );
-}
-
-function isBlended(material: Material): boolean {
-  return material.transparent || usesTransmission(material);
-}
-
-function isWireframe(object: Renderable, list: readonly MaterialUse[]): boolean {
-  const wireframe = list.some((use) => 'wireframe' in use.effective && use.effective.wireframe);
-  if (wireframe && list.some((use) => !('wireframe' in use.effective) || !use.effective.wireframe))
-    unsupported(
-      'Mixed solid/wireframe groups require native per-submesh line expansion',
-      object.uuid,
-    ).unwrap();
-  return wireframe;
-}
-
-function rejectOrderedOpaque(
-  frame: ScenePreparation,
-  object: Renderable,
-  list: readonly MaterialUse[],
-): void {
-  if (
-    (object.renderOrder !== 0 || (frame.groupOrders.get(object) ?? 0) !== 0) &&
-    list.some((use) => !use.shadowOnly && !isBlended(use.effective))
-  ) {
-    if (!frame.buffers.opaqueOrder)
-      unsupported('Opaque renderOrder requires renderer-owned ordering', object.uuid).unwrap();
-    frame.orderedOpaque = true;
-  }
-}
-
-const scalarColorParameters: readonly string[] = [
-  'baseColorTexture',
-  'emissiveTexture',
-  'specularColorTexture',
-  'sheenColorTexture',
-];
-const scalarRedParameters: readonly string[] = [
-  'alphaTexture',
-  'bumpTexture',
-  'displacementTexture',
-  'occlusionTexture',
-  'transmissionTexture',
-  'clearcoatTexture',
-  'iridescenceTexture',
-];
-
-/** Share existing orientation caches; scalar variants are created only when actually used. */
-function textureProjection(
-  material: SupportedMaterial,
-  parameter: string,
-  texture: Texture,
-): TextureProjection {
-  const sphere = isMatcapMaterial(material) && parameter === 'baseColorTexture';
-  if (texture.format !== RedFormat) return sphere ? 1 : 0;
-  if (scalarColorParameters.includes(parameter)) return sphere ? 3 : 2;
-  if (scalarRedParameters.includes(parameter)) return 0;
-  return 4;
-}
-
-function uvTextures(list: readonly MaterialUse[]): Texture[] {
-  const textures: Texture[] = [];
-  for (const use of list) {
-    // The sphere image uses generated coordinates. Without coverage, preserve
-    // the default Matcap path without enumerating or allocating texture slots.
-    if (isMatcapMaterial(use.effective)) {
-      if (use.effective.alphaMap != null) textures.push(use.effective.alphaMap);
-      continue;
-    }
-    for (const [, texture] of materialTextures(use.effective)) textures.push(texture);
-  }
-  return textures;
-}
-
-function flatMatcapSlots(list: readonly MaterialUse[]): Set<number> {
-  return new Set(
-    list.flatMap((use, slot) =>
-      isMatcapMaterial(use.effective) && use.shading === 1 ? [slot] : [],
-    ),
-  );
-}
-
-function expandsInstances(object: Renderable): boolean {
-  return (
-    object instanceof BatchedMesh ||
-    (object instanceof InstancedMesh &&
-      (object.instanceColor !== null || object.morphTexture !== null))
-  );
-}
-
-function geometryVariant(object: Renderable, shape: GeometryShape): string {
-  const perObject =
-    shape.expanded || shape.cpuSkin || shape.flatMatcap.size > 0 || shape.morphColor;
-  return JSON.stringify([
-    shape.topology,
-    shape.grouped,
-    shape.selection,
-    perObject ? object.uuid : '',
-    shape.wireframe,
-    shape.uv.values,
-    [...shape.flatMatcap],
-  ]);
-}
-
-function geometryCacheValues(
-  object: Renderable,
-  shape: GeometryShape,
-  camera: Camera,
-  firstMaterial: SupportedMaterial | undefined,
-): unknown[] {
-  const values = geometryValues(object.geometry, shape.grouped);
-  if (shape.cpuSkin) values.push(...cpuSkinValues(object as SkinnedMesh));
-  if ((shape.flatMatcap.size > 0 || shape.morphColor) && object instanceof Mesh)
-    values.push(...(object.morphTargetInfluences ?? []));
-  if (shape.expanded && firstMaterial !== undefined)
-    values.push(
-      ...instanceGeometryValues(object as InstancedMesh | BatchedMesh, camera, firstMaterial),
-    );
-  return values;
-}
-
-function projectMeshGeometry(object: Renderable, shape: GeometryShape): MeshAsset | undefined {
-  let base = projectGeometry(
-    object.geometry,
-    shape.grouped,
-    shape.selection,
-    shape.topology,
-    shape.uv.attributes,
-    shape.wireframe,
-    sourceMorphColorWeights(object, shape.morphColor),
-  ).unwrap();
-  if (base === undefined) return undefined;
-  if (shape.cpuSkin) base = projectCpuSkin(object as SkinnedMesh, base);
-  if (shape.expanded) base = projectInstanceGeometry(object as InstancedMesh | BatchedMesh, base);
-  if (base !== undefined && shape.flatMatcap.size > 0)
-    base = projectFlatNormals(
-      base,
-      shape.flatMatcap,
-      object instanceof Mesh ? object.morphTargetInfluences : undefined,
-    );
-  return base;
-}
-
-function projectLinePointMaterial(
-  object: Line | Points,
-  source: SupportedMaterial,
-  coordinates: Map<Texture, ResolvedMaterialTextureCoordinates>,
-): void {
-  if (!(isLineMaterial(source) || isPointsMaterial(source)))
-    unsupported('Lines/Points require their unlit material family', object.uuid).unwrap();
-  if (object instanceof Line && source.vertexColors && object.geometry.hasAttribute('color'))
-    unsupported('Native Lines do not transport per-vertex colors', object.uuid).unwrap();
-  for (const [parameter, texture] of materialTextures(source)) {
-    if (
-      !(
-        object instanceof Points &&
-        source instanceof PointsMaterial &&
-        parameter === 'baseColorTexture'
-      )
-    )
-      unsupported(
-        'Native Lines/Points do not transport source UV or point coordinates for this texture slot',
-        object.uuid,
-      ).unwrap();
-    if (object.geometry.hasAttribute('uv'))
-      unsupported(
-        'PointsMaterial.map with a geometry UV needs per-point sampling',
-        object.uuid,
-      ).unwrap();
-    const { transform } = textureCoordinates(texture).unwrap();
-    // Three's sprite coordinate has its origin at the lower left. Flip the
-    // generated coordinates, while sharing the original texture publication.
-    const [sx, sy] = transform.scale;
-    const [x, y] = transform.offset;
-    coordinates.set(texture, {
-      set: 0,
-      transform: {
-        offset: [x - Math.sin(transform.rotation) * sy, y + Math.cos(transform.rotation) * sy],
-        scale: [sx, -sy],
-        rotation: transform.rotation,
-      },
-    });
-  }
-}
-
-function pointStyle(object: Points, frame: ScenePreparation, list: readonly MaterialUse[]) {
-  const source = list.find(({ effective }) => effective instanceof PointsMaterial)?.effective;
-  if (!(source instanceof PointsMaterial))
-    return { size: 1, sizeUnits: PointSizeUnitsValue.pixels, minPixelSize: 0 };
-  if (
-    list.some(
-      ({ effective }) =>
-        !(effective instanceof PointsMaterial) ||
-        effective.size !== source.size ||
-        effective.sizeAttenuation !== source.sizeAttenuation,
-    )
-  )
-    unsupported(
-      'Points material groups need the same raster size and attenuation',
-      object.uuid,
-    ).unwrap();
-  const projection = frame.camera.projectionMatrix.elements;
-  const world = source.sizeAttenuation && projection[11] === -1;
-  const size = world
-    ? source.size / Math.abs(projection[5])
-    : source.size * (frame.buffers.pixelRatio ?? 1);
-  if (!Number.isFinite(Math.fround(size)) || Math.fround(size) <= 0)
-    invalid('PointsMaterial.size', source.uuid).unwrap();
-  return {
-    size,
-    sizeUnits: world ? PointSizeUnitsValue.world : PointSizeUnitsValue.pixels,
-    minPixelSize: 1,
-  };
-}
-
-function meshLineStyle(
-  object: Renderable,
-  payload: MeshAsset,
-  list: readonly MaterialUse[],
-  wireframe: boolean,
-): ReturnType<typeof lineStyle> | undefined {
-  if (object instanceof Line)
-    return lineStyle(
-      object,
-      payload,
-      list.map((use) => use.effective),
-    );
-  return wireframe ? { dashSize: 1, gapSize: 0, dashOffset: 0 } : undefined;
-}
-
-function instanceSourceValues(object: InstancedMesh, expanded: boolean): readonly unknown[] {
-  if (
-    !Number.isInteger(object.count) ||
-    object.count < 0 ||
-    object.count > object.instanceMatrix.count
-  )
-    invalid('InstancedMesh.count', object.uuid).unwrap();
-  return [
-    object.instanceMatrix,
-    object.instanceMatrix.array,
-    object.instanceMatrix.version,
-    object.count,
-    expanded,
-  ];
-}
-
-function projectsMorphColor(
-  geometry: BufferGeometry,
-  materials: readonly GeometryMaterial[],
-): boolean {
-  return (
-    geometry.morphAttributes.color !== undefined &&
-    materials.some((material) => material.vertexColors)
-  );
-}
-
-function meshMorphWeights(object: Renderable, payload: MeshAsset): Float32Array | undefined {
-  if (payload.morphTargets === undefined) return undefined;
-  const morphWeights = new Float32Array(
-    object instanceof Mesh
-      ? (object.morphTargetInfluences ??
-          (object instanceof InstancedMesh
-            ? Array.from({ length: payload.morphTargets.length }, () => 0)
-            : []))
-      : [],
-  );
-  if (morphWeights.length !== payload.morphTargets.length || !morphWeights.every(Number.isFinite))
-    invalid('Mesh.morphTargetInfluences', object.uuid).unwrap();
-  return morphWeights;
-}
-
-/** Material cache identity contributed by one bound texture parameter. */
-function bindingValues(
-  binding: MaterialTextureValue,
-  coordinates: ResolvedMaterialTextureCoordinates | undefined,
-): unknown[] {
-  return [
-    binding.texture ?? binding.source,
-    binding.sampler,
-    coordinates?.set ?? 0,
-    ...(coordinates?.transform?.offset ?? [0, 0]),
-    ...(coordinates?.transform?.scale ?? [1, 1]),
-    coordinates?.transform?.rotation ?? 0,
-  ];
-}
-
-function sceneAmbientIrradiance(
-  scene: Object3D,
-  visible: ReadonlySet<Object3D>,
-): [number, number, number] {
-  const ambientIrradiance: [number, number, number] = [0, 0, 0];
-  for (const object of visible) {
-    if (!(object instanceof AmbientLight)) continue;
-    ambientIrradiance[0] = ambientIrradiance[0] + object.color.r * object.intensity;
-    ambientIrradiance[1] = ambientIrradiance[1] + object.color.g * object.intensity;
-    ambientIrradiance[2] = ambientIrradiance[2] + object.color.b * object.intensity;
-  }
-  if (!ambientIrradiance.every((value) => Number.isFinite(Math.fround(value))))
-    invalid('AmbientLight total irradiance', scene.uuid).unwrap();
-  return ambientIrradiance;
-}
-
-/** Preserve native batching until the caller explicitly requests opaque ordering. */
-function rankOpaqueMeshes(frame: ScenePreparation): void {
-  if (!frame.buffers.opaqueOrder) return;
-  if (!frame.orderedOpaque && frame.buffers.sortObjects && frame.buffers.opaqueSort == null) return;
-  const plans = [...frame.meshes.values()].filter((plan) =>
-    plan.materials.some((use) => !use.shadowOnly && !isBlended(use.effective)),
-  );
-  // Keep the priorities below the native transparent queue (3000).
-  if (plans.length > 1000)
-    unsupported('Ordered opaque draws support at most 1000 objects per scene').unwrap();
-  const projection = new Matrix4().multiplyMatrices(
-    frame.camera.projectionMatrix,
-    frame.camera.matrixWorldInverse,
-  );
-  const items = plans.map((plan) => {
-    if (
-      !(plan.source instanceof Mesh) ||
-      plan.source instanceof InstancedMesh ||
-      plan.source instanceof BatchedMesh ||
-      Array.isArray(plan.source.material) ||
-      plan.materials.length !== 1 ||
-      frame.clipping.get(plan.source) !== undefined
-    )
-      unsupported(
-        'Opaque ordering requires single-material, unclipped ordinary meshes',
-        plan.source.uuid,
-      ).unwrap();
-    return { plan, item: sourceRenderItem(frame, plan, projection) };
-  });
-  if (frame.buffers.sortObjects) {
-    const compare = frame.buffers.opaqueSort ?? painterSort;
-    items.sort((a, b) => compare(a.item, b.item));
-  }
-  for (const [rank, { plan }] of items.entries()) {
-    const use = plan.materials[0];
-    if (use === undefined) throw new Error('ordered mesh has no material');
-    // Object identity, rather than rank, keeps asset handles stable after reordering.
-    use.variant += `:opaque:${plan.source.uuid}`;
-    use.queue = 2000 + rank;
-  }
-}
-
-function painterSort(a: RenderItem, b: RenderItem): number {
-  return (
-    (a.groupOrder ?? 0) - (b.groupOrder ?? 0) ||
-    (a.renderOrder ?? 0) - (b.renderOrder ?? 0) ||
-    (a.z ?? 0) - (b.z ?? 0) ||
-    (a.id ?? 0) - (b.id ?? 0)
-  );
-}
-
-function withOpaqueQueue(material: MaterialAsset, queue: number): MaterialAsset {
-  if (material.parent !== undefined) throw new Error('ordered material must own its passes');
-  const [first, ...rest] = (material.passes ?? []).map((pass) =>
-    pass.name === 'shadow-caster' ? pass : { ...pass, renderState: { ...pass.renderState, queue } },
-  );
-  if (first === undefined) throw new Error('ordered material has no concrete passes');
-  return { ...material, passes: [first, ...rest] };
-}
-
-/** r187 StandardDrawingPipeline uses clip-space Z without division by W. */
-function sourceRenderItem(
-  frame: ScenePreparation,
-  plan: MeshPlan,
-  projection: Matrix4,
-): RenderItem {
-  const geometry = plan.source.geometry;
-  const bounds = plan.source instanceof SkinnedMesh ? plan.source : geometry;
-  if (bounds.boundingSphere === null) bounds.computeBoundingSphere();
-  const localCenter = bounds.boundingSphere?.center;
-  const center =
-    plan.source instanceof Sprite
-      ? new Vector4().setFromMatrixPosition(plan.source.matrixWorld)
-      : new Vector4()
-          .set(localCenter?.x ?? 0, localCenter?.y ?? 0, localCenter?.z ?? 0, 1)
-          .applyMatrix4(plan.source.matrixWorld);
-  center.applyMatrix4(projection);
-  return {
-    id: plan.source.id,
-    object: plan.source,
-    geometry,
-    material: plan.materials[0]?.source ?? null,
-    groupOrder: frame.groupOrders.get(plan.source) ?? 0,
-    renderOrder: plan.source.renderOrder,
-    z: center.z,
-    group: null,
-    clippingContext: null,
-  };
-}
-
-/**
- * Native layers express the source transparent order even when camera depth
- * differs from world Z. Opaque ordering remains a separate native contract.
- */
-function rankTransparentMeshes(frame: ScenePreparation): void {
-  const transparent = [...frame.meshes.values()].filter((plan) =>
-    plan.materials.some((use) => isBlended(use.effective)),
-  );
-  if (frame.buffers.sortObjects && frame.buffers.transparentSort != null) {
-    rankCustomTransparent(frame, transparent, frame.buffers.transparentSort);
-    return;
-  }
-  const depths = new Map(transparent.map((plan) => [plan, sourceDepth(plan, frame.camera)]));
-  const groupOrders = frame.groupOrders;
-  if (frame.buffers.sortObjects)
-    transparent.sort(
-      (a, b) =>
-        (groupOrders.get(a.source) ?? 0) - (groupOrders.get(b.source) ?? 0) ||
-        a.source.renderOrder - b.source.renderOrder ||
-        (depths.get(a) ?? 0) - (depths.get(b) ?? 0) ||
-        a.source.id - b.source.id,
-    );
-  for (const [rank, plan] of transparent.entries()) frame.transparentRanks.set(plan.source, rank);
-}
-
-function sourceDepth(plan: MeshPlan, camera: Camera): number {
-  if (plan.source instanceof Sprite)
-    return new Vector3()
-      .setFromMatrixPosition(plan.source.matrixWorld)
-      .applyMatrix4(camera.matrixWorldInverse).z;
-  const geometry = plan.source.geometry;
-  if (geometry.boundingSphere === null) geometry.computeBoundingSphere();
-  return (geometry.boundingSphere?.center.clone() ?? new Vector3())
-    .applyMatrix4(plan.source.matrixWorld)
-    .applyMatrix4(camera.matrixWorldInverse).z;
-}
-
-/** Caller render items are created only when an explicit comparator is installed. */
-function rankCustomTransparent(
-  frame: ScenePreparation,
-  plans: MeshPlan[],
-  compare: (a: RenderItem, b: RenderItem) => number,
-): void {
-  const projection = new Matrix4().multiplyMatrices(
-    frame.camera.projectionMatrix,
-    frame.camera.matrixWorldInverse,
-  );
-  const items = plans.map((plan): RenderItem => {
-    if (plan.materials.length !== 1 || frame.clipping.get(plan.source) !== undefined)
-      unsupported(
-        'Custom transparent sorting requires single-material, unclipped objects',
-        plan.source.uuid,
-      ).unwrap();
-    return sourceRenderItem(frame, plan, projection);
-  });
-  items.sort(compare);
-  for (const [rank, item] of items.entries())
-    if (item.object !== null) frame.transparentRanks.set(item.object, rank);
-}
-
-function sourceMorphColorWeights(
-  object: Renderable,
-  enabled: boolean,
-): readonly number[] | undefined {
-  if (!enabled) return undefined;
-  if (!(object instanceof Mesh) || object instanceof InstancedMesh || object instanceof BatchedMesh)
-    return unsupported(
-      'Per-instance color morphs require native GPU color target channels',
-      object.uuid,
-    ).unwrap();
-  if (object.morphTargetInfluences === undefined)
-    return invalid('Mesh.morphTargetInfluences for color morphs', object.uuid).unwrap();
-  return object.morphTargetInfluences;
+function releaseMeshCache(record: NodeRecord): void {
+  if (record.meshCachePins === undefined) return;
+  for (const release of record.meshCachePins) release();
+  record.meshCachePins = undefined;
 }

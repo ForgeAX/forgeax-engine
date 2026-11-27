@@ -15,6 +15,7 @@ import { worldRenderResources } from '../../publication/resource-scope';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import { selectCpuLodRows } from '../cpu-lod';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
+import { MaterialBgAssemblyCache } from '../material-bg-assembly-cache';
 import { getOrCreateFromChain } from '../mesh-ssbo';
 import { recordShadowCasterDraws } from '../shadow-pass';
 import { cpuSetupFixture } from './main-pass-cpu-setup-fixture';
@@ -27,8 +28,11 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
   const assets = new AssetRegistry();
   const world = new World({ assets });
   const skylightFallback = createSkylightFallback(device, device.queue);
-  Object.assign(f.c, { world: worldRenderResources(world), skylightCount: 0 });
-  Object.assign(f.c.frameState, { materialBgShared: new Map() });
+  Object.assign(f.c, {
+    world: worldRenderResources(world),
+    skylightCount: 0,
+    materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+  });
   const first = f.add({ entity: 1, submeshes: 1 });
   const second = f.add({ entity: 2, submeshes: 1, claimed: [0] });
   for (const entry of [first, second])
@@ -184,6 +188,7 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
   const normal = {};
   const color = {};
   const shadowGroups = new WeakMap<object, unknown>();
+  const shadowCounters = { hits: 0, misses: 0, visitedDraws: 0, preparedHits: 0 };
   const materialBuffer = f.c.pipelineState.materialUniformBuffer.buffer;
   if (materialBuffer === null) throw new Error('Expected fixture material buffer');
   Object.assign(f.c.pipelineState, {
@@ -193,7 +198,11 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
     defaultNormalTextureView: normal,
     fallbackTextureView: color,
   });
-  Object.assign(f.c.frameState, { shadowMaterialBindGroups: shadowGroups });
+  Object.assign(f.c.frameState, {
+    frameNumber: 0,
+    renderBundleCounters: shadowCounters,
+    shadowMaterialBindGroups: shadowGroups,
+  });
   getOrCreateFromChain(
     shadowGroups,
     [materialLayout, materialBuffer, sampler, normal, color, f.meshUniformBuffer],
@@ -215,6 +224,7 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
     secondMesh,
     sourceSubmeshes,
     sourceDraws,
+    shadowCounters,
     rows(level: 0 | 1) {
       return selectCpuLodRows(f.entries, {
         ...makeZeroCameraFallbackSnapshot(),
@@ -230,8 +240,15 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
       kind: PhysicalRangePass,
       level: 0 | 1,
       profiled = false,
+      shadow?: { readonly adjacent: boolean; readonly x: number },
     ) {
-      const rows = this.rows(level);
+      const rows = this.rows(level).map((row, index) => {
+        if (shadow === undefined || index !== 0) return row;
+        const world = row.source.transform.world.slice();
+        world[12] = shadow.x;
+        return { ...row, source: { ...row.source, transform: { ...row.source.transform, world } } };
+      });
+      f.c.frameState.frameNumber++;
       Object.assign(f.c, {
         validatedOrdered: rows,
         shadowValidatedOrdered: rows,
@@ -239,7 +256,19 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
       });
       if (kind === 'shadow') {
         pass.setPipeline(shadowPipeline);
-        recordShadowCasterDraws(f.c, pass, shadowPipeline, f.meshGroup, undefined);
+        recordShadowCasterDraws(
+          f.c,
+          pass,
+          shadowPipeline,
+          f.meshGroup,
+          undefined,
+          false,
+          undefined,
+          false,
+          undefined,
+          undefined,
+          shadow?.adjacent ?? false,
+        );
       } else f.record(pass, kind);
     },
     oracle(

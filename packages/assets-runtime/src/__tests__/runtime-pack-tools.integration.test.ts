@@ -1,7 +1,7 @@
 import { preparePackProgram } from '@forgeax/engine-pack/runtime';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import type { PackV2 } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { expect, it, onTestFinished } from 'vitest';
 import {
   prepareRuntimePackContent,
   projectRuntimePackTools,
@@ -115,51 +115,44 @@ it.each([
   'module reference',
 ])('rejects %s atomically and leaves unrelated accepted tools intact', async (fault) => {
   const source = producer();
-  try {
-    (await source.admit(content('01900000-0000-7000-8000-000000000982'))).unwrap();
-    const before = source.rows();
-    const input = JSON.parse(JSON.stringify(content()));
-    const contract = input.source.assets.behavior.payload.toolContract;
-    if (fault === 'missing executor') delete input.programs.executor;
-    if (fault === 'wrong export') contract.commands[0].exportName = 'absent';
-    if (fault === 'ambiguous selection') input.programs.alias = input.programs.executor;
-    if (fault === 'duplicate ID')
-      contract.commands.push({ ...contract.commands[0], realm: 'host' });
-    if (fault === 'duplicate path')
-      contract.commands.push({ ...contract.commands[0], id: 'different', path: ['tools', 'run'] });
-    if (fault === 'unknown field') contract.extra = true;
-    if (fault === 'module reference')
-      input.source.assets.behavior.payload.toolContract = { specifier: './contract.js' };
-    const result = await source.admit(input);
-    expect(result.ok).toBe(false);
-    expect(source.rows()).toEqual(before);
-    expect(source.snapshot().packs).toHaveLength(1);
-  } finally {
-    source.dispose();
-  }
+  onTestFinished(() => source.dispose());
+  (await source.admit(content('01900000-0000-7000-8000-000000000982'))).unwrap();
+  const before = source.rows();
+  const input = JSON.parse(JSON.stringify(content()));
+  const contract = input.source.assets.behavior.payload.toolContract;
+  if (fault === 'missing executor') delete input.programs.executor;
+  if (fault === 'wrong export') contract.commands[0].exportName = 'absent';
+  if (fault === 'ambiguous selection') input.programs.alias = input.programs.executor;
+  if (fault === 'duplicate ID') contract.commands.push({ ...contract.commands[0], realm: 'host' });
+  if (fault === 'duplicate path')
+    contract.commands.push({ ...contract.commands[0], id: 'different', path: ['tools', 'run'] });
+  if (fault === 'unknown field') contract.extra = true;
+  if (fault === 'module reference')
+    input.source.assets.behavior.payload.toolContract = { specifier: './contract.js' };
+  const result = await source.admit(input);
+  expect(result.ok).toBe(false);
+  expect(source.rows()).toEqual(before);
+  expect(source.snapshot().packs).toHaveLength(1);
 });
 
 it('changes source and publication evidence when only the tool declaration changes', async () => {
   const source = producer();
-  try {
-    const original = content();
-    const first = (await source.admit(original)).unwrap();
-    const firstPack = (await (
-      await source.fetch(defined(first.rows[0]).packageUrl)
-    ).json()) as PackV2;
-    const changed = JSON.parse(JSON.stringify(original));
-    changed.source.assets.behavior.payload.toolContract.commands[0].title = 'Updated title';
-    expect((await source.admit(changed)).ok).toBe(false);
-    source.withdraw(packageId);
-    const next = (await source.admit(changed)).unwrap();
-    expect(
-      ((await (await source.fetch(defined(next.rows[0]).packageUrl)).json()) as PackV2).assets,
-    ).toEqual(firstPack.assets);
-    expect(next.publication?.sourceRevision).not.toBe(first.publication?.sourceRevision);
-    expect(next.publication?.generation).not.toBe(first.publication?.generation);
-  } finally {
-    source.dispose();
-  }
+  onTestFinished(() => source.dispose());
+  const original = content();
+  const first = (await source.admit(original)).unwrap();
+  const firstPack = (await (
+    await source.fetch(defined(first.rows[0]).packageUrl)
+  ).json()) as PackV2;
+  const changed = JSON.parse(JSON.stringify(original));
+  changed.source.assets.behavior.payload.toolContract.commands[0].title = 'Updated title';
+  expect((await source.admit(changed)).ok).toBe(false);
+  source.withdraw(packageId);
+  const next = (await source.admit(changed)).unwrap();
+  expect(
+    ((await (await source.fetch(defined(next.rows[0]).packageUrl)).json()) as PackV2).assets,
+  ).toEqual(firstPack.assets);
+  expect(next.publication?.sourceRevision).not.toBe(first.publication?.sourceRevision);
+  expect(next.publication?.generation).not.toBe(first.publication?.generation);
 });
 
 it('prepares inline source with the same tool contract and rejects a missing executor before returning content', async () => {

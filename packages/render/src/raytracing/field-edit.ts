@@ -2,6 +2,11 @@ import type { RenderSceneRecord } from '../scene/render-scene-types';
 import type { GlobalSdfGrid } from './global-sdf';
 import type { SceneFieldSource } from './scene-field-projection';
 import type { SdfMeshInstance } from './sdf-query';
+import {
+  type SdfSurfaceCoverage,
+  sameSdfSurfaceCoverage,
+  snapshotSdfSurfaceCoverage,
+} from './sdf-surface-coverage';
 
 /** Axis-aligned world box. */
 export interface FieldEditBounds {
@@ -16,6 +21,8 @@ interface FieldEditEntry {
   readonly geometry: readonly unknown[];
   /** Material facts: a change recaptures the instance's Cards only. */
   material: readonly unknown[];
+  /** Separate from material root values, owned against mutable source aliases. */
+  coverage: SdfSurfaceCoverage;
   readonly transform: Float32Array;
   /** Membership in the currently bound immutable SDF sample box. */
   outside?: boolean;
@@ -134,6 +141,14 @@ function materialFacts(source: SceneFieldSource): unknown[] {
 const same = (a: readonly unknown[], b: readonly unknown[]) =>
   a.length === b.length && a.every((value, i) => Object.is(value, b[i]));
 
+/** Persistent owner identity; ordinals may reorder without replacing an owner. */
+export function fieldEditOwnerKey(
+  source: Pick<RenderSceneRecord, 'entityKey' | 'slot' | 'generation'>,
+  instanceGeneration: number,
+): string {
+  return `${source.entityKey}:${source.slot}:${source.generation}:${instanceGeneration}`;
+}
+
 function identities(sources: readonly SceneFieldSource[], instances: readonly SdfMeshInstance[]) {
   const out: { id: string; source: SceneFieldSource; instance: SdfMeshInstance }[] = [];
   for (const source of sources)
@@ -141,7 +156,7 @@ function identities(sources: readonly SceneFieldSource[], instances: readonly Sd
       const instance = instances[source.firstInstance + ordinal];
       if (instance === undefined) throw new Error('field edit lost a projected instance');
       out.push({
-        id: `${source.entityKey}:${source.slot}:${source.generation}:${source.instances?.generations?.[ordinal] ?? 0}`,
+        id: fieldEditOwnerKey(source, source.instances?.generations?.[ordinal] ?? 0),
         source,
         instance,
       });
@@ -159,11 +174,17 @@ export function fieldLocalBounds(instance: SdfMeshInstance): FieldEditBounds {
   return { min: [b.min[0], b.min[1], b.min[2]], max: [b.max[0], b.max[1], b.max[2]] };
 }
 
-function entry(index: number, source: SceneFieldSource, instance: SdfMeshInstance) {
+function entry(
+  index: number,
+  source: SceneFieldSource,
+  instance: SdfMeshInstance,
+  copies: WeakMap<Uint32Array, Uint32Array>,
+) {
   return {
     index,
     geometry: geometryFacts(source),
     material: materialFacts(source),
+    coverage: snapshotSdfSurfaceCoverage(instance.surfaceCoverage, copies),
     transform: Float32Array.from(instance.transform),
     local: fieldLocalBounds(instance),
   };
@@ -174,8 +195,9 @@ export function fieldEditState(
   instances: readonly SdfMeshInstance[],
 ): FieldEditState {
   const state = new FieldEditState();
+  const copies = new WeakMap<Uint32Array, Uint32Array>();
   for (const { id, source, instance } of identities(sources, instances))
-    state.set(id, entry(instance.instanceId, source, instance));
+    state.set(id, entry(instance.instanceId, source, instance, copies));
   return state;
 }
 
@@ -203,7 +225,10 @@ export function diffFieldEdit(
     const to = Float32Array.from(instance.transform);
     if (to.some((v, i) => v !== owned.transform[i]))
       moved.push({ id, index: owned.index, from: owned.transform, to, local: owned.local });
-    if (!same(materialFacts(source), owned.material))
+    if (
+      !same(materialFacts(source), owned.material) ||
+      !sameSdfSurfaceCoverage(owned.coverage, instance.surfaceCoverage)
+    )
       rematerialized.push({ index: owned.index, id, source, instance, local });
   }
   const removed: FieldEdit['removed'][number][] = [];
@@ -221,20 +246,25 @@ export function adoptFieldEdit(
   edit: FieldEdit,
   rows: readonly number[] = [],
 ): void {
+  const copies = new WeakMap<Uint32Array, Uint32Array>();
   for (const move of edit.moved) {
     const owned = state.get(move.id);
     if (owned !== undefined) state.set(move.id, { ...owned, transform: move.to });
   }
   for (const change of edit.rematerialized) {
     const owned = state.get(change.id);
-    if (owned !== undefined) owned.material = materialFacts(change.source);
+    if (owned !== undefined) {
+      owned.material = materialFacts(change.source);
+      if (!sameSdfSurfaceCoverage(owned.coverage, change.instance.surfaceCoverage))
+        owned.coverage = snapshotSdfSurfaceCoverage(change.instance.surfaceCoverage, copies);
+    }
   }
   for (const removal of edit.removed) {
     state.delete(removal.id);
   }
   if (rows.length !== edit.added.length) throw new Error('field edit adds need one row each');
   edit.added.forEach((add, i) => {
-    state.set(add.id, entry(rows[i] ?? NaN, add.source, add.instance));
+    state.set(add.id, entry(rows[i] ?? NaN, add.source, add.instance, copies));
   });
 }
 

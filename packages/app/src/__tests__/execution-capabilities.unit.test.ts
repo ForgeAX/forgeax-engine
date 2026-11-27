@@ -136,26 +136,41 @@ describe('executionWorkerScriptsReachable', () => {
     expect(executionWorkerScriptsReachable(undefined, 'file:///app/a.js')).toBe(true);
   });
 
-  it('disables execution Workers before probing when their scripts are cross-origin', async () => {
+  it.each([
+    false,
+    true,
+  ])('probes cross-origin execution only with embedded scripts (%s)', async (embedded) => {
     const constructed = vi.fn();
     vi.stubGlobal(
       'Worker',
       class {
+        onmessage: ((event: MessageEvent) => void) | null = null;
+
         constructor() {
           constructed();
+          queueMicrotask(() => {
+            this.onmessage?.({
+              data: { workerAnimationFrame: true, workerWebGpu: true, atomicsWait: false },
+            } as MessageEvent);
+          });
         }
+        terminate() {}
       },
     );
     vi.stubGlobal('origin', 'https://other.test');
     const capabilities = await probeExecutionCapabilities(
       { transferControlToOffscreen: vi.fn() } as unknown as HTMLCanvasElement,
       null,
+      false,
+      embedded,
     );
     expect(capabilities.worker).toEqual({
-      available: false,
-      reason: 'Worker scripts are cross-origin to this document',
+      available: embedded,
+      reason: embedded
+        ? 'Worker constructor observed'
+        : 'Worker scripts are cross-origin to this document',
     });
-    expect(capabilities.workerWebGpu.available).toBe(false);
-    expect(constructed).not.toHaveBeenCalled();
+    expect(capabilities.workerWebGpu.available).toBe(embedded);
+    expect(constructed).toHaveBeenCalledTimes(embedded ? 1 : 0);
   });
 });

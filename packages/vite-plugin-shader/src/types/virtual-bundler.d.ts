@@ -29,5 +29,8 @@ declare module 'virtual:forgeax/bundler' {
    * @returns Renderer build inputs and optional explicit App capabilities for
    *   recorder capture, remote service startup, and browser relay lifecycle.
    */
-  export function forgeaxBundlerAdapter(): AppHostAdapter;
+  export function forgeaxBundlerAdapter(options?: {
+    /** An absolute manifest URL supplied by a Host with its own package transport. */
+    readonly shaderManifestUrl?: string;
+  }): AppHostAdapter;
 }

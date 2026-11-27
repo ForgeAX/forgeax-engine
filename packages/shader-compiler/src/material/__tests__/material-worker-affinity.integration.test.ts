@@ -62,3 +62,52 @@ it('shares a warm material lane for uniform edits while cooking different contra
   expect(outputs[1]?.duplicate).toBe(false);
   expect(outputs[1]?.peak).toBe(2);
 });
+
+it('reserves program concurrency for a single cold material within the memory budget', {
+  timeout: processTimeout,
+}, async () => {
+  const entry = import.meta.resolve('@forgeax/engine-shader-compiler');
+  const script = `
+    import { syncBuiltinESMExports } from 'node:module';
+    import os from 'node:os';
+    import workerThreads from 'node:worker_threads';
+    os.availableParallelism = () => 8;
+    process.availableMemory = () => 6.25 * 1024 ** 3;
+    const NativeWorker = workerThreads.Worker;
+    const programSlots = [];
+    workerThreads.Worker = class extends NativeWorker {
+      constructor(source, options) {
+        super(source, options);
+        if (options.resourceLimits) programSlots.push(Number(options.env.FORGEAX_SHADER_COMPILE_WORKERS));
+      }
+    };
+    syncBuiltinESMExports();
+    const { createMaterialPackCooker } = await import(${JSON.stringify(entry)});
+    const cooker = createMaterialPackCooker([], { profile: 'webgpu-storage' });
+    const cook = (cullMode) => cooker.cook({
+      guid: cullMode,
+      source: { kind: 'material', passes: [{
+        name: 'Forward', program: { module: 'forgeax::default-unlit' }, renderState: { cullMode },
+      }] },
+    });
+    const first = await cook('back');
+    const rest = await Promise.all([cook('front'), cook('none')]);
+    console.log(JSON.stringify({ programSlots, published: [first, ...rest].map(({ guid }) => guid) }));
+  `;
+  const result = await promisify(execFile)(
+    process.execPath,
+    ['--input-type=module', '--eval', script],
+    {
+      env: { ...process.env, FORGEAX_SHADER_COMPILE_WORKERS: '7' },
+      timeout: processTimeout,
+    },
+  );
+  const { programSlots, published } = JSON.parse(result.stdout) as {
+    programSlots: number[];
+    published: string[];
+  };
+  expect(published).toEqual(['back', 'front', 'none']);
+  expect(programSlots).toHaveLength(1);
+  expect(programSlots[0]).toBeGreaterThan(1);
+  expect(programSlots[0]).toBeLessThanOrEqual(5);
+});

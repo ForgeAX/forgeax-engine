@@ -3,27 +3,25 @@ import type { RenderError, RendererOptions, RenderResult } from '@forgeax/engine
 import type {
   BundlerOptions,
   RendererHostAssembly,
+  RendererHostBundlerOptions,
 } from '@forgeax/engine-render/internal/construct-renderer';
 import {
   constructRendererHost,
   EngineEnvironmentError,
 } from '@forgeax/engine-render/internal/construct-renderer';
 import { RhiError, type RhiErrorCode } from '@forgeax/engine-rhi';
-import { ShaderRegistry, type ShaderRegistryOptions } from '@forgeax/engine-shader';
-import { err } from '@forgeax/engine-types';
+import { err, ok } from '@forgeax/engine-types';
 import { installDefaultAssetDecoders } from './asset-contributions';
 import { type BackendPackSelection, loadBackendPack } from './backend-selection';
+import { createMaterialSourceCompiler } from './material-source-compiler';
 import { postSpawnResolveJoints } from './scene-instances/index';
+import { prepareProgramCompiler, stagePublicationShaders } from './shader-publication';
+import { taskShaderProgramCompiler } from './tasks';
 
 export type {
   BundlerOptions,
   RendererHostAssembly,
 } from '@forgeax/engine-render/internal/construct-renderer';
-
-const prepareProgramCompiler: NonNullable<
-  ShaderRegistryOptions['prepareProgramCompiler']
-> = async () =>
-  (await import('@forgeax/engine-shader-compiler/program')).prepareShaderProgramCompiler();
 
 const FALLBACK_ERROR_CODES = new Set<RhiErrorCode>([
   'adapter-unavailable',
@@ -56,7 +54,7 @@ async function attemptRendererHost(
   backend: BackendPackSelection,
   canvas: unknown,
   options: RendererOptions | undefined,
-  bundler: BundlerOptions | undefined,
+  bundler: RendererHostBundlerOptions | undefined,
 ): Promise<RenderResult<RendererHostAssembly, RenderError | EngineEnvironmentError>> {
   if (!backend.ok) {
     return err(
@@ -84,11 +82,18 @@ async function attemptRendererHost(
 export async function constructRuntimeRendererHost(
   canvas: unknown,
   options?: RendererOptions,
-  bundler?: BundlerOptions,
+  bundler?: RendererHostBundlerOptions,
 ): Promise<RenderResult<RendererHostAssembly, RenderError | EngineEnvironmentError>> {
   const publication = {
     ...bundler,
-    prepareShaderProgramCompiler: bundler?.prepareShaderProgramCompiler ?? prepareProgramCompiler,
+    prepareShaderProgramCompiler:
+      bundler?.prepareShaderProgramCompiler ??
+      (async () => {
+        const prepared = await prepareProgramCompiler();
+        return prepared.ok && options?.tasks !== undefined
+          ? ok(taskShaderProgramCompiler(prepared.value, options.tasks))
+          : prepared;
+      }),
   };
   const first = await loadBackendPack(options);
   let result = await attemptRendererHost(first, canvas, options, publication);
@@ -110,7 +115,13 @@ export async function constructRuntimeRendererHost(
       );
     }
   }
-  if (result.ok) installDefaultAssetDecoders(result.value.assets);
+  if (result.ok) {
+    const assets = result.value.assets;
+    assets.setMaterialSourceCompiler(
+      createMaterialSourceCompiler(assets.shaderRegistry, options?.tasks),
+    );
+    installDefaultAssetDecoders(assets);
+  }
   return result;
 }
 
@@ -118,23 +129,14 @@ export { loadRhiPack } from './backend-selection';
 export type { AssetRegistry };
 
 /** CPU asset assembly for the source realm of a split Renderer. */
-export async function createPublicationAssets(
+export function stagePublicationAssets(
   bundler?: BundlerOptions,
   options: { readonly assetBudgetBytes?: number } = {},
-): Promise<AssetRegistry> {
+) {
   if (options.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
-  const shaders = new ShaderRegistry({
-    prepareProgramCompiler: bundler?.prepareShaderProgramCompiler ?? prepareProgramCompiler,
-    ...(bundler?.readShaderManifest === undefined ? {} : { readText: bundler.readShaderManifest }),
-    manifestUrl:
-      bundler !== undefined && 'shaderManifestUrl' in bundler
-        ? bundler.shaderManifestUrl
-        : '/shaders/manifest.json',
-  });
-  const loaded = await shaders.loadManifest();
-  if (!loaded.ok) throw loaded.error;
+  const { catalog, ready } = stagePublicationShaders(bundler);
   const assets = new AssetRegistry({
-    shaderRegistry: shaders,
+    shaderRegistry: catalog,
     importTransport: bundler?.importTransport,
     postSpawnHook: postSpawnResolveJoints,
     ...(options.assetBudgetBytes === undefined
@@ -142,5 +144,20 @@ export async function createPublicationAssets(
       : { limits: { maxBytes: options.assetBudgetBytes } }),
   });
   installDefaultAssetDecoders(assets);
-  return assets;
+  return { assets, ready };
+}
+
+/** Obtain the source asset assembly after its CPU shader catalog is ready. */
+export async function createPublicationAssets(
+  bundler?: BundlerOptions,
+  options?: { readonly assetBudgetBytes?: number },
+): Promise<AssetRegistry> {
+  const { assets, ready } = stagePublicationAssets(bundler, options);
+  try {
+    await ready;
+    return assets;
+  } catch (cause) {
+    assets.dispose();
+    throw cause;
+  }
 }

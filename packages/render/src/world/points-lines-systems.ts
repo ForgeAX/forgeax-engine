@@ -44,7 +44,7 @@ function preparePointsLines(
     const uncull = view.scene.shadowCasterProjection()?.renderables;
     const outcome = owner.prepareFrame(uncull ?? frame.renderables, () => resourceWorld, clustered);
     // The view's parameter buffer grows before recording addresses its slots.
-    if (outcome.ok)
+    if (outcome.ok && (outcome.rows.size === 0 || outcome.slots > 0))
       recordContext(view.internals)
         .getPipelineState()
         ?.ensurePointsLinesViewCapacity?.(outcome.slots);

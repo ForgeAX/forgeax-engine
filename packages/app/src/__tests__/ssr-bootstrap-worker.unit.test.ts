@@ -11,6 +11,7 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', () => ({
       value: {
         renderer: {
           state: () => 'alive',
+          attach: () => ({ ok: true, value: { dispose() {} } }),
           inspect: () => ({ capabilities: {}, frame: { frameId: 0, deviceGeneration: 0 } }),
           dispose: mocks.dispose,
           subscribe: () => () => {},
@@ -26,14 +27,6 @@ vi.mock('../assets-runtime-assembly', () => ({
 }));
 vi.mock('../renderer-plugin', () => ({ createRenderFeatureHost: () => ({}) }));
 vi.mock('../internal/worker-engine-profile', () => ({ workerEngineProfile: () => ({}) }));
-vi.mock('../execution/attached-world-swap', () => ({
-  commitAttachedWorld: async () => true,
-  SerializedRebuildQueue: class {
-    enqueue<T>(job: () => Promise<T>): Promise<T> {
-      return job();
-    }
-  },
-}));
 vi.mock('@forgeax/engine-ecs', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@forgeax/engine-ecs')>()),
   createWorldContext: async () => ({ fiber: { async dispose() {} } }),
@@ -62,8 +55,11 @@ it.each([
   const prepared = await prepareBootstrapEntry(bootstrapUrl, undefined);
   if (!prepared.ok) throw prepared.error;
   if (owner === 'engine') await import('../execution/engine-worker-runtime');
-  else await import('../execution/render-worker-runtime');
-  const receive = globalThis.onmessage as unknown as (event: { data: unknown }) => void;
+  const dispatch =
+    owner === 'engine'
+      ? globalThis.onmessage
+      : (await import('../execution/render-worker-runtime')).receiveRenderWorkerInput;
+  const receive = dispatch as unknown as (event: { data: unknown }) => void;
   receive({
     data: {
       kind: 'init',

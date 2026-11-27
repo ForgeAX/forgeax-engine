@@ -948,7 +948,7 @@ const updateInspection = () => {
   const renderInspection = app.renderer.inspect();
   const observedResourceGrowth = resourceGrowth();
   const motionBlurParams = readMotionBlurParams();
-  const temporalTargetDescriptor = renderInspection.temporalTarget?.descriptor;
+  const renderExtent = renderInspection.dynamicResolution?.extent;
   const standardLut = renderInspection.output.standardLut;
   const lutReceipt =
     workloadKind === 'positive-lut' &&
@@ -981,11 +981,11 @@ const updateInspection = () => {
       contract: 'fixed-scale',
       scale: dynamicResolutionEnabled ? 0.67 : 1,
       output: { width: canvas.width, height: canvas.height },
-      internal: !dynamicResolutionEnabled || temporalTargetDescriptor === undefined
+      internal: !dynamicResolutionEnabled || renderExtent === undefined
         ? null
         : {
-            width: temporalTargetDescriptor.width,
-            height: temporalTargetDescriptor.height,
+            width: renderExtent.internalWidth,
+            height: renderExtent.internalHeight,
           },
       coverageProducer:
         dynamicResolutionEnabled && renderInspection.perFramePassNames.includes('standard-scene-coverage'),

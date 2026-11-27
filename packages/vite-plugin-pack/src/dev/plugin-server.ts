@@ -1,7 +1,6 @@
 import { resolve } from 'node:path';
 import type { ImportPublicationInput, RunImportMeta } from '@forgeax/engine-import';
 import type { CatalogBuildResult, CatalogProducerVisibility } from '@forgeax/engine-pack/build';
-import type { ScanSourceDeclaration } from '@forgeax/engine-pack/scanner';
 import type {
   AssetPublicationEnvelope,
   CatalogDelta,
@@ -16,7 +15,7 @@ import {
   type PluginPackFailure,
 } from '../errors.js';
 import type { HttpArtifactCompression } from '../http-artifact.js';
-import type { PluginPackInternalOptions } from '../plugin-contract.js';
+import type { PluginPackInternalOptions, PluginPackSourceProgress } from '../plugin-contract.js';
 import { projectRuntimeDiagnostics } from '../runtime-diagnostics.js';
 import type { DispatcherServer, MiddlewareDispatcher } from './dispatcher.js';
 import { createMiddlewareDispatcher } from './dispatcher.js';
@@ -89,16 +88,27 @@ export interface PluginServerLike extends DispatcherServer {
   };
 }
 
+export type DevPackBody =
+  | string
+  | Uint8Array
+  | {
+      readonly text: string;
+      readonly artifactPaths: readonly string[];
+    };
+
+export function packBodyContent(body: DevPackBody | undefined): string | Uint8Array | undefined {
+  return typeof body === 'object' && 'text' in body ? body.text : body;
+}
+
 export interface PluginServerState {
   readonly artifactCompression?: HttpArtifactCompression;
   catalogProjection: CatalogBuildResult;
-  importedGuids: Set<string>;
-  metaPackBodies: Map<string, string | Uint8Array>;
+  authoredPublications: ReadonlyMap<string, AssetPublicationEnvelope>;
+  metaPackBodies: Map<string, DevPackBody>;
   devArtifactBodies: Map<string, { readonly bytes: Uint8Array; readonly mimeType: string }>;
 }
 
 export type PluginServerProjectionState = PluginServerState & {
-  publicationCandidates: Map<string, AssetPublicationEnvelope>;
   pendingImportPublications: Map<string, ImportPublicationInput>;
 };
 
@@ -111,21 +121,21 @@ export interface PluginServerCallbacks {
   publishAuthoredDevPacks(
     entries: readonly PackIndexEntry[],
     projection: PluginServerProjectionState,
-    declarations?: ReadonlyMap<string, ScanSourceDeclaration>,
     signal?: AbortSignal,
     runtimeBinding?: RuntimeAssetBinding,
+    onProgress?: (event: PluginPackSourceProgress) => void,
   ): Promise<readonly PackIndexEntry[]>;
   ensureMetaImport(
     metaPath: string,
-    declaration?: RunImportMeta,
-    signal?: AbortSignal,
-    projection?: PluginServerProjectionState,
+    declaration: RunImportMeta | undefined,
+    signal: AbortSignal,
+    projection: PluginServerProjectionState,
     runtimeBinding?: RuntimeAssetBinding,
     prepared?: PreparedMetaImport,
   ): Promise<PackIndexEntry[]>;
+  metaTransportReady(guid: string): boolean;
+  publishMaterializedCatalog(delta: CatalogDelta): void;
   commitGeneration(candidate: PluginServerProjectionState, signal?: AbortSignal): Promise<void>;
-  discardPublications(candidates: ReadonlyMap<string, AssetPublicationEnvelope>): void;
-  discardImportPublications(candidates: Map<string, ImportPublicationInput>): Promise<void>;
   ensureMetaPackBody(
     url: string,
     runtimeBinding?: RuntimeAssetBinding,
@@ -152,15 +162,23 @@ export interface PluginServerContext {
   readonly registeredImporterKeys: ReadonlySet<string>;
   readonly catalogVisibility: CatalogProducerVisibility;
   readonly resetState: () => void;
-  readonly scopedPackageUrl: (binding: RuntimeAssetBinding, packageUrl: string) => string;
   readonly scopedCatalogEntry: (
-    binding: RuntimeAssetBinding,
+    binding: RuntimeAssetBinding | undefined,
     entry: PackIndexEntry,
   ) => PackIndexEntry;
   readonly scopedCatalogBody: (binding: RuntimeAssetBinding) => string;
   readonly state: PluginServerState;
   readonly callbacks: PluginServerCallbacks;
-  readonly setSourceRefresh: (refresh: (sourcePath: string) => Promise<void>) => void;
+  readonly setSourceRefresh: (refresh: (url: string) => Promise<void>) => void;
+}
+
+function stalePackBody(guid: string): PluginPackFailure {
+  return createPluginPackFailure({
+    code: 'stale-generation',
+    expected: 'the Pack body to belong to the active generation',
+    hint: 'retry the asset request after the active generation settles',
+    detail: { stage: 'route', subject: guid },
+  });
 }
 
 export function createPluginServer(context: PluginServerContext) {
@@ -197,6 +215,8 @@ export function createPluginServer(context: PluginServerContext) {
   };
   const productionBridge: ProductionBridge = createProductionBridge({
     producerReadiness: opts.producerReadiness,
+    onProgress: opts.onProgress,
+    enginePackageRoot: opts.enginePackageRoot,
     takeInitialSourceSnapshot: opts.takeInitialSourceSnapshot,
     ignorePath: opts.ignorePath,
     sourceIdentityFor: opts.sourceIdentityFor,
@@ -358,8 +378,7 @@ export function createPluginServer(context: PluginServerContext) {
     closeInFlight = (async () => {
       lifecycle.watchEpoch += 1;
       await Promise.all([
-        lifecycle.devSession?.close(),
-        productionBridge.session.close(),
+        lifecycle.devSession?.close() ?? productionBridge.session.close(),
         lifecycle.stopWatcher(),
       ]);
       configuredServers.clear();
@@ -395,6 +414,22 @@ export function createPluginServer(context: PluginServerContext) {
     },
     rebind,
     runtimeBinding,
+    async materializePackBody(guid: string, binding?: RuntimeAssetBinding): Promise<void> {
+      const dev = lifecycle.devSession;
+      const session = productionBridge.session;
+      const activeBinding = dev?.runtimeScope();
+      if (
+        binding !== undefined &&
+        (activeBinding?.scopeId !== binding.scopeId ||
+          activeBinding.generation !== binding.generation)
+      ) {
+        throw stalePackBody(guid);
+      }
+      await dev?.waitForRebuild();
+      const result = await session.materialize(guid, true);
+      if (result.status === 'failed') throw result.error;
+      if (result.status === 'stale') throw stalePackBody(guid);
+    },
     rebuildCatalogInPlace: (filenames: readonly string[]) =>
       lifecycle.rebuildCatalogInPlace(filenames),
     close,

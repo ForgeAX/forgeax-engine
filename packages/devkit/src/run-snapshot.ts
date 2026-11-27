@@ -16,14 +16,17 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { sha256 } from '@forgeax/engine-types';
 import { packlist } from '@pnpm/fs.packlist';
-import { parse, parseAllDocuments } from 'yaml';
+import { parse } from 'yaml';
 import {
   enginePackageRuntimeIdentity,
   inspectEngineWorkspace,
+  packageTargetPaths,
   readEngineBinding,
 } from './engine-binding.js';
 import { filesystemPathRelative, isFilesystemPathWithin } from './filesystem-path.js';
+import { parsePnpmLockDocuments } from './sdk-bootstrap.js';
 import type { CommandError } from './types.js';
 
 const omitted = new Set([
@@ -49,7 +52,7 @@ export function runStateDirectory(projectRoot: string): string {
     // must not silently create another ownership identity.
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  const identity = createHash('sha256').update(root).digest('hex');
+  const identity = sha256(root);
   return resolve(
     process.env.FORGEAX_RUNS_DIR ?? join(homedir(), '.local/share/ForgeaX/runs'),
     identity,
@@ -130,11 +133,10 @@ interface PnpmContext {
   };
 }
 
-interface SnapshotPlanOptions {
-  readonly verifyLocalDependencies?: boolean;
-  readonly expectedBinding?: string;
-  readonly expectedEngineDigest?: string;
-  readonly pnpmVersion?: string;
+interface DependencyProofRequest {
+  readonly expectedBinding: string;
+  readonly expectedEngineDigest: string | undefined;
+  readonly pnpmVersion: string;
 }
 
 class SnapshotChangedError extends Error {}
@@ -232,7 +234,7 @@ async function pathIsFile(path: string): Promise<boolean> {
 }
 
 function contentDigest(content: Uint8Array): string {
-  return createHash('sha256').update(content).digest('hex');
+  return sha256(content);
 }
 
 interface ProofPathIdentity {
@@ -255,14 +257,28 @@ async function proofPathIdentity(path: string): Promise<ProofPathIdentity> {
   };
 }
 
-function proofKey(path: string): string {
-  return normalizeRecordedPath(path);
+function sameProof(left: SnapshotProof, right: SnapshotProof): boolean {
+  return (
+    left.path === right.path &&
+    left.realPath === right.realPath &&
+    left.identity === right.identity &&
+    left.digest === right.digest &&
+    left.kind === right.kind
+  );
+}
+
+function recordSnapshotProof(proofs: Map<string, SnapshotProof>, proof: SnapshotProof): void {
+  const key = normalizeRecordedPath(proof.path);
+  const previous = proofs.get(key);
+  if (previous !== undefined && !sameProof(previous, proof))
+    throw dependencySourceChanged(proof.path);
+  proofs.set(key, proof);
 }
 
 async function readProvenFile(proofs: Map<string, SnapshotProof>, path: string): Promise<Buffer> {
   const identity = await proofPathIdentity(path);
   const content = await readFile(path);
-  proofs.set(proofKey(identity.path), {
+  recordSnapshotProof(proofs, {
     ...identity,
     digest: contentDigest(content),
     kind: 'file',
@@ -276,13 +292,13 @@ async function rememberEngineRuntimeProof(
 ): Promise<void> {
   const identity = await proofPathIdentity(path);
   const digest = await enginePackageRuntimeIdentity(identity.realPath);
-  proofs.set(proofKey(identity.path), { ...identity, digest, kind: 'engine-runtime' });
+  recordSnapshotProof(proofs, { ...identity, digest, kind: 'engine-runtime' });
 }
 
 function proofPathMatches(proof: SnapshotProof, identity: ProofPathIdentity): boolean {
   return (
-    proofKey(proof.path) === proofKey(identity.path) &&
-    proofKey(proof.realPath) === proofKey(identity.realPath) &&
+    normalizeRecordedPath(proof.path) === normalizeRecordedPath(identity.path) &&
+    normalizeRecordedPath(proof.realPath) === normalizeRecordedPath(identity.realPath) &&
     proof.identity === identity.identity
   );
 }
@@ -313,12 +329,7 @@ async function verifySnapshotProofs(proofs: readonly SnapshotProof[]): Promise<v
           ? contentDigest(await readFile(proof.path))
           : await enginePackageRuntimeIdentity(proof.realPath);
       const after = await proofPathIdentity(proof.path);
-      if (
-        !proofPathMatches(proof, after) ||
-        proofKey(before.realPath) !== proofKey(after.realPath) ||
-        before.identity !== after.identity ||
-        digest !== proof.digest
-      )
+      if (!proofPathMatches(proof, after) || digest !== proof.digest)
         throw dependencySourceChanged(proof.path);
     } catch (cause) {
       if (isDependencySourceChanged(cause)) throw cause;
@@ -328,13 +339,9 @@ async function verifySnapshotProofs(proofs: readonly SnapshotProof[]): Promise<v
 }
 
 function parsePnpmLockfile(bytes: Buffer): PnpmLockfile {
-  const documents = parseAllDocuments(bytes.toString('utf8'));
-  for (const document of documents) {
-    if (document.errors.length > 0) throw document.errors[0];
-  }
-  // pnpm places its environment graph first and the project graph last.
-  // They have separate importer and package identities; never merge them.
-  const lock = documents.at(-1)?.toJS() as PnpmLockfile | undefined;
+  const lock = parsePnpmLockDocuments(bytes.toString('utf8')).at(-1)?.toJS() as
+    | PnpmLockfile
+    | undefined;
   if (lock === null || typeof lock !== 'object' || Array.isArray(lock))
     throw new Error('The pnpm project lockfile document must be a mapping.');
   return lock;
@@ -465,6 +472,14 @@ async function pnpmRoots(packageRoot: string): Promise<{
   return { root, workspaceRoot };
 }
 
+type LocalDependencyProtocol = 'workspace:' | 'file:' | 'link:';
+
+export function localDependencyProtocol(specifier: string): LocalDependencyProtocol | undefined {
+  if (specifier.startsWith('workspace:')) return 'workspace:';
+  if (specifier.startsWith('file:')) return 'file:';
+  return specifier.startsWith('link:') ? 'link:' : undefined;
+}
+
 /** Require an Engine binding even when pnpm supplies the local specifier via an override. */
 export async function hasLocalEngineDependencyOverride(projectRoot: string): Promise<boolean> {
   const { workspaceRoot } = await pnpmRoots(await realpath(projectRoot));
@@ -474,16 +489,42 @@ export async function hasLocalEngineDependencyOverride(projectRoot: string): Pro
   } | null;
   return Object.entries(pnpmOverrides(manifest?.overrides, workspaceRoot)).some(
     ([name, specifier]) =>
-      isEngineDependency(name) &&
-      (specifier.startsWith('link:') ||
-        specifier.startsWith('workspace:') ||
-        specifier.startsWith('file:')),
+      isEngineDependency(name) && localDependencyProtocol(specifier) !== undefined,
   );
+}
+
+function pnpmImporter(
+  root: string,
+  packageRoot: string,
+  lock: PnpmLockfile,
+  linked = false,
+): PnpmImporter {
+  const path = filesystemPathRelative(root, packageRoot);
+  if (path === undefined)
+    throw dependencyClosureError(
+      'project-pnpm-importer-mismatch',
+      linked
+        ? 'The linked package is outside its installing pnpm workspace.'
+        : 'The package is outside its pnpm workspace root.',
+      { packageRoot, root },
+    );
+  const key = path === '' ? '.' : path.split(sep).join('/');
+  const importer = lock.importers?.[key];
+  if (importer === undefined)
+    throw dependencyClosureError(
+      'project-pnpm-importer-missing',
+      linked
+        ? 'The linked package has no importer in its installing pnpm lockfile.'
+        : 'The current package has no importer in pnpm-lock.yaml.',
+      { importer: key, packageRoot, root },
+    );
+  return importer;
 }
 
 async function pnpmContext(
   packageRootInput: string,
   expectedPnpmVersion: string,
+  proofs: Map<string, SnapshotProof>,
 ): Promise<PnpmContext> {
   const packageRoot = await realpath(packageRootInput);
   const { root, workspaceRoot } = await pnpmRoots(packageRoot);
@@ -498,7 +539,6 @@ async function pnpmContext(
 
   let lock: PnpmLockfile;
   let modules: PnpmModulesState;
-  const proofs = new Map<string, SnapshotProof>();
   const lockPath = join(root, 'pnpm-lock.yaml');
   const modulesPath = join(root, 'node_modules', '.modules.yaml');
   try {
@@ -545,28 +585,7 @@ async function pnpmContext(
       },
     );
 
-  const importerPath = filesystemPathRelative(root, packageRoot);
-  if (importerPath === undefined)
-    throw dependencyClosureError(
-      'project-pnpm-importer-mismatch',
-      'The package is outside its pnpm workspace root.',
-      {
-        packageRoot,
-        root,
-      },
-    );
-  const importerKey = importerPath.length === 0 ? '.' : importerPath.split(sep).join('/');
-  const importer = lock.importers?.[importerKey];
-  if (importer === undefined)
-    throw dependencyClosureError(
-      'project-pnpm-importer-missing',
-      'The current package has no importer in pnpm-lock.yaml.',
-      {
-        importer: importerKey,
-        packageRoot,
-        root,
-      },
-    );
+  const importer = pnpmImporter(root, packageRoot, lock);
 
   let workspace: PnpmContext['workspace'];
   if (workspaceRoot !== undefined) {
@@ -719,35 +738,85 @@ function pnpmVirtualStoreEntry(depPath: string, maxLength: number): string | und
     filename.length > maxLength ||
     (filename !== filename.toLowerCase() && !filename.startsWith('file+'))
   ) {
-    const hash = createHash('sha256').update(filename).digest('hex').slice(0, 32);
+    const hash = sha256(filename).slice(0, 32);
     return `${filename.slice(0, maxLength - 33)}_${hash}`;
   }
   return filename;
 }
 
-function npmAliasTarget(specifier: string): { readonly name: string } | undefined {
-  if (!specifier.startsWith('npm:')) return undefined;
-  const target = specifier.slice('npm:'.length);
-  const separator = target.startsWith('@')
-    ? target.indexOf('@', target.indexOf('/') + 1)
-    : target.indexOf('@');
-  if (separator <= 0 || separator === target.length - 1) return undefined;
-  const name = target.slice(0, separator);
-  if (!/^(?:@[a-zA-Z0-9_.-]+\/)?[a-zA-Z0-9_.-]+$/.test(name)) return undefined;
-  return { name };
+function isPackageName(value: string): boolean {
+  return /^(?:@[a-zA-Z0-9_.-]+\/)?[a-zA-Z0-9_.-]+$/.test(value);
 }
 
-function pnpmLocatorIdentity(
+function npmAliasTarget(specifier: string): string | undefined {
+  if (!specifier.startsWith('npm:')) return undefined;
+  const target = packageReference(specifier.slice('npm:'.length));
+  return target !== undefined && isPackageName(target.name) ? target.name : undefined;
+}
+
+function packageReference(locator: string) {
+  const separator = locator.indexOf('@', locator.startsWith('@') ? locator.indexOf('/') + 1 : 0);
+  if (separator <= 0 || separator === locator.length - 1) return undefined;
+  return { name: locator.slice(0, separator), reference: locator.slice(separator + 1) };
+}
+
+/** Package content ignores peers. Snapshot identity still includes its peer-qualified locator. */
+function lockedSnapshotIdentity(lock: PnpmLockfile, locator: string) {
+  const identity = packageReference(locator);
+  const version = identity?.reference.split('(')[0];
+  if (
+    !identity ||
+    !version ||
+    lock.packages?.[`${identity.name}@${version}`] === undefined ||
+    !Object.hasOwn(lock.snapshots ?? {}, locator)
+  )
+    return undefined;
+  return { name: identity.name, version };
+}
+
+async function resolveVirtualStore(
+  context: PnpmContext,
+  fail: (reason: string, missingLayout?: boolean) => never,
+): Promise<{ root: string; maxLength: number }> {
+  const { virtualStoreDir, virtualStoreDirMaxLength } = context.modules;
+  if (typeof virtualStoreDir !== 'string' || typeof virtualStoreDirMaxLength !== 'number')
+    fail('Installed pnpm metadata does not identify a bounded virtual-store layout.', true);
+  try {
+    return {
+      root: await realpath(resolve(context.root, virtualStoreDir)),
+      maxLength: virtualStoreDirMaxLength,
+    };
+  } catch (cause) {
+    fail(cause instanceof Error ? cause.message : String(cause));
+  }
+}
+
+async function resolveVirtualPackage(
+  store: { root: string; maxLength: number },
   locator: string,
-): { readonly name: string; readonly version: string } | undefined {
-  const separator = locator.startsWith('@')
-    ? locator.indexOf('@', locator.indexOf('/') + 1)
-    : locator.indexOf('@');
-  if (separator <= 0) return undefined;
-  const name = locator.slice(0, separator);
-  const version = locator.slice(separator + 1).split('(')[0];
-  if (!version) return undefined;
-  return { name, version };
+  name: string,
+  fail: (reason: string) => never,
+  unrepresentable: string,
+): Promise<string> {
+  const entry = pnpmVirtualStoreEntry(locator, store.maxLength);
+  if (entry === undefined) fail(unrepresentable);
+  try {
+    return await realpath(join(store.root, entry, 'node_modules', ...name.split('/')));
+  } catch (cause) {
+    fail(cause instanceof Error ? cause.message : String(cause));
+  }
+}
+
+async function matchesVirtualPackageLink(
+  actual: InstalledPackage,
+  store: string,
+  expected: string,
+): Promise<boolean> {
+  return (
+    normalizeRecordedPath(expected) === normalizeRecordedPath(actual.root) &&
+    isFilesystemPathWithin(store, actual.root) &&
+    (await lstat(actual.path)).isSymbolicLink()
+  );
 }
 
 async function verifyNpmAliasPlacement(
@@ -758,21 +827,12 @@ async function verifyNpmAliasPlacement(
   actual: InstalledPackage,
   actualManifest: Record<string, unknown>,
 ): Promise<void> {
-  const identity = pnpmLocatorIdentity(locator);
-  // Package content is peer-independent; the selected snapshot and physical
-  // placement still require the complete peer-qualified locator below.
-  const packageRecord =
-    identity === undefined
-      ? undefined
-      : context.lock.packages?.[`${identity.name}@${identity.version}`];
-  const hasSnapshot = Object.hasOwn(context.lock.snapshots ?? {}, locator);
+  const identity = lockedSnapshotIdentity(context.lock, locator);
   if (
     identity === undefined ||
     identity.name !== targetName ||
     typeof actualManifest.version !== 'string' ||
-    identity.version !== actualManifest.version ||
-    packageRecord === undefined ||
-    !hasSnapshot
+    identity.version !== actualManifest.version
   )
     throw dependencyClosureError(
       'project-dependency-identity-mismatch',
@@ -786,42 +846,24 @@ async function verifyNpmAliasPlacement(
       },
     );
 
-  const virtualStore = context.modules.virtualStoreDir;
-  const maxLength = context.modules.virtualStoreDirMaxLength;
-  if (typeof virtualStore !== 'string' || typeof maxLength !== 'number')
+  const fail = (reason: string, missingLayout = false): never => {
     throw dependencyClosureError(
       'project-dependency-identity-mismatch',
-      'Installed pnpm metadata does not identify a bounded virtual-store layout for the npm alias.',
-      { dependency, locator, installed: actual.root },
+      missingLayout
+        ? 'Installed pnpm metadata does not identify a bounded virtual-store layout for the npm alias.'
+        : 'The npm alias target has no resolvable pnpm virtual-store placement.',
+      { dependency, locator, installed: actual.root, ...(missingLayout ? {} : { reason }) },
     );
-
-  let virtualStoreRoot: string;
-  let expectedPackageRoot: string;
-  try {
-    virtualStoreRoot = await realpath(resolve(context.root, virtualStore));
-    const entry = pnpmVirtualStoreEntry(locator, maxLength);
-    if (entry === undefined) throw new Error('The pnpm locator exceeds the recorded store layout.');
-    expectedPackageRoot = await realpath(
-      join(virtualStoreRoot, entry, 'node_modules', ...targetName.split('/')),
-    );
-  } catch (cause) {
-    throw dependencyClosureError(
-      'project-dependency-identity-mismatch',
-      'The npm alias target has no resolvable pnpm virtual-store placement.',
-      {
-        dependency,
-        locator,
-        installed: actual.root,
-        reason: cause instanceof Error ? cause.message : String(cause),
-      },
-    );
-  }
-
-  if (
-    proofKey(expectedPackageRoot) !== proofKey(actual.root) ||
-    !isFilesystemPathWithin(virtualStoreRoot, actual.root) ||
-    !(await lstat(actual.path)).isSymbolicLink()
-  )
+  };
+  const store = await resolveVirtualStore(context, fail);
+  const expectedPackageRoot = await resolveVirtualPackage(
+    store,
+    locator,
+    targetName,
+    fail,
+    'The pnpm locator exceeds the recorded store layout.',
+  );
+  if (!(await matchesVirtualPackageLink(actual, store.root, expectedPackageRoot)))
     throw dependencyClosureError(
       'project-dependency-identity-mismatch',
       'The installed npm alias link does not resolve to the package placement selected by its pnpm locator.',
@@ -855,83 +897,31 @@ async function verifyFileDependencyPlacement(
   declaredTarget: string,
   actual: InstalledPackage,
 ): Promise<void> {
-  const virtualStore = context.modules.virtualStoreDir;
-  const virtualStoreMaxLength = context.modules.virtualStoreDirMaxLength;
-  if (typeof virtualStore !== 'string' || typeof virtualStoreMaxLength !== 'number')
-    fileDependencyUnverified(
-      name,
-      declaredTarget,
-      actual.root,
-      'Installed pnpm metadata does not identify a bounded virtual-store layout.',
-    );
-
-  let virtualStoreRoot: string;
-  let virtualStoreLock: PnpmLockfile;
-  try {
-    virtualStoreRoot = await realpath(resolve(context.root, virtualStore));
-    const virtualStoreLockPath = join(virtualStoreRoot, 'lock.yaml');
-    const virtualStoreLockBytes = await readProvenFile(context.proofs, virtualStoreLockPath);
-    virtualStoreLock = parsePnpmLockfile(virtualStoreLockBytes);
-  } catch (cause) {
-    fileDependencyUnverified(
-      name,
-      declaredTarget,
-      actual.root,
-      cause instanceof Error ? cause.message : String(cause),
-    );
-  }
-
-  if (JSON.stringify(virtualStoreLock) !== JSON.stringify(context.lock))
-    fileDependencyUnverified(
-      name,
-      declaredTarget,
-      actual.root,
-      'The installed virtual-store lock does not match the project lockfile.',
-    );
-
-  const identity = pnpmLocatorIdentity(`${name}@${locator}`);
-  const packageKey = identity === undefined ? undefined : `${identity.name}@${identity.version}`;
+  const fail = (reason: string): never =>
+    fileDependencyUnverified(name, declaredTarget, actual.root, reason);
+  const store = await resolveVirtualStore(context, fail);
+  const virtualLock = await readProvenFile(context.proofs, join(store.root, 'lock.yaml'))
+    .then(parsePnpmLockfile)
+    .catch((cause) => {
+      if (isDependencySourceChanged(cause)) throw cause;
+      return fail(cause instanceof Error ? cause.message : String(cause));
+    });
+  if (JSON.stringify(virtualLock) !== JSON.stringify(context.lock))
+    fail('The installed virtual-store lock does not match the project lockfile.');
   const snapshotKey = `${name}@${locator}`;
-  if (
-    packageKey === undefined ||
-    context.lock.packages?.[packageKey] === undefined ||
-    !Object.hasOwn(context.lock.snapshots ?? {}, snapshotKey)
-  )
-    fileDependencyUnverified(
-      name,
-      declaredTarget,
-      actual.root,
+  if (lockedSnapshotIdentity(context.lock, snapshotKey) === undefined)
+    fail(
       'The current lockfile does not resolve the declared installed package snapshot for this locator.',
     );
-  const entryName = pnpmVirtualStoreEntry(snapshotKey, virtualStoreMaxLength);
-  if (entryName === undefined)
-    fileDependencyUnverified(
-      name,
-      declaredTarget,
-      actual.root,
-      'The pnpm locator cannot be represented within the recorded virtual-store path limit.',
-    );
-  const expectedPackagePath = join(virtualStoreRoot, entryName, 'node_modules', ...name.split('/'));
-  let expectedPackageRoot: string;
-  try {
-    expectedPackageRoot = await realpath(expectedPackagePath);
-  } catch (cause) {
-    fileDependencyUnverified(
-      name,
-      declaredTarget,
-      actual.root,
-      cause instanceof Error ? cause.message : String(cause),
-    );
-  }
-  if (
-    normalizeRecordedPath(expectedPackageRoot) !== normalizeRecordedPath(actual.root) ||
-    !isFilesystemPathWithin(virtualStoreRoot, actual.root) ||
-    !(await lstat(actual.path)).isSymbolicLink()
-  )
-    fileDependencyUnverified(
-      name,
-      declaredTarget,
-      actual.root,
+  const expected = await resolveVirtualPackage(
+    store,
+    snapshotKey,
+    name,
+    fail,
+    'The pnpm locator cannot be represented within the recorded virtual-store path limit.',
+  );
+  if (!(await matchesVirtualPackageLink(actual, store.root, expected)))
+    fail(
       'The installed link does not resolve to the package placement selected by its pnpm locator.',
     );
 }
@@ -978,15 +968,26 @@ interface DependencyPlacement {
   readonly locator: string;
 }
 
-async function verifyLinkedDependency({
-  source,
-  name,
-  specifier,
-  actual,
-  context,
-  boundPackage,
-  locator,
-}: DependencyPlacement): Promise<string> {
+function resolveLockedLink(context: PnpmContext, locator: string): Promise<string> {
+  // Snapshot links are relative to the install root, unlike importer links.
+  const owner = context.snapshotKey === undefined ? context.packageRoot : context.root;
+  return realpath(resolve(owner, locator.slice('link:'.length)));
+}
+
+function matchesInstalledSource(
+  actual: InstalledPackage,
+  source: string,
+  binding?: string,
+): boolean {
+  return actual.root === source && (binding === undefined || source === binding);
+}
+
+function dependencyDeclaration({ name, source, specifier, locator }: DependencyPlacement) {
+  return { dependency: name, from: source, specifier, locator };
+}
+
+async function verifyLinkedDependency(placement: DependencyPlacement): Promise<string> {
+  const { source, name, specifier, actual, context, boundPackage, locator } = placement;
   if (context.snapshotKey !== undefined && isEngineDependency(name) && boundPackage === undefined)
     throw dependencyClosureError(
       'project-local-dependency',
@@ -1002,27 +1003,16 @@ async function verifyLinkedDependency({
   let declaredTarget: string;
   let lockedTarget: string;
   try {
-    // Snapshot links are relative to the install root, unlike importer links.
-    lockedTarget = await realpath(
-      resolve(
-        context.snapshotKey === undefined ? context.packageRoot : context.root,
-        locator.slice('link:'.length),
-      ),
-    );
+    lockedTarget = await resolveLockedLink(context, locator);
     declaredTarget = specifier.startsWith('link:')
-      ? await realpath(
-          resolve(context.sourceRoot ?? context.packageRoot, specifier.slice('link:'.length)),
-        )
+      ? await resolveDeclaredDependency(context, specifier, 'link:')
       : lockedTarget;
   } catch (cause) {
     throw dependencyClosureError(
       'project-dependency-link-unresolved',
       'The declared or locked dependency link target is unavailable.',
       {
-        dependency: name,
-        from: source,
-        specifier,
-        locator,
+        ...dependencyDeclaration(placement),
         cause: cause instanceof Error ? cause.message : String(cause),
       },
     );
@@ -1030,17 +1020,13 @@ async function verifyLinkedDependency({
   if (
     !(await lstat(actual.path)).isSymbolicLink() ||
     declaredTarget !== lockedTarget ||
-    actual.root !== declaredTarget ||
-    (boundPackage !== undefined && declaredTarget !== boundPackage)
+    !matchesInstalledSource(actual, declaredTarget, boundPackage)
   )
     throw dependencyClosureError(
       'project-dependency-identity-mismatch',
       'The installed symbolic link must match its declaration, pnpm locator and Engine binding.',
       {
-        dependency: name,
-        from: source,
-        specifier,
-        locator,
+        ...dependencyDeclaration(placement),
         declaredTarget,
         lockedTarget,
         installed: actual.root,
@@ -1050,24 +1036,14 @@ async function verifyLinkedDependency({
   return declaredTarget;
 }
 
-async function verifyWorkspaceDependency({
-  source,
-  name,
-  specifier,
-  actual,
-  context,
-  boundPackage,
-  locator,
-}: DependencyPlacement): Promise<string> {
+async function verifyWorkspaceDependency(placement: DependencyPlacement): Promise<string> {
+  const { source, name, actual, context, boundPackage, locator } = placement;
   if (!locator.startsWith('link:'))
     throw dependencyClosureError(
       'project-workspace-locator-mismatch',
       'A workspace dependency is not recorded as a pnpm workspace link.',
       {
-        dependency: name,
-        from: source,
-        specifier,
-        locator,
+        ...dependencyDeclaration(placement),
       },
     );
   if (context.workspace === undefined)
@@ -1079,13 +1055,8 @@ async function verifyWorkspaceDependency({
         from: source,
       },
     );
-  const target = await realpath(
-    resolve(
-      context.snapshotKey === undefined ? context.packageRoot : context.root,
-      locator.slice('link:'.length),
-    ),
-  );
-  if (target !== actual.root || (boundPackage !== undefined && target !== boundPackage))
+  const target = await resolveLockedLink(context, locator);
+  if (!matchesInstalledSource(actual, target, boundPackage))
     throw dependencyClosureError(
       'project-workspace-locator-mismatch',
       'The installed workspace package does not resolve to the lockfile and Engine binding target.',
@@ -1113,30 +1084,42 @@ async function verifyWorkspaceDependency({
   return target;
 }
 
-async function verifyFileDependency({
-  source,
-  name,
-  specifier,
-  actual,
-  actualManifest,
-  context,
-  boundPackage,
-  locator,
-}: DependencyPlacement): Promise<string> {
+type VerifiedPlacement = {
+  readonly installed: string;
+  readonly fileCopy?: { readonly manifestRoot: string; readonly snapshotKey: string };
+};
+
+function resolveDeclaredDependency(
+  context: PnpmContext,
+  specifier: string,
+  protocol: 'file:' | 'link:',
+): Promise<string> {
+  return realpath(
+    resolve(context.sourceRoot ?? context.packageRoot, specifier.slice(protocol.length)),
+  );
+}
+
+function filePlacement(
+  { boundPackage, actual, name, locator }: DependencyPlacement,
+  manifestRoot: string,
+): VerifiedPlacement {
+  return boundPackage === undefined && actual.root !== manifestRoot
+    ? { installed: actual.root, fileCopy: { manifestRoot, snapshotKey: `${name}@${locator}` } }
+    : { installed: boundPackage ?? actual.root };
+}
+
+async function verifyFileDependency(placement: DependencyPlacement): Promise<VerifiedPlacement> {
+  const { source, name, specifier, actual, actualManifest, context, boundPackage, locator } =
+    placement;
   if (!locator.startsWith('file:'))
     throw dependencyClosureError(
       'project-file-locator-mismatch',
       'A file dependency is not recorded as a pnpm file locator.',
       {
-        dependency: name,
-        from: source,
-        specifier,
-        locator,
+        ...dependencyDeclaration(placement),
       },
     );
-  const declaredTarget = await realpath(
-    resolve(context.sourceRoot ?? context.packageRoot, specifier.slice('file:'.length)),
-  );
+  const declaredTarget = await resolveDeclaredDependency(context, specifier, 'file:');
   const targetStat = await stat(declaredTarget);
   if (!targetStat.isDirectory())
     throw dependencyClosureError(
@@ -1148,12 +1131,7 @@ async function verifyFileDependency({
         target: declaredTarget,
       },
     );
-  const identity = pnpmLocatorIdentity(`${name}@${locator}`);
-  const packageRecord =
-    identity === undefined
-      ? undefined
-      : context.lock.packages?.[`${identity.name}@${identity.version}`];
-  const resolution = packageRecord?.resolution;
+  const resolution = context.lock.packages?.[`${name}@${locator.split('(')[0]}`]?.resolution;
   if (resolution?.type !== 'directory' || typeof resolution.directory !== 'string')
     throw dependencyClosureError(
       'project-file-dependency-unsupported',
@@ -1173,10 +1151,7 @@ async function verifyFileDependency({
       'project-file-locator-mismatch',
       'The file dependency source differs from its pnpm lock locator or Engine binding.',
       {
-        dependency: name,
-        from: source,
-        specifier,
-        locator,
+        ...dependencyDeclaration(placement),
         lockedTarget,
         declaredTarget,
         boundPackage: boundPackage ?? null,
@@ -1204,7 +1179,7 @@ async function verifyFileDependency({
         'The installed package payload differs from its declared directory source.',
       );
   }
-  return boundPackage ?? actual.root;
+  return filePlacement(placement, declaredTarget);
 }
 
 async function verifyRegistryDependency({
@@ -1244,30 +1219,33 @@ async function verifyRegistryDependency({
         boundVersion: boundManifest.version ?? null,
       },
     );
-  await assertPublicPackageExports(actual.root);
+  await assertPublicPackageExports(actual.root, actualManifest);
   await rememberEngineRuntimeProof(context.proofs, actual.root);
   return boundPackage ?? actual.root;
 }
 
 async function verifyLocalDependency(
   dependency: Omit<DependencyPlacement, 'locator'>,
-): Promise<string> {
-  const { context, name, specifier } = dependency;
+): Promise<VerifiedPlacement> {
+  const { context, name, specifier, boundPackage } = dependency;
   const locator = lockEntry(context, name, specifier);
+  const protocol = localDependencyProtocol(specifier);
   const placement = { ...dependency, locator };
-  if (
-    specifier.startsWith('link:') ||
-    (context.snapshotKey !== undefined && locator.startsWith('link:'))
-  )
-    return verifyLinkedDependency(placement);
-  if (specifier.startsWith('workspace:')) return verifyWorkspaceDependency(placement);
-  if (specifier.startsWith('file:')) return verifyFileDependency(placement);
-  return verifyRegistryDependency(placement);
+  if (protocol === 'link:' || (context.snapshotKey !== undefined && locator.startsWith('link:'))) {
+    const installed = await verifyLinkedDependency(placement);
+    // A nested snapshot can resolve a file declaration to a link. Its declared source still
+    // determines how relative dependencies of the linked package are resolved.
+    if (protocol === 'file:' && boundPackage === undefined)
+      return filePlacement(placement, await resolveDeclaredDependency(context, specifier, 'file:'));
+    return { installed };
+  }
+  if (protocol === 'workspace:') return { installed: await verifyWorkspaceDependency(placement) };
+  if (protocol === 'file:') return verifyFileDependency(placement);
+  return { installed: await verifyRegistryDependency(placement) };
 }
 
 async function installedPackage(from: string, name: string): Promise<InstalledPackage | undefined> {
-  if (!/^(?:@[a-zA-Z0-9_.-]+\/)?[a-zA-Z0-9_.-]+$/.test(name))
-    throw new Error(`Invalid package name: ${name}`);
+  if (!isPackageName(name)) throw new Error(`Invalid package name: ${name}`);
   for (let directory = resolve(from); ; directory = dirname(directory)) {
     const path = join(directory, 'node_modules', name);
     try {
@@ -1293,26 +1271,20 @@ async function installedPackage(from: string, name: string): Promise<InstalledPa
   }
 }
 
-function exportedFiles(value: unknown): string[] {
-  if (typeof value === 'string') return [value];
-  if (Array.isArray(value)) return value.flatMap(exportedFiles);
-  if (value !== null && typeof value === 'object')
-    return Object.values(value).flatMap(exportedFiles);
-  return [];
-}
-
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-async function assertPublicPackageExports(packageRoot: string): Promise<void> {
-  const manifest = await readPackageManifest(packageRoot);
-  const targets = [
-    ...exportedFiles(manifest.exports),
-    ...['main', 'module', 'types', 'typings'].flatMap((key) =>
-      typeof manifest[key] === 'string' ? [manifest[key] as string] : [],
+async function assertPublicPackageExports(
+  packageRoot: string,
+  manifest: Record<string, unknown>,
+): Promise<void> {
+  const targets = packageTargetPaths([
+    manifest.exports,
+    ...['main', 'module', 'types', 'typings'].map((key) =>
+      typeof manifest[key] === 'string' ? manifest[key] : undefined,
     ),
-  ];
+  ]);
   for (const target of new Set(targets)) {
     if (!target.startsWith('./'))
       throw dependencyClosureError(
@@ -1378,7 +1350,7 @@ async function assertPublicPackageExports(packageRoot: string): Promise<void> {
 async function planSnapshot(
   projectRoot: string,
   signal?: AbortSignal,
-  options: SnapshotPlanOptions = {},
+  proofRequest?: DependencyProofRequest,
 ): Promise<SnapshotPlan> {
   signal?.throwIfAborted();
   const bindingResult = await readEngineBinding(projectRoot);
@@ -1386,12 +1358,12 @@ async function planSnapshot(
     throw new Error(`${bindingResult.error.code}: ${bindingResult.error.hint}`);
   const binding = bindingResult.value;
   const bindingIdentity = JSON.stringify(binding);
-  if (options.verifyLocalDependencies && options.expectedBinding !== bindingIdentity)
+  if (proofRequest !== undefined && proofRequest.expectedBinding !== bindingIdentity)
     throw dependencyClosureError(
       'project-engine-binding-changed',
       'The Engine binding changed while doctor was checking dependencies.',
       {
-        expectedBinding: options.expectedBinding ?? null,
+        expectedBinding: proofRequest.expectedBinding,
         actualBinding: bindingIdentity,
       },
     );
@@ -1399,12 +1371,12 @@ async function planSnapshot(
   if (binding) {
     const inspected = await inspectEngineWorkspace(binding.path);
     if (!inspected.ok) throw new Error(`${inspected.error.code}: ${inspected.error.hint}`);
-    if (options.verifyLocalDependencies) {
+    if (proofRequest !== undefined) {
       if (
         inspected.value.missingBuilds.length > 0 ||
         inspected.value.versions.length !== 1 ||
-        (options.expectedEngineDigest !== undefined &&
-          inspected.value.digest !== options.expectedEngineDigest)
+        (proofRequest.expectedEngineDigest !== undefined &&
+          inspected.value.digest !== proofRequest.expectedEngineDigest)
       )
         throw dependencyClosureError(
           'project-engine-binding-changed',
@@ -1413,11 +1385,12 @@ async function planSnapshot(
             root: inspected.value.root,
             missingBuilds: inspected.value.missingBuilds,
             versions: inspected.value.versions,
-            expectedDigest: options.expectedEngineDigest ?? null,
+            expectedDigest: proofRequest.expectedEngineDigest ?? null,
             actualDigest: inspected.value.digest,
           },
         );
-      for (const entry of inspected.value.packages) await assertPublicPackageExports(entry.root);
+      for (const entry of inspected.value.packages)
+        await assertPublicPackageExports(entry.root, await readPackageManifest(entry.root));
     }
     for (const entry of inspected.value.packages)
       boundPackages.set(entry.name, await realpath(entry.root));
@@ -1427,6 +1400,7 @@ async function planSnapshot(
   const packages = new Map<string, string>();
   const expandedPackages = new Set<string>();
   const contexts = new Map<string, PnpmContext>();
+  const proofsByPath = new Map<string, SnapshotProof>();
   async function contextFor(source: string, installedBy?: PnpmContext): Promise<PnpmContext> {
     const canonical = await realpath(source);
     const existing = contexts.get(canonical);
@@ -1442,25 +1416,10 @@ async function planSnapshot(
     if (installedBy !== undefined) {
       // A verified workspace link belongs to the install that selected it,
       // even when the linked checkout contains its own workspace manifest.
-      const path = filesystemPathRelative(installedBy.root, canonical);
-      if (path === undefined)
-        throw dependencyClosureError(
-          'project-pnpm-importer-mismatch',
-          'The linked package is outside its installing pnpm workspace.',
-          { packageRoot: canonical, root: installedBy.root },
-        );
-      const importerKey = path.length === 0 ? '.' : path.split(sep).join('/');
-      const importer = installedBy.lock.importers?.[importerKey];
-      if (importer === undefined)
-        throw dependencyClosureError(
-          'project-pnpm-importer-missing',
-          'The linked package has no importer in its installing pnpm lockfile.',
-          { packageRoot: canonical, root: installedBy.root, importer: importerKey },
-        );
       const context: PnpmContext = {
         root: installedBy.root,
         packageRoot: canonical,
-        importer,
+        importer: pnpmImporter(installedBy.root, canonical, installedBy.lock, true),
         lock: installedBy.lock,
         modules: installedBy.modules,
         proofs: installedBy.proofs,
@@ -1469,13 +1428,12 @@ async function planSnapshot(
       contexts.set(canonical, context);
       return context;
     }
-    const version = options.pnpmVersion;
-    if (version === undefined)
+    if (proofRequest?.pnpmVersion === undefined)
       throw dependencyClosureError(
         'project-pnpm-version-missing',
         'The package-manager version was not supplied for local dependency verification.',
       );
-    const context = await pnpmContext(canonical, version);
+    const context = await pnpmContext(canonical, proofRequest.pnpmVersion, proofsByPath);
     contexts.set(canonical, context);
     return context;
   }
@@ -1528,7 +1486,7 @@ async function planSnapshot(
     // Published registry bundles own their nested aliases; only project/workspace
     // importers have pnpm placement records in this installation.
     if (specifier.startsWith('npm:') && context !== undefined) {
-      if (alias === undefined || alias.name !== actualManifest.name)
+      if (alias === undefined || alias !== actualManifest.name)
         throw dependencyClosureError(
           'project-dependency-identity-mismatch',
           'The npm alias target does not match the installed package manifest.',
@@ -1541,18 +1499,16 @@ async function planSnapshot(
           },
         );
       const locator = lockEntry(context, name, specifier);
-      await verifyNpmAliasPlacement(context, name, alias.name, locator, actual, actualManifest);
+      await verifyNpmAliasPlacement(context, name, alias, locator, actual, actualManifest);
     } else if (
-      specifier.startsWith('workspace:') ||
-      specifier.startsWith('file:') ||
-      specifier.startsWith('link:') ||
+      localDependencyProtocol(specifier) !== undefined ||
       boundPackage !== undefined ||
       (enginePackage && context !== undefined)
     ) {
       context ??= await contextFor(source);
       const sourceManifest = await readPackageManifest(context.packageRoot);
       assertWorkspaceProject(context, context.packageRoot, sourceManifest, name);
-      installed = await verifyLocalDependency({
+      const placement = await verifyLocalDependency({
         source: context.packageRoot,
         name,
         specifier,
@@ -1561,35 +1517,24 @@ async function planSnapshot(
         context,
         boundPackage,
       });
-      if (
-        specifier.startsWith('file:') &&
-        boundPackage === undefined &&
-        installed === actual.root
-      ) {
-        const snapshotKey = `${name}@${lockEntry(context, name, specifier)}`;
-        const sourceRoot = await realpath(
-          resolve(context.sourceRoot ?? context.packageRoot, specifier.slice('file:'.length)),
-        );
-        if (installed !== sourceRoot)
-          contexts.set(installed, {
-            ...context,
-            packageRoot: installed,
-            importer: {},
-            snapshotKey,
-            sourceRoot,
-          });
-      }
+      installed = placement.installed;
+      if (placement.fileCopy !== undefined)
+        contexts.set(installed, {
+          ...context,
+          packageRoot: installed,
+          importer: {},
+          snapshotKey: placement.fileCopy.snapshotKey,
+          sourceRoot: placement.fileCopy.manifestRoot,
+        });
     }
     return { installed, context };
   }
-  function requireLocalEngineBinding(name: string, specifier: string): void {
+  function requireLocalEngineBinding(name: string, protocol: LocalDependencyProtocol | undefined) {
     if (
-      options.verifyLocalDependencies &&
+      proofRequest !== undefined &&
       binding === null &&
-      isEngineDependency(name) &&
-      (specifier.startsWith('workspace:') ||
-        specifier.startsWith('file:') ||
-        specifier.startsWith('link:'))
+      protocol !== undefined &&
+      isEngineDependency(name)
     )
       throw dependencyClosureError(
         'project-local-dependency',
@@ -1625,7 +1570,7 @@ async function planSnapshot(
     };
     let context: PnpmContext | undefined;
     if (
-      options.verifyLocalDependencies &&
+      proofRequest !== undefined &&
       (project || installedBy !== undefined || contexts.has(source))
     ) {
       context = await contextFor(source, installedBy);
@@ -1651,34 +1596,27 @@ async function planSnapshot(
         specifier === manifest.peerDependencies?.[name]
           ? peerFromLink(linkConsumer, name, specifier)
           : undefined;
-      requireLocalEngineBinding(name, specifier);
+      const protocol = localDependencyProtocol(specifier);
+      requireLocalEngineBinding(name, protocol);
       const boundPackage = boundPackages.get(name);
       const actual = await installedPackage(source, name);
-      if (actual === undefined) {
-        if (
-          name in (manifest.optionalDependencies ?? {}) ||
-          manifest.peerDependenciesMeta?.[name]?.optional
-        )
-          continue;
-        if (options.verifyLocalDependencies || boundPackage === undefined)
-          throw dependencyClosureError(
-            'project-dependency-not-installed',
-            `Snapshot dependency is not installed: ${name} (from ${source}).`,
-            {
-              dependency: name,
-              from: source,
-            },
-          );
-      }
       let installed = boundPackage ?? actual?.root;
-      if (installed === undefined)
-        throw new Error(`Snapshot dependency is not installed: ${name} (from ${source}).`);
-      if (options.verifyLocalDependencies) {
-        if (actual === undefined)
-          throw new Error(`Verified dependency is not installed: ${name} (from ${source}).`);
+      if (
+        actual === undefined &&
+        (name in (manifest.optionalDependencies ?? {}) ||
+          manifest.peerDependenciesMeta?.[name]?.optional)
+      )
+        continue;
+      if (installed === undefined || (actual === undefined && proofRequest !== undefined))
+        throw dependencyClosureError(
+          'project-dependency-not-installed',
+          `Snapshot dependency is not installed: ${name} (from ${source}).`,
+          { dependency: name, from: source },
+        );
+      if (actual !== undefined && proofRequest !== undefined) {
         const actualManifest = await readPackageManifest(actual.root);
         const alias = npmAliasTarget(specifier);
-        if (actualManifest.name !== name && alias?.name !== actualManifest.name)
+        if (actualManifest.name !== name && alias !== actualManifest.name)
           throw dependencyClosureError(
             'project-dependency-identity-mismatch',
             'The installed package name does not match its dependency declaration.',
@@ -1704,7 +1642,7 @@ async function planSnapshot(
       }
       let destination = packages.get(installed);
       const existing = destination !== undefined;
-      destination ??= join('dependencies', createHash('sha256').update(installed).digest('hex'));
+      destination ??= join('dependencies', sha256(installed));
       packages.set(installed, destination);
       const dependencyTarget = join(target, 'node_modules', name);
       if (dependencyTarget !== destination) links.push({ target: dependencyTarget, destination });
@@ -1730,31 +1668,58 @@ async function planSnapshot(
           installed,
           destination,
           false,
-          options.verifyLocalDependencies && specifier.startsWith('workspace:')
-            ? context
-            : undefined,
-          options.verifyLocalDependencies && specifier.startsWith('link:') ? context : undefined,
+          proofRequest !== undefined && protocol === 'workspace:' ? context : undefined,
+          proofRequest !== undefined && protocol === 'link:' ? context : undefined,
         );
       }
     }
   }
   // Doctor validates installed dependencies, not the mutable consumer tree.
   // Real run snapshots still capture and compare every project runtime input.
-  if (!options.verifyLocalDependencies) await tree(projectRoot, 'project');
+  if (proofRequest === undefined) await tree(projectRoot, 'project');
   await dependencies(projectRoot, 'project', true);
-  const proofsByPath = new Map<string, SnapshotProof>();
-  for (const context of contexts.values()) {
-    for (const [path, proof] of context.proofs) {
-      const previous = proofsByPath.get(path);
-      if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(proof))
-        throw dependencySourceChanged(proof.path);
-      proofsByPath.set(path, proof);
-    }
-  }
   const proofs = [...proofsByPath.values()].sort((left, right) =>
     left.path.localeCompare(right.path),
   );
-  return { binding: JSON.stringify(binding), files, links, proofs };
+  return { binding: bindingIdentity, files, links, proofs };
+}
+
+function firstChangedRow<T>(
+  section: keyof SnapshotPlan,
+  before: readonly T[],
+  after: readonly T[],
+  same: (left: T, right: T) => boolean,
+): { section: keyof SnapshotPlan; before: T | undefined; after: T | undefined } | undefined {
+  const length = Math.max(before.length, after.length);
+  for (let index = 0; index < length; index++) {
+    const left = before[index];
+    const right = after[index];
+    if (left === undefined || right === undefined || !same(left, right))
+      return { section, before: left, after: right };
+  }
+  return undefined;
+}
+
+function snapshotChange(before: SnapshotPlan, after: SnapshotPlan) {
+  if (before.binding !== after.binding)
+    return { section: 'binding', before: before.binding, after: after.binding };
+  return (
+    firstChangedRow(
+      'files',
+      before.files,
+      after.files,
+      (left, right) =>
+        // A file's stamp includes its mode and size.
+        left.source === right.source && left.target === right.target && left.stamp === right.stamp,
+    ) ??
+    firstChangedRow(
+      'links',
+      before.links,
+      after.links,
+      (left, right) => left.target === right.target && left.destination === right.destination,
+    ) ??
+    firstChangedRow('proofs', before.proofs, after.proofs, sameProof)
+  );
 }
 
 /** Reuse the snapshot dependency owner without copying files or publishing a run. */
@@ -1764,21 +1729,21 @@ export async function inspectRunDependencyClosure(
   engineDigest: string | undefined,
   pnpmVersion: string,
 ): Promise<void> {
-  const options: SnapshotPlanOptions = {
-    verifyLocalDependencies: true,
+  const root = resolve(projectRoot);
+  const proofRequest = {
     expectedBinding: JSON.stringify(binding),
-    ...(engineDigest === undefined ? {} : { expectedEngineDigest: engineDigest }),
+    expectedEngineDigest: engineDigest,
     pnpmVersion,
   };
-  const first = await planSnapshot(resolve(projectRoot), undefined, options);
-  const second = await planSnapshot(resolve(projectRoot), undefined, options);
-  if (JSON.stringify(first) !== JSON.stringify(second)) {
+  const first = await planSnapshot(root, undefined, proofRequest);
+  const second = await planSnapshot(root, undefined, proofRequest);
+  if (snapshotChange(first, second) !== undefined) {
     const inputs = (plan: SnapshotPlan) =>
       new Map([
         ...plan.files.map((file) => [file.source, file.stamp] as const),
         ...plan.proofs.map((proof) => [proof.path, JSON.stringify(proof)] as const),
-        ...plan.links.map((link) => [resolve(projectRoot, link.target), link.destination] as const),
-        [resolve(projectRoot, '.forgeax/engine-binding.json'), plan.binding] as const,
+        ...plan.links.map((link) => [resolve(root, link.target), link.destination] as const),
+        [resolve(root, '.forgeax/engine-binding.json'), plan.binding] as const,
       ]);
     const before = inputs(first),
       after = inputs(second);
@@ -1789,7 +1754,7 @@ export async function inspectRunDependencyClosure(
       'project-dependency-source-changed',
       'Installed dependency inputs or links changed during doctor inspection.',
       {
-        root: resolve(projectRoot),
+        root,
         changedPaths: changedPaths.slice(0, 64),
         omittedPathCount: Math.max(0, changedPaths.length - 64),
       },
@@ -1856,26 +1821,8 @@ async function createRunSnapshotAttempt(
     // Re-resolve links as well as file metadata: an installed package can be
     // replaced without modifying the old directory that we just copied.
     const currentPlan = await planSnapshot(resolve(projectRoot), signal);
-    if (JSON.stringify(currentPlan) !== JSON.stringify(plan)) {
-      let change: { section: keyof SnapshotPlan; before: unknown; after: unknown } = {
-        section: 'binding',
-        before: plan.binding,
-        after: currentPlan.binding,
-      };
-      if (plan.binding === currentPlan.binding) {
-        for (const section of ['files', 'links', 'proofs'] as const) {
-          const before = plan[section];
-          const after = currentPlan[section];
-          const length = Math.max(before.length, after.length);
-          let index = 0;
-          while (index < length && JSON.stringify(before[index]) === JSON.stringify(after[index]))
-            index++;
-          if (index < length) {
-            change = { section, before: before[index], after: after[index] };
-            break;
-          }
-        }
-      }
+    const change = snapshotChange(plan, currentPlan);
+    if (change !== undefined) {
       throw new SnapshotChangedError(
         `Project inputs changed while snapshotting; retry from a stable version: ${JSON.stringify(change)}`,
         { cause: change },

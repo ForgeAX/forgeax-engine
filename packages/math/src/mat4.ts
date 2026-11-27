@@ -99,43 +99,43 @@ export function equals(a: Mat4Like, b: Mat4Like, epsilon = 1e-6): boolean {
 }
 
 /**
- * out = a * b (column-major matrix multiply). Returns out.
+ * out = a * b (column-major matrix multiply). bOffset and aOffset address the source matrices in packed storage.
  *
  * Aliasing-safe: out may equal a or b; reads all 32 source elements into locals first.
  */
-export function multiply(out: Mat4, a: Mat4Like, b: Mat4Like): Mat4 {
-  const a00 = a[0] as number;
-  const a01 = a[1] as number;
-  const a02 = a[2] as number;
-  const a03 = a[3] as number;
-  const a10 = a[4] as number;
-  const a11 = a[5] as number;
-  const a12 = a[6] as number;
-  const a13 = a[7] as number;
-  const a20 = a[8] as number;
-  const a21 = a[9] as number;
-  const a22 = a[10] as number;
-  const a23 = a[11] as number;
-  const a30 = a[12] as number;
-  const a31 = a[13] as number;
-  const a32 = a[14] as number;
-  const a33 = a[15] as number;
-  const b00 = b[0] as number;
-  const b01 = b[1] as number;
-  const b02 = b[2] as number;
-  const b03 = b[3] as number;
-  const b10 = b[4] as number;
-  const b11 = b[5] as number;
-  const b12 = b[6] as number;
-  const b13 = b[7] as number;
-  const b20 = b[8] as number;
-  const b21 = b[9] as number;
-  const b22 = b[10] as number;
-  const b23 = b[11] as number;
-  const b30 = b[12] as number;
-  const b31 = b[13] as number;
-  const b32 = b[14] as number;
-  const b33 = b[15] as number;
+export function multiply(out: Mat4, a: Mat4Like, b: Mat4Like, bOffset = 0, aOffset = 0): Mat4 {
+  const a00 = a[aOffset + 0] as number;
+  const a01 = a[aOffset + 1] as number;
+  const a02 = a[aOffset + 2] as number;
+  const a03 = a[aOffset + 3] as number;
+  const a10 = a[aOffset + 4] as number;
+  const a11 = a[aOffset + 5] as number;
+  const a12 = a[aOffset + 6] as number;
+  const a13 = a[aOffset + 7] as number;
+  const a20 = a[aOffset + 8] as number;
+  const a21 = a[aOffset + 9] as number;
+  const a22 = a[aOffset + 10] as number;
+  const a23 = a[aOffset + 11] as number;
+  const a30 = a[aOffset + 12] as number;
+  const a31 = a[aOffset + 13] as number;
+  const a32 = a[aOffset + 14] as number;
+  const a33 = a[aOffset + 15] as number;
+  const b00 = b[bOffset] as number;
+  const b01 = b[bOffset + 1] as number;
+  const b02 = b[bOffset + 2] as number;
+  const b03 = b[bOffset + 3] as number;
+  const b10 = b[bOffset + 4] as number;
+  const b11 = b[bOffset + 5] as number;
+  const b12 = b[bOffset + 6] as number;
+  const b13 = b[bOffset + 7] as number;
+  const b20 = b[bOffset + 8] as number;
+  const b21 = b[bOffset + 9] as number;
+  const b22 = b[bOffset + 10] as number;
+  const b23 = b[bOffset + 11] as number;
+  const b30 = b[bOffset + 12] as number;
+  const b31 = b[bOffset + 13] as number;
+  const b32 = b[bOffset + 14] as number;
+  const b33 = b[bOffset + 15] as number;
   out[0] = a00 * b00 + a10 * b01 + a20 * b02 + a30 * b03;
   out[1] = a01 * b00 + a11 * b01 + a21 * b02 + a31 * b03;
   out[2] = a02 * b00 + a12 * b01 + a22 * b02 + a32 * b03;

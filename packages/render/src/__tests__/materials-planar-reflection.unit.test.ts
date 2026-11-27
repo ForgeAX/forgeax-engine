@@ -9,16 +9,17 @@ import { standardSurfaceParameters } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import {
   materialUsesPlanarReflection,
-  PLANAR_REFLECTION_MATERIAL_LAYOUT_ENTRIES,
   planarCaptureDemanded,
-  planarReflectionMaterialEntries,
+  planarReflectionViewEntries,
   planarRoutedPasses,
   setPlanarCaptureDemand,
 } from '../capture/planar-material.js';
+import { PLANAR_REFLECTION_VIEW_LAYOUT_ENTRIES } from '../environment/bindings.js';
 import { Materials } from '../materials.js';
 import {
   PLANAR_REFLECTION_DISABLED_UNIFORM_OFFSET,
   PLANAR_REFLECTION_UNIFORM_OFFSET,
+  PLANAR_REFLECTION_UNIFORM_SIZE,
   VIEW_UNIFORM_SLOT_STRIDE,
 } from '../record/view-ubo.js';
 
@@ -61,20 +62,20 @@ describe('Standard planar reflection capability', () => {
   });
 
   it('binds the capture with its projection, or a fallback with the disabled projection', () => {
-    expect(PLANAR_REFLECTION_MATERIAL_LAYOUT_ENTRIES.map((entry) => entry.binding)).toEqual([
+    expect(PLANAR_REFLECTION_VIEW_LAYOUT_ENTRIES.map((entry) => entry.binding)).toEqual([
       STANDARD_PLANAR_REFLECTION_TEXTURE_BINDING,
       STANDARD_PLANAR_REFLECTION_UNIFORM_BINDING,
     ]);
     // The disabled projection shares the planar slot and is never written.
     expect(PLANAR_REFLECTION_DISABLED_UNIFORM_OFFSET % 256).toBe(0);
-    expect(PLANAR_REFLECTION_DISABLED_UNIFORM_OFFSET + 96).toBeLessThanOrEqual(
-      PLANAR_REFLECTION_UNIFORM_OFFSET + VIEW_UNIFORM_SLOT_STRIDE,
-    );
+    expect(
+      PLANAR_REFLECTION_DISABLED_UNIFORM_OFFSET + PLANAR_REFLECTION_UNIFORM_SIZE,
+    ).toBeLessThanOrEqual(PLANAR_REFLECTION_UNIFORM_OFFSET + VIEW_UNIFORM_SLOT_STRIDE);
     const buffer = {} as never;
     const capture = { label: 'capture' } as never;
     const fallback = { label: 'fallback' } as never;
     const offsets = (view: never | undefined) =>
-      planarReflectionMaterialEntries(buffer, view, fallback).map((entry) =>
+      planarReflectionViewEntries(buffer, view, fallback).map((entry) =>
         entry.resource.kind === 'buffer' ? entry.resource.value.offset : entry.resource.value,
       );
     expect(offsets(capture)).toEqual([capture, PLANAR_REFLECTION_UNIFORM_OFFSET]);

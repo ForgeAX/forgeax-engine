@@ -548,16 +548,16 @@ describe('detectCycle DFS + tri-colour (white/gray/black)', () => {
 describe('scanDefineConflicts TS-layer #define collision scan', () => {
   it('(a) no conflict -> empty array (happy path)', () => {
     const modules = {
-      'forgeax_pbr::brdf': '#define_import_path forgeax_pbr::brdf\nfn a() {}\n',
-      'forgeax_view::common': '#define_import_path forgeax_view::common\nstruct V {}\n',
+      'forgeax_pbr::brdf': ['#define_import_path forgeax_pbr::brdf'],
+      'forgeax_view::common': ['#define_import_path forgeax_view::common'],
     };
     expect(scanDefineConflicts(modules)).toEqual([]);
   });
 
   it('(b) `#define FOO` appears in 2 modules -> sites.length === 2 (AC-07 fixture)', () => {
     const modules = {
-      mod1: '#define FOO\nfn a() {}\n',
-      mod2: '#define FOO\nfn b() {}\n',
+      mod1: ['#define FOO'],
+      mod2: ['#define FOO'],
     };
     const conflicts = scanDefineConflicts(modules);
     expect(conflicts.length).toBe(1);
@@ -571,15 +571,15 @@ describe('scanDefineConflicts TS-layer #define collision scan', () => {
 
   it('(c) idempotent: `#define FOO` twice in the same module is NOT a conflict', () => {
     const modules = {
-      mod1: '#define FOO\n#define FOO\nfn a() {}\n',
+      mod1: ['#define FOO', '#define FOO'],
     };
     expect(scanDefineConflicts(modules)).toEqual([]);
   });
 
   it('(d) multiple defines each conflicting independently -> >=2 entries', () => {
     const modules = {
-      mod1: '#define FOO\n#define BAR\n',
-      mod2: '#define FOO\n#define BAR\n',
+      mod1: ['#define FOO', '#define BAR'],
+      mod2: ['#define FOO', '#define BAR'],
     };
     const conflicts = scanDefineConflicts(modules);
     expect(conflicts.length).toBe(2);
@@ -589,8 +589,8 @@ describe('scanDefineConflicts TS-layer #define collision scan', () => {
 
   it('handles leading whitespace (`  #define FOO`) same as flush-left', () => {
     const modules = {
-      mod1: '  #define FOO\n',
-      mod2: '#define FOO\n',
+      mod1: ['  #define FOO'],
+      mod2: ['#define FOO'],
     };
     const conflicts = scanDefineConflicts(modules);
     expect(conflicts.length).toBe(1);
@@ -1217,9 +1217,14 @@ beforeAll(async () => {
     'forgeax_pbr::lighting_directional': LIGHTING_DIRECTIONAL,
     'forgeax_pbr::lighting_punctual': LIGHTING_PUNCTUAL,
     'forgeax_pbr::lighting_probe': readSrc('lighting-probe.wgsl'),
+    'forgeax_pbr::sky_sh_polynomial': readSrc('sky-sh-polynomial.wgsl'),
     'forgeax_pbr::standard_lighting': readSrc('standard-lighting.wgsl'),
     'forgeax_pbr::gbuffer': readSrc('standard-gbuffer.wgsl'),
     'forgeax_pbr::gbuffer_output': readSrc('standard-gbuffer-output.wgsl'),
+    'forgeax_ssr::forward': readSrc('ssr-forward.wgsl'),
+    'forgeax_pbr::planar_reflection': readSrc('planar-reflection.wgsl'),
+    'forgeax_depth_pyramid::sample': readSrc('depth-pyramid-sample.wgsl'),
+    'forgeax_ssr::ray': readSrc('ssr-ray.wgsl'),
     'forgeax_pbr::lighting_spot_modifiers': readSrc('lighting-spot-modifiers.wgsl'),
     'forgeax_pbr::lighting_ies_profile': readSrc('lighting-ies-profile.wgsl'),
     'forgeax_pbr::lighting_rect_area': readSrc('lighting-rect-area.wgsl'),
@@ -1237,6 +1242,8 @@ beforeAll(async () => {
     'forgeax_material::water_waves': readSrc('water-waves.wgsl'),
     'forgeax_material::surface_sampling': readSrc('surface-sampling.wgsl'),
     'forgeax_material::default_standard_surface': readSrc('default_standard_surface.wgsl'),
+    'forgeax_material::standard_physical_inputs': readSrc('material/standard-physical-inputs.wgsl'),
+    'forgeax_material::standard_surface_maps': readSrc('material/standard-surface-maps.wgsl'),
     'forgeax_material::slot::surface': readSrc('default_standard_surface.wgsl').replace(
       /^\s*#define_import_path\s+[^\n]+/m,
       '#define_import_path forgeax_material::slot::surface',

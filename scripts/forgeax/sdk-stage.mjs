@@ -12,9 +12,9 @@ export async function sdkGpuStage(label, operation) {
 export async function sdkStage(label, operation, timeoutMs) {
   const started = performance.now();
   const elapsed = () => Math.round(performance.now() - started);
-  console.error(`[sdk] start ${label}`);
+  console.error(`[sdk] start ${label} at=${new Date().toISOString()}`);
   const heartbeat = setInterval(() => {
-    console.error(`[sdk] running ${label} elapsedMs=${elapsed()}`);
+    console.error(`[sdk] running ${label} elapsedMs=${elapsed()} at=${new Date().toISOString()}`);
   }, 30_000);
   heartbeat.unref();
   let timeout;
@@ -31,11 +31,11 @@ export async function sdkStage(label, operation, timeoutMs) {
             );
           }),
         ]));
-    console.error(`[sdk] complete ${label} elapsedMs=${elapsed()}`);
+    console.error(`[sdk] complete ${label} elapsedMs=${elapsed()} at=${new Date().toISOString()}`);
     return result;
   } catch (error) {
     console.error(
-      `[sdk] failed ${label} elapsedMs=${elapsed()} code=${error?.code ?? error?.name ?? typeof error} signal=${error?.signal ?? 'none'}`,
+      `[sdk] failed ${label} elapsedMs=${elapsed()} code=${error?.code ?? error?.name ?? typeof error} signal=${error?.signal ?? 'none'} at=${new Date().toISOString()}`,
     );
     for (const channel of ['stdout', 'stderr']) {
       if (error?.[channel])

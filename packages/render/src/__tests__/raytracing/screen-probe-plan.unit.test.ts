@@ -59,12 +59,15 @@ describe('screen probe plan', () => {
     for (const invalid of [
       { downsample: 12 },
       { adaptiveFraction: 1.5 },
+      { adaptiveCandidates: 12 },
+      { interpolation: 'stochastic' },
       { importance: 'cosine' },
       { screenTrace: { maxSteps: 200, thickness: 0.02 } },
       { screenTrace: { maxSteps: 8, thickness: 0 } },
       { screenTrace: { maxSteps: 8, thickness: 0.02, extra: 1 } },
       { filterPasses: 5 },
       { shortRangeAo: -1 },
+      { shortRangeAoMode: 'half-scalar' },
       { maxFrames: 0 },
       { history: { probe: 1 } },
       { history: { extra: true } },
@@ -110,6 +113,7 @@ describe('screen probe plan', () => {
       tilesX: 5,
       tilesY: 3,
       uniformCount: 15,
+      adaptiveSlots: 4,
       adaptiveCapacity: 7,
       probeCount: 22,
     });
@@ -118,15 +122,23 @@ describe('screen probe plan', () => {
   });
 
   it('packs the frame uniform at the offsets ScreenProbeFrame declares', () => {
-    const layout = planScreenProbeLayout({ ...SCREEN_PROBE_DEFAULTS, downsample: 8 }, 32, 32);
+    const layout = planScreenProbeLayout(
+      { ...SCREEN_PROBE_DEFAULTS, downsample: 8, adaptiveCandidates: 16 },
+      32,
+      32,
+    );
     const query = new Uint8Array(8);
     new DataView(query.buffer).setUint32(0, 96, true);
     new DataView(query.buffer).setFloat32(4, 0.25, true);
     const bytes = packScreenProbeFrame({
+      worldSource: { traversal: 'global-sdf', expected: [72, 48, 2, 9] },
       layout,
       downsample: 8,
       frameIndex: 7,
       importance: 'brdf',
+      stochasticInterpolation: true,
+      sh3Irradiance: true,
+      shortRangeAoMode: 'half-scalar',
       screenSteps: 32,
       thickness: 0.02,
       environment: [0.1, 0.2, 0.3],
@@ -154,6 +166,8 @@ describe('screen probe plan', () => {
     ]);
     expect(u[20]).toBe(96);
     expect(f[21]).toBe(0.25);
+    expect(u[23]).toBe(16 | 32 | 64 | 128 | 256);
+    expect([...u.subarray(44, 48)]).toEqual([72, 48, 2, 9]);
     expect([...f.subarray(24, 44)]).toEqual([
       ...Array.from({ length: 16 }, (_, i) => i + 1),
       7,
@@ -172,8 +186,9 @@ describe('screen probe plan', () => {
           ),
         ].map((match) => [Number(match[1]), { space: match[2] ?? '', type: match[4] ?? '' }]),
       );
-    const kindOf = ({ space, type }: { space: string; type: string }) =>
-      type.trim() === 'acceleration_structure'
+    const kindOf = ({ space, type }: { space: string; type: string }) => {
+      if (type.startsWith('texture_storage_2d<r32float,')) return 'storage-r32float';
+      return type.trim() === 'acceleration_structure'
         ? 'tlas'
         : space === 'uniform'
           ? 'uniform'
@@ -186,14 +201,17 @@ describe('screen probe plan', () => {
                 : type.includes('u32')
                   ? 'uint'
                   : 'float';
+    };
     const probe = declared(wgsl);
     for (const [slot, [binding, kind]] of Object.entries(SCREEN_PROBE_BINDINGS)) {
+      // Atlas-only binding types and slots are checked in the compiled programs.
+      if (slot === 'atlasIn' || slot === 'atlasOut') continue;
       const entry = probe.get(binding);
       expect(entry, slot).toBeDefined();
       if (entry) expect(kindOf(entry), slot).toBe(kind);
     }
     for (const [stage, spec] of Object.entries(SCREEN_PROBE_STAGES)) {
-      expect(wgsl, stage).toContain(`fn ${stage}(`);
+      expect(wgsl, stage).toMatch(new RegExp(`\\bfn\\s+${stage}\\b`));
       // WebGPU default: eight storage buffers per stage, three in the field sample group.
       const storage = spec.slots.filter((slot) => {
         const kind = SCREEN_PROBE_BINDINGS[slot][1];

@@ -1,13 +1,11 @@
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  assertRuntimeScope,
-  collectDdcGarbage,
-  createRuntimeScope,
   DdcEntryStore,
   DdcLifecycle,
   ddcOutputDigest,
+  resolveRuntimeDdcRoot,
 } from '@forgeax/engine/ddc';
 import { defineFeature } from '../../lab/feature';
 import { codeOf } from './support/fixture';
@@ -16,7 +14,6 @@ const GUID = '019f1a00-0000-7000-8000-0000000001e1';
 const KEY_A = 'a'.repeat(64);
 const KEY_B = 'b'.repeat(64);
 const KEY_C = 'c'.repeat(64);
-const ORPHAN = 'd'.repeat(64);
 
 async function writeEntry(root: string, key: string): Promise<void> {
   const base = {
@@ -47,9 +44,9 @@ export default defineFeature({
   catalog: 'DDC lifecycle/CAS',
   kind: 'headless',
   summary:
-    'DdcLifecycle keeps one CAS head per GUID: a lease-guarded missing -> cooking -> current transition, last-known-good retention across failed recooks, stale and lease-lost refusals for superseded attempts, scoped runtime roots, and a mark-and-sweep GC that never deletes current, LKG, or leased entries.',
+    'DdcLifecycle keeps one CAS head per GUID: a lease-guarded missing -> cooking -> current transition, last-known-good retention across failed recooks, stale key and lost lease refusals and scoped runtime roots.',
   expect:
-    'Commit of a written entry becomes current and a missing entry is "invalid"; a failed recook keeps currentKey/LKG; an old key after the desired key moved, or a superseded in-flight attempt, is "stale"; replaying a consumed lease is "lease-lost"; runtime scope metadata is verified; GC deletes only the unprotected orphan.',
+    'Commit of a written entry becomes current and a missing entry is "invalid"; a failed recook keeps currentKey/LKG; a mismatched key is "stale"; superseded and consumed leases return "lease-lost"; runtime scope names and generations stay isolated.',
   async run(checks) {
     const root = await mkdtemp(join(tmpdir(), 'feature-lab-ddc-lifecycle-'));
     try {
@@ -66,10 +63,12 @@ export default defineFeature({
         'cooking',
       );
       await writeEntry(root, KEY_A);
-      checks.equal('commit of a written entry is current', await lifecycle.commit(first, KEY_A), {
-        result: 'current',
-        key: KEY_A,
-      });
+      const committed = await lifecycle.commit(first, KEY_A);
+      checks.equal(
+        'commit of a written entry is current',
+        [committed.result, committed.result === 'current' ? committed.head.currentKey : undefined],
+        ['current', KEY_A],
+      );
       const current = await lifecycle.readCurrentEntry(GUID);
       checks.equal(
         'current head and entry read together',
@@ -101,9 +100,9 @@ export default defineFeature({
         'invalid',
       );
       checks.equal(
-        'superseded in-flight attempt is stale',
+        'superseded in-flight attempt has lost its lease',
         (await lifecycle.commit(older, KEY_C)).result,
-        'stale',
+        'lease-lost',
       );
       const retry = await lifecycle.begin(GUID, KEY_C);
       await writeEntry(root, KEY_C);
@@ -115,33 +114,14 @@ export default defineFeature({
         'lease-lost',
       );
 
-      const scope = await createRuntimeScope(root, 'feature-lab-scope');
-      checks.ok(
-        'runtime scope verifies',
-        (await assertRuntimeScope(root, scope)).scopeHash === scope.scopeHash,
-      );
-      checks.equal(
-        'forged scope hash code',
-        await thrownCode(() => assertRuntimeScope(root, { ...scope, scopeHash: '0'.repeat(64) })),
-        'ddc-scope-mismatch',
-      );
+      const scope = (scopeId: string, generation = 1) =>
+        resolveRuntimeDdcRoot(root, { scopeId, generation });
+      checks.ok('runtime scope names stay isolated', scope('a/b') !== scope('a_b'));
+      checks.ok('runtime generations stay isolated', scope('a_b') !== scope('a_b', 2));
       checks.equal(
         'empty scope id code',
-        await thrownCode(() => createRuntimeScope(root, '')),
+        await thrownCode(async () => scope('')),
         'ddc-scope-mismatch',
-      );
-
-      await writeEntry(root, ORPHAN);
-      const gc = await collectDdcGarbage(root, {
-        currentKeys: [KEY_C],
-        lastKnownGoodKeys: [KEY_A],
-        activeLeaseKeys: [KEY_B],
-      });
-      checks.equal('GC deletes only the orphan', gc.deleted, [ORPHAN]);
-      checks.equal(
-        'GC keeps current, LKG, and leased entries',
-        (await readdir(join(root, 'entries'))).sort(),
-        [KEY_A, KEY_C],
       );
     } finally {
       await rm(root, { recursive: true, force: true });

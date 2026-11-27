@@ -176,6 +176,7 @@ it.each([
 it.each([
   'view-and-scene-depth',
   'render-material-and-scene-depth',
+  'render-lit-material-and-scene-depth',
   'render-standard-material-and-scene-depth',
 ] as const)('carries the selected material binding contract through preparation: %s', async (bindings) => {
   const f = await fixture();
@@ -239,8 +240,10 @@ it.each([
   resolver.release().unwrap();
 });
 
-it('retains the Standard material depth contract and its dynamic View offsets', async () => {
-  const bindingContract = 'render-standard-material-and-scene-depth';
+it.each([
+  'render-standard-material-and-scene-depth',
+  'render-lit-material-and-scene-depth',
+] as const)('retains full lighting/depth and dynamic View offsets: %s', async (bindingContract) => {
   const f = await fixture();
   const sampler = f.device.createSampler({ compare: 'greater-equal' }).unwrap();
   Object.assign(f.state, {
@@ -264,10 +267,10 @@ it('retains the Standard material depth contract and its dynamic View offsets', 
     Array.from(groups.mock.calls[0]?.[0].entries ?? [])
       .map((entry) => entry.binding)
       .sort((a, b) => a - b),
-  ).toEqual([0, 1, 3, 4, 5, 6, 7, 8, 10, 17]);
+  ).toEqual([0, 1, 3, 4, 5, 6, 7, 8, 17]);
   expect(resolved).toMatchObject({
     handle: expect.anything(),
-    dynamicOffsets: [translucentViewOffset('additive'), 0],
+    dynamicOffsets: [translucentViewOffset('additive')],
   });
 });
 
@@ -448,7 +451,7 @@ it('reuses Standard VFX depth views and groups while observing physical resource
     return result;
   };
   const first = resolve();
-  expect(first).toMatchObject({ handle: expect.anything(), dynamicOffsets: [0, 0] });
+  expect(first).toMatchObject({ handle: expect.anything(), dynamicOffsets: [0] });
   f.device.queue.writeBuffer(f.buffer, 0, new Float32Array([1, 2, 3, 4])).unwrap();
   expect(resolve().handle).toBe(first?.handle);
   expect(groups).toHaveBeenCalledTimes(1);
@@ -456,7 +459,7 @@ it('reuses Standard VFX depth views and groups while observing physical resource
   Object.assign(f.input.binding, { fogComposition: 'additive' });
   expect(resolve()).toMatchObject({
     handle: first?.handle,
-    dynamicOffsets: [translucentViewOffset('additive'), 0],
+    dynamicOffsets: [translucentViewOffset('additive')],
   });
   f.setDepth(f.makeDepth());
   const replacement = resolve();

@@ -16,10 +16,10 @@ import testQuality from '../../../../scripts/test/render-quality.json' with { ty
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { testAssets } from './helpers/runtime-assets';
 
+// Each optional input is isolated once, then both exercise the combined GPU lane.
 it.each([
   { vertexColor: false, lod: true },
   { vertexColor: true, lod: true },
-  { vertexColor: false, lod: false },
   { vertexColor: true, lod: false },
 ])('preserves shared-mesh shadows with vertexColor=$vertexColor lod=$lod', async ({
   vertexColor,

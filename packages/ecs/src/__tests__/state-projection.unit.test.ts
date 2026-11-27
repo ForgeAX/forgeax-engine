@@ -1,13 +1,167 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { componentId, defineComponent } from '../component';
+import { Disabled } from '../entity';
 import { type EntityHandle, entityIndex } from '../entity-handle';
-import { createStateProjection } from '../projection/state-projection';
+import { createArchetypeReader, createComponentPresenceReader } from '../projection';
+import { createStateProjection, observeStateChanges } from '../projection/state-projection';
 import { World } from '../world';
 import { worldInternal } from '../world-internal';
 
 const Position = defineComponent('ProjectionPosition', { x: 'f32' });
 const Extra = defineComponent('ProjectionExtra', {});
 const Selected = defineComponent('ProjectionSelected', {}, { storage: 'sparse' });
+
+test('shares component-presence facts by archetype and resolves sparse migrations and recycled slots', () => {
+  const world = new World();
+  const compile = vi.fn((has: (component: typeof Selected) => boolean) => ({
+    selected: has(Selected),
+  }));
+  const layout = createArchetypeReader(world, compile);
+  const first = world.spawn({ component: Position, data: {} }).unwrap();
+  const second = world.spawn({ component: Position, data: {} }).unwrap();
+  const ordinary = layout(first);
+  expect(ordinary?.selected).toBe(false);
+  expect(layout(second)).toBe(ordinary);
+  world.addComponent(first, { component: Selected, data: {} }).unwrap();
+  expect(layout(first)?.selected).toBe(true);
+  expect(layout(second)).toBe(ordinary);
+  world.removeComponent(first, Selected).unwrap();
+  expect(layout(first)).toBe(ordinary);
+  world.despawn(first).unwrap();
+  const replacement = world.spawn({ component: Position, data: {} }).unwrap();
+  expect(entityIndex(replacement)).toBe(entityIndex(first));
+  expect(layout(first)).toBeUndefined();
+  expect(layout(replacement)).toBe(ordinary);
+  expect(compile).toHaveBeenCalledTimes(2);
+});
+
+test('component occupancy follows sparse membership and counts disabled rows in shared tables', () => {
+  const world = new World();
+  const hasSelected = createComponentPresenceReader(world, Selected);
+  const a = world.spawn({ component: Position, data: {} }).unwrap();
+  const b = world.spawn({ component: Position, data: {} }).unwrap();
+  expect(hasSelected()).toBe(false);
+  world.addComponent(a, { component: Disabled, data: {} }).unwrap();
+  world.addComponent(a, { component: Selected, data: {} }).unwrap();
+  expect(hasSelected()).toBe(true);
+  world.addComponent(b, { component: Selected, data: {} }).unwrap();
+  world.despawn(a).unwrap();
+  expect(hasSelected()).toBe(true);
+  world.removeComponent(b, Selected).unwrap();
+  expect(hasSelected()).toBe(false);
+  world.addComponent(b, { component: Selected, data: {} }).unwrap();
+  expect(hasSelected()).toBe(true);
+});
+
+test('owned rows stay unique when component writes overlap each other and structural edits', () => {
+  const world = new World();
+  const Velocity = defineComponent('OwnedPoseVelocity', { x: 'f32' });
+  const entity = world
+    .spawn({ component: Position, data: {} }, { component: Velocity, data: {} })
+    .unwrap();
+  const index = entityIndex(entity);
+  const observer = observeStateChanges(world, [Position, Velocity], new Set([index]));
+  const stage = (structural: boolean) => {
+    const batch = observer.read();
+    expect(batch.indices).toEqual([index]);
+    expect(batch.scannedRows).toBe(1);
+    expect(batch.hasStructuralChange(index)).toBe(structural);
+    batch.accept();
+  };
+  world.set(entity, Position, { x: 1 }).unwrap();
+  stage(false);
+  world.set(entity, Position, { x: 2 }).unwrap();
+  world.set(entity, Velocity, { x: 1 }).unwrap();
+  stage(false);
+  world.addComponent(entity, { component: Extra, data: {} }).unwrap();
+  world.set(entity, Position, { x: 3 }).unwrap();
+  stage(true);
+  world.set(entity, Velocity, { x: 2 }).unwrap();
+  stage(false);
+});
+
+test('an owned slot observation skips existing rows and retains deletion through slot reuse', () => {
+  const world = new World();
+  const owned = world.spawn({ component: Position, data: {} }).unwrap();
+  const other = world.spawn({ component: Position, data: {} }).unwrap();
+  for (let i = 0; i < 4096; i++) world.spawn({ component: Position, data: {} }).unwrap();
+
+  const index = entityIndex(owned);
+  const observer = observeStateChanges(world, [Position], new Set([index]));
+  expect(observer.isCurrent()).toBe(true);
+  const baseline = observer.read();
+  expect(baseline.indices).toEqual([]);
+  expect(baseline.checkedIndexEntries).toBe(0);
+  baseline.accept();
+
+  world.set(other, Position, { x: 1 }).unwrap();
+  const unrelated = observer.read();
+  expect(unrelated.indices).toEqual([]);
+  expect(unrelated.scannedRows).toBe(0);
+  unrelated.accept();
+
+  world.set(owned, Position, { x: 2 }).unwrap();
+  const write = observer.read();
+  expect(write.indices).toEqual([index]);
+  expect(write.hasStructuralChange(index)).toBe(false);
+  write.accept();
+
+  world.despawn(owned).unwrap();
+  const replacement = world.spawn({ component: Extra, data: {} }).unwrap();
+  expect(entityIndex(replacement)).toBe(index);
+  const removal = observer.read();
+  expect(removal.indices).toEqual([index]);
+  expect(removal.hasStructuralChange(index)).toBe(true);
+  removal.accept();
+  expect(observer.isCurrent()).toBe(true);
+});
+
+test('a publisher baseline expires outstanding batches and retains subsequent external changes', () => {
+  const world = new World();
+  const entity = world.spawn({ component: Position, data: {} }).unwrap();
+  const index = entityIndex(entity);
+  const observer = observeStateChanges(world, [Position], new Map([[index, entity]]));
+  const old = observer.read();
+  world.set(entity, Position, { x: 1 }).unwrap();
+  const { resetBaseline } = observer;
+  resetBaseline();
+  expect(() => old.accept()).toThrow();
+  expect(observer.isCurrent()).toBe(true);
+  world.set(entity, Position, { x: 2 }).unwrap();
+  expect(observer.read().indices).toEqual([index]);
+});
+
+test('full publications reconcile slot membership without enumerating published value writes', () => {
+  const world = new World();
+  const first = world.spawn({ component: Position, data: {} }).unwrap();
+  const projection = createStateProjection(world, [Position]);
+  projection.acceptFullRead();
+  world.set(first, Position, { x: 1 }).unwrap();
+  const previous = projection.read();
+  const visit = vi.spyOn(world[worldInternal], 'visitComponentChanged');
+  try {
+    projection.acceptFullRead();
+    expect(() => previous.accept()).toThrow();
+    expect(projection.isCurrent()).toBe(true);
+    const second = world.spawn({ component: Position, data: {} }).unwrap();
+    world.set(first, Position, { x: 2 }).unwrap();
+    projection.acceptFullRead();
+    expect(visit).not.toHaveBeenCalled();
+
+    world.despawn(second).unwrap();
+    const replacement = world.spawn({ component: Extra, data: {} }).unwrap();
+    expect(entityIndex(replacement)).toBe(entityIndex(second));
+    const removed = projection.read();
+    expect(removed.indices).toEqual([entityIndex(second)]);
+    expect(removed.hasStructuralChange(entityIndex(second))).toBe(true);
+    projection.acceptFullRead();
+    expect(() => removed.accept()).toThrow();
+    world.set(first, Position, { x: 3 }).unwrap();
+    expect(projection.read().indices).toEqual([entityIndex(first)]);
+  } finally {
+    visit.mockRestore();
+  }
+});
 
 test('value-only acceptance preserves known membership without re-reading archetypes', () => {
   const world = new World();

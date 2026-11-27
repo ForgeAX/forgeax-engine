@@ -11,7 +11,7 @@
 // The registry is package-private by convention: no root/advanced export
 // exposes this key, while Symbol.for keeps source/dist and split bundles on
 // one identity.
-import type { Result } from '@forgeax/engine-types';
+import type { Handle, Result } from '@forgeax/engine-types';
 import type { Component, ComponentData, ComponentSchema, ShapeOf } from './component';
 import type { EntityHandle } from './entity-handle';
 import type { EcsError, RelationshipSelfCycleError } from './errors';
@@ -43,6 +43,7 @@ export const worldInternal: unique symbol = Symbol.for(
  */
 /** @internal Raw ECS owner seam; source-relative consumers only. */
 export interface WorldInternal {
+  readonly releaseUnadoptedUniqueRef: (handle: Handle<string, 'unique'>) => Result<void, EcsError>;
   readonly beginDerivedWrite: () => boolean;
   readonly endDerivedWrite: () => void;
   readonly isDerivedWriteActive: () => boolean;
@@ -82,6 +83,10 @@ export interface WorldInternal {
   readonly getEntityArchetype: (entity: EntityHandle) => Archetype | undefined;
   readonly getFixedAccumulator: () => number;
   readonly graph: ArchetypeGraph;
+  readonly setDisabledBatch: (
+    entities: ReadonlySet<EntityHandle>,
+    disabled: boolean,
+  ) => Result<void, EcsError>;
   readonly getMutationEpoch: () => number;
   readonly getQueryRow: (
     entity: EntityHandle,

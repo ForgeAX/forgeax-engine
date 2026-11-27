@@ -1,23 +1,26 @@
+import { runtimeArtifactDescriptorIssue } from '@forgeax/engine-pack/bundle';
 import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import { withCombinedSignal } from '@forgeax/engine-platform';
 import type {
-  AssetEnvelopeV2,
   AssetLoadError,
   AssetPublicationTuple,
   PackageFetcher,
   PackV2,
   Result,
 } from '@forgeax/engine-types';
-import { err, ok } from '@forgeax/engine-types';
+import { err, isValidAssetGuidString, ok } from '@forgeax/engine-types';
 import { freezeRuntimePayload } from './immutable-payload.js';
-import { packEnvelopeIssue } from './pack-envelope.js';
-import { readPackJson } from './pack-json.js';
+import { readDocumentJson } from './pack-json.js';
 import { readPackage } from './package-read.js';
 import { assetLoadCancelled, waitForAsset } from './wait-for-asset.js';
 
 interface PackReaderOptions {
   readonly fetcher?: PackageFetcher;
 }
+
+type PackExpectation = Omit<AssetPublicationTuple, 'scopeId'> & {
+  readonly scopeId?: string | undefined;
+};
 
 export type VerifiedPack = PackV2<unknown>;
 
@@ -30,9 +33,9 @@ function invalid(guid: string, reason: string): Result<never, AssetLoadError> {
   });
 }
 
-function sameTuple(left: AssetPublicationTuple, right: AssetPublicationTuple): boolean {
+function sameTuple(left: AssetPublicationTuple, right: PackExpectation): boolean {
   return (
-    left.scopeId === right.scopeId &&
+    (right.scopeId === undefined || left.scopeId === right.scopeId) &&
     left.generation === right.generation &&
     left.digest === right.digest &&
     left.outputSetDigest === right.outputSetDigest
@@ -94,7 +97,7 @@ export class PackReader {
     boundFetcher?: PackageFetcher,
   ): Promise<Result<VerifiedPack, AssetLoadError>> {
     const fetcher = boundFetcher ?? this.fetcher ?? globalThis.fetch.bind(globalThis);
-    const read = await readPackage(fetcher, packageUrl, readPackJson, { signal });
+    const read = await readPackage(fetcher, packageUrl, readDocumentJson, { signal });
     if (!read.ok) {
       if (read.error.malformed) return invalid(packageUrl, 'invalid JSON');
       if (signal.aborted) return err(assetLoadCancelled(packageUrl));
@@ -105,33 +108,58 @@ export class PackReader {
         detail: { guid: packageUrl, packageUrl },
       });
     }
-    // readPackJson has already decoded the material program table.
-    const checked = validatePackEnvelope(read.value, expected);
-    if (!checked.ok && checked.error.code === 'asset-package-invalid') {
-      return invalid(packageUrl, checked.error.detail.reason);
-    }
-    if (!checked.ok) return checked;
-    return ok(freezeRuntimePayload(read.value as VerifiedPack));
+    return this.verify(read.value, expected, packageUrl);
   }
 
   private key(packageUrl: string, tuple: AssetPublicationTuple): string {
     return `${packageUrl}\u0000${tuple.scopeId}\u0000${tuple.generation}\u0000${tuple.digest}\u0000${tuple.outputSetDigest}`;
   }
 
-  /** Verify a raw document from a caller that did not decode it (publication capture and validation). */
-  verify(value: unknown, expected: AssetPublicationTuple): Result<VerifiedPack, AssetLoadError> {
+  /** Open an independent candidate/capture without entering the live in-flight cache. */
+  async openDetached(
+    packageUrl: string,
+    expected: PackExpectation,
+    fetcher: PackageFetcher,
+    signal?: AbortSignal,
+  ): Promise<Result<VerifiedPack, AssetLoadError>> {
+    const response = await fetcher(packageUrl, signal === undefined ? undefined : { signal });
+    if (!response.ok) throw new TypeError('candidate Pack unavailable');
+    const raw = await readDocumentJson(response);
+    signal?.throwIfAborted();
+    return this.verify(raw, expected);
+  }
+
+  /** Verify a raw document; private candidates may infer scope from the decoded Pack. */
+  verify(
+    value: unknown,
+    expected: PackExpectation,
+    packageUrl?: string,
+  ): Result<VerifiedPack, AssetLoadError> {
     const decoded = decodeMaterialProgramWire(value);
-    if (!decoded.ok) return invalid('', 'invalid material program table');
-    const checked = validatePackEnvelope(decoded.value, expected);
-    if (!checked.ok) return checked;
-    return ok(freezeRuntimePayload(decoded.value as VerifiedPack));
+    return decoded.ok
+      ? this.admit(decoded.value, expected, packageUrl)
+      : invalid(
+          packageUrl ?? '',
+          packageUrl === undefined ? 'invalid material program table' : 'invalid JSON',
+        );
+  }
+
+  private admit(
+    value: unknown,
+    expected: PackExpectation,
+    packageUrl?: string,
+  ): Result<VerifiedPack, AssetLoadError> {
+    const checked = validatePackEnvelope(value, expected);
+    if (!checked.ok && packageUrl !== undefined && checked.error.code === 'asset-package-invalid')
+      return invalid(packageUrl, checked.error.detail.reason);
+    return checked.ok ? ok(freezeRuntimePayload(value as VerifiedPack)) : checked;
   }
 }
 
 /** Complete Pack validation without freezing or retaining the caller's mutable input. */
 export function validatePackEnvelope(
   value: unknown,
-  expected: AssetPublicationTuple,
+  expected: PackExpectation,
 ): Result<void, AssetLoadError> {
   if (value === null || typeof value !== 'object') return invalid('', 'Pack is not an object');
   const pack = value as Partial<PackV2<unknown>>;
@@ -147,51 +175,48 @@ export function validatePackEnvelope(
   ) {
     return invalid('', 'publication tuple mismatch');
   }
-  if (!Array.isArray(pack.assets)) return invalid('', 'assets');
+  return validatePackAssets(pack.assets);
+}
+
+function validatePackAssets(assets: unknown): Result<void, AssetLoadError> {
+  if (!Array.isArray(assets)) return invalid('', 'assets');
   const guids = new Set<string>();
-  for (const raw of pack.assets) {
-    const issue = packEnvelopeIssue(raw);
-    if (issue !== undefined) return invalid('', issue);
-    const asset = raw as Partial<AssetEnvelopeV2<unknown>>;
-    const guid = typeof asset.guid === 'string' ? asset.guid : '';
-    if (guid.length === 0 || guids.has(guid.toLowerCase())) return invalid(guid, 'duplicate guid');
-    guids.add(guid.toLowerCase());
-    if (
-      typeof asset.kind !== 'string' ||
-      asset.payload === undefined ||
-      !Array.isArray(asset.refs) ||
-      asset.refs.some((ref) => typeof ref !== 'string') ||
-      asset.artifacts === null ||
-      typeof asset.artifacts !== 'object'
-    ) {
+  for (const raw of assets) {
+    if (!record(raw)) return invalid('', 'envelope');
+    const { guid, kind, payload, refs, artifacts } = raw;
+    if (!isValidAssetGuidString(guid)) return invalid('', 'guid');
+    if (typeof kind !== 'string' || kind.length === 0) return invalid('', 'kind');
+    if (payload === undefined) return invalid('', 'payload');
+    if (refs !== undefined) {
+      if (!Array.isArray(refs)) return invalid('', 'refs');
+      const bad = refs.findIndex((ref) => !isValidAssetGuidString(ref));
+      if (bad !== -1) return invalid('', `refs[${bad}]`);
+    }
+    const key = guid.toLowerCase();
+    if (guids.has(key)) return invalid(guid, 'duplicate guid');
+    guids.add(key);
+    if (artifacts !== undefined && !record(artifacts)) return invalid('', 'artifacts');
+    if (refs === undefined || artifacts === undefined)
       return invalid(guid, 'asset envelope fields');
-    }
-    for (const [artifactKey, descriptor] of Object.entries(asset.artifacts)) {
-      if (!validArtifact(guid, artifactKey, descriptor)) {
-        return invalid(guid, `artifact ${artifactKey}`);
-      }
-    }
+    const result = validatePackArtifacts(guid, artifacts);
+    if (!result.ok) return result;
   }
   return ok(undefined);
 }
 
-function validArtifact(_guid: string, key: string, value: unknown): boolean {
-  if (value === null || typeof value !== 'object') return false;
-  const descriptor = value as Record<string, unknown>;
-  const integrity = descriptor.integrity;
-  return (
-    key.length > 0 &&
-    typeof descriptor.path === 'string' &&
-    descriptor.path.length > 0 &&
-    typeof descriptor.mediaType === 'string' &&
-    descriptor.mediaType.length > 0 &&
-    (descriptor.contentEncoding === 'identity' || descriptor.contentEncoding === 'zstd') &&
-    Number.isSafeInteger(descriptor.byteLength) &&
-    Number(descriptor.byteLength) >= 0 &&
-    integrity !== null &&
-    typeof integrity === 'object' &&
-    (integrity as Record<string, unknown>).algorithm === 'sha256' &&
-    typeof (integrity as Record<string, unknown>).digest === 'string' &&
-    /^sha256:[0-9a-f]{64}$/i.test(String((integrity as Record<string, unknown>).digest))
-  );
+function validatePackArtifacts(
+  guid: string,
+  artifacts: Record<string, unknown>,
+): Result<void, AssetLoadError> {
+  for (const [key, descriptor] of Object.entries(artifacts)) {
+    const issue = key ? runtimeArtifactDescriptorIssue(descriptor) : 'descriptor';
+    if (issue === 'delivery') return invalid(guid, `artifact ${key}`);
+    if (issue !== undefined)
+      return invalid('', issue === 'descriptor' ? `artifacts.${key}` : `artifacts.${key}.${issue}`);
+  }
+  return ok(undefined);
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

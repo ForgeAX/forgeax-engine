@@ -1,5 +1,9 @@
-import type { FixedPackPublication } from '@forgeax/engine-pack/runtime';
-import { createPackageResponse } from '@forgeax/engine-pack/runtime';
+import {
+  createPackageResponse,
+  type FixedPackPublication,
+  fixedPublicationDependencies,
+  matchesFixedDependency,
+} from '@forgeax/engine-pack/runtime';
 import type {
   Asset,
   AssetPublicationOutput,
@@ -10,6 +14,7 @@ import type { AssetRegistry } from './asset-registry.js';
 import { captureAssetPublication } from './capture-publication.js';
 import { type CatalogSource, createCatalogSource } from './catalog-source.js';
 import { runtimeAssetDecoders } from './internal/runtime-assets';
+import { artifactUrl } from './registry/artifact-io.js';
 import { preparePublicationPayloads } from './validate-publication.js';
 
 type RetainedData = Asset | (() => Promise<Asset>);
@@ -49,33 +54,21 @@ export async function retainAssetPublications(
     const fixed = (
       await captureAssetPublication(row, entries, source, fetcher, { ...options, registry })
     ).unwrap();
-    const own = new Set(publication.outputs.map((output) => output.guid));
     const dependencies = new Map<string, RetainedAsset>();
-    const references = new Set([
-      ...publication.outputs.flatMap((output) => output.refs),
-      ...publication.externalEvidence
-        .filter((edge) => edge.usage !== 'content')
-        .map((edge) => edge.guid),
-    ]);
-    for (const ref of references) {
-      if (own.has(ref)) continue;
-      const pin = await retain(ref, new Set([...ancestors, row.packageUrl]));
-      const evidence = publication.externalEvidence.find((edge) => edge.guid === ref);
-      if (
-        evidence?.usage !== 'content' &&
-        ((evidence?.digest !== undefined && evidence.digest !== pin.digest) ||
-          (evidence?.generation !== undefined && evidence.generation !== pin.generation))
-      )
+    const nextAncestors = new Set([...ancestors, row.packageUrl]);
+    for (const [ref, evidence] of fixedPublicationDependencies(publication)) {
+      const pin = await retain(ref, nextAncestors);
+      if (!matchesFixedDependency(evidence, pin))
         throw new TypeError(`dependency version changed ${ref}`);
       dependencies.set(ref, pin);
     }
     const assets = new Map<string, RetainedData>();
     const recipe = { fixed, dependencies, assets, outputs: publication.outputs };
+    const paths = new Map(
+      Object.keys(fixed.blobs).map((path) => [artifactUrl(row.packageUrl, path), path]),
+    );
     const bound: PackageFetcher = async (input) => {
-      const url = String(input);
-      const path = [...Object.keys(fixed.blobs)].find(
-        (path) => new URL(path, row.packageUrl).href === url,
-      );
+      const path = paths.get(String(input));
       if (!path) return createPackageResponse(new Uint8Array(), { status: 404 });
       const bytes = fixed.blobs[path];
       if (!(bytes instanceof Uint8Array))
@@ -107,10 +100,18 @@ export async function retainAssetPublications(
             const asset = result.unwrap().get(output.guid);
             if (!asset) throw new TypeError(`missing retained payload ${output.guid}`);
             return asset;
-          })().catch((error) => {
-            pending = undefined;
-            throw error;
-          });
+          })().then(
+            (asset) => {
+              // A fixed Mesh retains its verified artifact bytes. Concurrent
+              // consumers share preparation, then own the decoded result.
+              if (asset.kind === 'mesh') pending = undefined;
+              return asset;
+            },
+            (error: unknown) => {
+              pending = undefined;
+              throw error;
+            },
+          );
         return pending;
       };
       assets.set(output.guid, data);

@@ -1,4 +1,9 @@
 import type { FieldVec3 } from '@forgeax/engine-types';
+import {
+  pointBoxDistanceInterval,
+  type TriangleDistanceInterval,
+  triangleDistanceInterval,
+} from './triangle-distance-interval';
 
 export type QueryTriangle = readonly [FieldVec3, FieldVec3, FieldVec3];
 export interface TriangleRayHit {
@@ -10,8 +15,21 @@ export interface TriangleRayHit {
 export interface TriangleQueryBudget {
   remaining: number;
 }
+/** Per-call accounting, including work completed before a null budget result. */
+export interface TriangleNearestWork {
+  nodes: number;
+  legacyPrimitives: number;
+  certificatePrimitives: number;
+  sharedPrimitives: number;
+  certificateExtraPrimitives: number;
+  totalPrimitives: number;
+}
+export interface TriangleNearestEvidence extends TriangleDistanceInterval {
+  readonly sampleSquared: number;
+}
 
-/** Exact squared distance, including segment/point degeneracies. */
+/** Legacy floating-point squared representative, including segment/point degeneracies.
+ * Numeric error and pruning do not make this value an exact distance bound. */
 export function triangleDistanceSquared(p: FieldVec3, triangle: QueryTriangle): number {
   const [a, b, c] = triangle;
   const abx = b[0] - a[0],
@@ -64,6 +82,11 @@ interface Node extends Bounds {
   escape: number;
   first: number;
   count: number;
+}
+interface NearestState {
+  lower: number;
+  upper: number;
+  sampleSquared: number;
 }
 
 /**
@@ -182,8 +205,139 @@ export function createTriangleQuery(triangles: readonly QueryTriangle[]) {
     node.escape = nodes.length;
   };
   if (triangles.length) build(0, triangles.length);
+  const sampleNearestLeaf = (
+    node: Node,
+    p: FieldVec3,
+    flags: number,
+    state: NearestState,
+    budget: TriangleQueryBudget | undefined,
+    counts: TriangleNearestWork,
+  ) => {
+    for (let i = node.first; i < node.first + node.count; i++) {
+      if (budget) {
+        if (budget.remaining <= 0) return false;
+        budget.remaining--;
+      }
+      counts.totalPrimitives++;
+      const triangle = item(triangles, item(order, i));
+      if (flags & 1) {
+        counts.legacyPrimitives++;
+        state.sampleSquared = Math.min(state.sampleSquared, triangleDistanceSquared(p, triangle));
+      }
+      if (flags & 2) {
+        counts.certificatePrimitives++;
+        if (flags & 1) counts.sharedPrimitives++;
+        else counts.certificateExtraPrimitives++;
+        const interval = triangleDistanceInterval(p, triangle);
+        state.lower = Math.min(state.lower, interval.lower);
+        state.upper = Math.min(state.upper, interval.upper);
+      }
+    }
+    return true;
+  };
+  const nearestStack = (p: FieldVec3, preserveLegacy: boolean) => {
+    if (!nodes.length)
+      return { pending: [] as number[], flags: [] as number[], bounds: [] as number[] };
+    return {
+      pending: [0],
+      flags: [preserveLegacy ? 3 : 2],
+      bounds: [pointBoundSquared(p, item(nodes, 0))],
+    };
+  };
+  const nearestEvidence = (
+    p: FieldVec3,
+    maxDistance: number,
+    budget: TriangleQueryBudget | undefined,
+    preserveLegacy: boolean,
+    work?: TriangleNearestWork,
+  ): TriangleNearestEvidence | null => {
+    const counts = Object.assign(work ?? {}, {
+      nodes: 0,
+      legacyPrimitives: 0,
+      certificatePrimitives: 0,
+      sharedPrimitives: 0,
+      certificateExtraPrimitives: 0,
+      totalPrimitives: 0,
+    });
+    const state = {
+      lower: maxDistance,
+      upper: maxDistance,
+      sampleSquared: maxDistance * maxDistance,
+    };
+    const { pending, flags, bounds } = nearestStack(p, preserveLegacy);
+    while (pending.length) {
+      const cursor = pending.pop(),
+        inherited = flags.pop(),
+        bound = bounds.pop();
+      if (cursor === undefined || inherited === undefined || bound === undefined)
+        throw new RangeError('Nearest traversal stacks diverged');
+      counts.nodes++;
+      const node = item(nodes, cursor);
+      // Old float pruning controls only the old representative. It never
+      // supplies a certificate, and certificate-only visits cannot change it.
+      const legacy = (inherited & 1) !== 0 && !(bound > state.sampleSquared);
+      const certificate =
+        (inherited & 2) !== 0 && !(pointBoxDistanceInterval(p, node).lower > state.upper);
+      if (!legacy && !certificate) continue;
+      if (node.count === 0) {
+        const left = cursor + 1,
+          right = item(nodes, left).escape;
+        const a = pointBoundSquared(p, item(nodes, left)),
+          b = pointBoundSquared(p, item(nodes, right));
+        const next = (legacy ? 1 : 0) | (certificate ? 2 : 0);
+        if (preserveLegacy && !(a <= b)) {
+          pending.push(left, right);
+          bounds.push(a, b);
+        } else {
+          pending.push(right, left);
+          bounds.push(b, a);
+        }
+        flags.push(next, next);
+        continue;
+      }
+      if (
+        !sampleNearestLeaf(node, p, (legacy ? 1 : 0) | (certificate ? 2 : 0), state, budget, counts)
+      )
+        return null;
+    }
+    return state;
+  };
   return {
     nodeCount: nodes.length,
+    /** Owned copy of this exact tree for a derived artifact; never a second
+     * builder or mutable authority over the query's internal nodes/order. */
+    snapshot() {
+      return {
+        nodes: nodes.map((node) => ({
+          ...node,
+          min: [...node.min] as [number, number, number],
+          max: [...node.max] as [number, number, number],
+        })),
+        order: order.slice(),
+      };
+    },
+    /** Capped unsigned nearest enclosure. Prune only with outward node lower
+     * bounds above a witnessed upper bound. Exhaustion never publishes a partial
+     * lower bound; this method makes no sign or solid-interior claim. */
+    nearestInterval(
+      p: FieldVec3,
+      maxDistance = Infinity,
+      budget?: TriangleQueryBudget,
+    ): TriangleDistanceInterval | null {
+      const result = nearestEvidence(p, maxDistance, budget, false);
+      return result === null ? null : { lower: result.lower, upper: result.upper };
+    },
+    /** One visit schedule with separate legacy scalar and certified interval
+     * facts. Only legacy visits affect sampleSquared; every needed primitive is
+     * charged once. Exhaustion returns no sample or partial certificate. */
+    nearestSample(
+      p: FieldVec3,
+      maxDistance = Infinity,
+      budget?: TriangleQueryBudget,
+      work?: TriangleNearestWork,
+    ) {
+      return nearestEvidence(p, maxDistance, budget, true, work);
+    },
     /** Returns null on primitive-test exhaustion; a partial nearest value is not a distance bound. */
     nearestSquared(
       p: FieldVec3,

@@ -48,6 +48,8 @@ import { type ConfiguredAppOptions, prepareConfiguredApp } from './configuration
 import { createEngineConfigurationStore } from './configuration-store';
 import type { HostDeviceFacts } from './configuration-types';
 import { createAppHostAudio, hostAudioBindingError } from './host-audio';
+import { levelServicePlugin } from './levels/level-service';
+import { stageLocalAppLevels } from './levels/local-app-levels';
 
 export type { BrowserFrameProgress } from './browser-frame-signal';
 export type { AppHostAdapter } from './types';
@@ -79,6 +81,7 @@ import {
 } from './execution';
 import { normalizeExecutionBootstrapUrl } from './execution/bootstrap-url';
 import { createLocalExecutionControl, type LocalExecutionControl } from './execution/control';
+import { createBrowserTaskPool } from './execution/engine-worker';
 import { installCarriedGpuStub } from './execution/gpu-stub';
 import { createWorkerExecutionApp } from './execution/host-controller';
 import { attachInputAuto, type InputAttachHandle } from './internal/input-attach';
@@ -261,6 +264,13 @@ function browserDeviceFacts(): HostDeviceFacts {
   return { platform, runtime: 'browser' };
 }
 
+function browserRuntimePacks(options: ConfiguredAppOptions['runtimePacks']) {
+  if (!options?.authored?.length || options.tasks !== undefined || typeof Worker !== 'function')
+    return { options, dispose: () => {} };
+  const tasks = createBrowserTaskPool();
+  return { options: { ...options, tasks }, dispose: () => tasks.dispose() };
+}
+
 async function createConfiguredBrowserApp(
   canvas: HTMLCanvasElement,
   opts?: ConfiguredAppOptions,
@@ -345,6 +355,7 @@ async function createConfiguredBrowserApp(
   // The canvas form owns world lifetime, in contrast to the assemble form
   // where the host owns it.
   const world = new World(opts?.time !== undefined ? { time: opts.time } : {});
+  const localLevels = stageLocalAppLevels(world, assets, renderer);
   const physics = opts?.startup?.settings.simulation?.physics;
   if (physics !== undefined) world.insertResource(PHYSICS_STARTUP_OPTIONS, physics);
   const frameInspection = createFrameInspectionRef();
@@ -352,7 +363,11 @@ async function createConfiguredBrowserApp(
   const { handle: inputHandle, backend: inputBackend } = acquireAppInput(canvas, opts);
   let pluginContext: Context;
   const ownedAppFibers: Fiber[] = [];
+  const runtimePacks = browserRuntimePacks(
+    preparedExecutionBootstrap?.runtimePacks ?? opts?.runtimePacks,
+  );
   const disposeAppContext = async (): Promise<void> => {
+    localLevels.owner.stopRequests();
     try {
       if (opts?.context === undefined) {
         await pluginContext.fiber.dispose();
@@ -360,6 +375,7 @@ async function createConfiguredBrowserApp(
       }
       await disposeFibersInReverse(ownedAppFibers);
     } finally {
+      runtimePacks.dispose();
       opts?.execution?.bootstrapPort?.close();
     }
   };
@@ -369,12 +385,11 @@ async function createConfiguredBrowserApp(
     return fiber;
   };
   const pluginPrograms = preparedExecutionBootstrap?.pluginPrograms ?? opts?.pluginPrograms;
-  const runtimePacks = preparedExecutionBootstrap?.runtimePacks ?? opts?.runtimePacks;
   const profile = mainEngineProfile({
     renderer,
     assetAssembly,
     pluginPrograms,
-    runtimePacks,
+    runtimePacks: runtimePacks.options,
     rendererDebugDrawHost: rendering.value.debugDrawHost,
     rendererFeatureHost: rendering.value.featureHost,
     assets,
@@ -386,6 +401,7 @@ async function createConfiguredBrowserApp(
       debugDraw = value;
     },
     extensions: [
+      levelServicePlugin(localLevels.owner.service),
       ...browserHostServicePlugins(opts, bundler),
       rhiDebugHostPlugin(cleanupRhiDebugHost),
       ...browserUserPlugins(canvas, renderer, opts, preparedExecutionBootstrap, inputBackend),
@@ -399,9 +415,11 @@ async function createConfiguredBrowserApp(
   try {
     pluginContext = await activateAppPluginContext(world, profile, opts?.context, ownedAppFibers);
   } catch (cause) {
+    localLevels.owner.stopRequests();
     opts?.execution?.bootstrapPort?.close();
     cleanupRhiDebugHost();
     assetAssembly?.dispose();
+    runtimePacks.dispose();
     await disposeFibersInReverse(ownedAppFibers);
     return err(pluginActivationError(cause));
   }
@@ -443,7 +461,7 @@ async function createConfiguredBrowserApp(
         opts?.profiler,
         executionControl,
         pluginContext,
-        runtimePacks?.imports,
+        runtimePacks.options?.imports,
         pluginProjection,
       )
     : undefined;
@@ -456,6 +474,7 @@ async function createConfiguredBrowserApp(
   }
 
   const buildArgs: BuildAppArgs = {
+    localLevels,
     platform: platform.value,
     installAppPlugin,
     renderer,
@@ -727,6 +746,7 @@ async function selectBrowserExecution(
     canvas,
     execution.startupTimeoutMs,
     opts.gpuStub !== undefined,
+    bundler?.workerScriptDelivery === 'embedded',
   );
   const selected = selectExecutionWorkers({
     workers: execution.workers ?? {},
@@ -816,12 +836,15 @@ function rendererOptionsFor(
         backgroundPipelineLibraryConcurrency: opts.backgroundPipelineLibraryConcurrency,
       });
     }
+    if (opts?.viewportHitWarmup === true) Object.assign(rendererOpts, { viewportHitWarmup: true });
     if (opts?.outputColorSpace !== undefined) {
       Object.assign(rendererOpts, { outputColorSpace: opts.outputColorSpace });
     }
     if (opts?.renderBackend !== undefined) {
       Object.assign(rendererOpts, { renderBackend: opts.renderBackend });
     }
+    if (opts?.staticShadowBudgetBytes !== undefined)
+      Object.assign(rendererOpts, { staticShadowBudgetBytes: opts.staticShadowBudgetBytes });
     if (opts?.dynamicGeometryMeshBudgetBytes !== undefined) {
       Object.assign(rendererOpts, {
         dynamicGeometryMeshBudgetBytes: opts.dynamicGeometryMeshBudgetBytes,

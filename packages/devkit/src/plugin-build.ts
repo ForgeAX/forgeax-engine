@@ -1,7 +1,12 @@
 /** Plugin compilation and runtime program preparation for custom project hosts. */
 
+export {
+  authoredRuntimePackImports,
+  prepareAuthoredRuntimePacks,
+} from './build/authored-runtime-packs.js';
 export { loadProjectCookers, type ProjectCookers } from './build/cookers.js';
 export { executionWorkerEntries } from './build/execution-workers.js';
+export { withBuildGpuDevice } from './build/gpu-device.js';
 export { preparePackProgramSource, prepareRuntimePackProgram } from './build/pack-program.js';
 export { discoverPluginAssets, publishedPluginInventory } from './build/plugin-assets.js';
 export { pluginProgramsBuild, pluginRuntimeProjection } from './build/plugin-programs.js';

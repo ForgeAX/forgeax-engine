@@ -1,5 +1,6 @@
 import { defineSystem } from '@forgeax/engine-ecs';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
+import { ShaderRegistry } from '@forgeax/engine-shader';
 import { describe, expect, it, vi } from 'vitest';
 import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { EMPTY_GPU_DRAW_SELECTION, GpuDrawSelection } from '../../gpu-driven/draw-selection';
@@ -94,7 +95,11 @@ function setup(
     world.addComponent(view, { component: ViewStandardLighting, data: { state } }).unwrap();
   }
   viewPassPlanQueue(world, view).stage(input(probeFallbackDemand, gpuDrivenScene));
-  const internals = { renderWorld: world, viewEntity: view } as unknown as RenderSystemInternals;
+  const internals = {
+    renderWorld: world,
+    viewEntity: view,
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  } as unknown as RenderSystemInternals;
   return { world, view, internals };
 }
 
@@ -112,9 +117,10 @@ function residentScene(query: () => PersistentGpuDrivenState['plan']) {
   let queries = 0;
   const scene = {
     plan,
-    queryPlan: () => {
+    queryExecution: () => {
       queries += 1;
-      return query();
+      const plan = query();
+      return { active: plan, resident: plan };
     },
   } as unknown as PersistentGpuDrivenState;
   return { scene, plan, queries: () => queries };
@@ -234,7 +240,7 @@ describe('render-gpu-driven-prepare system', () => {
     const consumed = consumeViewGpuDriven(internals, { scene: resident.scene }, () => {});
     expect(resident.queries()).toBe(1);
     expect(consumed.input?.scene?.plan).toBe(queried);
-    expect(consumed.input?.scene?.queryPlan).toBeUndefined();
+    expect(consumed.input?.scene?.queryExecution).toBeUndefined();
     expect(consumed.frame).toBeUndefined();
   });
 
@@ -373,9 +379,12 @@ describe('render-gpu-driven-prepare system', () => {
     ['direct', true, false],
     ['automatic', false, false],
   ] as const)('stages %s raster with prepared=%s after Skin and refines HZB to %s', (geometryLane, hasPrepared, lateOcclusion) => {
-    const context = setup('forward', false);
-    // Forward HZB is opt-in; this case exercises its post-Skin refinement.
-    viewPassPlanQueue(context.world, context.view).stage({ ...input(false), gpuOcclusion: true });
+    const context = setup('deferred', false);
+    viewPassPlanQueue(context.world, context.view).stage({
+      ...input(false),
+      renderPath: 'deferred',
+      gpuOcclusion: true,
+    });
     const order: string[] = [];
     const prepared = {
       selection: EMPTY_GPU_DRAW_SELECTION,

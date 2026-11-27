@@ -12,6 +12,40 @@ const relationship = defineRelationship({
 });
 
 describe('World semantic read seam', () => {
+  it('projects partial changes directly from live fields at their stored precision', () => {
+    const component = defineComponent('WorldReadDelta', {
+      x: { type: 'f32', default: 0 },
+      y: { type: 'f32', default: 0 },
+      enabled: { type: 'bool', default: false },
+      name: { type: 'string', default: '' },
+      values: { type: 'array<f32>' },
+      owner: { type: 'entity', default: null },
+    });
+    const world = new World();
+    const read = world[worldRead];
+    const entity = world
+      .spawn({ component, data: { x: 0.1, y: -0, name: 'first', values: [0.3, 4] } })
+      .unwrap();
+    const input = { x: 0.1, y: -0, name: 'first', values: [0.3, 4], enabled: false, owner: null };
+    expect(read.changedFields(entity, component, input)).toBeUndefined();
+    const changed = { ...input, y: 0, enabled: true, owner: entity };
+    expect(read.changedFields(entity, component, changed)).toEqual({
+      y: 0,
+      enabled: true,
+      owner: entity,
+    });
+    for (let frame = 0; frame < 60; frame++) {
+      const next = { ...changed, name: `material-${frame}`, values: [0.3, frame] };
+      const patch = read.changedFields(entity, component, next);
+      expect(patch?.name).toBe(next.name);
+      expect(patch).not.toHaveProperty('x');
+      world.set(entity, component, patch ?? {}).unwrap();
+      expect(read.changedFields(entity, component, next)).toBeUndefined();
+    }
+    world.despawn(entity).unwrap();
+    expect(read.changedFields(entity, component, input)).toBe(input);
+  });
+
   it('reads the existing relationship epoch independently of unrelated entities', () => {
     const world = new World();
     const read = world[worldRead];

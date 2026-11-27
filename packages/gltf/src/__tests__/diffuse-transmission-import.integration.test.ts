@@ -3,6 +3,7 @@ import { textureContribution } from '@forgeax/engine-image';
 import {
   ImporterRegistry,
   type ImportRunnerFs,
+  projectImportPack,
   type RunImportMeta,
   runImport,
 } from '@forgeax/engine-import';
@@ -134,7 +135,9 @@ describe('glTF KHR_materials_diffuse_transmission import', { timeout: 60_000 }, 
     // The factor texture is alpha data; the tint texture is sRGB color.
     expect(colorSpaces).toEqual(['linear', 'srgb']);
 
-    const material = result.value.pack.assets.find((asset) => asset.guid === MATERIAL_GUID);
+    const material = projectImportPack(result.value.product).assets.find(
+      (asset) => asset.guid === MATERIAL_GUID,
+    );
     if (material === undefined) throw new Error('leaf material row missing');
     expect([...material.refs].sort()).toEqual([...TEXTURE_GUIDS, ...SAMPLER_GUIDS].sort());
     const names = new Set(
@@ -148,7 +151,7 @@ describe('glTF KHR_materials_diffuse_transmission import', { timeout: 60_000 }, 
     ])
       expect(names.has(name)).toBe(true);
 
-    const { assets: runtime } = importedSource(result.value.pack);
+    const { assets: runtime } = importedSource(projectImportPack(result.value.product));
     runtime.installDecoder(materialContribution.kind, materialContribution.decoder);
     runtime.installDecoder(textureContribution.kind, textureContribution.decoder);
     runtime.installDecoder(samplerContribution.kind, samplerContribution.decoder);
@@ -181,7 +184,9 @@ describe('glTF KHR_materials_diffuse_transmission import', { timeout: 60_000 }, 
     const result = await runImport(meta(), importers, fs({}, []));
     if (!result.ok) throw new Error(JSON.stringify(result.error));
     if ('skipped' in result.value) throw new Error('diffuse import did not publish');
-    const material = result.value.pack.assets.find((asset) => asset.guid === MATERIAL_GUID);
+    const material = projectImportPack(result.value.product).assets.find(
+      (asset) => asset.guid === MATERIAL_GUID,
+    );
     const values = (material?.payload.values ?? {}) as Record<string, unknown>;
     expect(values.diffuseTransmission).toBe(0);
     expect(values.diffuseTransmissionColor).toEqual([1, 1, 1]);

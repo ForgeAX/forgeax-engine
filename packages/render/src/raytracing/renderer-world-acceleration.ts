@@ -7,8 +7,10 @@ import type {
 } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
 import { meshAttributeChannels } from '../publication/packed-rows-mesh';
+import type { FieldEdit } from './field-edit';
 import type { ProbeGlobalRegion } from './renderer-probe-global';
 import { type RayReferenceError, rayReferenceFailure } from './scene';
+import { sdfSurfaceCoveragePattern } from './sdf-surface-coverage';
 import {
   createWorldAcceleration,
   type WorldAcceleration,
@@ -16,17 +18,20 @@ import {
   type WorldAccelerationGeometry,
   type WorldAccelerationInstance,
 } from './world-acceleration';
+import { worldAccelerationTableWords } from './world-acceleration-coverage';
 
 /** BLAS builds admitted per frame; later geometries join the TLAS on following frames. */
 export const WORLD_ACCELERATION_BLAS_BUILDS_PER_FRAME = 4;
 
 /**
  * Why a Ray Query capable device still traces the Global SDF:
+ * `hardware-ray-query-disabled` when the field explicitly disables hardware;
  * `scene-exceeds-ray-query-limits` when the projected instances or one
  * geometry's triangles exceed `caps.rayQuery` limits.
  */
 export type WorldTraversalFallback =
   | RhiRayQueryUnsupportedReason
+  | 'hardware-ray-query-disabled'
   | 'scene-exceeds-ray-query-limits';
 
 type WorldTraversalSelection =
@@ -92,16 +97,28 @@ export function worldAccelerationRoster(
   const instances: WorldAccelerationInstance[] = [];
   for (const source of region.sources) {
     const geometry = worldAccelerationGeometry(source, ids);
-    if (geometry !== undefined) geometries.set(geometry.geometryId, geometry);
     const count = source.instances?.instanceCount ?? 1;
     for (let ordinal = 0; ordinal < count; ordinal++) {
       const instance = region.instances[source.firstInstance + ordinal];
       if (instance === undefined) continue;
+      const pattern =
+        geometry === undefined
+          ? undefined
+          : sdfSurfaceCoveragePattern(instance.surfaceCoverage, triangleCount(geometry));
+      const admitted = pattern?.ok === true ? pattern.value : undefined;
+      if (geometry !== undefined && admitted !== undefined)
+        geometries.set(geometry.geometryId, geometry);
       instances.push({
         instanceId: instance.instanceId,
-        geometryId: geometry?.geometryId ?? -1,
+        geometryId: admitted === undefined ? -1 : (geometry?.geometryId ?? -1),
         mask: instance.mask,
         transform: instance.transform,
+        surfaceCoverage:
+          admitted?.mode === 0
+            ? 'opaque'
+            : admitted?.bits === undefined
+              ? 'unknown'
+              : { kind: 'partial', opaquePrimitives: admitted.bits.slice() },
       });
     }
   }
@@ -111,12 +128,15 @@ export function worldAccelerationRoster(
 const triangleCount = (geometry: WorldAccelerationGeometry) =>
   (geometry.indices?.length ?? geometry.positions.length / 3) / 3;
 
-/** Automatic lane selection: Ray Query when supported and the scene fits its limits. */
+/** Ray Query when allowed, supported and within limits; an explicit off keeps real device caps. */
 export function selectWorldTraversal(
   caps: RhiRayQueryCaps,
   instances: number,
   geometries: readonly WorldAccelerationGeometry[],
+  hardwareRayTracing = true,
 ): WorldTraversalSelection {
+  if (!hardwareRayTracing)
+    return { traversal: 'global-sdf', fallback: 'hardware-ray-query-disabled' };
   if (!caps.supported) return { traversal: 'global-sdf', fallback: caps.reason };
   if (
     instances > caps.maxTlasInstanceCount ||
@@ -145,6 +165,10 @@ export interface WorldAccelerationInspection {
   readonly rowsWritten: number;
   /** Submitted CPU-written bytes: changed table rows plus new BLAS inputs and face normals. */
   readonly bytesUploaded: number;
+  readonly coverageBytesUploaded: number;
+  readonly coverageWords: number;
+  /** Actual allocated traversal records plus bounded bitmap tail (including alignment). */
+  readonly traversalTableBytes: number;
   /** Retained TLAS records patched (adds, moves, swap-fills); O(changed instances). */
   readonly recordsPatched: number;
   /** BLAS released after their last instance left. */
@@ -165,8 +189,8 @@ export const WORLD_ACCELERATION_TRIANGLE_HEADROOM = 65_536;
  * One in-place scene delta of the `'ray-query'` lane, addressed by owned field
  * rows (`instanceId`). Moves replace the instance transform, removals drop the
  * row, adds append a row whose `geometry` builds a BLAS only when its
- * `geometryId` (mesh identity) is not yet resident. Material changes carry no
- * acceleration work and never reach this edit.
+ * `geometryId` (mesh identity) is not yet resident. Material changes carry
+ * no BLAS/TLAS work; qualification changes update only traversal records and shared bitmaps.
  */
 export interface WorldAccelerationEdit {
   readonly moved: readonly { readonly index: number; readonly to: ArrayLike<number> }[];
@@ -175,6 +199,44 @@ export interface WorldAccelerationEdit {
     readonly instance: WorldAccelerationInstance;
     readonly geometry: WorldAccelerationGeometry;
   }[];
+  readonly coverage?: readonly {
+    readonly index: number;
+    readonly surfaceCoverage: WorldAccelerationInstance['surfaceCoverage'];
+  }[];
+}
+
+/** Translate one accepted field delta once; material qualification never changes Mesh identity. */
+export function worldAccelerationEdit(
+  edit: FieldEdit,
+  addedRows: readonly number[],
+  ids: WorldAccelerationGeometryIds,
+): Result<WorldAccelerationEdit, RayReferenceError> {
+  const added: WorldAccelerationEdit['added'][number][] = [];
+  for (const [index, add] of edit.added.entries()) {
+    const row = addedRows[index];
+    const geometry = worldAccelerationGeometry(add.source, ids);
+    if (row === undefined || geometry === undefined)
+      return rayReferenceFailure('an accepted hardware field add requires its actual row and Mesh');
+    added.push({
+      instance: {
+        instanceId: row,
+        geometryId: geometry.geometryId,
+        mask: add.instance.mask,
+        transform: add.instance.transform,
+        surfaceCoverage: add.instance.surfaceCoverage,
+      },
+      geometry,
+    });
+  }
+  return ok({
+    moved: edit.moved,
+    removed: edit.removed,
+    added,
+    coverage: edit.rematerialized.map((change) => ({
+      index: change.index,
+      surfaceCoverage: change.instance.surfaceCoverage,
+    })),
+  });
 }
 
 /**
@@ -250,7 +312,14 @@ export function prepareWorldAcceleration(
   let settled = false;
   // Bumped by every edit: a commit settles only an update encoded after the last edit.
   let revision = 0;
-  const totals = { blasBuilt: 0, tlasBuilt: 0, bytesBuilt: 0, rowsWritten: 0, bytesUploaded: 0 };
+  const totals = {
+    blasBuilt: 0,
+    tlasBuilt: 0,
+    bytesBuilt: 0,
+    rowsWritten: 0,
+    bytesUploaded: 0,
+    coverageBytesUploaded: 0,
+  };
   const beginFrame = (): Result<void, RayReferenceError | RhiError> => {
     if (encoded === undefined) return ok(undefined);
     // An encoded update never reached commit (a failed submit): rebuild every GPU object.
@@ -261,6 +330,7 @@ export function prepareWorldAcceleration(
     encoded = undefined;
     return ok(undefined);
   };
+  const isSettled = () => settled && !world.motionPending;
   return ok({
     traversal: 'ray-query',
     maxInstances,
@@ -275,9 +345,9 @@ export function prepareWorldAcceleration(
       encoded = { build: updated.value, revision };
       return ok(undefined);
     },
-    settled: () => settled,
+    settled: isSettled,
     edit(edit) {
-      // Validate the whole delta first: a rejected edit leaves the roster unchanged.
+      // Validate roster limits first; material qualification is acquired atomically.
       let removed = 0;
       for (const removal of edit.removed) if (world.has(removal.index)) removed++;
       const fresh = new Map<number, WorldAccelerationGeometry>();
@@ -297,6 +367,8 @@ export function prepareWorldAcceleration(
         return rayReferenceFailure('world acceleration exceeds its triangle headroom', true);
       if (world.instances - removed + edit.added.length > maxInstances)
         return rayReferenceFailure('world acceleration exceeds its instance headroom', true);
+      const qualification = world.setCoverages(edit.coverage ?? []);
+      if (!qualification.ok) return qualification;
       for (const move of edit.moved) {
         const moved = world.move(move.index, move.to);
         if (!moved.ok) return moved;
@@ -323,13 +395,16 @@ export function prepareWorldAcceleration(
       totals.bytesBuilt += build.bytesBuilt;
       totals.rowsWritten += build.rowsWritten;
       totals.bytesUploaded += build.bytesUploaded;
+      totals.coverageBytesUploaded += build.coverageBytesUploaded;
       encoded = undefined;
     },
     inspect: () => ({
       instances: world.instances,
       geometries: world.geometries,
       pending,
-      settled,
+      coverageWords: world.coverageWords,
+      traversalTableBytes: worldAccelerationTableWords(maxInstances, maxTriangles) * 4,
+      settled: isSettled(),
       ...totals,
       ...world.work,
     }),

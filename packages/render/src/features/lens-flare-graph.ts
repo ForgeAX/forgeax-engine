@@ -11,7 +11,12 @@ import {
   LENS_FLARE_COMPOSITE_ID,
   LENS_FLARE_GUARD_BAND,
   LENS_FLARE_PREFILTER_ID,
+  LENS_FLARE_WITH_BLOOM_ID,
 } from './lens-flare';
+
+export const LENS_FLARE_PREFILTER = 'standard-lens-flare-prefilter';
+export const LENS_FLARE_BOKEH = 'standard-lens-flare-bokeh';
+export const LENS_FLARE_COMBINED = 'standard-lens-flare';
 
 /**
  * The guard band covers LENS_FLARE_GUARD_BAND times the view at 1/8 of its
@@ -32,38 +37,39 @@ export function lensFlareGuardBandSize(output: {
 
 export function addLensFlarePasses(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
-  input: RenderPipelineTarget,
+  halfScene: RenderPipelineTarget,
   output: { readonly width: number; readonly height: number },
+  bloom?: RenderPipelineTarget,
 ): Result<RenderPipelineTarget, RenderGraphError> {
   const guardBand = lensFlareGuardBandSize(output);
-  const prefiltered = createRenderPipelineTarget(graph, 'standard-lens-flare-prefilter', {
+  const prefiltered = createRenderPipelineTarget(graph, LENS_FLARE_PREFILTER, {
     format: 'rgba16float',
     size: guardBand,
     domain: 'linear-hdr',
   });
   if (!prefiltered.ok) return prefiltered;
-  const bokeh = createRenderPipelineTarget(graph, 'standard-lens-flare-bokeh', {
+  const bokeh = createRenderPipelineTarget(graph, LENS_FLARE_BOKEH, {
     format: 'rgba16float',
     size: guardBand,
     domain: 'linear-hdr',
   });
   if (!bokeh.ok) return bokeh;
-  const composited = createRenderPipelineTarget(graph, 'standard-lens-flare', {
+  const composited = createRenderPipelineTarget(graph, LENS_FLARE_COMBINED, {
     format: 'rgba16float',
-    size: { width: output.width, height: output.height },
+    size: { width: Math.ceil(output.width / 2), height: Math.ceil(output.height / 2) },
     domain: 'linear-hdr',
   });
   if (!composited.ok) return composited;
   const thresholded = addTypedFullscreenPass(graph, {
-    name: 'standard-lens-flare-prefilter',
+    name: LENS_FLARE_PREFILTER,
     shader: LENS_FLARE_PREFILTER_ID,
     clearColor: [0, 0, 0, 1],
-    input,
+    input: halfScene,
     outputs: [prefiltered.value],
   });
   if (!thresholded.ok) return thresholded;
   const blurred = addTypedFullscreenPass(graph, {
-    name: 'standard-lens-flare-bokeh',
+    name: LENS_FLARE_BOKEH,
     shader: LENS_FLARE_BLUR_ID,
     clearColor: [0, 0, 0, 1],
     input: prefiltered.value,
@@ -71,11 +77,11 @@ export function addLensFlarePasses(
   });
   if (!blurred.ok) return blurred;
   const ghosts = addTypedFullscreenPass(graph, {
-    name: 'standard-lens-flare',
-    shader: LENS_FLARE_COMPOSITE_ID,
-    input,
+    name: LENS_FLARE_COMBINED,
+    shader: bloom === undefined ? LENS_FLARE_COMPOSITE_ID : LENS_FLARE_WITH_BLOOM_ID,
+    input: bokeh.value,
     outputs: [composited.value],
-    additionalReads: [{ key: 'lens-flare-bokeh', target: bokeh.value }],
+    ...(bloom === undefined ? {} : { additionalReads: [{ key: 'bloom', target: bloom }] }),
   });
   return ghosts.ok ? ok(composited.value) : ghosts;
 }

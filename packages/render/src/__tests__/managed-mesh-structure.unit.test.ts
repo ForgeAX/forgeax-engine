@@ -1,4 +1,4 @@
-import { createBoxGeometry } from '@forgeax/engine-geometry';
+import { createBoxGeometry, describeMeshDraw } from '@forgeax/engine-geometry';
 import { frustum, mat4, vec3 } from '@forgeax/engine-math';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { type MeshAsset, ok } from '@forgeax/engine-types';
@@ -6,6 +6,7 @@ import { assert, expect, it, vi } from 'vitest';
 import { buildGpuDrivenDraws } from '../extract/gpu-driven';
 import { MemberCandidates } from '../gpu-driven/batch-members';
 import { BatchTopology } from '../gpu-driven/batch-topology';
+import { GPU_TASK_HEADER_BYTES } from '../gpu-driven/task-header';
 import { GpuDrivenView } from '../gpu-driven/view-gpu';
 import { GpuScene } from '../gpu-scene';
 import { GPU_MEMBER_RECORD_WORDS } from '../gpu-scene-inputs';
@@ -48,7 +49,7 @@ function setup(count = 10000) {
     transform: { world: mat4.identity(mat4.create()) },
     localAabb: Float32Array.of(-1, -1, -1, 1, 1, 1),
     gpuDrivenDraws: buildGpuDrivenDraws({
-      mesh,
+      mesh: describeMeshDraw(mesh),
       materials: [a.snapshot],
       fallbackMaterial: a.snapshot,
       deformation: 'rigid',
@@ -82,12 +83,12 @@ function setup(count = 10000) {
 
 it('expands changed submeshes, topology and LOD from one fixed root without touching membership', () => {
   const f = setup();
-  const before = f.topology.query(f.topology.sourcePlan(), f.initial),
+  const before = f.topology.query(f.topology.sourcePlan(), f.initial).active,
     membership = f.topology.inspect();
   const old = before.batches.at(0);
   assert(old);
   const edited = f.initial.with(7, f.changed, [f.b, f.b]);
-  const after = f.topology.query(f.topology.sourcePlan(), edited);
+  const after = f.topology.query(f.topology.sourcePlan(), edited).active;
   expect(after.batches).toHaveLength(2);
   for (const batch of after.batches) {
     expect(batch.candidates).toBe(old.candidates);
@@ -115,14 +116,14 @@ it('expands changed submeshes, topology and LOD from one fixed root without touc
     },
     [f.b],
   );
-  const point = f.topology.query(f.topology.sourcePlan(), points).batches.at(0);
+  const point = f.topology.query(f.topology.sourcePlan(), points).active.batches.at(0);
   assert(point);
   expect(point.key).toMatchObject({ drawKind: 'non-indexed', topology: 'point-list', count: 4 });
   expect(point.binding?.geometry.receipt.indexed).toBe(false);
   expect(point.candidates).toBe(old.candidates);
   expect(old.key).toMatchObject({ drawKind: 'indexed', topology: 'triangle-list', count: 36 });
   expect(old.binding?.material).toBe(f.a);
-  const restored = f.topology.query(f.topology.sourcePlan(), f.initial);
+  const restored = f.topology.query(f.topology.sourcePlan(), f.initial).active;
   expect(restored.batches.at(0)?.candidates).toBe(old.candidates);
   expect(restored.batches.at(0)?.binding).toBe(old.binding);
 });
@@ -140,7 +141,7 @@ it('adds a GPU execution without reading, copying, reallocating or uploading sha
     shaderModuleFactory: { createShaderModule: () => ok(shader) },
   }).unwrap();
   const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
-  const first = f.topology.query(f.topology.sourcePlan(), f.initial);
+  const first = f.topology.query(f.topology.sourcePlan(), f.initial).active;
   const original = first.batches.at(0)?.candidates;
   assert(original);
   let reads = 0;
@@ -158,16 +159,20 @@ it('adds a GPU execution without reading, copying, reallocating or uploading sha
     expect(view.inspect().sharedInputUploadBytes).toBeLessThanOrEqual(2 * recordBytes);
     expect(expansions()).toBe(0);
     const capacity = view.inspect().candidateCapacity;
+    const memberNodes = gpu.inputs.memberNodesWritten;
+    const headers = gpu.inputs.taskHeadersWritten;
     reads = 0;
     updateGpuView(
       view,
-      f.topology.query(f.topology.sourcePlan(), f.initial.with(7, f.changed, [f.b, f.b])),
+      f.topology.query(f.topology.sourcePlan(), f.initial.with(7, f.changed, [f.b, f.b])).active,
       gpu,
       planes,
     ).unwrap();
     expect(reads).toBeLessThanOrEqual(4); // O(1) root lookup per actual task.
     expect(expansions()).toBe(0);
-    expect(view.inspect().sharedInputUploadBytes).toBe(0);
+    expect(gpu.inputs.memberNodesWritten).toBe(memberNodes);
+    expect(gpu.inputs.taskHeadersWritten - headers).toBe(2);
+    expect(view.inspect().sharedInputUploadBytes).toBe(2 * GPU_TASK_HEADER_BYTES);
     expect(view.inspect().candidateCapacity).toBe(capacity);
     expect(view.inspect().batchUploadBytes).toBeGreaterThan(0);
     view._commitResourceReplacement();
@@ -176,6 +181,8 @@ it('adds a GPU execution without reading, copying, reallocating or uploading sha
     updateGpuView(view, first, gpu, planes).unwrap();
     expect(reads).toBeLessThanOrEqual(4); // O(1) root lookup per actual task.
     expect(expansions()).toBe(0);
+    expect(gpu.inputs.memberNodesWritten).toBe(memberNodes);
+    expect(gpu.inputs.taskHeadersWritten - headers).toBe(2);
     expect(view.inspect().sharedInputUploadBytes).toBe(0);
   } finally {
     stopObserving();

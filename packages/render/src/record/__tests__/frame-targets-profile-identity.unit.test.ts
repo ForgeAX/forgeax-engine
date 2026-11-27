@@ -1,5 +1,9 @@
 import { createProfiler } from '@forgeax/engine-profiler';
-import type { RenderGraphPassExecution } from '@forgeax/engine-render-graph';
+import type {
+  CompiledRenderGraph,
+  RenderGraphFrame,
+  RenderGraphPassExecution,
+} from '@forgeax/engine-render-graph';
 import { describe, expect, it } from 'vitest';
 import type { RenderPassCpuIdentityCapture } from '../../render-contract';
 import { createRenderWorld, pinRenderProfileSession } from '../../world/render-world';
@@ -37,16 +41,27 @@ describe('graph pass view identity', () => {
   });
 
   it('freezes declaration manifests derived from an immutable compiled graph', () => {
+    const native = {
+      name: 'shadow-select-3',
+      kind: 'compute',
+      profileName: 'shadow-select',
+    } as const;
     const passes = [
       { executionIndex: 0, name: 'first', kind: 'raster' as const },
       { executionIndex: 1, name: 'copy', kind: 'copy' as const },
-      { executionIndex: 2, name: 'group', kind: 'subgraph' as const },
+      {
+        executionIndex: 2,
+        name: 'group',
+        kind: 'subgraph' as const,
+        nativeProfilePasses: [native],
+      },
     ] as const;
     const phases = graphExecutionProfilePhases({ passes }, 'view-7');
 
     expect(phases).toEqual([
       graphExecutionProfilePhase({ owner: 'view-7', pass: passes[0] }),
       graphExecutionProfilePhase({ owner: 'view-7', pass: passes[1] }),
+      graphExecutionProfilePhase({ owner: 'view-7', pass: native }),
     ]);
     expect(Object.isFrozen(phases)).toBe(true);
   });
@@ -115,7 +130,7 @@ describe('graph pass view identity', () => {
     } as unknown as RenderSystemInternals;
     const graph = {
       inspect: () => ({ generation: 4, passes: [pass] }),
-    } as unknown as Parameters<typeof createRenderGraphPassInstrumentation>[0]['graph'];
+    } as unknown as CompiledRenderGraph<RenderGraphFrame>;
     const instrumentation = createRenderGraphPassInstrumentation({
       internals,
       graph,
@@ -161,7 +176,7 @@ describe('graph pass view identity', () => {
     } as unknown as RenderSystemInternals;
     const graph = {
       inspect: () => ({ generation: 7, passes: [pass] }),
-    } as unknown as Parameters<typeof createRenderGraphPassInstrumentation>[0]['graph'];
+    } as unknown as CompiledRenderGraph<RenderGraphFrame>;
 
     const instrumentation = createRenderGraphPassInstrumentation({ internals, graph });
     const scope = instrumentation?.begin(pass, {} as never);
@@ -216,7 +231,7 @@ describe('graph pass view identity', () => {
     } as unknown as RenderSystemInternals;
     const graph = {
       inspect: () => ({ generation: 9, passes: [pass] }),
-    } as unknown as Parameters<typeof createRenderGraphPassInstrumentation>[0]['graph'];
+    } as unknown as CompiledRenderGraph<RenderGraphFrame>;
 
     const instrumentation = createRenderGraphPassInstrumentation({ internals, graph });
     const scope = instrumentation?.begin(pass, {} as never);
@@ -250,7 +265,7 @@ describe('graph pass view identity', () => {
     } as unknown as RenderSystemInternals;
     const graph = {
       inspect: () => ({ generation: 10, passes: [pass] }),
-    } as unknown as Parameters<typeof createRenderGraphPassInstrumentation>[0]['graph'];
+    } as unknown as CompiledRenderGraph<RenderGraphFrame>;
 
     expect(createRenderGraphPassInstrumentation({ internals, graph })).toBeUndefined();
     expect(cpuIdentityCapture.entries).toHaveLength(0);

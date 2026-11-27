@@ -46,9 +46,12 @@ export type CameraExposure =
   | { readonly kind: 'manual'; readonly multiplier: number }
   | {
       readonly kind: 'auto';
+      /** UE's linear/exponential transition in scene luminance EV. */
+      readonly adaptation?: 'ue-eye-adaptation';
       readonly fallback: number;
       readonly compensationEv: number;
       readonly rangeEv: readonly [min: number, max: number];
+      /** For UE adaptation these are stops per second for brighter/darker scene luminance. */
       readonly rates: readonly [up: number, down: number];
     };
 
@@ -61,6 +64,8 @@ export const CAMERA_EXPOSURE_MODE_MANUAL = 0;
  * re-meters when the sun or sky brightness changes at runtime.
  */
 export const CAMERA_EXPOSURE_MODE_AUTO = 1;
+/** GPU-adapted exposure with UE's EV transition and view-history reset. */
+export const CAMERA_EXPOSURE_MODE_AUTO_UE = 2;
 
 /** Product-supported white-balance temperature range in Kelvin. */
 export const CAMERA_TEMPERATURE_MIN = 1000;
@@ -138,18 +143,27 @@ export function validateCameraExposure(exposure: CameraExposure): CameraExposure
     );
   }
   if (exposure.kind === 'manual') {
-    if (!finitePositive(exposure.multiplier)) {
+    if (!Number.isFinite(exposure.multiplier) || exposure.multiplier < 0) {
       throw cameraError(
         'camera-exposure-invalid',
         'multiplier',
         exposure.multiplier,
-        'a finite number greater than zero',
-        'set Camera.exposure to a positive finite manual multiplier',
+        'a finite non-negative number',
+        'set Camera.exposure to a finite non-negative manual multiplier',
       );
     }
     return exposure;
   }
   if (exposure.kind === 'auto') {
+    if (exposure.adaptation !== undefined && exposure.adaptation !== 'ue-eye-adaptation') {
+      throw cameraError(
+        'camera-exposure-invalid',
+        'adaptation',
+        exposure.adaptation,
+        'ue-eye-adaptation when specified',
+        'choose the supported eye adaptation profile',
+      );
+    }
     const [min, max] = exposure.rangeEv;
     const [up, down] = exposure.rates;
     if (
@@ -477,6 +491,30 @@ export const BLOOM_DISABLED = 0;
 /** Numeric encoding of bloom enabled (schema value for `bloom`). */
 export const BLOOM_ENABLED = 1;
 
+export const BLOOM_QUALITY_LOW = 3;
+export const BLOOM_QUALITY_MEDIUM = 4;
+export const BLOOM_QUALITY_HIGH = 5;
+export type BloomQuality =
+  | typeof BLOOM_QUALITY_LOW
+  | typeof BLOOM_QUALITY_MEDIUM
+  | typeof BLOOM_QUALITY_HIGH;
+
+export function bloomQualityFromF32(quality: number): BloomQuality {
+  if (
+    quality === BLOOM_QUALITY_LOW ||
+    quality === BLOOM_QUALITY_MEDIUM ||
+    quality === BLOOM_QUALITY_HIGH
+  )
+    return quality;
+  throw cameraError(
+    'camera-bloom-invalid',
+    'bloomQuality',
+    quality,
+    '3, 4 or 5',
+    'select Camera Bloom quality low, medium or high',
+  );
+}
+
 /** Bloom intensity is a linear HDR add-back multiplier. */
 export const CAMERA_BLOOM_INTENSITY_MIN = 0;
 export const CAMERA_BLOOM_INTENSITY_MAX = 8;
@@ -637,6 +675,8 @@ export function validateCameraBloom(
 export const Camera = defineComponent('Camera', {
   /** Unsigned 32-bit geometry visibility mask; independent of lighting and shadows. */
   cullMask: { type: 'f64', default: 0xffffffff },
+  /** Sort direct opaque draws by their authored render Layer for this view. */
+  orderOpaqueByLayer: { type: 'bool', default: false },
   fov: { type: 'f32' },
   aspect: { type: 'f32' },
   near: { type: 'f32', default: 0.1 },
@@ -660,6 +700,8 @@ export const Camera = defineComponent('Camera', {
   temperature: { type: 'f32', default: 6504 },
   tint: { type: 'f32', default: 0 },
   colorLut: { type: 'asset<texture>', default: 0 as never },
+  /** Runtime GPU-generated LUT. Takes precedence when both sources are assigned. */
+  generatedColorLut: { type: 'asset<gpu-texture>', default: 0 as never },
   colorLutStrength: { type: 'f32', default: 1 },
   antialias: { type: 'f32', default: 0 },
   // TAA only: 1 enables the Unreal TSR flickering temporal analysis
@@ -668,6 +710,7 @@ export const Camera = defineComponent('Camera', {
   transparency: { type: 'f32', default: TRANSPARENCY_SORTED },
   historyVersion: { type: 'u32', default: 0 },
   bloom: { type: 'f32', default: 0 },
+  bloomQuality: { type: 'f32', default: BLOOM_QUALITY_HIGH },
   // Negative (default, as in Unreal) blooms the whole frame; 1 blooms only above-white HDR luminance.
   bloomThreshold: { type: 'f32', default: -1 },
   bloomIntensity: { type: 'f32', default: 0.5 },
@@ -727,13 +770,11 @@ export function validateCameraPerspectiveFov(value: number): number {
   return value;
 }
 
-/** Validate and detach the two shared lens offsets before extraction/publication. */
-export function validateCameraProjectionOffset(
-  value: ArrayLike<number>,
-): readonly [number, number] {
+export function assertCameraProjectionOffset(value: ArrayLike<number>): void {
   if (
     value.length !== 2 ||
-    ![value[0], value[1]].every((v) => Number.isFinite(Math.fround(v ?? NaN)))
+    !Number.isFinite(Math.fround(value[0] ?? NaN)) ||
+    !Number.isFinite(Math.fround(value[1] ?? NaN))
   )
     throw cameraError(
       'camera-projection-invalid',
@@ -742,6 +783,13 @@ export function validateCameraProjectionOffset(
       'two finite Float32 NDC offsets',
       'use [0, 0] for a centered lens or finite X/Y offsets for an off-axis lens',
     );
+}
+
+/** A published camera snapshot owns the two validated lens values. */
+export function validateCameraProjectionOffset(
+  value: ArrayLike<number>,
+): readonly [number, number] {
+  assertCameraProjectionOffset(value);
   return [value[0] as number, value[1] as number];
 }
 
@@ -752,9 +800,11 @@ export function cameraExposureFromColumns(
   if (input.exposureMode === CAMERA_EXPOSURE_MODE_MANUAL) {
     return validateCameraExposure({ kind: 'manual', multiplier: input.exposure });
   }
-  if (input.exposureMode === CAMERA_EXPOSURE_MODE_AUTO) {
+  const ue = input.exposureMode === CAMERA_EXPOSURE_MODE_AUTO_UE;
+  if (input.exposureMode === CAMERA_EXPOSURE_MODE_AUTO || ue) {
     return validateCameraExposure({
       kind: 'auto',
+      ...(ue ? { adaptation: 'ue-eye-adaptation' } : {}),
       fallback: input.exposure,
       compensationEv: input.compensationEv,
       rangeEv: [input.rangeEv[0] ?? -8, input.rangeEv[1] ?? 8],
@@ -765,12 +815,13 @@ export function cameraExposureFromColumns(
     'camera-exposure-mode-invalid',
     'exposureMode',
     input.exposureMode,
-    `${CAMERA_EXPOSURE_MODE_MANUAL} or ${CAMERA_EXPOSURE_MODE_AUTO}`,
+    `${CAMERA_EXPOSURE_MODE_MANUAL}, ${CAMERA_EXPOSURE_MODE_AUTO} or ${CAMERA_EXPOSURE_MODE_AUTO_UE}`,
     'set Camera.exposureMode to the manual or auto encoding',
   );
 }
 
-function cameraExposureColumns(
+/** Encode exposure for Camera creation or a Camera component patch. */
+export function cameraExposureColumns(
   exposure: CameraExposure,
 ): Pick<CameraData, 'exposureMode' | 'exposure' | 'compensationEv' | 'rangeEv' | 'rates'> {
   const checked = validateCameraExposure(exposure);
@@ -784,7 +835,10 @@ function cameraExposureColumns(
     };
   }
   return {
-    exposureMode: CAMERA_EXPOSURE_MODE_AUTO,
+    exposureMode:
+      checked.adaptation === 'ue-eye-adaptation'
+        ? CAMERA_EXPOSURE_MODE_AUTO_UE
+        : CAMERA_EXPOSURE_MODE_AUTO,
     exposure: checked.fallback,
     compensationEv: checked.compensationEv,
     rangeEv: new Float32Array(checked.rangeEv),
@@ -797,13 +851,14 @@ interface CameraColorGradingOpts {
   temperature?: number;
   tint?: number;
   colorLut?: CameraPod['colorLut'];
+  generatedColorLut?: CameraPod['generatedColorLut'];
   colorLutStrength?: number;
 }
 
 function cameraColorGradingColumns(
   opts: CameraColorGradingOpts,
 ): ReturnType<typeof cameraExposureColumns> &
-  Pick<CameraData, 'temperature' | 'tint' | 'colorLut' | 'colorLutStrength'> {
+  Pick<CameraData, 'temperature' | 'tint' | 'colorLut' | 'generatedColorLut' | 'colorLutStrength'> {
   const exposure = opts.exposure ?? { kind: 'manual', multiplier: 1 };
   const temperature = opts.temperature ?? 6504;
   const tint = opts.tint ?? 0;
@@ -815,6 +870,7 @@ function cameraColorGradingColumns(
     temperature,
     tint,
     colorLut: opts.colorLut ?? (0 as CameraPod['colorLut']),
+    generatedColorLut: opts.generatedColorLut ?? (0 as CameraPod['generatedColorLut']),
     colorLutStrength,
   };
 }
@@ -866,6 +922,7 @@ interface CameraPerspectiveOpts {
   temperature?: number;
   tint?: number;
   colorLut?: CameraPod['colorLut'];
+  generatedColorLut?: CameraPod['generatedColorLut'];
   colorLutStrength?: number;
 }
 
@@ -882,22 +939,24 @@ interface CameraOrthographicOpts {
   temperature?: number;
   tint?: number;
   colorLut?: CameraPod['colorLut'];
+  generatedColorLut?: CameraPod['generatedColorLut'];
   colorLutStrength?: number;
 }
 
-/**
- * Build a CameraPod base from Camera.fields defaults (per-field SSOT).
- * Fields without a default (fov / aspect) are left
- * unset; caller fills them from opts or sentinel values.
- */
-function cameraPodFromDefaults(): CameraPod {
-  const base: Record<string, unknown> = {};
-  for (const [key, field] of Object.entries(Camera.fields)) {
-    if ('default' in field && field.default !== undefined) {
-      base[key] = field.default;
-    }
-  }
-  return base as CameraPod;
+// The component schema supplies the factory defaults. Each product owns its
+// writable vectors; the exposure columns construct their two vectors below.
+const cameraColumnDefaults = Object.freeze(
+  Object.fromEntries(
+    Object.entries(Camera.fields).flatMap(([key, field]) =>
+      'default' in field && field.default !== undefined ? [[key, field.default]] : [],
+    ),
+  ),
+) as Readonly<CameraPod>;
+
+function cameraLensOffset(value: ArrayLike<number> | undefined): Float32Array {
+  const source = value ?? cameraColumnDefaults.projectionOffset;
+  assertCameraProjectionOffset(source);
+  return new Float32Array(source);
 }
 
 /**
@@ -942,10 +1001,8 @@ function cameraPodFromDefaults(): CameraPod {
  */
 export function perspective(opts: CameraPerspectiveOpts): CameraPod {
   return {
-    // cameraPodFromDefaults() reads autoAspect's schema default (true), so an
-    // omitted opts.autoAspect lands the default-correct value; an explicit
-    // false overrides it below (D-4: factory one-step opt-out, charter P1).
-    ...cameraPodFromDefaults(),
+    ...cameraColumnDefaults,
+    clearColor: new Float32Array(cameraColumnDefaults.clearColor),
     fov: validateCameraPerspectiveFov(opts.fov),
     aspect: opts.aspect,
     ...(opts.near === undefined ? {} : { near: opts.near }),
@@ -953,11 +1010,7 @@ export function perspective(opts: CameraPerspectiveOpts): CameraPod {
     projection: CAMERA_PROJECTION_PERSPECTIVE,
     ...(opts.autoAspect !== undefined ? { autoAspect: opts.autoAspect } : {}),
     ...(opts.postProcessing === undefined ? {} : { postProcessing: opts.postProcessing }),
-    ...(opts.projectionOffset === undefined
-      ? {}
-      : {
-          projectionOffset: new Float32Array(validateCameraProjectionOffset(opts.projectionOffset)),
-        }),
+    projectionOffset: cameraLensOffset(opts.projectionOffset),
     ...cameraColorGradingColumns(opts),
   };
 }
@@ -988,7 +1041,8 @@ export function perspective(opts: CameraPerspectiveOpts): CameraPod {
  */
 export function orthographic(opts: CameraOrthographicOpts): CameraPod {
   return {
-    ...cameraPodFromDefaults(),
+    ...cameraColumnDefaults,
+    clearColor: new Float32Array(cameraColumnDefaults.clearColor),
     fov: 0,
     aspect: 1,
     ...(opts.near === undefined ? {} : { near: opts.near }),
@@ -999,11 +1053,7 @@ export function orthographic(opts: CameraOrthographicOpts): CameraPod {
     right: opts.right,
     bottom: opts.bottom,
     top: opts.top,
-    ...(opts.projectionOffset === undefined
-      ? {}
-      : {
-          projectionOffset: new Float32Array(validateCameraProjectionOffset(opts.projectionOffset)),
-        }),
+    projectionOffset: cameraLensOffset(opts.projectionOffset),
     ...cameraColorGradingColumns(opts),
   };
 }

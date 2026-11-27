@@ -28,6 +28,7 @@ import testQuality from '../../../../scripts/test/render-quality.json' with { ty
 import { createDevImportTransport } from '../dev-import-transport';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { compactTape } from './compact-tape.fixture';
+import { completedReadyFrame } from './helpers/completed-ready-frame';
 import { testAssets } from './helpers/runtime-assets';
 import { describeReplayWork } from './replay-inspections.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
@@ -38,6 +39,7 @@ export async function verifyMaterialMrt(options: {
   shaderManifestUrl: string;
   save(name: string, bytes: Uint8Array): void | Promise<void>;
 }) {
+  const deadline = Date.now() + 120_000;
   const errors: unknown[] = [];
   let surface: GPUTexture | undefined;
   let rawDevice: GPUDevice | undefined;
@@ -201,22 +203,22 @@ export async function verifyMaterialMrt(options: {
       )
       .unwrap();
     const lease = renderValue(renderer.attach(world));
-    const draw = async () => {
+    const draw = () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const receipt = renderValue(renderer.draw({ source: lease, geometryLane: 'direct' }));
-      renderValue(await receipt.completed);
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      return renderValue(renderer.draw({ source: lease, geometryLane: 'direct' }));
     };
-    for (let i = 0; i < testQuality.staticFrames; i++) await draw();
+    for (let i = 0; i < testQuality.staticFrames; i++) await completedReadyFrame(draw, deadline);
     for (const extent of [32, 48]) {
       size = extent;
       canvas.width = canvas.height = extent;
-      for (let i = 0; i < 3; i++) await draw();
+      for (let i = 0; i < 3; i++) await completedReadyFrame(draw, deadline);
       observe = true;
       const capture = recorder.captureFrame();
       (await recorder.frameBoundary()).unwrap();
-      await draw();
+      const receipt = draw();
+      renderValue(await receipt.completed);
+      await new Promise((resolve) => setTimeout(resolve, 0));
       (await recorder.frameBoundary()).unwrap();
       const encoded = (await capture).unwrap();
       observe = false;
@@ -228,6 +230,7 @@ export async function verifyMaterialMrt(options: {
           item.attachments?.colorViewHandleIds.length === 4 &&
           (item.kind === 'draw' || item.kind === 'drawIndexed'),
       );
+      expect(receipt.presentation, JSON.stringify(receipt.presentationPendingReason)).toBe('ready');
       if (work?.attachments === null || work === undefined)
         throw new Error('MRT draw absent from real frame');
       const live: Uint8Array[] = [];

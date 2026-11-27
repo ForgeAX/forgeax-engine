@@ -86,7 +86,6 @@ export function meshSsboBuffer(
   return buffer;
 }
 
-/** Resolve the physical resource and dynamic offset from the same logical address. */
 /** The binding-relative offset of {@link meshSsboBufferBinding}, without a binding record. */
 export function meshSsboByteOffset(
   storage: Pick<MeshSsboBufferWrapper, 'pages'>,
@@ -98,19 +97,27 @@ export function meshSsboByteOffset(
     : byteOffset - Math.floor(byteOffset / pages.byteStride) * pages.byteStride;
 }
 
+/** Resolve the address, optionally writing into the encoder's synchronous scratch row. */
 export function meshSsboBufferBinding(
   storage: Pick<MeshSsboBufferWrapper, 'buffer' | 'pages'>,
   byteOffset: number,
-): { readonly buffer: Buffer; readonly byteOffset: number } {
-  const buffer = meshSsboBuffer(storage, byteOffset);
+  into?: { buffer: Buffer; byteOffset: number },
+): { buffer: Buffer; byteOffset: number } {
   const pages = storage.pages;
-  return {
-    buffer,
-    byteOffset:
-      pages === undefined
-        ? byteOffset
-        : byteOffset - Math.floor(byteOffset / pages.byteStride) * pages.byteStride,
-  };
+  let buffer: Buffer | null | undefined;
+  if (pages === undefined) {
+    buffer = storage.buffer;
+    if (buffer === null) throw new Error('draw buffer is not allocated');
+  } else {
+    const page = Math.floor(byteOffset / pages.byteStride);
+    buffer = pages.buffers[page];
+    if (buffer === undefined) throw new Error('draw buffer address exceeds allocated pages');
+    byteOffset -= page * pages.byteStride;
+  }
+  if (into === undefined) return { buffer, byteOffset };
+  into.buffer = buffer;
+  into.byteOffset = byteOffset;
+  return into;
 }
 
 /**
@@ -129,8 +136,13 @@ export function writeMeshSsboBuffer(
   if (size === 0) return;
   const pages = storage.pages;
   if (pages === undefined) {
-    const binding = meshSsboBufferBinding(storage, byteOffset);
-    const result = queue.writeBuffer(binding.buffer, binding.byteOffset, data, dataOffset, size);
+    const result = queue.writeBuffer(
+      meshSsboBuffer(storage, byteOffset),
+      byteOffset,
+      data,
+      dataOffset,
+      size,
+    );
     if (!result.ok) throw result.error;
     return;
   }

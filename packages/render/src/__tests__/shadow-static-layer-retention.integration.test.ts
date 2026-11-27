@@ -31,6 +31,8 @@ function spotTopology(spotMapSize = 32): RenderPipelineTopology {
     camera: { tonemap: 'aces-filmic', antialias: 'fxaa', bloom: 'off', bloomIntensity: 1 },
     shadow: {
       directional: 'disabled',
+      pointStaticMask: 1,
+      spotStaticMask: 1,
       spotMapSize,
       pointCount: 0,
       pointFaceSize: 16,
@@ -196,6 +198,50 @@ function expectFullCopies(operations: readonly string[], producerName = 'shadowC
     operations.indexOf(expected[2] ?? 'missing-copy'),
   );
 }
+
+it('releases an unused static atlas only after a successful replacement submission', async () => {
+  const device = await nullDevice();
+  const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
+  const pool = ShadowViewStatePool.create({
+    device,
+    shaderModuleFactory: { createShaderModule: () => ok(shader) },
+  }).unwrap();
+  try {
+    const atlas = pool.staticLayers.texture('point-shadow-static', 16, 6);
+    pool.retain([]);
+    pool._abortResourceReplacement();
+    expect(pool.staticLayers.residentTexture('point-shadow-static', 16, 6)).toBe(atlas);
+    pool.retain([]);
+    pool._commitResourceReplacement();
+    expect(pool.staticLayers.residentTexture('point-shadow-static', 16, 6)).toBeUndefined();
+  } finally {
+    pool.dispose();
+  }
+});
+
+it('records all local shadow faces without a static target unless the light requests one', async () => {
+  const device = await nullDevice();
+  const graph = new RenderGraphBuilder<RenderPipelineFrame>();
+  const base = spotTopology();
+  const { pointStaticMask: _point, spotStaticMask: _spot, ...shadow } = base.shadow;
+  addTypedShadowPasses(
+    graph,
+    { ...base, shadow: { ...shadow, pointCount: 1 } },
+    {
+      projectGpuDrivenShadow: () => ok(undefined),
+    },
+  ).unwrap();
+  const compiled = graph.compile({ device, surfaceSize: { width: 64, height: 64 } }).unwrap();
+  try {
+    const info = compiled.inspect();
+    const names = info.passes.map((pass) => pass.name);
+    for (let face = 0; face < 6; face++) expect(names).toContain(`point-shadow-0-${face}`);
+    expect(names).toContain('spot-shadow-0');
+    expect(info.resources.some((row) => row.label.includes('shadow-static'))).toBe(false);
+  } finally {
+    (await compiled.retire()).unwrap();
+  }
+});
 
 describe('static shadow layer retention', () => {
   it('commits the submitted graph generation after compile without a second shadow raster', async () => {
@@ -636,12 +682,14 @@ describe('static shadow layer retention', () => {
         { ...base, shadow: { ...base.shadow, spotCount } },
         { depthLayers: layers },
       ).unwrap();
+      const spot = shadows.spot;
+      if (spot === undefined) throw new Error('Active spot view requires an atlas');
       let sampled: import('@forgeax/engine-rhi').TextureView | undefined;
       graph
         .addComputePass('sample-active-spot-prefix', {
-          accesses: [{ resource: shadows.spot.view, usage: 'sampled-read' }],
+          accesses: [{ resource: spot.view, usage: 'sampled-read' }],
           encodeDirect: (_pass, _frame, resources) => {
-            sampled = resources.textureView(shadows.spot.view).unwrap();
+            sampled = resources.textureView(spot.view).unwrap();
           },
         })
         .unwrap();
@@ -671,6 +719,39 @@ describe('static shadow layer retention', () => {
       const replaced = sample(1, 64);
       expect(replaced.sampled).not.toBe(first.sampled);
       (await replaced.compiled.retire()).unwrap();
+    } finally {
+      layers.dispose();
+    }
+  });
+
+  it('restores the submitted directional map on a rejected resize and redraws new splits without an extra queue submission', async () => {
+    const device = await nullDevice();
+    const submits = vi.spyOn(device.queue, 'submit');
+    const destroy = vi.spyOn(device, 'destroyTexture');
+    const layers = new ShadowDepthLayers(device);
+    const label = 'directional-shadow-depth';
+    try {
+      const first = layers.currentDirectionalTexture(16, 2);
+      const firstView = layers.view(label);
+      layers.rastered(label, 0);
+      layers._commit();
+      const rejected = layers.currentDirectionalTexture(16, 4);
+      expect(rejected).not.toBe(first);
+      expect(layers.retained(label, 0)).toBe(false);
+      layers.rastered(label, 3);
+      layers._abort();
+      expect(layers.currentDirectionalTexture(16, 1)).toBe(first);
+      expect(layers.view(label)).toBe(firstView);
+      expect(layers.retained(label, 0)).toBe(true);
+      expect(layers.retained(label, 3)).toBe(false);
+      expect(destroy.mock.calls.map(([texture]) => texture)).toEqual([rejected]);
+      const next = layers.currentDirectionalTexture(32, 3);
+      layers.rastered(label, 2);
+      layers._commit();
+      expect(layers.extent(label, next)).toEqual({ width: 32, height: 32, depthOrArrayLayers: 3 });
+      expect(() => layers.extent(label, first)).toThrow();
+      expect(destroy).toHaveBeenCalledTimes(2);
+      expect(submits).not.toHaveBeenCalled();
     } finally {
       layers.dispose();
     }
@@ -796,6 +877,17 @@ it.each([
           view.layer === 'static' ? undefined : 'content-changed',
       },
     } as unknown as RenderPipelineFrame;
+    expect(demand?.(context, identity, true)).toBe(false);
+    const staticChange = {
+      frameState,
+      gpuDrivenShadowViews: {
+        ...hitPool,
+        invalidationReason: (view: ShadowViewIdentity) =>
+          view.layer === 'static' ? 'content-changed' : undefined,
+      },
+    } as unknown as RenderPipelineFrame;
+    expect(demand?.(staticChange, identity, true)).toBe(true);
+    expect(demand?.(dynamic, identity, true)).toBe(true);
     expect(demand?.(dynamic, identity)).toBe(true);
     expect(demand?.(dynamic, { ...identity, layer: 'static' })).toBe(false);
     const unsubmittedLayers = new ShadowDepthLayers(device);

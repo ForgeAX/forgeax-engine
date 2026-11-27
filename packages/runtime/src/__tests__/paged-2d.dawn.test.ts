@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, beforeAll, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { offscreenCanvas } from './hdr-evidence.fixture';
@@ -11,7 +11,7 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
 let url: string;
 beforeAll(async () => {
-  url = shaderManifestUrl(await buildEngineShaderManifest());
+  url = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 }, 120_000);
 afterAll(() => URL.revokeObjectURL(url));
 

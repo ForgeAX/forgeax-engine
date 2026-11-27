@@ -56,6 +56,9 @@ export function prepareTypedScenePipelineDemand(
   const gpuDraws = new Map<ValidatedRenderable, Set<number>>();
   const factory = context.runtime.prepareMaterialShaderPipelineEntry;
   if (
+    // The installed pass may serve both camera lanes. A direct request records
+    // the mesh vertex entry even when this pass can also issue indexed Scene draws.
+    context.gpuDrivenGeometryLane !== 'direct' &&
     (pass.gpu ||
       (pass.gpuFilter !== undefined &&
         context.gpuDrivenGeometryLane === 'automatic' &&
@@ -72,6 +75,7 @@ export function prepareTypedScenePipelineDemand(
           reflectionFallback: context.reflectionFallbackDemand,
         }),
       artifacts,
+      shaders: context.runtime.shaderRegistry,
       factory,
       formats,
       sampleCount,
@@ -86,9 +90,11 @@ export function prepareTypedScenePipelineDemand(
       }),
       coverageOnly,
       seededDepth: demand.seededDepth === true,
+      opaqueDepthPrimed: demand.opaqueDepthPrimed === true,
       visibleSurface: context.visibleSurface,
       directionalShadowSimple: context.directionalShadowSimple === true,
       leanLighting: context.leanLighting === true,
+      forwardInlineSsr: context.forwardInlineSsr === true,
       // Keep the normal typed pass's explicit preparation contract.
       onSelected: (entry, index) => {
         let draws = gpuDraws.get(entry);
@@ -113,6 +119,7 @@ export function prepareTypedScenePipelineDemand(
       ...(fragmentEntryPoint === undefined ? {} : { fragmentEntryPoint }),
       transparentDepthWrite: demand.transparentDepthWrite,
       seededDepth: demand.seededDepth === true,
+      opaqueDepthPrimed: demand.opaqueDepthPrimed === true,
     },
     sampleCount,
     formats,

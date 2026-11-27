@@ -10,6 +10,7 @@ import {
 import type { ReferenceRay } from '../../raytracing/scene';
 import { createSdfQuery, SdfQueryStatus } from '../../raytracing/sdf-query';
 import { createSurfaceCapture } from '../../raytracing/surface-cards';
+import { cardQueryReplayStages } from './card-capture-replay.fixture';
 import { readBuffer } from './path-tracer.fixture';
 import type { SdfCardsFixture } from './sdf-cards.commands';
 import { sdfCubeInstance } from './sdf-cards.fixture';
@@ -115,9 +116,9 @@ export async function verifyTwoSidedSdf(fixture: SdfCardsFixture) {
   const tape = decodeTape(tapeBytes).unwrap(),
     model = buildFrameModel(tape);
   expect(model.unseededResources).toEqual([]);
-  expect(model.works.length).toBe(4);
-  const hitResource = model.works[2]?.bindings.find((b) => b.binding === 3)?.resourceId;
-  const lookupResource = model.works[3]?.bindings.find((b) => b.binding === 2)?.resourceId;
+  const { traceWork, lookupWork } = cardQueryReplayStages(tape, model, 2);
+  const hitResource = traceWork.bindings.find((b) => b.binding === 3)?.resourceId;
+  const lookupResource = lookupWork.bindings.find((b) => b.binding === 2)?.resourceId;
   assert(hitResource && lookupResource);
   const fresh = (await (await webgpu.rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const freshRaw = webgpu._internal_getRawDevice(fresh);
@@ -130,11 +131,17 @@ export async function verifyTwoSidedSdf(fixture: SdfCardsFixture) {
     expect((await replay.readResource(hitResource)).unwrap().bytes.every((v) => v === 0)).toBe(
       true,
     );
-    expect(equalBytes((await replay.readResourceAtWork(hitResource, 2)).unwrap().bytes, live)).toBe(
-      true,
-    );
     expect(
-      equalBytes((await replay.readResourceAtWork(lookupResource, 3)).unwrap().bytes, mapped),
+      equalBytes(
+        (await replay.readResourceAtWork(hitResource, traceWork.workIndex)).unwrap().bytes,
+        live,
+      ),
+    ).toBe(true);
+    expect(
+      equalBytes(
+        (await replay.readResourceAtWork(lookupResource, lookupWork.workIndex)).unwrap().bytes,
+        mapped,
+      ),
     ).toBe(true);
   } finally {
     (await replay.dispose()).unwrap();

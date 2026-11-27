@@ -9,6 +9,7 @@ import {
 } from '../../world/render-world';
 import { createFrameRecordingAttempt, releaseFrameRecordingAttempt } from '../frame';
 import type { RenderFrameState } from '../frame-snapshot';
+import { MaterialBgAssemblyCache } from '../material-bg-assembly-cache';
 
 function fixture() {
   const world = new World();
@@ -45,6 +46,8 @@ function fixture() {
     compiledFrameGraphGeneration: 4,
     standardLightingGraphSignature: 'candidate',
     retiredCompiledFrameGraphs: new Set(),
+    materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+    meshBindGroupCache: new WeakMap(),
     standardOncePerFrameFired: new Set(),
   } as unknown as RenderFrameState;
   const internals = { renderWorld: world, errorRegistry: { fire: vi.fn() } };

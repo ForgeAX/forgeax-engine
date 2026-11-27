@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { createImportProduct } from '../import-product.js';
 import { type RunImportMeta, runImport } from '../import-runner.js';
 import { ImporterRegistry } from '../importer-registry.js';
+import { projectImportPack } from '../pack-value.js';
 
 const GUID = '019e2cc6-0c86-79da-aa76-b0984c86d45c';
 const DEPENDENCY_GUID = '019e2cc6-0c86-79da-aa76-b0984c86d45d';
@@ -140,8 +141,8 @@ describe('import runner producer fact propagation', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok || 'skipped' in result.value) return;
-    expect(result.value.pack).toMatchObject(facts);
-    expect(result.value.pack.assets).toEqual([
+    expect(projectImportPack(result.value.product, meta(facts))).toMatchObject(facts);
+    expect(projectImportPack(result.value.product, meta(facts)).assets).toEqual([
       expect.objectContaining({
         guid: GUID,
         sourceKey: 'scene/main',
@@ -169,11 +170,11 @@ describe('import runner producer fact propagation', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok || 'skipped' in result.value) return;
-    expect(result.value.pack).not.toHaveProperty('packageId');
-    expect(result.value.pack).not.toHaveProperty('provenance');
-    expect(result.value.pack).not.toHaveProperty('revision');
-    expect(result.value.pack).not.toHaveProperty('diagnostics');
-    expect(result.value.pack.assets[0]).toMatchObject({
+    expect(projectImportPack(result.value.product, meta())).not.toHaveProperty('packageId');
+    expect(projectImportPack(result.value.product, meta())).not.toHaveProperty('provenance');
+    expect(projectImportPack(result.value.product, meta())).not.toHaveProperty('revision');
+    expect(projectImportPack(result.value.product, meta())).not.toHaveProperty('diagnostics');
+    expect(projectImportPack(result.value.product, meta()).assets[0]).toMatchObject({
       guid: GUID,
       sourceKey: 'scene/main',
       sourceIndex: 0,
@@ -213,11 +214,13 @@ describe('engine-import terminal product contract', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.sourceRevision).toBe('sha256:hero');
-    expect(result.value.sourceKey).toBe('hero/albedo');
-    expect(result.value).toHaveProperty('refs');
-    expect(result.value).toHaveProperty('artifacts');
-    expect(result.value).toHaveProperty('receipts');
-    expect(result.value).toHaveProperty('diagnostics');
+    expect(result.value).toMatchObject({
+      sourceRevision: 'sha256:hero',
+      sourceKey: 'hero/albedo',
+      refs: [],
+      artifacts: {},
+      receipts: [],
+      diagnostics: [],
+    });
   });
 });

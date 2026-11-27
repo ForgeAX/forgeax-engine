@@ -10,8 +10,8 @@ import {
   prepareLiveSyncSharedInputs,
 } from '../../scripts/live-sync-inputs.mjs';
 import { createViteConfig } from '../host.js';
+import { materializeViteDevPort } from '../loopback.js';
 import { readProjectFacts } from '../project.js';
-import { allocateLoopbackPort } from '../tools/browser-host.js';
 
 it('publishes and restores asset Pack edits while a borrowed frontend remains immutable', async () => {
   const { root, temporaryRoot } = await createLiveSyncProjectDirectory(
@@ -74,7 +74,7 @@ it('publishes and restores asset Pack edits while a borrowed frontend remains im
     const facts = await readProjectFacts(root);
     if (!facts.ok) throw facts.error;
     const config = await createViteConfig(facts.value, 'serve', '/', {
-      server: { port: await allocateLoopbackPort(), strictPort: true },
+      server: { port: await materializeViteDevPort(), strictPort: true },
       host: {
         backend,
         frontendAssembly: createHostAssembly({

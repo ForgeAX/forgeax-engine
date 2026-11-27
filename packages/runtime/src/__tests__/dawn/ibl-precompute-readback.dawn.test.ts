@@ -1,20 +1,6 @@
 import { worldRenderResources } from '../../../../render/src/publication/resource-scope';
 import { testAssets } from '../helpers/runtime-assets';
-// t51 (M3.5) -- dawn 4-pass IBL precompute readback (red-phase).
-//
-// Real GPU (dawn-node / webgpu native binding) test: feeds a 4x2 rgba16float
-// all-ones equirect into uploadCubemapFromEquirect, then reads back one
-// pixel from each of the 4 produced textures. All 4 pixels must be
-// non-zero -- a zero readback means the GPU pass never ran (round-1
-// counter-as-dispatch-proxy regression).
-//
-// Red phase: before t52/t53 wire real createIblPipelines + runIblPrecompute,
-// the cubemap / irradiance / prefilter / brdfLut textures are created but
-// never drawn into, so every readback pixel is vec4(0).
-//
-// Green phase: t52/t53 land 4 real render passes + queue.submit; readback
-// pixels carry non-zero values (white equirect -> bright cube -> non-zero
-// irradiance / prefilter / brdfLut).
+// Read the actual cube, the published Sky SH coefficients, and the specular products.
 
 import { World } from '@forgeax/engine-ecs';
 import { composeShader } from '@forgeax/engine-naga';
@@ -81,7 +67,6 @@ async function composeIblShadersForDawn(): Promise<void> {
   const read = (name: string) => fs.readFileSync(pathMod.resolve(shaderSrc, name), 'utf8');
   const sharedSrc = read('ibl-shared.wgsl');
   const equirectSrc = read('ibl-equirect-to-cube.wgsl');
-  const irradianceSrc = read('ibl-irradiance.wgsl');
   const prefilterSrc = read('ibl-prefilter.wgsl');
   const brdfLutSrc = read('ibl-brdf-lut.wgsl');
   // The per-pass modules import ibl-shared, which derives F90 through brdf.
@@ -90,13 +75,12 @@ async function composeIblShadersForDawn(): Promise<void> {
     'forgeax_pbr::ibl_shared': sharedSrc,
     'forgeax_pbr::brdf': read('brdf.wgsl'),
   };
-  const [equirectToCube, irradiance, prefilter, brdfLut] = await Promise.all([
+  const [equirectToCube, prefilter, brdfLut] = await Promise.all([
     composeShader(equirectSrc, imports, {}),
-    composeShader(irradianceSrc, imports, {}),
     composeShader(prefilterSrc, imports, {}),
     composeShader(brdfLutSrc, imports, {}),
   ]);
-  setIblComposedShaders({ equirectToCube, irradiance, prefilter, brdfLut });
+  setIblComposedShaders({ equirectToCube, prefilter, brdfLut });
 }
 
 const dawnReady = typeof navigator !== 'undefined' && navigator.gpu !== undefined;
@@ -284,7 +268,7 @@ async function loadPhysicalGuidEquirect(): Promise<EquirectAsset> {
 
 describe('t51 (M3.5) -- dawn IBL 4-pass non-zero readback', () => {
   it.skipIf(!dawnReady)(
-    'AC-04/05/06: equirect / irradiance / prefilter / brdfLut readback pixels are non-zero',
+    'publishes finite Sky SH and nonzero equirect, PMREM and BRDF output',
     async () => {
       // Compose ibl-* WGSL into 4 entry shaders before the upload. In
       // production this happens at vite-plugin-shader build-time and the
@@ -355,40 +339,25 @@ describe('t51 (M3.5) -- dawn IBL 4-pass non-zero readback', () => {
         identity: 'cubemap-source',
       });
 
-      // (b) irradiance, (c) prefilter, (d) brdfLut: the textures live on
-      // IblPipelineCache after t52/t53. Read opaque cache slots through the
-      // test-only raw texture boundary.
       const cache = store.getCubemapIbl(Number(cubeHandle), worldRenderResources(world));
       if (cache === undefined) throw new Error('missing source IBL output');
-      const {
-        irradianceTexture: irrTex,
-        prefilterTexture: prefTex,
-        brdfLutTexture: brdfTex,
-      } = cache;
-      expect(irrTex).toBeDefined();
-      expect(prefTex).toBeDefined();
-      expect(brdfTex).toBeDefined();
-      expect(cache.prefilterLevelCount).toBeDefined();
-      if (
-        irrTex === undefined ||
-        prefTex === undefined ||
-        brdfTex === undefined ||
-        cache.prefilterLevelCount === undefined
-      )
-        return;
-
-      const irrRaw = rawTexture(irrTex);
-      const irrPx = await readbackRgba16f(rawDevice, irrRaw, 0, 0);
-      expect(irrPx.values.some((c) => c !== 0)).toBe(true);
-      await assertFiniteTextureRgba16f(rawDevice, {
-        label: 'irradiance',
-        texture: irrRaw,
-        width: 32,
-        height: 32,
-        faces: 6,
-        mipLevels: 1,
-        identity: 'ibl-irradiance-cube',
-      });
+      const { skySh, prefilterTexture: prefTex, brdfLutTexture: brdfTex } = cache;
+      const coefficients = rhiDevice.createBuffer({ size: 112, usage: 0x08 | 0x01 }).unwrap();
+      const encoder = rhiDevice.createCommandEncoder().unwrap();
+      encoder.copyBufferToBuffer(skySh, 0, coefficients, 0, 112);
+      rhiDevice.queue.submit([encoder.finish().unwrap()]).unwrap();
+      const mapped = (await coefficients.mapAsync(1)).unwrap();
+      const packed = new Float32Array(mapped.getMappedRange().unwrap().slice(0));
+      mapped.unmap();
+      rhiDevice.destroyBuffer(coefficients).unwrap();
+      expect(packed.length).toBe(28);
+      expect(packed.every(Number.isFinite)).toBe(true);
+      if (process.env.FORGEAX_IBL_REAL_SOURCE === '1') {
+        expect(packed[3]).toBeGreaterThan(0);
+      } else {
+        for (let i = 0; i < packed.length; i++)
+          expect(packed[i]).toBeCloseTo(i === 3 || i === 7 || i === 11 ? 1 : 0, 3);
+      }
 
       const prefRaw = rawTexture(prefTex);
       const prefPx = await readbackRgba16f(rawDevice, prefRaw, 0, 0);

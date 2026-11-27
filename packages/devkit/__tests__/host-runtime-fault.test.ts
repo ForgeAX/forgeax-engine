@@ -3,6 +3,7 @@ import testQuality from '../../../scripts/test/render-quality.json' with { type:
 import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { ExecutionReport } from '@forgeax/engine-app';
+import { DEFAULT_LOAD_PROGRESS_LABELS } from '@forgeax/engine-types';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
 import { chromium, type Page } from 'playwright';
 import { createServer, type ViteDevServer } from 'vite';
@@ -18,6 +19,32 @@ const snapshot = (page: Page) =>
   page.evaluate(() =>
     (globalThis as unknown as { fixture: { snapshot(): Snapshot } }).fixture.snapshot(),
   );
+
+const FIXTURE_STARTUP_TIMEOUT_MS = 90_000;
+
+async function waitForEnteredFixture(page: Page): Promise<void> {
+  try {
+    await Promise.all([
+      page.locator('#forgeax-loading').waitFor({
+        state: 'hidden',
+        timeout: FIXTURE_STARTUP_TIMEOUT_MS,
+      }),
+      expect
+        .poll(async () => (await snapshot(page)).execution.render?.completedFrame, {
+          timeout: FIXTURE_STARTUP_TIMEOUT_MS,
+        })
+        .toBeGreaterThanOrEqual(2),
+    ]);
+  } catch (cause) {
+    const progress = await page.locator('#app').evaluate((node: HTMLCanvasElement) => ({
+      submitted: node.forgeaxFrameProgress?.submitted?.frameId,
+      completed: node.forgeaxFrameProgress?.completed?.frameId,
+      presentation: node.forgeaxFrameProgress?.completed?.presentation,
+      pending: node.forgeaxFrameProgress?.completed?.presentationPendingReason,
+    }));
+    throw new Error(`Host runtime fixture did not enter: ${JSON.stringify(progress)}`, { cause });
+  }
+}
 
 // Real App owner and generated DOM; no Game/private application RPC surface.
 it('shows an entered terminal App fault while pointer-lock rejection stays recoverable', async () => {
@@ -135,16 +162,13 @@ it('shows an entered terminal App fault while pointer-lock rejection stays recov
     });
     await page.goto(url);
     await page.waitForFunction(() => 'fixture' in globalThis);
-    await expect
-      .poll(async () => (await snapshot(page)).execution.render?.completedFrame, { timeout: 90000 })
-      .toBeGreaterThanOrEqual(2);
+    await waitForEnteredFixture(page);
     expect(
       await page.locator('#app').evaluate((canvas) => [
         Number(canvas.getAttribute('width')), Number(canvas.getAttribute('height')),
       ]),
     ).toEqual([testQuality.squareSize, testQuality.squareSize]);
-    await expect
-      .poll(() => page.locator('#forgeax-loading').evaluate((el) => getComputedStyle(el).display))
+    expect(await page.locator('#forgeax-loading').evaluate((el) => getComputedStyle(el).display))
       .toBe('none');
     const before = await snapshot(page);
     expect(before.execution.fault).toBeNull();
@@ -192,7 +216,7 @@ it('shows an entered terminal App fault while pointer-lock rejection stays recov
       .poll(() => page.locator('#forgeax-fatal').evaluate((el) => getComputedStyle(el).display))
       .toBe('grid');
     expect(await page.locator('#forgeax-fatal-message').textContent()).toBe(
-      'The game stopped because execution failed.',
+      DEFAULT_LOAD_PROGRESS_LABELS.host.runtimeFailed,
     );
     expect(await page.locator('#forgeax-fatal-details').textContent()).toContain(
       'Host runtime fault fixture Update failure',
@@ -208,6 +232,9 @@ it('shows an entered terminal App fault while pointer-lock rejection stays recov
       const f = (globalThis as unknown as { fixture?: { snapshot(): Snapshot } }).fixture;
       return f !== undefined && f.snapshot().owner !== previous;
     }, owner);
+    // Fixture publication precedes App startup. Prove the replacement has
+    // entered and presented frames before exercising its normal shutdown.
+    await waitForEnteredFixture(page);
     expect((await snapshot(page)).execution.fault).toBeNull();
     await page.evaluate(() =>
       (globalThis as unknown as { fixture: { dispose(): Promise<void> } }).fixture.dispose(),

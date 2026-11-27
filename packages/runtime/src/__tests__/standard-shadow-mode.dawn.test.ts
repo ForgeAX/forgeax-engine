@@ -9,7 +9,7 @@ import {
 } from '@forgeax/engine-render';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -19,7 +19,7 @@ import { buildPcssScene } from './helpers/portable-pcss';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
 const SIZE = 128;
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 
 function unwrap<T>(result: RenderResult<T, unknown> | undefined): T {
   if (result === undefined) throw new Error('required Renderer operation is unavailable');
@@ -62,7 +62,7 @@ it('light shadow settings: PCF1 collapses the PCSS penumbra and castShadow false
         shadowFilter: DirectionalShadowFilterValue[shadowFilter ?? 'pcf1'],
       })
       .unwrap();
-    unwrap(renderer.setProfile({ ...original, renderPath, ssao: false }));
+    unwrap(renderer.setProfile({ ...original, renderPath, ambientOcclusion: { enabled: false } }));
     let luminance: Float32Array | undefined;
     for (let index = 0; index < 6; index++) {
       world.update(1 / 60).unwrap();

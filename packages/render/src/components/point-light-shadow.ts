@@ -44,6 +44,8 @@ export const PointLightShadow = defineComponent('PointLightShadow', {
   shadowProjection: { type: 'enum', labels: { light: 0, fixed: 1 }, default: 0 },
   shadowPosition: { type: 'array<f32, 3>' },
   shadowCasterChannels: { type: 'f64', default: 0xffffffff },
+  // Opt into a second depth product for this light's static casters.
+  staticShadowCache: { type: 'bool', default: false },
   shadowAutoUpdate: { type: 'bool', default: true },
   shadowRevision: { type: 'f64', default: 0 },
   mapSize: { type: 'f32', default: 512 },

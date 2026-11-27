@@ -19,3 +19,11 @@ export interface TransmissionDemand {
   readonly needsRoughMips: boolean;
   readonly needsBackPass?: boolean;
 }
+
+/** Resolve the renderer's explicit permission after collecting material demand. */
+export function limitRoughRefraction(
+  demand: TransmissionDemand,
+  enabled?: boolean,
+): TransmissionDemand {
+  return enabled === true || !demand.needsRoughMips ? demand : { ...demand, needsRoughMips: false };
+}

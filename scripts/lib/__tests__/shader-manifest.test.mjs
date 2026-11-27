@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { zstdCompressSync } from 'node:zlib';
 import { createDistAssetFetch } from '../dist-asset-fetch.mjs';
-import * as shaderManifest from '../shader-manifest.mjs';
 import {
   decodeShaderManifestText,
   openShaderManifestPublication,
@@ -168,38 +167,4 @@ test('Blob transport with the fixture origin still delegates instead of reading 
   });
   assert.equal(await (await fetch(input)).text(), 'native blob');
   assert.equal(calls, 1);
-});
-
-test('profile preparation follows every point-shadow consumer and retains the standard producer', async () => {
-  assert.equal(typeof shaderManifest.ensureShaderManifestProfile, 'function');
-  let called = 0;
-  await shaderManifest.ensureShaderManifestProfile('point-ssao', {
-    sharedInputManifest: '/verified/shared-inputs.json',
-    run: async (command, options) => {
-      const [executable, ...args] = command;
-      called++;
-      assert.equal(executable, process.execPath);
-      assert.ok(
-        args[0]
-          .replaceAll('\\', '/')
-          .endsWith('/scripts/forgeax/prepare-shader-release-inputs.mjs'),
-      );
-      assert.deepEqual(args.slice(1), [
-        '--build',
-        '--profile',
-        'point-ssao',
-        '--shared-input-manifest',
-        '/verified/shared-inputs.json',
-      ]);
-      assert.equal(options.gpuLease, false);
-      assert.equal(options.timeoutMs, 300_000);
-      return { status: 0 };
-    },
-  });
-  assert.equal(called, 1);
-  for (const result of [{ status: 1 }, { status: null, signal: 'SIGTERM' }])
-    await assert.rejects(
-      () => shaderManifest.ensureShaderManifestProfile('point-ssao', { run: () => result }),
-      /Shader profile preparation failed/,
-    );
 });

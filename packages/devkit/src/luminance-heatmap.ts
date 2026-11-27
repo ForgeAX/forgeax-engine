@@ -7,6 +7,8 @@
 // (threshold .. threshold + smoothWidth) and hot whole-stop bands for pixels
 // at full bloom weight, plus a legend strip with the numeric settings.
 
+import { BITMAP_GLYPH_ADVANCE, bitmapText } from './tools/evidence-image.js';
+
 /** Wire form of `simulation.observation.luminance()`. */
 export interface LuminanceObservation {
   readonly frameId: number;
@@ -94,55 +96,6 @@ export function heatmapColor(
   return HEATMAP_BELOW[HEATMAP_BELOW.length + band] as Rgb;
 }
 
-// 5x7 bitmap glyphs, one string per row ('#' = ink). Only legend characters.
-const GLYPHS: Readonly<Record<string, readonly string[]>> = {
-  '0': [' ### ', '#   #', '#  ##', '# # #', '##  #', '#   #', ' ### '],
-  '1': ['  #  ', ' ##  ', '  #  ', '  #  ', '  #  ', '  #  ', ' ### '],
-  '2': [' ### ', '#   #', '    #', '   # ', '  #  ', ' #   ', '#####'],
-  '3': ['#####', '   # ', '  #  ', '   # ', '    #', '#   #', ' ### '],
-  '4': ['   # ', '  ## ', ' # # ', '#  # ', '#####', '   # ', '   # '],
-  '5': ['#####', '#    ', '#### ', '    #', '    #', '#   #', ' ### '],
-  '6': ['  ## ', ' #   ', '#    ', '#### ', '#   #', '#   #', ' ### '],
-  '7': ['#####', '    #', '   # ', '  #  ', ' #   ', ' #   ', ' #   '],
-  '8': [' ### ', '#   #', '#   #', ' ### ', '#   #', '#   #', ' ### '],
-  '9': [' ### ', '#   #', '#   #', ' ####', '    #', '   # ', ' ##  '],
-  '.': ['     ', '     ', '     ', '     ', '     ', ' ##  ', ' ##  '],
-  '-': ['     ', '     ', '     ', '#####', '     ', '     ', '     '],
-  '+': ['     ', '  #  ', '  #  ', '#####', '  #  ', '  #  ', '     '],
-  '%': ['##   ', '##  #', '   # ', '  #  ', ' #   ', '#  ##', '   ##'],
-  '(': ['   # ', '  #  ', ' #   ', ' #   ', ' #   ', '  #  ', '   # '],
-  ')': [' #   ', '  #  ', '   # ', '   # ', '   # ', '  #  ', ' #   '],
-  ':': ['     ', ' ##  ', ' ##  ', '     ', ' ##  ', ' ##  ', '     '],
-  '=': ['     ', '     ', '#####', '     ', '#####', '     ', '     '],
-  '<': ['   # ', '  #  ', ' #   ', '#    ', ' #   ', '  #  ', '   # '],
-  '>': ['#    ', ' #   ', '  #  ', '   # ', '  #  ', ' #   ', '#    '],
-  '|': ['  #  ', '  #  ', '  #  ', '  #  ', '  #  ', '  #  ', '  #  '],
-  A: [' ### ', '#   #', '#   #', '#####', '#   #', '#   #', '#   #'],
-  B: ['#### ', '#   #', '#   #', '#### ', '#   #', '#   #', '#### '],
-  C: [' ### ', '#   #', '#    ', '#    ', '#    ', '#   #', ' ### '],
-  D: ['###  ', '#  # ', '#   #', '#   #', '#   #', '#  # ', '###  '],
-  E: ['#####', '#    ', '#    ', '#### ', '#    ', '#    ', '#####'],
-  F: ['#####', '#    ', '#    ', '#### ', '#    ', '#    ', '#    '],
-  G: [' ### ', '#   #', '#    ', '# ###', '#   #', '#   #', ' ####'],
-  H: ['#   #', '#   #', '#   #', '#####', '#   #', '#   #', '#   #'],
-  I: [' ### ', '  #  ', '  #  ', '  #  ', '  #  ', '  #  ', ' ### '],
-  K: ['#   #', '#  # ', '# #  ', '##   ', '# #  ', '#  # ', '#   #'],
-  L: ['#    ', '#    ', '#    ', '#    ', '#    ', '#    ', '#####'],
-  M: ['#   #', '## ##', '# # #', '# # #', '#   #', '#   #', '#   #'],
-  N: ['#   #', '#   #', '##  #', '# # #', '#  ##', '#   #', '#   #'],
-  O: [' ### ', '#   #', '#   #', '#   #', '#   #', '#   #', ' ### '],
-  P: ['#### ', '#   #', '#   #', '#### ', '#    ', '#    ', '#    '],
-  R: ['#### ', '#   #', '#   #', '#### ', '# #  ', '#  # ', '#   #'],
-  S: [' ####', '#    ', '#    ', ' ### ', '    #', '    #', '#### '],
-  T: ['#####', '  #  ', '  #  ', '  #  ', '  #  ', '  #  ', '  #  '],
-  U: ['#   #', '#   #', '#   #', '#   #', '#   #', '#   #', ' ### '],
-  V: ['#   #', '#   #', '#   #', '#   #', '#   #', ' # # ', '  #  '],
-  W: ['#   #', '#   #', '#   #', '# # #', '# # #', '# # #', ' # # '],
-  X: ['#   #', '#   #', ' # # ', '  #  ', ' # # ', '#   #', '#   #'],
-  Y: ['#   #', '#   #', ' # # ', '  #  ', '  #  ', '  #  ', '  #  '],
-};
-const GLYPH_ADVANCE = 6;
-
 class Canvas {
   readonly rgba: Uint8Array;
   constructor(
@@ -173,25 +126,14 @@ class Canvas {
   }
 
   text(x0: number, y0: number, value: string, scale: number, color: Rgb): void {
-    for (const [index, char] of [...value.toUpperCase()].entries()) {
-      const glyph = GLYPHS[char];
-      if (glyph === undefined) continue;
-      for (const [row, bits] of glyph.entries())
-        for (let column = 0; column < 5; column += 1)
-          if (bits[column] === '#')
-            this.fill(
-              x0 + (index * GLYPH_ADVANCE + column) * scale,
-              y0 + row * scale,
-              scale,
-              scale,
-              () => color,
-            );
-    }
+    bitmapText(value, x0, y0, scale, 'legend', (x, y) => {
+      this.fill(x, y, scale, scale, () => color);
+    });
   }
 }
 
 export function textWidth(value: string, scale: number): number {
-  return value.length * GLYPH_ADVANCE * scale;
+  return value.length * BITMAP_GLYPH_ADVANCE * scale;
 }
 
 function legendCells(

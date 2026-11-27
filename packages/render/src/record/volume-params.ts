@@ -195,7 +195,7 @@ function residentVolumeDensity(
     ownerWorld,
   );
   if (!resident.ok || !('texture' in resident.value)) {
-    if (!resident.ok) {
+    if (!resident.ok && resident.error.code !== 'asset-not-ready') {
       internals.errorRegistry.fire(
         resident.error instanceof RhiError
           ? resident.error

@@ -1,4 +1,4 @@
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, beforeAll, it } from 'vitest';
 import {
   RUNTIME_MATERIAL_CASE_TIMEOUT_MS,
@@ -8,7 +8,9 @@ import {
 let manifestUrl: string;
 beforeAll(async () => {
   manifestUrl = URL.createObjectURL(
-    new Blob([JSON.stringify(await buildEngineShaderManifest())], { type: 'application/json' }),
+    new Blob([JSON.stringify(await buildEngineShaderTemplateManifest())], {
+      type: 'application/json',
+    }),
   );
 }, 120_000);
 afterAll(() => URL.revokeObjectURL(manifestUrl));

@@ -1,27 +1,53 @@
-import { resolve } from 'node:path';
-import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
+import { on } from 'node:events';
+import { Worker } from 'node:worker_threads';
+import type { CookedMaterialRecord } from '@forgeax/engine-pack';
 import { createBuiltinMaterialAsset } from '@forgeax/engine-shader';
-import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, onTestFailed } from 'vitest';
 
-describe('Standard material cold cook', () => {
+type Selection = CookedMaterialRecord['programs'][number]['selections'][number];
+type SelectionEvidence = Pick<Selection, 'address' | 'context' | 'entry' | 'pass'> & {
+  vertexColor: boolean | undefined;
+};
+type CookResult = { artifacts: number; selections: SelectionEvidence[] } | { error: string };
+
+function startCooker() {
+  const env = { ...process.env };
+  delete env.NODE_V8_COVERAGE;
+  // The serial fixture owns a single material at a time. Give its program
+  // compiler the existing four-worker cap instead of reserving idle material lanes.
+  if (Number(env.FORGEAX_SHADER_COMPILE_WORKERS) > 4) env.FORGEAX_SHADER_COMPILE_WORKERS = '4';
+  const worker = new Worker(new URL('./standard-material-cold-cook.fixture.mjs', import.meta.url), {
+    env,
+  });
+  return { worker, replies: on(worker, 'message', { close: ['exit'] }) };
+}
+
+describe.sequential('Standard material cold cook', () => {
   const storageCapabilities = [
     'storage-buffer-minimum',
     'storage-buffer-projector',
     'storage-buffer',
     'storage-buffer-atmosphere',
   ] as const;
-  // Cold filesystem discovery and all Standard variants share the
-  // explicit compiler-fixture budget used by covered Pack/Surface cooks.
-  // Keep every artifact and ABI assertion inside this bounded operation.
+  let cooker: ReturnType<typeof startCooker> | undefined;
+  const stopCooker = async () => {
+    const active = cooker;
+    cooker = undefined;
+    await active?.worker.terminate();
+  };
+  afterAll(stopCooker);
+  // Exercise the smaller independent roots first so the full Standard
+  // matrix can spend its case budget on compilation and artifact admission.
+  // No material root reuses a previous case's cooked result.
   it.each([
-    'forgeax_material::standard',
-    'forgeax_material::pbr-skin',
     'forgeax::vfx-render.particles.mesh',
     'forgeax::vfx-render.particles.mesh-inputs',
+    'forgeax_material::pbr-skin',
+    'forgeax_material::standard',
   ])('retains the declared material interface without transmission: %s', async (module) => {
-    const root = resolve(import.meta.dirname, '../../../shader/src');
-    const particleRoot = resolve(import.meta.dirname, '../../../vfx-render/src/shaders');
+    onTestFailed(stopCooker);
+    cooker ??= startCooker();
+    const active = cooker;
     const material = createBuiltinMaterialAsset('standard');
     const passes = material.passes?.map((pass) => {
       const program = { ...pass.program, module };
@@ -32,27 +58,28 @@ describe('Standard material cold cook', () => {
       const { moduleSlots: _moduleSlots, ...programWithoutSlots } = pass.program;
       return { ...pass, program: { ...programWithoutSlots, module } };
     });
-    const draft = await createMaterialPackCooker([root, particleRoot]).cook({
+    active.worker.postMessage({
       guid: '019f0000-0000-7000-8000-000000000101',
       source: {
         ...material,
         ...(passes === undefined ? {} : { passes }),
       },
     });
+    const reply = await active.replies.next();
+    if (reply.done) throw new Error('Material compiler exited without a publication');
+    const [result] = reply.value as [CookResult];
+    if ('error' in result) throw new Error(result.error);
     // Storage roots cover visible-surface, view clipping and both color ABIs
     // on direct/scene-index lanes. Rigid Standard additionally covers LOD
     // coverage and publishes ray-hit/Card; portable backends share source bytes.
-    expect(Object.keys(draft.artifacts)).toHaveLength(
+    expect(result.artifacts).toBe(
       module === 'forgeax_material::standard'
         ? storageCapabilities.length * 32 + 6
         : module === 'forgeax_material::pbr-skin'
           ? storageCapabilities.length * 16 + 4
           : storageCapabilities.length,
     );
-    const cooked = validateCookedMaterialRecord(
-      (draft.payload as Record<string, unknown>).cooked,
-    ).unwrap();
-    const selections = cooked.programs.flatMap((program) => program.selections);
+    const { selections } = result;
     // Both Surface derivatives select from the same authored forward pass.
     // Skinned and particle roots retain their existing raster-only admission.
     expect(
@@ -88,8 +115,7 @@ describe('Standard material cold cook', () => {
                         (selection.context.visibleSurface === true) === visibleSurface &&
                         (selection.context.viewClipping === true) === viewClipping &&
                         (selection.context.lodCoverage === true) === lodCoverage &&
-                        selection.abi?.vertexInputs.some((input) => input.semantic === 'color') ===
-                          vertexColor,
+                        selection.vertexColor === vertexColor,
                     )
                     .map((selection) => selection.address),
                 ).toEqual(['direct', 'scene-index']);
@@ -109,8 +135,7 @@ describe('Standard material cold cook', () => {
                     selection.context.capability === 'uniform-fallback' &&
                     (selection.context.viewClipping === true) === viewClipping &&
                     selection.context.lodCoverage !== true &&
-                    selection.abi?.vertexInputs.some((input) => input.semantic === 'color') ===
-                      vertexColor,
+                    selection.vertexColor === vertexColor,
                 )
                 .map((selection) => selection.address),
             ).toEqual(['direct']);

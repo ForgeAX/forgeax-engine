@@ -15,7 +15,7 @@
 //
 // A single Skylight activates ambient lighting transparently. The `equirect`
 // field is OPTIONAL: omit it for a constant solid-color ambient that needs NO
-// async GPU precompute -- the engine binds a 1x1 white irradiance cube, so
+// async GPU precompute -- the engine binds constant white Sky SH, so
 // ambient = color * intensity * albedo is live on the very first frame (this
 // is the fix for the downstream "scene is black until the async IBL cubemap
 // finishes uploading" gap). Supply an equirect to upgrade to full image-based
@@ -32,7 +32,7 @@
 // Edge cases handled by w18 / w19:
 //   - Multi-Skylight: first archetype hit wins, console.warn in dev+prod
 //   - intensity=0: ambient term = 0, mathematically valid, no warn
-//   - No equirect: solid-color ambient via the white fallback cube (no async)
+//   - No equirect: solid-color ambient via constant white Sky SH (no async)
 
 import { defineComponent } from '@forgeax/engine-ecs';
 
@@ -47,12 +47,12 @@ import { defineComponent } from '@forgeax/engine-ecs';
  *
  * - **Solid-color ambient (no equirect).** Omit `equirect` for a constant
  *   ambient = `color` * `intensity` applied immediately, with no async GPU
- *   precompute. The engine samples a built-in 1x1 white irradiance cube, so a
+ *   precompute. The engine evaluates constant white Sky SH, so a
  *   freshly-loaded scene is lit on its first frame instead of being black
  *   until an IBL upload finishes.
  * - **Image-based lighting (with equirect).** Supply `equirect` to upgrade to
- *   diffuse irradiance + specular prefilter IBL. The engine runs the full
- *   precompute (equirect->cubemap, irradiance convolution, prefilter mip
+ *   diffuse Sky SH + specular prefilter IBL. The engine runs the full
+ *   precompute (equirect->cubemap, Sky SH projection, prefilter mip
  *   chain, BRDF LUT) transparently inside the render-system record arm;
  *   `color` * `intensity` then scale the IBL ambient.
  *
@@ -121,6 +121,8 @@ export const Skylight = defineComponent('Skylight', {
   // state. Record/restore preserves the portable lighting controls while the
   // render owner resolves this asset again on the target world.
   equirect: { type: 'asset<equirect>', simulationTransient: true },
+  /** Linear rgba16float 2D panorama produced by a runtime GPU texture generator. */
+  generatedEquirect: { type: 'asset<gpu-texture>', simulationTransient: true },
   // color carries an explicit layer-2 default [1,1,1] (white); the array
   // layer-3 fallback is all-zero, so the default MUST be explicit (D-5).
   color: { type: 'array<f32, 3>', default: new Float32Array([1, 1, 1]) },

@@ -65,4 +65,6 @@ export const Skin = defineComponent('Skin', {
   // relationships remain the portable simulation-side pose contract.
   skeleton: { type: 'asset<skeleton>' },
   joints: { type: 'array<entity>' },
+  // Project the blended local xyz as a point under the mesh world transform.
+  affinePoint: { type: 'bool', default: false },
 });

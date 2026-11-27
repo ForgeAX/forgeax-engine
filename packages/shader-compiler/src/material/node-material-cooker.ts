@@ -10,26 +10,46 @@ import { normalizeMaterialAsset } from './pack-material-contract.js';
 
 const GiB = 1024 ** 3;
 
+interface MaterialWorkerBudget {
+  readonly total: number;
+  readonly materials: number;
+  readonly programs: number;
+  readonly singleMaterialPrograms: number;
+  readonly singleMaterialLanes: number;
+}
+
+/** A wide first lane trades material lanes for concurrent program compilation. @internal */
+export function planMaterialWorkerBudget(
+  cpu: number,
+  freeMemory: number,
+  limit?: number,
+): MaterialWorkerBudget {
+  const availableMemory = Math.max(0, freeMemory - 2 * GiB);
+  const memory = Math.max(1, Math.floor(availableMemory / (2 * GiB)));
+  const admitted = Math.min(cpu, limit ?? 4);
+  const materialSlots = limit === undefined ? 4 : Math.min(4, Math.max(2, admitted - 2));
+  const materials = Math.min(memory, admitted, materialSlots);
+  const programCapacity = (lanes: number) =>
+    Math.min(6, 1 + Math.floor(Math.max(0, availableMemory - lanes * 2 * GiB) / (GiB / 2)));
+  const programs = Math.min(admitted - materials + 1, programCapacity(materials));
+  const singleMaterialPrograms =
+    limit === undefined ? programs : Math.min(admitted, programCapacity(1));
+  const wideLaneExtraMemory = (singleMaterialPrograms - 1) * (GiB / 2);
+  const singleMaterialLanes = Math.max(
+    1,
+    Math.min(materials, Math.floor((availableMemory - wideLaneExtraMemory) / (2 * GiB))),
+  );
+  return { total: admitted, materials, programs, singleMaterialPrograms, singleMaterialLanes };
+}
+
 /** One process-wide budget for material execution and program compilation. */
-function workerBudget(): { materials: number; programs: number } {
-  if (!isMainThread) return { materials: 1, programs: 1 };
+function workerBudget(): MaterialWorkerBudget {
   const requested = Number(process.env.FORGEAX_SHADER_COMPILE_WORKERS);
   const limit = Number.isSafeInteger(requested) && requested > 0 ? requested : undefined;
   const cpu = Math.max(1, availableParallelism() - (limit === undefined ? 1 : 0));
-  const free = process.availableMemory?.() ?? freemem();
-  const memory = Math.max(1, Math.floor((free - 2 * GiB) / (2 * GiB)));
-  const admitted = Math.min(cpu, limit ?? 4);
-  // An explicit budget can reserve up to two slots for programs within the
-  // first material while keeping at least two material slots when available.
-  const materialSlots = limit === undefined ? 4 : Math.min(4, Math.max(2, admitted - 2));
-  const materials = Math.min(memory, admitted, materialSlots);
-  // Only the first material receives spare program slots.
-  const spareMemory = Math.max(0, free - (2 + materials * 2) * GiB);
-  const programs = Math.max(
-    1,
-    Math.min(6, admitted - materials + 1, Math.floor(spareMemory / (GiB / 2)) + 1),
-  );
-  return { materials, programs };
+  // Program workers created inside a material worker have their own assigned share.
+  if (!isMainThread) return planMaterialWorkerBudget(1, 0, 1);
+  return planMaterialWorkerBudget(cpu, process.availableMemory?.() ?? freemem(), limit);
 }
 
 interface Job {
@@ -38,12 +58,14 @@ interface Job {
   readonly roots: readonly string[];
   readonly profile: MaterialPackCookProfile | undefined;
   readonly sourceSnapshot: MaterialSourceSnapshot | undefined;
+  readonly rasterSourceDigests: readonly string[] | undefined;
   readonly input: unknown;
   readonly resolve: (draft: NativeCookDraft) => void;
   readonly reject: (error: unknown) => void;
 }
 interface Lane {
   readonly worker: Worker;
+  readonly programs: number;
   job: Job | undefined;
   sourceSnapshotIdentity?: string | undefined;
 }
@@ -59,14 +81,14 @@ const workerSource = `
 import('node:worker_threads').then(({ parentPort }) => {
 const api = import(${JSON.stringify(compilerModule)});
 let key, cooker, capturedSnapshot;
-parentPort.on('message', async ({ roots, profile, input, sourceSnapshot, sourceSnapshotIdentity }) => {
+parentPort.on('message', async ({ roots, profile, input, sourceSnapshot, sourceSnapshotIdentity, rasterSourceDigests }) => {
   try {
     const { createMaterialPackCooker } = await api;
     if (sourceSnapshot !== undefined) capturedSnapshot = sourceSnapshot;
     if (sourceSnapshotIdentity === undefined) capturedSnapshot = undefined;
-    const nextKey = JSON.stringify([roots, profile, sourceSnapshotIdentity]);
+    const nextKey = JSON.stringify([roots, profile, sourceSnapshotIdentity, rasterSourceDigests]);
     if (nextKey !== key) {
-      cooker = createMaterialPackCooker(roots, { ...(profile === undefined ? {} : { profile }), ...(capturedSnapshot === undefined ? {} : {sourceSnapshot: capturedSnapshot}) });
+      cooker = createMaterialPackCooker(roots, { ...(profile === undefined ? {} : { profile }), ...(capturedSnapshot === undefined ? {} : {sourceSnapshot: capturedSnapshot}), ...(rasterSourceDigests === undefined ? {} : { rasterSourceDigests }) });
       key = nextKey;
     }
     const draft = await cooker.cook(input);
@@ -123,10 +145,7 @@ class MaterialCookPool {
   private readonly affinity = new Map<string, Lane>();
   private pumpQueued = false;
 
-  constructor(
-    private readonly limit: number,
-    private readonly firstLanePrograms: number,
-  ) {
+  constructor(private readonly budget: MaterialWorkerBudget) {
     // Initialize OpenSSL providers before concurrent Worker imports.
     getCiphers();
   }
@@ -145,11 +164,25 @@ class MaterialCookPool {
 
   private pump(): void {
     for (;;) {
+      let available = this.budget.total;
       for (const lane of this.lanes) {
-        if (lane.job === undefined) this.dispatch(lane);
+        if (lane.job !== undefined) available -= lane.programs;
+      }
+      for (const lane of this.lanes) {
+        if (lane.job !== undefined) continue;
+        const index = selectAffineJob(this.queue, lane, this.affinity);
+        if (index < 0) continue;
+        // Drain active work before dispatching a waiting wide lane.
+        if (available < lane.programs) return;
+        this.dispatch(lane, index);
+        if (lane.job !== undefined) available -= lane.programs;
       }
       // Spawn another lane only for work no existing lane holds.
-      if (this.lanes.length >= this.limit) return;
+      const materialLimit =
+        this.lanes[0]?.programs === this.budget.singleMaterialPrograms
+          ? this.budget.singleMaterialLanes
+          : this.budget.materials;
+      if (available === 0 || this.lanes.length >= materialLimit) return;
       const index = selectAffineJob(this.queue, {}, this.affinity);
       if (index < 0) return;
       try {
@@ -163,13 +196,20 @@ class MaterialCookPool {
   }
 
   private spawn(): void {
-    const programs = this.lanes.length === 0 ? this.firstLanePrograms : 1;
+    // An initially serial queue can spend spare admitted slots inside its first
+    // material. Cold batches keep the balanced allocation across material lanes.
+    const programs =
+      this.lanes.length !== 0
+        ? 1
+        : this.queue.length === 1
+          ? this.budget.singleMaterialPrograms
+          : this.budget.programs;
     const worker = new Worker(workerSource, {
       eval: true,
       env: { ...process.env, FORGEAX_SHADER_COMPILE_WORKERS: String(programs) },
       resourceLimits: { maxOldGenerationSizeMb: 1024, maxYoungGenerationSizeMb: 64 },
     });
-    const owner: Lane = { worker, job: undefined };
+    const owner: Lane = { worker, programs, job: undefined };
     this.lanes.push(owner);
     const fail = (error: Error): void => {
       const index = this.lanes.indexOf(owner);
@@ -209,9 +249,7 @@ class MaterialCookPool {
     });
   }
 
-  private dispatch(lane: Lane): void {
-    const index = selectAffineJob(this.queue, lane, this.affinity);
-    if (index < 0) return;
+  private dispatch(lane: Lane, index: number): void {
     const [job] = this.queue.splice(index, 1);
     if (job === undefined) return;
     this.affinity.delete(job.program);
@@ -228,6 +266,7 @@ class MaterialCookPool {
         profile: job.profile,
         input: job.input,
         sourceSnapshotIdentity: job.sourceSnapshot?.identity,
+        rasterSourceDigests: job.rasterSourceDigests,
         ...(lane.sourceSnapshotIdentity === job.sourceSnapshot?.identity
           ? {}
           : { sourceSnapshot: job.sourceSnapshot }),
@@ -302,10 +341,11 @@ export function withNodeMaterialWorkers(
   roots: readonly string[],
   profile?: MaterialPackCookProfile,
   sourceSnapshot?: MaterialSourceSnapshot,
+  rasterSourceDigests?: readonly string[],
 ): NativeCooker {
   const budget = workerBudget();
   if (budget.materials === 1) return cooker;
-  pool ??= new MaterialCookPool(budget.materials, budget.programs);
+  pool ??= new MaterialCookPool(budget);
   const owner = pool;
   const capturedRoots = [...roots];
   return {
@@ -328,6 +368,7 @@ export function withNodeMaterialWorkers(
           roots: capturedRoots,
           profile,
           sourceSnapshot,
+          rasterSourceDigests,
           input: captured,
           resolve,
           reject,

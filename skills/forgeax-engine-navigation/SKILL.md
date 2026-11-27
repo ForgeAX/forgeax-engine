@@ -7,6 +7,8 @@ description: >-
 
 # forgeax-engine-navigation
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 | Need | Entry |
 |:--|:--|
 | Authored network or weighted tile grid | `createNavigationGraph` / `createNavigationGrid`; query `findPath` with an expansion budget |

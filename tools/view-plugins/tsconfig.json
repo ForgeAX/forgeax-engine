@@ -11,6 +11,9 @@
       "../view/node_modules/@types"
     ],
     "paths": {
+      "@forgeax/view-workspace-core/locale-bridge": [
+        "../view/packages/view-workspace-core/src/locale-bridge.ts"
+      ],
       "react": [
         "../view/packages/viewer/node_modules/@types/react/index.d.ts"
       ],

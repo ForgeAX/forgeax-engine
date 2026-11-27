@@ -1,4 +1,5 @@
 import { decodeDocumentText } from '@forgeax/engine-codec';
+import { nowMs } from '@forgeax/engine-platform';
 import {
   isMaterialProgramAbi,
   isShaderBuiltinRole,
@@ -7,6 +8,7 @@ import {
   isShaderProgramContract,
   isShaderReflection,
   type MaterialProgramAbi,
+  type MaterialRasterSourceRecipe,
   type ShaderEntryPointReads,
   ShaderSource,
 } from '@forgeax/engine-types';
@@ -19,6 +21,7 @@ import {
   withMaterialShaderEntryPoints,
   withMaterialShaderForwardFog,
 } from './material/program.js';
+import { standardSurfaceResourceDefines } from './material-schemas.js';
 // @forgeax/engine-shader/ShaderRegistry — runtime shader registry, instance-per-engine shape.
 //
 // Shape rules (plan-strategy §S-10 / D-R10 / OQ-5 close + AC-03):
@@ -62,6 +65,7 @@ import {
   hasDeferredReflection,
   manifestShaderSource,
   readOwnedShaderManifestPublication,
+  SHADER_MANIFEST_PUBLICATION_VERSION,
 } from './manifest-publication.js';
 import {
   equalMaterialArtifactBytes,
@@ -75,12 +79,16 @@ import {
 import {
   type MaterialShaderVariantReference,
   type MaterialVariantSource,
+  materialTemplateVariantFamily,
   materialVariantFamily,
   ownMaterialVariantReferences,
+  packedVariantIdentifier,
 } from './material/variant-family.js';
 import {
   type AdmittedShaderProgramTemplate,
   admitShaderProgramTemplate,
+  type MaterialShaderTemplate,
+  type PreparedMaterialShaderTemplate,
   readShaderProgramTemplates,
   type ShaderProgramCompilation,
   type ShaderProgramCompiler,
@@ -92,9 +100,15 @@ import {
   admitShaderTemplateManifest,
   isShaderTemplateManifestRow,
   materializeShaderTemplateManifest,
+  SHADER_PROJECT_MANIFEST_VERSION,
   SHADER_TEMPLATE_MANIFEST_VERSION,
 } from './program-template-manifest.js';
-import { findVariantByKey, type MaterialShaderManifestEntry } from './types.js';
+import {
+  findVariantByKey,
+  type MaterialShaderManifestEntry,
+  type MaterialShaderManifestVariant,
+  sealMaterialShaderVariants,
+} from './types.js';
 
 export type { MaterialShaderVariantReference } from './material/variant-family.js';
 
@@ -110,6 +124,7 @@ interface ManifestIndexes {
 
 interface RegistryManifest extends ManifestIndexes {
   readonly template?: AdmittedShaderTemplateManifest;
+  readonly cooked?: ManifestIndexes;
 }
 
 interface AdmittedManifest extends ManifestIndexes {
@@ -185,13 +200,10 @@ function manifestFailureReason(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-function isTemplatePublication(value: unknown): boolean {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'schemaVersion' in value &&
-    value.schemaVersion === SHADER_TEMPLATE_MANIFEST_VERSION
-  );
+function shaderManifestVersion(value: unknown): unknown {
+  return typeof value === 'object' && value !== null && 'schemaVersion' in value
+    ? value.schemaVersion
+    : undefined;
 }
 
 function manifestReuseKey(text: string, wire: Uint8Array | undefined): () => Promise<string> {
@@ -293,7 +305,7 @@ export interface ShaderRegistryDevice {
  */
 export const FORGEAX_RESERVED_PATH_PREFIX = 'forgeax::' as const;
 
-/** Stable build-time module ids for the shared closest-depth pyramid producer. */
+/** Stable build-time module ids for the shared depth pyramid producer. */
 export const DEPTH_PYRAMID_SHADER_MODULES = Object.freeze({
   seed: 'forgeax_depth_pyramid::seed',
   reduce: 'forgeax_depth_pyramid::reduce',
@@ -302,7 +314,6 @@ export const DEPTH_PYRAMID_SHADER_MODULES = Object.freeze({
 /** Stable build-time module ids for the M1 spatial SSR artifact set. */
 export const SSR_SHADER_MODULES = Object.freeze({
   trace: 'forgeax_ssr::trace',
-  temporal: 'forgeax_ssr::temporal',
 } as const);
 
 /**
@@ -351,12 +362,23 @@ export interface MaterialShaderByteEntry
   readonly digest: string;
 }
 
+/** A verified content address and declared ABI precede first-use shader compilation. */
+export interface MaterialShaderSourceEntry extends Omit<MaterialShaderByteEntry, 'bytes'> {
+  readonly prepare: () => Promise<ShaderResult<Uint8Array, ShaderError>>;
+  readonly recipe?: MaterialRasterSourceRecipe;
+}
+
+type MaterialProgramAdmission = MaterialShaderByteEntry | MaterialShaderSourceEntry;
+
 type MaterialRegistration =
   | {
       readonly kind: 'ready';
       readonly publication: ResultOk<RegisteredMaterialShaderEntry>;
       /** Content address of the admitted program bytes; absent for a program installed as text. */
       readonly digest?: string;
+      readonly sourceBacked?: true;
+      readonly recipe?: MaterialRasterSourceRecipe;
+      readonly templateVariants?: MaterialShaderManifestEntry;
     }
   | {
       readonly kind: 'bytes';
@@ -366,6 +388,7 @@ type MaterialRegistration =
       readonly paramSchemaProjection: ImmutableParamSchemaProjection;
       readonly receipt?: MaterialProgramAbi;
       readonly entryPoints?: readonly ShaderEntryPointReads[];
+      readonly templateVariants?: MaterialShaderManifestEntry;
     }
   | {
       readonly kind: 'template';
@@ -459,15 +482,36 @@ function materialEntrySource(entry: MaterialShaderEntry, source: string): Shader
   return entry.sourceReference;
 }
 
+interface TemplatePreparation {
+  readonly completion: Promise<ShaderResult<void, ShaderError>>;
+  error?: ShaderError;
+}
+
+interface MaterialAddressCompilation {
+  requests: number;
+  completed: number;
+  unavailable: number;
+  failures: number;
+  compileMs: number;
+}
+
 export class ShaderRegistry {
   readonly #device: ShaderRegistryDevice | undefined;
   #programCompiler: ShaderProgramCompiler | undefined;
+  #initializingProgramCompiler:
+    | Promise<ShaderResult<ShaderProgramCompiler, ShaderError>>
+    | undefined;
   readonly #prepareProgramCompiler: ShaderRegistryOptions['prepareProgramCompiler'];
   readonly #templates = new Map<string, AdmittedShaderProgramTemplate>();
   #templatePrograms = new Map<string, ResolvedShaderTemplateProgram>();
+  #templatePreparations = new Map<string, TemplatePreparation>();
+  readonly #pendingMaterialSources = new Set<Promise<ShaderResult<void, ShaderError>>>();
   #templateRequests = 0;
   #templateCacheHits = 0;
   #templateCompileMs = 0;
+  readonly #sourceMaterialCompiles: Partial<
+    Record<import('@forgeax/engine-types').MaterialProgramAddress, MaterialAddressCompilation>
+  > = {};
   readonly #manifestUrl: string | undefined;
   readonly #readText: ((url: string) => Promise<string>) | undefined;
   // hash → ShaderModule cache (populated lazily on first get()).
@@ -503,16 +547,24 @@ export class ShaderRegistry {
       ...(this.#readText === undefined ? {} : { readText: this.#readText }),
     });
     candidate.#templatePrograms = this.#templatePrograms;
+    candidate.#templatePreparations = this.#templatePreparations;
     for (const [id, template] of this.#templates) candidate.#templates.set(id, template);
     candidate.#manifestLoaded = this.#manifestLoaded;
     const template = this.#admitted?.template;
     candidate.#admitted =
-      template === undefined ? this.#admitted : candidate.#indexTemplateManifest(template);
+      template === undefined
+        ? this.#admitted
+        : candidate.#indexTemplateManifest(template, this.#admitted?.cooked);
     for (const [source, program] of this.#materialPrograms)
       candidate.#materialPrograms.set(source, program);
     for (const [id, reference] of this.#sources) candidate.#sources.set(id, reference);
     candidate.#sourceBytes = this.#sourceBytes;
     return candidate;
+  }
+
+  /** Paired immutable Engine source modules shared with the Material Pack. */
+  shaderTemplateSources(): Readonly<Record<string, string>> | undefined {
+    return this.#admitted?.template?.wire.library.sources;
   }
 
   /** Fetch (or host-read) the manifest document; `wire` is set when the bytes came over fetch. */
@@ -568,31 +620,101 @@ export class ShaderRegistry {
     return ok({ raw, wire });
   }
 
+  async #initializeProgramCompiler(
+    fallback?: ShaderRegistryOptions['prepareProgramCompiler'],
+  ): Promise<ShaderResult<ShaderProgramCompiler, ShaderError>> {
+    if (this.#programCompiler !== undefined) return ok(this.#programCompiler);
+    if (this.#initializingProgramCompiler !== undefined) return this.#initializingProgramCompiler;
+    const initialize = this.#prepareProgramCompiler ?? fallback;
+    if (initialize === undefined)
+      return err(
+        manifestMalformed({
+          message: 'The portable shader program compiler is unavailable',
+          hint: 'supply the runtime host program compiler before loading a source publication',
+        }),
+      );
+    const work = Promise.resolve()
+      .then(initialize)
+      .then((result) => {
+        if (result.ok) this.#programCompiler ??= result.value;
+        return result;
+      })
+      .catch((cause: unknown) =>
+        err(
+          cause instanceof ShaderErrorClass
+            ? cause
+            : manifestMalformed({
+                message: 'Shader program compiler initialization failed',
+                hint: 'repair the runtime host compiler service before loading a source publication',
+                reason: String(cause),
+              }),
+        ),
+      )
+      .finally(() => {
+        if (this.#initializingProgramCompiler === work)
+          this.#initializingProgramCompiler = undefined;
+      });
+    this.#initializingProgramCompiler = work;
+    return work;
+  }
+
+  /** Admit source and its portable compiler before Render selects any pass or target. */
+  async prepareMaterialTemplate(
+    template: MaterialShaderTemplate,
+    fallback?: ShaderRegistryOptions['prepareProgramCompiler'],
+  ): Promise<ShaderResult<PreparedMaterialShaderTemplate, ShaderError>> {
+    const compiler = await this.#initializeProgramCompiler(fallback);
+    if (!compiler.ok) return compiler;
+    return this.prepareMaterialTemplateFromInitializedCompiler(template);
+  }
+
+  /** A receiving Renderer uses its initialized compiler to admit a transferred material. */
+  prepareMaterialTemplateFromInitializedCompiler(
+    template: MaterialShaderTemplate,
+  ): ShaderResult<PreparedMaterialShaderTemplate, ShaderError> {
+    if (this.#programCompiler?.prepareMaterial === undefined)
+      return err(
+        manifestMalformed({
+          message: 'The portable compiler cannot prepare Pack material templates',
+          hint: 'use the material compiler supplied by the current runtime host',
+        }),
+      );
+    const prepared = this.#programCompiler.prepareMaterial(template);
+    if (!prepared.ok || prepared.value.selectAddress === undefined) return prepared;
+    const selectAddress = prepared.value.selectAddress.bind(prepared.value);
+    return ok({
+      select: prepared.value.select.bind(prepared.value),
+      selectAddress: (request, address) => {
+        this.#sourceMaterialCompiles[address] ??= {
+          requests: 0,
+          completed: 0,
+          unavailable: 0,
+          failures: 0,
+          compileMs: 0,
+        };
+        const counts = this.#sourceMaterialCompiles[address];
+        counts.requests++;
+        const started = nowMs();
+        const selected = selectAddress(request, address);
+        counts.compileMs += nowMs() - started;
+        if (!selected.ok) counts.failures++;
+        else if (selected.value === undefined) counts.unavailable++;
+        else counts.completed++;
+        return selected;
+      },
+    });
+  }
+
   async #admitTemplateManifest(
     parsed: unknown,
   ): Promise<ShaderResult<AdmittedShaderTemplateManifest, ShaderError>> {
     const declaration = admitShaderTemplateManifest(parsed);
     if (!declaration.ok) return declaration;
-    if (this.#programCompiler === undefined && this.#prepareProgramCompiler !== undefined) {
-      try {
-        const initialized = await this.#prepareProgramCompiler();
-        if (!initialized.ok) return initialized;
-        this.#programCompiler = initialized.value;
-      } catch (cause) {
-        if (cause instanceof ShaderErrorClass) return err(cause);
-        return err(
-          manifestMalformed({
-            message: 'Shader program compiler initialization failed',
-            hint: 'repair the runtime host compiler service before loading this source publication',
-            reason: String(cause),
-          }),
-        );
-      }
-    }
+    const compiler = await this.#initializeProgramCompiler();
+    if (!compiler.ok) return compiler;
     if (
-      this.#programCompiler === undefined ||
       !shaderCompilerProfilesEqual(
-        this.#programCompiler.profile,
+        compiler.value.profile,
         declaration.value.wire.library.compilerProfile,
       )
     ) {
@@ -616,16 +738,80 @@ export class ShaderRegistry {
     return declaration;
   }
 
-  #indexTemplateManifest(template: AdmittedShaderTemplateManifest): RegistryManifest {
+  async #admitCookedProjectShaders(
+    value: unknown,
+  ): Promise<ShaderResult<ManifestIndexes, ShaderError>> {
+    try {
+      if (shaderManifestVersion(value) !== SHADER_MANIFEST_PUBLICATION_VERSION)
+        throw new Error('The cooked section must be a packed shader publication');
+      return indexManifest(await readOwnedShaderManifestPublication(value));
+    } catch (cause) {
+      return err(
+        manifestMalformed({
+          message: 'Project shader manifest contains an invalid cooked section',
+          hint: 'rebuild the cooked material publication with the matching producer',
+          reason: manifestFailureReason(cause),
+        }),
+      );
+    }
+  }
+
+  async #loadTemplateManifest(
+    url: string,
+    parsed: unknown,
+    version: typeof SHADER_PROJECT_MANIFEST_VERSION | typeof SHADER_TEMPLATE_MANIFEST_VERSION,
+  ): Promise<ShaderResult<void, ShaderError>> {
+    const project =
+      version === SHADER_PROJECT_MANIFEST_VERSION
+        ? (parsed as { templates?: unknown; cooked?: unknown })
+        : undefined;
+    let cooked: ManifestIndexes | undefined;
+    if (project !== undefined) {
+      const result = await this.#admitCookedProjectShaders(project.cooked);
+      if (!result.ok) return result;
+      cooked = result.value;
+    }
+    const declaration = await this.#admitTemplateManifest(project ? project.templates : parsed);
+    if (!declaration.ok) return declaration;
+    const template = declaration.value;
+    if (
+      cooked !== undefined &&
+      (template.wire.entries.some(({ hash }) => cooked.entries.has(hash)) ||
+        template.wire.materialShaders.some(({ identifier }) => cooked.materials.has(identifier)))
+    ) {
+      return err(
+        manifestMalformed({
+          message: 'Project shader manifest contains conflicting template and cooked rows',
+          hint: 'give each shader entry and material identifier one publication owner',
+        }),
+      );
+    }
+    const indexes = this.#indexTemplateManifest(template, cooked);
+    for (const [id, program] of template.programs) this.#templates.set(id, program);
+    return this.#publishManifest(url, indexes);
+  }
+
+  #indexTemplateManifest(
+    template: AdmittedShaderTemplateManifest,
+    cooked?: ManifestIndexes,
+  ): RegistryManifest {
     const { entries, materialShaders } = materializeShaderTemplateManifest(
       template,
       (id, selection) => this.resolveProgramTemplate(id, selection),
+      (id, selection) => this.prepareProgramTemplate(id, selection),
     );
     return {
       template,
-      entries: new Map(entries.map((entry) => [entry.hash, entry])),
-      materials: new Map(materialShaders.map((entry) => [entry.identifier, entry])),
-      publicationEntryCount: entries.length,
+      ...(cooked === undefined ? {} : { cooked }),
+      entries: new Map([
+        ...entries.map((entry) => [entry.hash, entry] as const),
+        ...(cooked?.entries ?? []),
+      ]),
+      materials: new Map([
+        ...materialShaders.map((entry) => [entry.identifier, entry] as const),
+        ...(cooked?.materials ?? []),
+      ]),
+      publicationEntryCount: entries.length + (cooked?.publicationEntryCount ?? 0),
     };
   }
 
@@ -715,13 +901,12 @@ export class ShaderRegistry {
           }),
         );
       }
-      if (isTemplatePublication(parsed)) {
-        const declaration = await this.#admitTemplateManifest(parsed);
-        if (!declaration.ok) return declaration;
-        const template = declaration.value;
-        const indexes = this.#indexTemplateManifest(template);
-        for (const [id, program] of template.programs) this.#templates.set(id, program);
-        return this.#publishManifest(url, indexes);
+      const version = shaderManifestVersion(parsed);
+      if (
+        version === SHADER_PROJECT_MANIFEST_VERSION ||
+        version === SHADER_TEMPLATE_MANIFEST_VERSION
+      ) {
+        return this.#loadTemplateManifest(url, parsed, version);
       }
       try {
         parsed = await readOwnedShaderManifestPublication(parsed);
@@ -860,6 +1045,11 @@ export class ShaderRegistry {
     };
   }
 
+  /** Read an admitted template's fixed publication options without selecting a variant. */
+  programTemplate(identifier: string): AdmittedShaderProgramTemplate['template'] | undefined {
+    return this.#templates.get(identifier)?.template;
+  }
+
   /** Admit a native source recipe without composing or reflecting any selection. */
   installProgramTemplate(identifier: string, input: unknown): ShaderResult<void, ShaderError> {
     if (identifier.length === 0)
@@ -904,12 +1094,12 @@ export class ShaderRegistry {
     return ok(undefined);
   }
 
-  /** Resolve only the requested feature set; uniforms and render state never enter this key. */
-  resolveProgramTemplate(
+  #templateProgramRequest(
     identifier: string,
     selection: Readonly<Record<string, boolean>>,
-  ): ShaderResult<ResolvedShaderTemplateProgram, ShaderError> {
-    this.#templateRequests++;
+    standardSurfaceMask?: number,
+    forwardScreenShadow?: true,
+  ) {
     const admitted = this.#templates.get(identifier);
     if (admitted === undefined)
       return err(
@@ -932,7 +1122,112 @@ export class ShaderRegistry {
         }),
       );
     }
-    const key = `${admitted.identity}:${selected.value.key}`;
+    const surface =
+      standardSurfaceMask === undefined
+        ? undefined
+        : standardSurfaceResourceDefines(
+            standardSurfaceMask,
+            admitted.template.engine?.paramSchema ?? [],
+          );
+    const defines =
+      forwardScreenShadow === true
+        ? { ...selected.value.defines, ...surface, FORWARD_SCREEN_SHADOW_RECEIVER: true }
+        : surface === undefined
+          ? selected.value.defines
+          : { ...selected.value.defines, ...surface };
+    const surfaceKey =
+      surface === undefined ? '' : `:surface:${Object.values(surface).map(Number).join('')}`;
+    const receiverKey = forwardScreenShadow === true ? ':forward-screen-shadow' : '';
+    return ok({
+      admitted,
+      compiler,
+      selected: { ...selected.value, defines },
+      key: `${admitted.identity}:${selected.value.key}${surfaceKey}${receiverKey}`,
+    });
+  }
+
+  /** Request one selected CPU program through the host's optional asynchronous compiler. */
+  prepareProgramTemplate(
+    identifier: string,
+    selection: Readonly<Record<string, boolean>>,
+    standardSurfaceMask?: number,
+    forwardScreenShadow?: true,
+    onPending?: (completion: Promise<ShaderResult<void, ShaderError>>) => void,
+  ): ShaderResult<boolean, ShaderError> {
+    const request = this.#templateProgramRequest(
+      identifier,
+      selection,
+      standardSurfaceMask,
+      forwardScreenShadow,
+    );
+    if (!request.ok) return request;
+    const { admitted, compiler, selected, key } = request.value;
+    const compile = compiler.compileAsync;
+    if (compile === undefined || this.#templatePrograms.has(key)) return ok(true);
+    const existing = this.#templatePreparations.get(key);
+    if (existing !== undefined) {
+      if (existing.error !== undefined) return err(existing.error);
+      onPending?.(existing.completion);
+      return ok(false);
+    }
+    // Start the worker request now so it can overlap the rest of this frame's
+    // preparation. Normalizing through an async function also catches a host throw.
+    const submit = async () => compile.call(compiler, admitted.template, selected.defines);
+    const preparation: TemplatePreparation = {
+      completion: submit()
+        .then((result): ShaderResult<void, ShaderError> => {
+          if (!result.ok) {
+            preparation.error = result.error;
+            return result;
+          }
+          this.#storeTemplateProgram(key, result.value);
+          this.#templatePreparations.delete(key);
+          return ok(undefined);
+        })
+        .catch((cause) => {
+          this.#templatePreparations.delete(key);
+          return err(
+            new ShaderErrorClass({
+              code: 'shader-compile-failed',
+              expected: 'the selected program task completes in the current executor',
+              message: `Shader template preparation failed: ${identifier}`,
+              hint: `retry with the current task executor and shader publication (${String(cause)})`,
+            }),
+          );
+        }),
+    };
+    this.#templatePreparations.set(key, preparation);
+    onPending?.(preparation.completion);
+    return ok(false);
+  }
+
+  pendingTemplatePreparations(): Promise<ShaderResult<void, ShaderError>> | undefined {
+    const pending = [...this.#templatePreparations.values()]
+      .filter((entry) => entry.error === undefined)
+      .map((entry) => entry.completion);
+    return pending.length === 0
+      ? undefined
+      : Promise.all(pending).then(
+          (results) => results.find((result) => !result.ok) ?? ok(undefined),
+        );
+  }
+
+  /** Resolve only the requested feature set; uniforms and render state never enter this key. */
+  resolveProgramTemplate(
+    identifier: string,
+    selection: Readonly<Record<string, boolean>>,
+    standardSurfaceMask?: number,
+    forwardScreenShadow?: true,
+  ): ShaderResult<ResolvedShaderTemplateProgram, ShaderError> {
+    this.#templateRequests++;
+    const request = this.#templateProgramRequest(
+      identifier,
+      selection,
+      standardSurfaceMask,
+      forwardScreenShadow,
+    );
+    if (!request.ok) return request;
+    const { admitted, compiler, selected, key } = request.value;
     const cached = this.#templatePrograms.get(key);
     if (cached !== undefined) {
       this.#templateCacheHits++;
@@ -949,11 +1244,57 @@ export class ShaderRegistry {
       );
       return ok(cached);
     }
-    const started = performance.now();
-    const compiled = compiler.compile(admitted.template, selected.value.defines);
-    this.#templateCompileMs += performance.now() - started;
-    if (!compiled.ok) return compiled;
-    const result = compiled.value;
+    const preparation = this.#templatePreparations.get(key);
+    if (preparation !== undefined)
+      return err(
+        preparation.error ??
+          shaderNotFound({
+            hash: identifier,
+            hint: 'shader preparation is pending. Await the selected program before requesting its source',
+          }),
+      );
+    const started = nowMs();
+    const compiled = compiler.compile(admitted.template, selected.defines);
+    this.#templateCompileMs += nowMs() - started;
+    return compiled.ok ? ok(this.#storeTemplateProgram(key, compiled.value)) : compiled;
+  }
+
+  /** Project one used stock Surface contract through the already admitted program template. */
+  selectStandardSurfaceProgram(
+    identifier: string,
+    variantKey: string,
+    mask: number | undefined,
+    forwardScreenShadow?: true,
+    onPending?: (completion: Promise<ShaderResult<void, ShaderError>>) => void,
+  ): ShaderResult<ResolvedShaderTemplateProgram | 'pending' | undefined, ShaderError> {
+    const manifest = this.#admitted;
+    const family = manifest?.materials.get(identifier);
+    const declaration = manifest?.template?.wire.materialShaders.find(
+      (row) => row.identifier === identifier,
+    );
+    const selected = family === undefined ? undefined : findVariantByKey(family, variantKey);
+    if (declaration === undefined || selected === undefined) return ok(undefined);
+    const prepared = this.prepareProgramTemplate(
+      declaration.program,
+      selected.defines,
+      mask,
+      forwardScreenShadow,
+      onPending,
+    );
+    if (!prepared.ok) return prepared;
+    if (!prepared.value) return ok('pending');
+    return this.resolveProgramTemplate(
+      declaration.program,
+      selected.defines,
+      mask,
+      forwardScreenShadow,
+    );
+  }
+
+  #storeTemplateProgram(
+    key: string,
+    result: ShaderProgramCompilation,
+  ): ResolvedShaderTemplateProgram {
     // Reflection, reads and the immutable source belong to this selected program.
     const manifestEntry = structuredClone(result.manifestEntry);
     const receipt = result.receipt === undefined ? undefined : structuredClone(result.receipt);
@@ -972,7 +1313,39 @@ export class ShaderRegistry {
       ...(receipt === undefined ? {} : { receipt }),
     });
     this.#templatePrograms.set(key, resolved);
-    return ok(resolved);
+    return resolved;
+  }
+
+  /** Inspect previously compiled Surface rows for the exact captured WGSL. */
+  preparedSurfaceSourceRows(
+    identifier: string,
+    source: string,
+  ): readonly MaterialShaderManifestVariant[] {
+    const declaration = this.#admitted?.template?.wire.materialShaders.find(
+      (row) => row.identifier === identifier,
+    );
+    const template =
+      declaration === undefined ? undefined : this.#templates.get(declaration.program);
+    if (template === undefined) return [];
+    const prefix = `${template.identity}:`;
+    const rows: MaterialShaderManifestVariant[] = [];
+    for (const [key, compiled] of this.#templatePrograms) {
+      if (!key.startsWith(prefix)) continue;
+      const definesKey = key.slice(prefix.length);
+      if (!definesKey.includes(':surface:') && !definesKey.endsWith(':forward-screen-shadow'))
+        continue;
+      if (!compiled.program.sourceReference.matches(source)) continue;
+      const { wgsl, defines, bindings: _bindings, glsl: _glsl, ...facts } = compiled.manifestEntry;
+      rows.push({
+        ...facts,
+        definesKey,
+        defines: { ...defines },
+        composedWgsl: wgsl,
+        sourceDigest: compiled.program.sourceReference.identity,
+        ...(compiled.receipt === undefined ? {} : { receipt: compiled.receipt }),
+      });
+    }
+    return rows;
   }
 
   programTemplateInspection(options?: { readonly includePrograms?: true }): {
@@ -981,6 +1354,14 @@ export class ShaderRegistry {
     readonly requests: number;
     readonly cacheHits: number;
     readonly compileMs: number;
+    readonly sourceMaterialCompiles: Readonly<
+      Partial<
+        Record<
+          import('@forgeax/engine-types').MaterialProgramAddress,
+          Readonly<MaterialAddressCompilation>
+        >
+      >
+    >;
     readonly programs?: readonly { readonly identifier: string; readonly definesKey: string }[];
   } {
     const names = options?.includePrograms
@@ -994,6 +1375,12 @@ export class ShaderRegistry {
       requests: this.#templateRequests,
       cacheHits: this.#templateCacheHits,
       compileMs: this.#templateCompileMs,
+      sourceMaterialCompiles: Object.fromEntries(
+        Object.entries(this.#sourceMaterialCompiles).map(([address, counts]) => [
+          address,
+          { ...counts },
+        ]),
+      ),
       ...(names === undefined
         ? {}
         : {
@@ -1355,6 +1742,11 @@ export class ShaderRegistry {
       this.#materialShaders.set(identifier, {
         kind: 'ready',
         ...(registration.digest === undefined ? {} : { digest: registration.digest }),
+        ...(registration.sourceBacked === undefined ? {} : { sourceBacked: true }),
+        ...(registration.recipe === undefined ? {} : { recipe: registration.recipe }),
+        ...(registration.templateVariants === undefined
+          ? {}
+          : { templateVariants: registration.templateVariants }),
         publication: Object.freeze(
           ok(
             Object.freeze({
@@ -1390,7 +1782,7 @@ export class ShaderRegistry {
    */
   #preflightMaterialArtifactBytes(
     identifier: string,
-    entry: MaterialShaderByteEntry,
+    entry: MaterialProgramAdmission,
   ): Result<MaterialByteSource | undefined, MaterialArtifactConflictError> {
     validateMaterialByteMetadata(entry);
     const registration = this.#materialShaders.get(identifier);
@@ -1402,12 +1794,23 @@ export class ShaderRegistry {
           : registration.kind === 'ready'
             ? registration.digest
             : undefined;
+    const bytes = 'bytes' in entry ? entry.bytes : undefined;
     const retained =
-      admittedDigest === undefined ? ownMaterialByteSource(entry.bytes, entry.digest) : undefined;
-    if (registration === undefined) return ok(retained);
+      admittedDigest === undefined && bytes !== undefined
+        ? ownMaterialByteSource(bytes, entry.digest)
+        : undefined;
+    if (registration === undefined) {
+      if ('prepare' in entry)
+        return ok({
+          digest: entry.digest,
+          prepare: entry.prepare,
+          ...(entry.recipe === undefined ? {} : { recipe: entry.recipe }),
+        });
+      return ok(retained);
+    }
     const dimension =
       admittedDigest === undefined
-        ? textProgramDiffers(registration, retained, entry.bytes)
+        ? bytes === undefined || textProgramDiffers(registration, retained, bytes)
           ? 'bytes'
           : materialMetadataConflict(
               this.#paramSchemaProjectionOwner,
@@ -1443,6 +1846,27 @@ export class ShaderRegistry {
     const owner = this.#preflightMaterialArtifactBytes(identifier, entry).unwrap();
     if (owner === undefined) return;
     if (entry.bytes.length === 0) throw new Error('ShaderRegistry: empty material program');
+    this.#installMaterialByteOwner(identifier, entry, owner);
+  }
+
+  validateMaterialArtifactSource(
+    identifier: string,
+    entry: MaterialShaderSourceEntry,
+  ): Result<boolean, MaterialArtifactConflictError> {
+    const admitted = this.#preflightMaterialArtifactBytes(identifier, entry);
+    return admitted.ok ? ok(admitted.value === undefined) : admitted;
+  }
+
+  installMaterialArtifactSource(identifier: string, entry: MaterialShaderSourceEntry): void {
+    const owner = this.#preflightMaterialArtifactBytes(identifier, entry).unwrap();
+    if (owner !== undefined) this.#installMaterialByteOwner(identifier, entry, owner);
+  }
+
+  #installMaterialByteOwner(
+    identifier: string,
+    entry: MaterialProgramAdmission,
+    owner: MaterialByteSource,
+  ): void {
     const projection = this.#paramSchemaProjectionOwner.admit({
       ownerId: identifier,
       revision: 1,
@@ -1463,6 +1887,96 @@ export class ShaderRegistry {
       ...(receipt === undefined ? {} : { receipt }),
       ...(entryPoints === undefined ? {} : { entryPoints }),
     });
+  }
+
+  /** Start only a selected source program. Looking up metadata never requests work. */
+  prepareMaterialArtifact(
+    identifier: string,
+    onPending?: (completion: Promise<ShaderResult<void, ShaderError>>) => void,
+  ): ShaderResult<boolean, ShaderError> {
+    const entry = this.#materialShaders.get(identifier);
+    if (entry?.kind !== 'bytes') return ok(true);
+    const owner = entry.owner;
+    const prepare = owner.prepare;
+    if (prepare === undefined || owner.bytes !== undefined) return ok(true);
+    if (owner.failure !== undefined) return err(owner.failure);
+    const submit = async () => prepare();
+    owner.pending ??= submit()
+      .then((result): ShaderResult<void, ShaderError> => {
+        if (!result.ok) {
+          owner.failure = result.error;
+          return result;
+        }
+        const bytes = new Uint8Array(result.value);
+        if (bytes.byteLength === 0 || `sha256:${bytesToHex(sha256(bytes))}` !== owner.digest) {
+          owner.failure = new ShaderErrorClass({
+            code: 'shader-compile-failed',
+            expected: 'rebuilt bytes matching the published material digest',
+            hint: 'recook the Pack and pair it with its Engine shader library',
+            message: `Rebuilt material '${identifier}' does not match its artifact`,
+          });
+          return err(owner.failure);
+        }
+        owner.bytes = bytes;
+        return ok(undefined);
+      })
+      .catch((cause) =>
+        err(
+          new ShaderErrorClass({
+            code: 'shader-compile-failed',
+            expected: 'the selected material task completes',
+            hint: 'retry material preparation with the current task executor',
+            message: `Unable to prepare material '${identifier}': ${String(cause)}`,
+            detail: {
+              code: 'shader-compile-failed',
+              compilerMessages: [],
+              reason: String(cause),
+            },
+          }),
+        ),
+      )
+      .finally(() => {
+        delete owner.pending;
+      });
+    const pending = owner.pending;
+    if (!this.#pendingMaterialSources.has(pending)) {
+      this.#pendingMaterialSources.add(pending);
+      void pending.then(() => this.#pendingMaterialSources.delete(pending));
+    }
+    onPending?.(pending);
+    return ok(false);
+  }
+
+  pendingMaterialPreparations(): Promise<ShaderResult<void, ShaderError>> | undefined {
+    return this.#pendingMaterialSources.size === 0
+      ? undefined
+      : Promise.all(this.#pendingMaterialSources).then(
+          (results) => results.find((result) => !result.ok) ?? ok(undefined),
+        );
+  }
+
+  /** Attach the runtime selector to its admitted base material program. */
+  installMaterialTemplateVariants(
+    identifier: string,
+    selections: readonly {
+      readonly defines: Readonly<Record<string, boolean>>;
+      readonly select: () => string;
+    }[],
+  ): void {
+    const registration = this.#materialShaders.get(identifier);
+    if (registration === undefined || registration.kind === 'template')
+      throw new Error(`ShaderRegistry: missing material base program '${identifier}'`);
+    if (registration.templateVariants !== undefined) return;
+    const source = this.#materialVariantSource(identifier);
+    const family = materialTemplateVariantFamily(
+      identifier,
+      source.paramSchema,
+      selections.map(({ defines, select }) => ({
+        defines,
+        resolve: () => this.#materialVariantSource(select()),
+      })),
+    );
+    this.#materialShaders.set(identifier, { ...registration, templateVariants: family });
   }
 
   #resolveMaterialArtifact(
@@ -1492,7 +2006,16 @@ export class ShaderRegistry {
       this.#materialShaders.set(identifier, { kind: 'ready', publication });
       return publication;
     }
-    const source = readMaterialByteSource(registration.owner);
+    const owner = registration.owner;
+    if (owner.prepare !== undefined && owner.bytes === undefined)
+      return err(
+        owner.failure ??
+          shaderNotFound({
+            hash: identifier,
+            hint: 'prepare the selected material program before reading its WGSL',
+          }),
+      );
+    const source = readMaterialByteSource(owner);
     const publication = this.#prepareMaterialArtifact(
       identifier,
       {
@@ -1517,6 +2040,11 @@ export class ShaderRegistry {
       kind: 'ready',
       publication,
       digest: registration.owner.digest,
+      ...(owner.prepare === undefined ? {} : { sourceBacked: true }),
+      ...(owner.recipe === undefined ? {} : { recipe: owner.recipe }),
+      ...(registration.templateVariants === undefined
+        ? {}
+        : { templateVariants: registration.templateVariants }),
     });
     return publication;
   }
@@ -1537,8 +2065,24 @@ export class ShaderRegistry {
    */
   findMaterialArtifact(
     identifier: string,
-  ): ShaderResult<RegisteredMaterialShaderEntry, ShaderError> {
+    purpose: 'optional',
+  ): ShaderResult<RegisteredMaterialShaderEntry, ShaderError> | undefined;
+  findMaterialArtifact(
+    identifier: string,
+  ): ShaderResult<RegisteredMaterialShaderEntry, ShaderError>;
+  findMaterialArtifact(
+    identifier: string,
+    purpose?: 'optional',
+  ): ShaderResult<RegisteredMaterialShaderEntry, ShaderError> | undefined {
     const entry = this.#materialShaders.get(identifier);
+    if (
+      purpose === 'optional' &&
+      (entry === undefined ||
+        (entry.kind === 'bytes' &&
+          entry.owner.prepare !== undefined &&
+          entry.owner.bytes === undefined))
+    )
+      return undefined;
     if (entry === undefined) {
       return err(
         materialShaderNotFound({
@@ -1554,9 +2098,71 @@ export class ShaderRegistry {
   /** Optional immutable artifact lookup; normal misses do not construct diagnostics. */
   materialArtifact(identifier: string): RegisteredMaterialShaderEntry | undefined {
     const entry = this.#materialShaders.get(identifier);
-    return entry === undefined
-      ? undefined
-      : this.#resolveMaterialArtifact(identifier, entry).unwrap();
+    if (
+      entry === undefined ||
+      (entry.kind === 'bytes' &&
+        entry.owner.prepare !== undefined &&
+        entry.owner.bytes === undefined)
+    )
+      return undefined;
+    return this.#resolveMaterialArtifact(identifier, entry).unwrap();
+  }
+
+  /** A published material schema is usable before first program compilation. */
+  materialParamSchemaProjection(identifier: string): ImmutableParamSchemaProjection | undefined {
+    const entry = this.#materialShaders.get(identifier);
+    return entry?.kind === 'ready'
+      ? entry.publication.value.paramSchemaProjection
+      : entry?.paramSchemaProjection;
+  }
+
+  /** The Pack recipe remains available for remote or recovered renderers after local readiness. */
+  materialArtifactSourceRecipe(identifier: string): MaterialRasterSourceRecipe | undefined {
+    const entry = this.#materialShaders.get(identifier);
+    return entry?.kind === 'bytes'
+      ? entry.owner.recipe
+      : entry?.kind === 'ready'
+        ? entry.recipe
+        : undefined;
+  }
+
+  isSourceBackedMaterialArtifact(identifier: string): boolean {
+    const entry = this.#materialShaders.get(identifier);
+    return entry?.kind === 'bytes'
+      ? entry.owner.prepare !== undefined
+      : entry?.kind === 'ready' && entry.sourceBacked === true;
+  }
+
+  /** Resolve a Pack family's existing reference to the selected program owner. */
+  materialVariantArtifactIdentifier(identifier: string, variantKey: string | undefined): string {
+    if (variantKey === undefined || !this.isSourceBackedMaterialArtifact(identifier))
+      return identifier;
+    const entry = this.#materialShaders.get(identifier);
+    const references =
+      entry?.kind === 'bytes'
+        ? entry.variantReferences
+        : entry?.kind === 'ready'
+          ? entry.publication.value.variantReferences
+          : undefined;
+    if (references === undefined) return identifier;
+    const family = this.materialShaderManifestEntry(identifier);
+    const selected = family === undefined ? undefined : findVariantByKey(family, variantKey);
+    if (selected === undefined) return identifier;
+    // Pack rows carry the source relation through byte admission and ready publication.
+    return (
+      packedVariantIdentifier(selected) ??
+      references.find(({ defines }) => defines === selected.defines)?.identifier ??
+      identifier
+    );
+  }
+
+  hasPendingMaterialPreparations(): boolean {
+    return this.#pendingMaterialSources.size > 0;
+  }
+
+  isMaterialArtifactPreparationPending(identifier: string): boolean {
+    const entry = this.#materialShaders.get(identifier);
+    return entry?.kind === 'bytes' && entry.owner.pending !== undefined;
   }
 
   /** Declaration-only inspection never decodes or analyzes a pending program. */
@@ -1564,7 +2170,7 @@ export class ShaderRegistry {
     identifier: string,
   ):
     | { readonly kind: 'ready'; readonly entry: RegisteredMaterialShaderEntry }
-    | ({ readonly kind: 'bytes' } & Omit<MaterialShaderByteEntry, 'bytes' | 'digest'>)
+    | ({ readonly kind: 'bytes' | 'source' } & Omit<MaterialShaderByteEntry, 'bytes' | 'digest'>)
     | { readonly kind: 'template'; readonly paramSchema: readonly ParamSchemaEntry[] }
     | undefined {
     const entry = this.#materialShaders.get(identifier);
@@ -1573,7 +2179,7 @@ export class ShaderRegistry {
     if (entry.kind === 'template')
       return { kind: 'template', paramSchema: entry.paramSchemaProjection.schema };
     return {
-      kind: 'bytes',
+      kind: entry.owner.prepare === undefined ? 'bytes' : 'source',
       ...(entry.variantReferences === undefined
         ? {}
         : { variantReferences: entry.variantReferences }),
@@ -1623,6 +2229,8 @@ export class ShaderRegistry {
       this.#admitted?.materials.get(identifier) ?? this.#materialVariantFamilies.get(identifier);
     if (held !== undefined) return held;
     const registration = this.#materialShaders.get(identifier);
+    if (registration?.kind !== 'template' && registration?.templateVariants !== undefined)
+      return registration.templateVariants;
     const references =
       registration?.kind === 'bytes'
         ? registration.variantReferences
@@ -1656,6 +2264,7 @@ export class ShaderRegistry {
     const owner = registration.owner;
     return {
       read: () => readMaterialByteSource(owner),
+      ...(owner.prepare === undefined ? {} : { prepared: () => owner.bytes !== undefined }),
       paramSchema: registration.paramSchemaProjection.schema,
       ...(registration.receipt === undefined ? {} : { receipt: registration.receipt }),
       ...(registration.forwardFog === undefined ? {} : { forwardFog: registration.forwardFog }),
@@ -1733,6 +2342,7 @@ function indexManifest(parsed: unknown): ShaderResult<ManifestIndexes, ShaderErr
       }
       const variantFailure = materialVariantKeyFailure(ms);
       if (variantFailure !== undefined) return err(variantFailure);
+      if (!isShaderTemplateManifestRow(ms)) sealMaterialShaderVariants(ms);
       validatedMaterialShaderEntries.set(ms.identifier, ms);
     }
   }
@@ -1870,7 +2480,7 @@ function buildMaterialShaderVariantKey(defines: Record<string, boolean>): string
 }
 
 /** Metadata-only checks deliberately run before source preparation. */
-function validateMaterialByteMetadata(entry: MaterialShaderByteEntry): void {
+function validateMaterialByteMetadata(entry: MaterialProgramAdmission): void {
   if (entry.forwardFog !== undefined && entry.forwardFog !== 'height-vertex/1')
     throw new Error('ShaderRegistry: invalid Forward fog contract');
   ownMaterialVariantReferences(entry.variantReferences);
@@ -1908,7 +2518,7 @@ function materialMetadataConflict(
   schemas: ParamSchemaProjectionOwner,
   identifier: string,
   registration: MaterialRegistration,
-  entry: MaterialShaderByteEntry,
+  entry: MaterialProgramAdmission,
 ): 'param-schema' | 'receipt' | undefined {
   const prior = registration.kind === 'ready' ? registration.publication.value : undefined;
   const schema =

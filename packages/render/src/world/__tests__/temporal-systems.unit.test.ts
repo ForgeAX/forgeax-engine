@@ -2,6 +2,7 @@ import type { EntityHandle } from '@forgeax/engine-ecs';
 import { expect, it, vi } from 'vitest';
 import { registeredSystem } from '../../__tests__/registered-system.fixture';
 import { dependencyNames } from '../../__tests__/schedule-graph.fixture';
+import { MaterialBgAssemblyCache } from '../../record/material-bg-assembly-cache';
 import { TemporalViewHistory } from '../../temporal/frame';
 import { adoptViewRecordHistory, viewRecordHistory } from '../record-history';
 import { ViewRecorder, ViewSubmission } from '../render-views';
@@ -44,6 +45,7 @@ function fixture() {
     childScope: { retire: vi.fn() },
   };
   const frameState = {
+    materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     temporalFrameTransaction: transaction,
     temporalView: new TemporalViewHistory(),
     temporalGpuState: undefined as typeof gpu | undefined,

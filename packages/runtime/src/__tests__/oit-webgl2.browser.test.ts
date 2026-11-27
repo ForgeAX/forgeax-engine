@@ -1,4 +1,5 @@
 import * as wgpu from '@forgeax/engine-rhi-wgpu';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { expect, it } from 'vitest';
 import { constructRendererHost } from '../../../render/src/construct-renderer';
 import { loadRhiPack } from '../backend-selection';
@@ -21,7 +22,7 @@ it.each([
   const constructed = await constructRendererHost(
     canvas,
     undefined,
-    { shaderManifestUrl: '/shaders/manifest.json' },
+    { shaderManifestUrl: '/shaders/manifest.json', prepareShaderProgramCompiler },
     loadRhiPack(wgpu as unknown as Record<string, unknown>),
   );
   if (!constructed.ok) throw new Error(JSON.stringify(constructed.error));

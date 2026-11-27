@@ -24,6 +24,7 @@ export function shadowSourceSnapshot(
   world[12] = x;
   return {
     assetHandle,
+    mobility: 'static',
     transform: { world },
     localAabb: Float32Array.of(-1, -1, -1, 1, 1, 1),
     material,
@@ -96,7 +97,7 @@ export function shadowSourceFixture(
     );
     return {
       identity,
-      sourcePlan: topology.query(topology.sourcePlan(), undefined),
+      sourcePlan: topology.query(topology.sourcePlan(), undefined).active,
       scene,
       matrix,
       planes,

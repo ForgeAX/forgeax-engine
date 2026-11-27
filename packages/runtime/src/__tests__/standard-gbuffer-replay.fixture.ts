@@ -68,12 +68,19 @@ const maxDifference = (a: readonly number[], b: readonly number[]) => {
 const reflectance = (word: number) =>
   [0, 8, 16].map((shift) => (((word >>> shift) & 255) / 255) ** 2);
 
+function isDeferredSsaoWork(work: WorkEntry): boolean {
+  return work.pipeline.shaders.some(
+    ({ entryPoint }) =>
+      entryPoint === 'fs_ssao_full_normal' || entryPoint === 'fs_ssao_full_normal_upsample',
+  );
+}
+
 function effectPixelWorks(works: readonly WorkEntry[], enabled: boolean) {
   return enabled
-    ? works.filter((work) =>
-        work.pipeline.shaders.some((shader) =>
-          ['fs_ssao_calc', 'fs_ssr_compose'].includes(shader.entryPoint ?? ''),
-        ),
+    ? works.filter(
+        (work) =>
+          isDeferredSsaoWork(work) ||
+          work.pipeline.shaders.some(({ entryPoint }) => entryPoint === 'fs_ssr_compose'),
       )
     : [];
 }
@@ -337,7 +344,13 @@ export async function verifyStandardGBufferReplay(
           })
           .unwrap();
       }
-      renderValue(renderer.setProfile({ ...original, renderPath: 'deferred', ssao: effects }));
+      renderValue(
+        renderer.setProfile({
+          ...original,
+          renderPath: 'deferred',
+          ambientOcclusion: { enabled: effects },
+        }),
+      );
       const draw = async (observe = false) => {
         world.update(1 / 60).unwrap();
         propagateTransforms(world).unwrap();
@@ -389,6 +402,13 @@ export async function verifyStandardGBufferReplay(
       );
       if (geometry === undefined || lighting === undefined || geometry.attachments === null)
         throw new Error('missing production GBuffer/lighting work');
+      expect(
+        geometryWorks.flatMap((work) =>
+          work.bindings.filter(
+            (binding) => binding.groupIndex === 1 && binding.resourceKind === 'textureView',
+          ),
+        ),
+      ).toEqual([]);
       expect(geometry.workIndex).toBeLessThan(lighting.workIndex);
       expect(geometry.drawCall).toMatchObject({
         // Deferred SSR writes its fallback in lighting, so the G-buffer stays GPU-driven.
@@ -544,9 +564,7 @@ export async function verifyStandardGBufferReplay(
         let finalPixels = lightingPixels;
         let compositionDifference: number | undefined;
         if (effects) {
-          const ao = model.works.find((work) =>
-            work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_ssao_calc'),
-          );
+          const ao = model.works.find(isDeferredSsaoWork);
           const trace = model.works.find((work) =>
             work.pipeline.shaders.some((shader) => shader.entryPoint === 'ssr_trace'),
           );
@@ -563,11 +581,8 @@ export async function verifyStandardGBufferReplay(
           expect(ao.workIndex).toBeGreaterThan(geometry.workIndex);
           expect(ao.workIndex).toBeLessThan(lighting.workIndex);
           const occlusion = await inspect(ao);
-          // Visibility is .r; .gb carry the encoded normal the AO filter reads.
-          expect(occlusion.format).toBe('rgba8unorm');
-          expect(
-            occlusion.bytes.filter((_, i) => i % 4 === 0).reduce((a, b) => Math.min(a, b), 255),
-          ).toBeLessThan(255);
+          expect(occlusion.format).toBe('r8unorm');
+          expect(occlusion.bytes.some((visibility) => visibility < 255)).toBe(true);
           const traceOutput = trace.bindings.find(
             (binding) => binding.groupIndex === 0 && binding.binding === 4,
           );

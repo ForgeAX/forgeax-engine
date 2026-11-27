@@ -16,6 +16,11 @@ import type { FrameReceipt } from '../../../render/src/render-contract';
 import { createFrameLoop } from '../internal/frame-loop';
 import { testPlatform } from './platform-fixture';
 
+const { renderLifecycleManifestJson } = await import(
+  new URL('../../../render/src/__tests__/shader-manifest-fixture.ts', import.meta.url).href
+);
+const shaderManifest = renderLifecycleManifestJson();
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (cause: unknown) => void;
@@ -27,9 +32,6 @@ function deferred<T>() {
 }
 
 async function fixture() {
-  const { renderLifecycleManifestUrl }: { renderLifecycleManifestUrl(): string } = await import(
-    new URL('../../../render/src/__tests__/shader-manifest-fixture.ts', import.meta.url).href
-  );
   const losses: ReturnType<typeof deferred<{ reason: 'unknown'; message: string }>>[] = [];
   const host = await createRenderer(
     { width: 64, height: 64, getContext: () => null },
@@ -43,7 +45,10 @@ async function fixture() {
         },
       },
     },
-    { shaderManifestUrl: renderLifecycleManifestUrl() },
+    {
+      shaderManifestUrl: 'fixture://app/renderer-completion-shaders.json',
+      readShaderManifest: async () => shaderManifest,
+    },
   );
   const initialization = await host.initialization;
   if (!initialization.ok) throw initialization.error;

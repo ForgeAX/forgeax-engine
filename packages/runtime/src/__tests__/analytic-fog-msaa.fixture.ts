@@ -30,7 +30,11 @@ export async function verifyAnalyticFogMsaa(manifest: string) {
   );
   const { renderer, assets } = host;
   renderValue(
-    renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'forward', ssao: false }),
+    renderer.setProfile({
+      ...renderer.inspect().profile,
+      renderPath: 'forward',
+      ambientOcclusion: { enabled: false },
+    }),
   );
   const world = new World({ assets });
   const lease = renderValue(renderer.attach(world));

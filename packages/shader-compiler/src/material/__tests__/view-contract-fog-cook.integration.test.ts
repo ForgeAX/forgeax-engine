@@ -17,6 +17,7 @@ const RENDER_MATERIAL_CONTRACTS = [
   'render-material',
   'render-material-with-scene-depth',
   'render-material-and-scene-depth',
+  'render-lit-material-and-scene-depth',
 ];
 
 describe('program binding contract selectors', () => {

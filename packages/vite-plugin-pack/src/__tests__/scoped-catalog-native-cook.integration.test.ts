@@ -2,15 +2,31 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
+import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import type { Importer } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  directPackFixture,
+  metaFixture,
+  packAssetFixture,
+} from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
+import { capturePackMiddleware, requestText as request } from './middleware-fixture.js';
 
-const EFFECT_GUID = 'f7b169a1-73cc-4cc4-b0c1-6f93d8db44a1';
-const MATERIAL_GUID = 'cc0c6eaf-086b-4a02-b0d3-ea068b178105';
+const EFFECT_PACK_ID = 'f7b169a1-73cc-4cc4-b0c1-6f93d8db44a1';
+const SIBLING_PACK_ID = '01900000-0000-7000-8000-dddddddddddd';
+
+function effectGuid(packageId: string): string {
+  const namespace = PackageId.parse(packageId);
+  if (!namespace.ok) throw namespace.error;
+  return AssetGuid.format(AssetGuid.derive(namespace.value, 'output'));
+}
+
+const EFFECT_GUID = effectGuid(EFFECT_PACK_ID);
+
 const IMPORTED_GUID = '01900000-0000-7000-8000-eeeeeeeeeeee';
-const SIBLING_EFFECT_GUID = '01900000-0000-7000-8000-dddddddddddd';
+const SIBLING_EFFECT_GUID = effectGuid(SIBLING_PACK_ID);
 
 describe('roots-scoped native catalog publication', () => {
   let root: string | undefined;
@@ -28,29 +44,24 @@ describe('roots-scoped native catalog publication', () => {
     const activePack = join(active, 'effect.pack.json');
     await writeFile(
       activePack,
-      JSON.stringify({
-        schemaVersion: '2.0.0',
-        kind: 'internal-text-package',
-        assets: [
-          {
-            guid: EFFECT_GUID,
-            kind: 'test-effect',
-            execution: 'cooked',
+      JSON.stringify(
+        directPackFixture(EFFECT_PACK_ID, {
+          output: {
+            kind: 'sampler',
             payload: { schemaVersion: 1, emitters: [{ id: 'spark' }] },
             refs: [],
-            artifacts: {},
           },
-        ],
-      }),
+        }),
+      ),
     );
     await writeFile(join(brokenSibling, 'broken.pack.json'), '{not-json');
 
     const cooker: NativeCooker = {
-      key: 'test-effect',
+      key: 'sampler',
       cook: ({ guid, source }) => ({
         guid,
-        payload: { ...(source as Record<string, unknown>), compiled: true },
-        refs: [MATERIAL_GUID],
+        payload: { ...(source as Record<string, unknown>), kind: 'sampler', compiled: true },
+        refs: [EFFECT_GUID],
         inputFingerprint: 'sha256:test-effect-source',
         artifacts: {
           program: {
@@ -65,11 +76,7 @@ describe('roots-scoped native catalog publication', () => {
       cookers: [cooker],
       ddc: { projectDdcRoot: join(root, 'ddc') },
     });
-    const middlewares: Middleware[] = [];
-    plugin.configureServer({
-      middlewares: { use: (middleware) => middlewares.push(middleware as never) },
-      ws: { send: () => {} },
-    });
+    const middlewares = capturePackMiddleware(plugin);
 
     const binding = await plugin.rebind(runtimeBinding('active', 1), [active]);
     expect(binding.status).toBe('ready');
@@ -78,9 +85,9 @@ describe('roots-scoped native catalog publication', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatchObject({
       guid: EFFECT_GUID,
-      kind: 'test-effect',
-      packageUrl: `/__pack/scopes/active/1/asset/__forgeax-ddc/${EFFECT_GUID}.pack.json`,
-      refs: [MATERIAL_GUID],
+      kind: 'sampler',
+      packageUrl: `/__pack/scopes/active/1/asset/__forgeax-ddc/${EFFECT_PACK_ID}.runtime-pack.json`,
+      refs: [EFFECT_GUID],
       publication: {
         schemaVersion: 'asset-publication/1',
         generation: expect.any(Number),
@@ -139,14 +146,9 @@ describe('roots-scoped native catalog publication', () => {
     await writeFile(join(active, 'level.reel.json'), '{"title":"scoped"}');
     await writeFile(
       join(active, 'level.reel.json.meta.json'),
-      JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'external-asset-package',
-        importer: 'reel-game-blob',
-        source: 'level.reel.json',
-        importSettings: {},
-        subAssets: [{ guid: IMPORTED_GUID, sourceIndex: 0, kind: 'reel-game-blob' }],
-      }),
+      metaFixture('level.reel.json', 'reel-game-blob', [
+        { guid: IMPORTED_GUID, sourceIndex: 0, kind: 'reel-game-blob' },
+      ]),
     );
     await writeFile(join(brokenSibling, 'broken.pack.json'), '{not-json');
 
@@ -161,13 +163,9 @@ describe('roots-scoped native catalog publication', () => {
           ok: true,
           value: {
             assets: [
-              {
-                guid: IMPORTED_GUID,
-                kind: 'reel-game-blob',
-                payload: { text: new TextDecoder().decode(source.value) } as never,
-                refs: [],
-                artifacts: {},
-              },
+              packAssetFixture(IMPORTED_GUID, 'reel-game-blob', {
+                text: new TextDecoder().decode(source.value),
+              } as never),
             ],
             sourceDependencies: [],
           },
@@ -180,11 +178,7 @@ describe('roots-scoped native catalog publication', () => {
       producerReadiness: 'on-demand',
       ddc: { projectDdcRoot: join(root, 'ddc') },
     });
-    const middlewares: Middleware[] = [];
-    plugin.configureServer({
-      middlewares: { use: (middleware) => middlewares.push(middleware as never) },
-      ws: { send: () => {} },
-    });
+    const middlewares = capturePackMiddleware(plugin);
 
     const binding = await plugin.rebind(runtimeBinding('active', 1), [active]);
     const catalogResponse = await request(middlewares, binding.catalogUrl);
@@ -224,37 +218,29 @@ describe('roots-scoped native catalog publication', () => {
     const sibling = join(root, 'sibling');
     await mkdir(active, { recursive: true });
     await mkdir(sibling, { recursive: true });
-    const writeEffect = (directory: string, guid: string) =>
+    const writeEffect = (directory: string, packageId: string) =>
       writeFile(
         join(directory, 'effect.pack.json'),
-        JSON.stringify({
-          schemaVersion: '2.0.0',
-          kind: 'internal-text-package',
-          assets: [
-            {
-              guid,
-              kind: 'test-effect',
-              execution: 'cooked',
+        JSON.stringify(
+          directPackFixture(packageId, {
+            output: {
+              kind: 'sampler',
               payload: { schemaVersion: 1, emitters: [{ id: 'spark' }] },
               refs: [],
-              artifacts: {},
             },
-          ],
-        }),
+          }),
+        ),
       );
-    await Promise.all([
-      writeEffect(active, EFFECT_GUID),
-      writeEffect(sibling, SIBLING_EFFECT_GUID),
-    ]);
+    await Promise.all([writeEffect(active, EFFECT_PACK_ID), writeEffect(sibling, SIBLING_PACK_ID)]);
 
     let cookCalls = 0;
     const cooker: NativeCooker = {
-      key: 'test-effect',
+      key: 'sampler',
       cook: ({ guid, source }) => {
         cookCalls++;
         return {
           guid,
-          payload: { ...(source as Record<string, unknown>), compiled: true },
+          payload: { ...(source as Record<string, unknown>), kind: 'sampler', compiled: true },
           refs: [],
           inputFingerprint: `sha256:${guid}`,
           artifacts: {},
@@ -318,46 +304,4 @@ function runtimeBinding(scopeId: string, generation: number) {
     importUrlBase: `/__pack/scopes/${scopeId}/${generation}/import`,
     packageUrlBase: `/__pack/scopes/${scopeId}/${generation}/asset`,
   };
-}
-
-interface MockResponse {
-  statusCode: number;
-  body: string;
-  headers: Record<string, string>;
-  setHeader(name: string, value: string): void;
-  end(chunk: string | Uint8Array): void;
-}
-
-type Middleware = (
-  req: { url?: string; method?: string },
-  res: MockResponse,
-  next: () => void,
-) => unknown;
-
-async function request(
-  middlewares: readonly Middleware[],
-  url: string,
-  method = 'GET',
-): Promise<MockResponse> {
-  const response: MockResponse = {
-    statusCode: 200,
-    body: '',
-    headers: {},
-    setHeader(name, value) {
-      this.headers[name.toLowerCase()] = value;
-    },
-    end(chunk) {
-      this.body = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
-    },
-  };
-  let index = 0;
-  const next = async (): Promise<void> => {
-    const middleware = middlewares[index++];
-    if (middleware !== undefined)
-      await middleware({ url, method }, response, () => {
-        void next();
-      });
-  };
-  await next();
-  return response;
 }

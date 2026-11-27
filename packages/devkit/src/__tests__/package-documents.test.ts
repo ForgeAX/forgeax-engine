@@ -2,8 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createZip } from '../archive.js';
-import { GAME_PACKAGE_DOCUMENT_PATHS, readGamePackageDocuments } from '../package-documents.js';
+import { createZip, GAME_PACKAGE_DOCUMENT_PATHS, readGamePackageDocuments } from '../archive.js';
 
 describe('game package documents', () => {
   it('reads the required project documents as ZIP entries', async () => {

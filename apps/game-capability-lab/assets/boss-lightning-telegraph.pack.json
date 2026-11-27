@@ -1,11 +1,9 @@
 {
-  "schemaVersion": "2.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "019e9c00-0000-7000-8000-000000000100",
+  "schemaVersion": "3.0.0",
+  "packageId": "3f1f47f8-8b7c-5508-b214-b545ea0b82ab",
+  "assets": {
+    "particle-effect/boss-lightning-telegraph": {
       "kind": "particle-effect",
-      "execution": "cooked",
       "payload": {
         "schemaVersion": 3,
         "emitters": [
@@ -159,8 +157,7 @@
           }
         ]
       },
-      "refs": [],
-      "artifacts": {}
+      "refs": []
     }
-  ]
+  }
 }

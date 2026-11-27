@@ -11,7 +11,6 @@ import {
   waterInfoShaderFixture,
 } from '../../../render/src/__tests__/shader-manifest-fixture';
 import { constructRendererHost } from '../../../render/src/construct-renderer';
-import { RenderBundleCache } from '../../../render/src/record/render-bundle-cache';
 import { testAssets } from './helpers/runtime-assets';
 
 function value<T>(
@@ -46,7 +45,7 @@ const manifest = `data:application/json,${encodeURIComponent(
   }),
 )}`;
 
-it('retains bundles through resize and follows real scene membership and culling changes', async () => {
+it('records direct draws through resize and follows real scene membership and culling changes', async () => {
   const adapter = new RhiNullAdapter();
   const device = (await adapter.requestDevice()).unwrap();
   if (!(device instanceof RhiNullDevice)) throw new Error('Expected the structural Null backend');
@@ -109,15 +108,13 @@ it('retains bundles through resize and follows real scene membership and culling
       return device.totalDrawCount - draws;
     };
     for (let i = 0; i < 60; i++) await frame();
-    expect(create.mock.calls.length).toBeGreaterThan(0);
-    expect(create.mock.calls.length).toBeLessThan(10);
-    const warmed = create.mock.calls.length;
+    expect(create).not.toHaveBeenCalled();
     const drawsBeforeResize = await frame();
     expect(drawsBeforeResize).toBeGreaterThan(0);
     world.set(entity, Transform, { pos: [0.1, 0, 0] }).unwrap();
     await frame();
     await frame();
-    expect(create).toHaveBeenCalledTimes(warmed);
+    expect(create).not.toHaveBeenCalled();
     textures.mockClear();
     canvas.width = 64;
     expect(await frame()).toBe(drawsBeforeResize);
@@ -129,24 +126,16 @@ it('retains bundles through resize and follows real scene membership and culling
         size: expect.objectContaining({ width: 64, height: 32 }),
       }),
     );
-    // Resized attachments do not change the scene's bound resources or bundle formats.
-    expect(create).toHaveBeenCalledTimes(warmed);
-    // Exercise actual World membership and culling inputs, with the uncached
-    // compiled renderer as a structural oracle at each transition.
-    const compare = async () => {
-      const cached = await frame();
-      expect(cached).toBeGreaterThan(0);
-      const direct = vi
-        .spyOn(RenderBundleCache.prototype, 'encode')
-        .mockImplementation((_device, pass, record) => record(pass));
-      try {
-        expect(await frame()).toBe(cached);
-      } finally {
-        direct.mockRestore();
-      }
-      expect(await frame()).toBe(cached);
+    // Direct draws use the current scene rows and the resized attachments.
+    expect(create).not.toHaveBeenCalled();
+    const stableFrame = async () => {
+      const draws = await frame();
+      expect(draws).toBeGreaterThan(0);
+      expect(await frame()).toBe(draws);
+      expect(await frame()).toBe(draws);
+      return draws;
     };
-    await compare();
+    const baseline = await stableFrame();
     for (let cycle = 0; cycle < 20; cycle++) {
       const added = Array.from({ length: 16 + (cycle % 4) }, () =>
         world
@@ -164,17 +153,21 @@ it('retains bundles through resize and follows real scene membership and culling
           )
           .unwrap(),
       );
-      await compare();
+      const spawned = await stableFrame();
+      expect(spawned).toBeGreaterThan(baseline);
       for (let index = 0; index < added.length; index++) {
         const target = added[index];
         if (target === undefined) throw new Error('Missing spawned entity');
         world.set(target, Transform, { pos: [index % 2 === 0 ? 1000 : 0.1, 0, 0] }).unwrap();
       }
-      await compare();
+      const culled = await stableFrame();
+      expect(culled).toBeGreaterThan(baseline);
+      expect(culled).toBeLessThan(spawned);
       for (const target of added) world.despawn(target).unwrap();
       canvas.width = cycle % 2 === 0 ? 32 : 64;
-      await compare();
+      expect(await stableFrame()).toBe(baseline);
     }
+    expect(create).not.toHaveBeenCalled();
   } finally {
     renderer.dispose();
   }

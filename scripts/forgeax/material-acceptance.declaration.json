@@ -17,9 +17,9 @@
     {
       "id": "custom-shader-dawn",
       "category": "custom-shader",
-      "subject": "apps/hello/custom-shader/src/pulse-material.shader.pack.json",
-      "fixture": "apps/hello/custom-shader/assets/pulse-material.pack.json",
-      "materialGuid": "01935b00-7d8c-7c4e-9f12-345678abcd02",
+      "subject": "apps/hello/custom-shader/src/pulse-material.pack.json",
+      "fixture": "apps/hello/custom-shader/fixtures/pulse-material.runtime-pack.json",
+      "materialGuid": "330a8d22-5e43-5aab-8cd4-5d920045f7a8",
       "evidence": "dawn",
       "command": {
         "program": "pnpm",
@@ -29,9 +29,9 @@
     {
       "id": "custom-shader-browser",
       "category": "custom-shader",
-      "subject": "apps/hello/custom-shader/src/pulse-material.shader.pack.json",
-      "fixture": "apps/hello/custom-shader/assets/pulse-material.pack.json",
-      "materialGuid": "01935b00-7d8c-7c4e-9f12-345678abcd02",
+      "subject": "apps/hello/custom-shader/src/pulse-material.pack.json",
+      "fixture": "apps/hello/custom-shader/fixtures/pulse-material.runtime-pack.json",
+      "materialGuid": "330a8d22-5e43-5aab-8cd4-5d920045f7a8",
       "evidence": "browser",
       "command": {
         "program": "pnpm",
@@ -102,7 +102,7 @@
       "id": "runtime-bool-no-compile-dawn",
       "category": "runtime-bool-no-compile",
       "subject": "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
-      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-runtime-bool-no-compile.pack.json",
+      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-runtime-bool-no-compile.runtime-pack.json",
       "materialGuid": "019f0000-0000-7000-8000-000000000201",
       "evidence": "dawn",
       "command": {
@@ -118,7 +118,7 @@
       "id": "runtime-bool-no-compile-browser",
       "category": "runtime-bool-no-compile",
       "subject": "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
-      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-runtime-bool-no-compile.pack.json",
+      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-runtime-bool-no-compile.runtime-pack.json",
       "materialGuid": "019f0000-0000-7000-8000-000000000201",
       "evidence": "browser",
       "command": {
@@ -134,7 +134,7 @@
       "id": "module-slot-replacement-dawn",
       "category": "module-slot-replacement",
       "subject": "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
-      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-module-slot-replacement.pack.json",
+      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-module-slot-replacement.runtime-pack.json",
       "materialGuid": "019f0000-0000-7000-8000-000000000201",
       "evidence": "dawn",
       "command": {
@@ -150,7 +150,7 @@
       "id": "module-slot-replacement-browser",
       "category": "module-slot-replacement",
       "subject": "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
-      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-module-slot-replacement.pack.json",
+      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-module-slot-replacement.runtime-pack.json",
       "materialGuid": "019f0000-0000-7000-8000-000000000201",
       "evidence": "browser",
       "command": {
@@ -166,7 +166,7 @@
       "id": "compiler-context-variant-dawn",
       "category": "compiler-context-variant",
       "subject": "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
-      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-compiler-context-variant.pack.json",
+      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-compiler-context-variant.runtime-pack.json",
       "materialGuid": "019f0000-0000-7000-8000-000000000201",
       "evidence": "dawn",
       "command": {
@@ -182,7 +182,7 @@
       "id": "compiler-context-variant-browser",
       "category": "compiler-context-variant",
       "subject": "apps/hello/custom-shader/scripts/smoke-material-semantics.mjs",
-      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-compiler-context-variant.pack.json",
+      "fixture": "scripts/forgeax/material-witness-fixtures/semantic-compiler-context-variant.runtime-pack.json",
       "materialGuid": "019f0000-0000-7000-8000-000000000201",
       "evidence": "browser",
       "command": {

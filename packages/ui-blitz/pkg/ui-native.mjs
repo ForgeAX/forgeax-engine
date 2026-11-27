@@ -1,5 +1,5 @@
 import { sha256 } from '@noble/hashes/sha2.js';
-const artifact = {"bytes":17073853,"sha256":"ef8d40053d3c4358b298d5a127dbf12b2317eb175d5026843c60122c2dc8e48f"};
+const artifact = {"bytes":17077571,"sha256":"f71239eaf4bccd4aa248e472d980395b877c0bb397226fca18050210fd14d1f6"};
 /* @ts-self-types="./ui_blitz.d.ts" */
 
 export class UiDocument {
@@ -258,6 +258,20 @@ export class UiDocument {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0] !== 0;
+    }
+    /**
+     * Native keyboard editing and the rendered caret borrow the same editor.
+     * @param {bigint} id
+     * @returns {Uint32Array}
+     */
+    input_selection(id) {
+        const ret = wasm.uidocument_input_selection(this.__wbg_ptr, id);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
     }
     /**
      * @param {bigint} id
@@ -791,6 +805,17 @@ export class UiDocument {
      */
     set_input_checked(id, checked) {
         const ret = wasm.uidocument_set_input_checked(this.__wbg_ptr, id, checked);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {bigint} id
+     * @param {number} anchor
+     * @param {number} caret
+     */
+    set_input_selection(id, anchor, caret) {
+        const ret = wasm.uidocument_set_input_selection(this.__wbg_ptr, id, anchor, caret);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }

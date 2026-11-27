@@ -27,6 +27,10 @@ export class UiDocument {
     inner_html(id: bigint): string;
     input_bad_input(id: bigint): boolean;
     input_checked(id: bigint): boolean;
+    /**
+     * Native keyboard editing and the rendered caret borrow the same editor.
+     */
+    input_selection(id: bigint): Uint32Array;
     input_step(id: bigint, count: number): void;
     input_text(id: bigint): string;
     input_value(id: bigint): string;
@@ -93,6 +97,7 @@ export class UiDocument {
     set_hover(id: bigint): void;
     set_inner_html(id: bigint, html: string): void;
     set_input_checked(id: bigint, checked: boolean): void;
+    set_input_selection(id: bigint, anchor: number, caret: number): void;
     set_input_text(id: bigint, value: string): boolean;
     set_input_value(id: bigint, value: string): void;
     set_option_selected(id: bigint, selected: boolean): void;
@@ -141,6 +146,7 @@ export interface InitOutput {
     readonly uidocument_inner_html: (a: number, b: bigint) => [number, number, number, number];
     readonly uidocument_input_bad_input: (a: number, b: bigint) => [number, number, number];
     readonly uidocument_input_checked: (a: number, b: bigint) => [number, number, number];
+    readonly uidocument_input_selection: (a: number, b: bigint) => [number, number, number, number];
     readonly uidocument_input_step: (a: number, b: bigint, c: number) => [number, number];
     readonly uidocument_input_text: (a: number, b: bigint) => [number, number, number, number];
     readonly uidocument_input_value: (a: number, b: bigint) => [number, number, number, number];
@@ -184,6 +190,7 @@ export interface InitOutput {
     readonly uidocument_set_hover: (a: number, b: bigint) => [number, number];
     readonly uidocument_set_inner_html: (a: number, b: bigint, c: number, d: number) => [number, number];
     readonly uidocument_set_input_checked: (a: number, b: bigint, c: number) => [number, number];
+    readonly uidocument_set_input_selection: (a: number, b: bigint, c: number, d: number) => [number, number];
     readonly uidocument_set_input_text: (a: number, b: bigint, c: number, d: number) => [number, number, number];
     readonly uidocument_set_input_value: (a: number, b: bigint, c: number, d: number) => [number, number];
     readonly uidocument_set_option_selected: (a: number, b: bigint, c: number) => [number, number];

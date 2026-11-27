@@ -60,6 +60,3 @@ Current main selects `635e6bce68445fc4a22c9fa9dbd8a92b5c9fa778` in CI. Read-only
 comparison confirms unchanged asset-reference, target-inspection, asset-fact,
 workspace and resource-presentation implementations. The consumed App exports
 remain available. No Engine files or CI pins are changed by this delivery.
-
-The [evidence report](evidence/2026-10-22-mesh-material-slots/README.md) separates
-fixture layout/interaction checks, native Engine pixels/navigation and remote CI.

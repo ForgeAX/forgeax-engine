@@ -11,7 +11,7 @@ import {
 import type { StandardSceneSurfaceAdmission } from '../src/temporal/scene-data';
 import {
   createSceneDataCatalog,
-  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
 } from '../src/temporal/scene-data-catalog';
 import {
   createStandardSceneSurfaceAdmission,
@@ -45,7 +45,7 @@ function standardSnapshot(handle: number, module: string): MaterialSnapshot {
     ]),
     materialProgramKeys: freezeJson({ forward: programKey, shadow: `${programKey}:shadow` }),
     materialProgramInputs: freezeJson({
-      forward: { entryPoints: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
+      forward: { entryPoints: [{ name: 'fs_depth_masked', stage: 'fragment', bindings: [] }] },
     }),
     materialContext: freezeJson({ geometry: 'mesh', vertexColor: false }),
     materialPublication: freezeJson({
@@ -193,7 +193,7 @@ function consumerPlan(admission: StandardSceneSurfaceAdmission): RenderFeaturePl
     rgba16floatRenderable: true,
     surfaceAdmission: admission,
     surfaceAdmissionRevision: 1,
-  }).require(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA);
+  }).require(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA);
   return {
     featureIdentity: 'scene-consumer',
     scope: { view: 'camera:1' },

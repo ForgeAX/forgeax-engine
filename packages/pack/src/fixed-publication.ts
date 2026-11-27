@@ -1,6 +1,8 @@
 import { isToolCommandContract } from '@forgeax/engine-tool-runtime';
 import {
   type AssetPublicationEnvelope,
+  type AssetPublicationExternalEvidence,
+  assetPublicationReceiptMatches,
   type CatalogEntry,
   canonicalJson,
   err,
@@ -12,7 +14,7 @@ import {
 } from '@forgeax/engine-types';
 import { validateArtifactPath } from './artifact-path.js';
 import { validatePackBlob } from './blob.js';
-import { decodedArtifactRangeIssue } from './bundle.js';
+import { runtimeArtifactDescriptorIssue } from './bundle.js';
 import { type PackProgramError, verifyPackProgram } from './program.js';
 import type { FixedPackExecution, FixedPackPublication } from './runtime-publication.js';
 import { validatePackV2 } from './schema-compiled.js';
@@ -32,7 +34,6 @@ function record(value: unknown): boolean {
 }
 
 type FixedAsset = FixedPackPublication['pack']['assets'][number];
-type FixedArtifact = FixedAsset['artifacts'][string];
 
 function assertFixedEnvelope(input: FixedPackPublication): void {
   const { pack, executions = {} } = input;
@@ -79,12 +80,7 @@ function assertPublicationTuple(
     throw new TypeError('fixed publication tuple differs');
   const receipt = publication.receipt;
   if (
-    !receipt ||
-    receipt.schemaVersion !== 'asset-publication-receipt/1' ||
-    receipt.sourcePath !== publication.sourcePath ||
-    receipt.sourceRevision !== publication.sourceRevision ||
-    receipt.outputDigest !== pack.digest ||
-    receipt.outputSetDigest !== pack.outputSetDigest ||
+    !assetPublicationReceiptMatches(publication) ||
     !text(receipt.inputFingerprint) ||
     canonicalJson(receipt.externalEvidence) !== canonicalJson(publication.externalEvidence)
   )
@@ -101,35 +97,14 @@ function assertPublicationTuple(
     throw new TypeError('fixed current locator differs');
 }
 
-/** Every unique sibling GUID appears once in the Pack, the Catalog rows and the outputs. */
-function uniqueSiblingGuids(
-  pack: FixedPackPublication['pack'],
-  rows: readonly CatalogEntry[],
-  publication: AssetPublicationEnvelope,
-): ReadonlySet<string> {
-  const own = new Set(pack.assets.map((asset) => asset.guid));
-  if (
-    !own.size ||
-    own.size !== pack.assets.length ||
-    rows.length !== own.size ||
-    new Set(rows.map((row) => row.guid)).size !== own.size ||
-    publication.outputs.length !== own.size ||
-    new Set(publication.outputs.map((output) => output.guid)).size !== own.size
-  )
-    throw new TypeError('fixed publication must retain every unique sibling');
-  return own;
-}
-
 function assertSiblingRow(
   row: CatalogEntry,
   first: CatalogEntry,
   publication: AssetPublicationEnvelope,
-  asset: FixedAsset | undefined,
-): asserts asset is FixedAsset {
-  const output = publication.outputs.find((output) => output.guid === row.guid);
+  asset: FixedAsset,
+  output: AssetPublicationEnvelope['outputs'][number],
+): void {
   if (
-    !asset ||
-    !output ||
     row.packageUrl !== first.packageUrl ||
     row.packageId !== first.packageId ||
     row.sourcePath !== publication.sourcePath ||
@@ -139,57 +114,60 @@ function assertSiblingRow(
     (row.sourceKey !== undefined && row.sourceKey !== output.sourceKey) ||
     !digest(output.digest) ||
     canonicalJson(output.refs) !== canonicalJson(asset.refs) ||
-    canonicalJson(row.publication) !== canonicalJson(publication) ||
+    (row.publication !== publication &&
+      canonicalJson(row.publication) !== canonicalJson(publication)) ||
     (row.lifecycle !== undefined && row.lifecycle !== 'current')
   )
     throw new TypeError('fixed sibling evidence differs');
 }
 
-function assertFixedArtifact(
-  artifact: FixedArtifact,
-  packageRoot: string,
-  guid: string,
-  artifactKey: string,
-): void {
-  if (
-    !validateArtifactPath(artifact.path, { packageRoot, guid, artifactKey }).ok ||
-    !text(artifact.mediaType) ||
-    decodedArtifactRangeIssue(artifact) !== undefined ||
-    !['identity', 'zstd'].includes(artifact.contentEncoding) ||
-    !Number.isSafeInteger(artifact.byteLength) ||
-    artifact.byteLength < 0 ||
-    artifact.integrity?.algorithm !== 'sha256' ||
-    !digest(artifact.integrity.digest)
-  )
-    throw new TypeError('invalid fixed artifact descriptor');
-}
-
-/** Validates sibling rows and their artifacts; returns plugin GUID -> program name. */
+/** Validate the complete sibling and artifact closure using GUID indexes. */
 function validateFixedSiblings(
   input: FixedPackPublication,
   first: CatalogEntry,
   publication: AssetPublicationEnvelope,
-): ReadonlyMap<string, string> {
+) {
   const { pack, rows, blobs } = input;
+  const assets = new Map(pack.assets.map((asset) => [asset.guid, asset]));
+  const outputs = new Map(publication.outputs.map((output) => [output.guid, output]));
+  if (
+    !assets.size ||
+    assets.size !== pack.assets.length ||
+    rows.length !== assets.size ||
+    new Set(rows.map((row) => row.guid)).size !== assets.size ||
+    outputs.size !== assets.size ||
+    outputs.size !== publication.outputs.length
+  )
+    throw new TypeError('fixed publication must retain every unique sibling');
   const paths = new Set<string>();
   const pluginPrograms = new Map<string, string>();
   for (const row of rows) {
-    const asset = pack.assets.find((asset) => asset.guid === row.guid);
-    assertSiblingRow(row, first, publication, asset);
+    const asset = assets.get(row.guid);
+    const output = outputs.get(row.guid);
+    if (!asset || !output) throw new TypeError('fixed sibling evidence differs');
+    assertSiblingRow(row, first, publication, asset, output);
     if (asset.kind === 'plugin') {
       const name = (asset.payload as { readonly program?: unknown })?.program;
       if (typeof name !== 'string') throw new TypeError('missing plugin program');
       pluginPrograms.set(asset.guid, name);
     }
     for (const [artifactKey, artifact] of Object.entries(asset.artifacts)) {
-      assertFixedArtifact(artifact, first.packageUrl, asset.guid, artifactKey);
+      if (
+        !validateArtifactPath(artifact.path, {
+          packageRoot: first.packageUrl,
+          guid: asset.guid,
+          artifactKey,
+        }).ok ||
+        runtimeArtifactDescriptorIssue(artifact) !== undefined
+      )
+        throw new TypeError('invalid fixed artifact descriptor');
       paths.add(artifact.path);
       validatePackBlob(blobs[artifact.path]);
     }
   }
   if (Object.keys(blobs).some((path) => !paths.has(path)))
     throw new TypeError('unreferenced fixed content');
-  return pluginPrograms;
+  return { pluginPrograms, assets };
 }
 
 const FIXED_TARGETS = { host: true, engine: true, build: true, frontend: true } satisfies Record<
@@ -250,9 +228,30 @@ function validateFixedExecution(
   return ok(undefined);
 }
 
+/** Fixed recipes retain deliverable references, including independent version evidence. */
+export function fixedPublicationDependencies(publication: AssetPublicationEnvelope) {
+  const own = new Set(publication.outputs.map((output) => output.guid));
+  const dependencies = new Map<string, AssetPublicationExternalEvidence | undefined>();
+  for (const output of publication.outputs)
+    for (const guid of output.refs) if (!own.has(guid)) dependencies.set(guid, undefined);
+  for (const edge of publication.externalEvidence)
+    if (edge.usage !== 'content' && !own.has(edge.guid)) dependencies.set(edge.guid, edge);
+  return dependencies;
+}
+
+export function matchesFixedDependency(
+  evidence: AssetPublicationExternalEvidence | undefined,
+  pin: { readonly digest: string; readonly generation?: number },
+): boolean {
+  return (
+    (evidence?.digest === undefined || evidence.digest === pin.digest) &&
+    (evidence?.generation === undefined || evidence.generation === pin.generation)
+  );
+}
+
 function assertExternalEvidence(
   publication: AssetPublicationEnvelope,
-  own: ReadonlySet<string>,
+  own: ReadonlyMap<string, FixedAsset>,
 ): void {
   const external = new Set<string>();
   for (const evidence of publication.externalEvidence) {
@@ -288,8 +287,7 @@ export function validateFixedPackPublication(
     if (!first) throw new TypeError('missing current publication evidence');
     const publication = currentPublicationOf(first);
     assertPublicationTuple(pack, publication, first.packageUrl);
-    const own = uniqueSiblingGuids(pack, rows, publication);
-    const pluginPrograms = validateFixedSiblings(input, first, publication);
+    const { pluginPrograms, assets } = validateFixedSiblings(input, first, publication);
     const covered = new Set<string>();
     for (const [target, execution] of Object.entries(executions)) {
       const verified = validateFixedExecution(target, execution, pluginPrograms, covered);
@@ -298,7 +296,7 @@ export function validateFixedPackPublication(
     for (const guid of pluginPrograms.keys())
       if (!covered.has(guid))
         throw new TypeError(`missing fixed execution coverage for plugin sibling: ${guid}`);
-    assertExternalEvidence(publication, own);
+    assertExternalEvidence(publication, assets);
     return ok(input);
   } catch (cause) {
     return err({

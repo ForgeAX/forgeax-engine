@@ -232,6 +232,7 @@ it.each([
       createGameVfx,
       createGameRenderFeatures,
       createRuntimePackOptions: async () => ({}),
+      createTauriRuntimePackCache: (channel: string) => ({ channel }),
       runtimeBinding: { scopeId: 'fixture' },
       createPrograms: () => ({}),
       crypto: { randomUUID: () => 'fixture' },
@@ -289,15 +290,14 @@ it.each([
     const selection = page.match(
       /const query = new URLSearchParams\(location.search\);\nconst isolateVfxViewGraph = .*;\nconst vfxInstanceArenas = .*;\nconst vfxNativePlanning = .*;\nconst vfxRetainedResources = .*;/,
     )?.[0];
-    const payload = page.match(
-      /bootstrapData: (\{ (?:programDeliveryChannel, )?isolateVfxViewGraph, vfxInstanceArenas, vfxNativePlanning, vfxRetainedResources \}),/,
-    )?.[1];
+    const payload = page.match(/^\s*bootstrapData: (\{.*\}),$/m)?.[1];
     expect(selection).toBeDefined();
     expect(payload).toBeDefined();
     const data = runInNewContext(`${selection}\n(${payload})`, {
       location: { search },
       URLSearchParams,
       programDeliveryChannel: 'fixture',
+      storageChannel: 'fixture-storage',
     });
     expect(data.isolateVfxViewGraph).toBe(isolateViewGraph);
     expect(data.vfxInstanceArenas).toBe(instanceArenas);
@@ -305,6 +305,9 @@ it.each([
     expect(data.vfxRetainedResources).toBe(retainedResources);
     const source = await bootstrap(structuredClone(data));
     const renderer = await bootstrap(structuredClone(data));
+    const cache = target === 'tauri' ? { channel: 'fixture-storage' } : undefined;
+    expect(source.runtimePacks.cache).toEqual(cache);
+    expect(renderer.runtimePacks.cache).toEqual(cache);
     expect(source.features[0].viewGraph).toBe(isolateViewGraph ? 'transient' : undefined);
     expect(renderer.features[0].viewGraph).toBe(source.features[0].viewGraph);
     expect(capturedOptions).toHaveLength(2);

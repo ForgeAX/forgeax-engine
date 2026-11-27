@@ -6,11 +6,13 @@ import { CheckList, defineFeature, type FeatureDefinition } from '../../lab/feat
 import { spawnCamera, spawnMesh, standard } from '../../lab/stage';
 
 const AO = {
-  algorithm: 'gtao',
-  quality: 'high',
+  enabled: true,
+  method: 'ssao',
+  quality: 100,
   radius: 0.8,
-  bias: 0.025,
-  intensity: 2.5,
+  radiusInWorldSpace: true,
+  bias: 3,
+  intensity: 1,
 } as const;
 
 export default defineFeature<FeatureDefinition>({
@@ -18,11 +20,11 @@ export default defineFeature<FeatureDefinition>({
   catalog: 'Screen-space ambient occlusion',
   kind: 'visual',
   summary:
-    'StandardProfile.ssao defaults to full-resolution GTAO on eligible Forward and Deferred paths; resolutionScale reduces cost and algorithm selects explicit SSAO. AO darkens indirect light by default, with direct-light attenuation controlled separately.',
+    'Standard enables SSAO by default. This comparison toggles indirect-light AO with unchanged scene lighting and camera.',
   expect:
     'ON: dark contact shadows pool where the cubes meet the floor and in the inner corner of the stacked blocks. OFF: the same scene is flatly lit by the skylight with no contact darkening.',
   appOptions: {
-    standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: AO },
+    standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ambientOcclusion: AO },
   },
   setup({ app, world, frames }) {
     const primitiveAssets = world.assets;
@@ -56,7 +58,7 @@ export default defineFeature<FeatureDefinition>({
     const setAo = (on: boolean): void => {
       const result = app.renderer.setProfile({
         ...app.renderer.inspect().profile,
-        ssao: on ? AO : false,
+        ambientOcclusion: on ? AO : { enabled: false },
       });
       if (!result.ok) throw result.error;
     };
@@ -68,9 +70,10 @@ export default defineFeature<FeatureDefinition>({
         return new CheckList()
           .equal('profile render path', inspection.profile.renderPath, 'forward')
           .ok(
-            'profile carries SSAO parameters',
-            typeof inspection.profile.ssao === 'object',
-            JSON.stringify(inspection.profile.ssao),
+            'profile enables SSAO',
+            inspection.profile.ambientOcclusion.enabled &&
+              inspection.profile.ambientOcclusion.method === 'ssao',
+            JSON.stringify(inspection.profile.ambientOcclusion),
           )
           .ok(
             'an AO pass is scheduled',

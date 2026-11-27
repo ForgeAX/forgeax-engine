@@ -16,8 +16,6 @@ import {
 } from '../gpu-usage';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 
-const WIDTH = 8;
-const HEIGHT = 4;
 const SAMPLES = 4;
 const WALL_DEPTH = 0.5;
 // Perspective near 1, far 10: the reversed-Z wall sits at 1 / (0.5 + 0.5 * 0.1).
@@ -48,12 +46,12 @@ async function compileShader(name: string): Promise<string> {
 }
 
 /** A wall whose `mask` selects which samples of each covered pixel it writes. */
-function wallPipeline(device: RhiDevice, mask: number) {
+function wallPipeline(device: RhiDevice, mask: number, depth = WALL_DEPTH) {
   const module = createShaderModuleImmediate(device, {
     code: `
 @vertex fn wall_vertex(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
   let p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
-  return vec4<f32>(p[i], ${WALL_DEPTH}, 1.0);
+  return vec4<f32>(p[i], ${depth}, 1.0);
 }
 @fragment fn wall_fragment() {}`,
   }).unwrap();
@@ -76,7 +74,10 @@ function wallPipeline(device: RhiDevice, mask: number) {
 // only in sample 0, as along a silhouette edge. The furthest seed must keep the
 // wall on the left and report the right half EMPTY; a seed that read one sample
 // would hide geometry visible through the other three.
-it('seeds the furthest pyramid from every sample of multisampled depth', async () => {
+it.each([
+  { label: 'conservative occlusion', width: 8, height: 4, resolve: false },
+  { label: 'resolved screen HZB', width: 17, height: 9, resolve: true },
+])('seeds multisampled depth for $label', async ({ width, height, resolve }) => {
   const [seed, reduce] = await Promise.all([
     compileShader('depth-pyramid-seed'),
     compileShader('depth-pyramid-reduce'),
@@ -84,7 +85,7 @@ it('seeds the furthest pyramid from every sample of multisampled depth', async (
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const depth = device
     .createTexture({
-      size: { width: WIDTH, height: HEIGHT, depthOrArrayLayers: 1 },
+      size: { width: width, height: height, depthOrArrayLayers: 1 },
       format: 'depth32float',
       sampleCount: SAMPLES,
       usage: GPU_TEXTURE_USAGE_RENDER_ATTACHMENT | GPU_TEXTURE_USAGE_TEXTURE_BINDING,
@@ -98,7 +99,7 @@ it('seeds the furthest pyramid from every sample of multisampled depth', async (
     .unwrap();
   const readback = device
     .createBuffer({
-      size: 256 * HEIGHT,
+      size: 256 * (height + 1),
       usage: GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_MAP_READ,
     })
     .unwrap();
@@ -123,8 +124,14 @@ it('seeds the furthest pyramid from every sample of multisampled depth', async (
     pass.setPipeline(edge);
     pass.draw(3);
     pass.setPipeline(solid);
-    pass.setScissorRect(0, 0, WIDTH / 2, HEIGHT);
+    pass.setScissorRect(0, 0, Math.floor(width / 2), height);
     pass.draw(3);
+    if (resolve) {
+      // The rightmost odd column should appear in its own tile and its padding.
+      pass.setScissorRect(width - 1, 0, 1, height);
+      pass.setPipeline(wallPipeline(device, 0b0001, 0.25));
+      pass.draw(3);
+    }
     pass.end();
     device.queue.submit([raster.finish().unwrap()]).unwrap();
 
@@ -135,7 +142,7 @@ it('seeds the furthest pyramid from every sample of multisampled depth', async (
         'msaa-depth',
         {
           format: 'depth32float',
-          size: { width: WIDTH, height: HEIGHT },
+          size: { width: width, height: height },
           sampleCount: SAMPLES,
           usage: GPU_TEXTURE_USAGE_RENDER_ATTACHMENT | GPU_TEXTURE_USAGE_TEXTURE_BINDING,
         },
@@ -155,10 +162,11 @@ it('seeds the furthest pyramid from every sample of multisampled depth', async (
     const projected = addDepthPyramidPasses(graph, {
       depth: depthSample,
       view: importedView,
-      width: WIDTH,
-      height: HEIGHT,
+      width: width,
+      height: height,
       reduction: 'furthest',
-      multisampled: true,
+      multisampled: resolve ? 'nearest' : true,
+      ...(resolve ? { paddedView: true as const } : {}),
     }).unwrap();
     const mip0 = projected.pyramid.plan.levels[0];
     const mip0View = projected.pyramid.levels[0];
@@ -166,18 +174,29 @@ it('seeds the furthest pyramid from every sample of multisampled depth', async (
       throw new Error('depth pyramid has no level 0');
     graph
       .addCopyPass('pyramid-readback', {
-        accesses: [{ resource: mip0View, usage: 'copy-src' }],
+        accesses: projected.pyramid.levels.map((resource) => ({ resource, usage: 'copy-src' })),
+
         encode: ({ encoder, resources }) => {
           encoder.copyTextureToBuffer(
             { texture: resources.texture(projected.pyramid.texture).unwrap(), mipLevel: 0 },
             { buffer: readback, offset: 0, bytesPerRow: 256, rowsPerImage: mip0.height },
             { width: mip0.width, height: mip0.height, depthOrArrayLayers: 1 },
           );
+          if (resolve) {
+            encoder.copyTextureToBuffer(
+              {
+                texture: resources.texture(projected.pyramid.texture).unwrap(),
+                mipLevel: projected.pyramid.plan.mipLevelCount - 1,
+              },
+              { buffer: readback, offset: mip0.height * 256, bytesPerRow: 256, rowsPerImage: 1 },
+              { width: 1, height: 1, depthOrArrayLayers: 1 },
+            );
+          }
         },
       })
       .unwrap();
     const compiled = graph
-      .compile({ device, surfaceSize: { width: WIDTH, height: HEIGHT } })
+      .compile({ device, surfaceSize: { width: width, height: height } })
       .unwrap();
     const encoder = device.createCommandEncoder().unwrap();
     compiled
@@ -200,11 +219,19 @@ it('seeds the furthest pyramid from every sample of multisampled depth', async (
     mapped.unmap();
     await compiled.retire();
 
-    expect(mip0).toMatchObject({ width: WIDTH / 2, height: HEIGHT / 2 });
+    const lastColumnDepth = 1 / (0.25 + 0.75 * 0.1);
+    if (resolve) {
+      expect(mip0).toMatchObject({ width: 16, height: 8 });
+      expect(words[mip0.height * 64]).toBeCloseTo(lastColumnDepth, 4);
+    } else {
+      expect(mip0).toMatchObject({ width: width / 2, height: height / 2 });
+    }
     for (let y = 0; y < mip0.height; y += 1) {
       for (let x = 0; x < mip0.width; x += 1) {
         const texel = words[y * 64 + x] ?? Number.NaN;
-        if (x < mip0.width / 2) expect(texel, `texel ${x},${y}`).toBeCloseTo(WALL_DISTANCE, 4);
+        if (resolve)
+          expect(texel, `texel ${x},${y}`).toBeCloseTo(x < 8 ? WALL_DISTANCE : lastColumnDepth, 4);
+        else if (x < mip0.width / 2) expect(texel, `texel ${x},${y}`).toBeCloseTo(WALL_DISTANCE, 4);
         else expect(texel, `texel ${x},${y}`).toBeGreaterThanOrEqual(EMPTY_DEPTH);
       }
     }

@@ -10,6 +10,7 @@ import {
 import type { ReferenceRay } from '../../raytracing/scene';
 import { createSdfQuery, SdfQueryStatus } from '../../raytracing/sdf-query';
 import { CARD_PLANES, createSurfaceCapture } from '../../raytracing/surface-cards';
+import { cardQueryReplayStages } from './card-capture-replay.fixture';
 import { readBuffer } from './path-tracer.fixture';
 import type { SdfCardsFixture } from './sdf-cards.commands';
 import { sdfCubeIndices as indices, sdfCubePositions as positions } from './sdf-cards.geometry';
@@ -153,34 +154,38 @@ export async function verifySdfCards(fixture: SdfCardsFixture) {
   (await recorder.dispose()).unwrap();
   const tape = decodeTape(tapeBytes).unwrap(),
     model = buildFrameModel(tape);
-  expect(model.works.length).toBe(8);
-  const last = model.works[6];
-  assert(last);
-  const resource = last.bindings.find((b) => b.binding === 3)?.resourceId;
+  const { firstMaterial, traceWork, lookupWork } = cardQueryReplayStages(tape, model, 6);
+  const resource = traceWork.bindings.find((b) => b.binding === 3)?.resourceId;
   assert(resource);
   const fresh = (await (await webgpu.rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const replay = (
     await openReplay(tape, { device: fresh, createShaderModule: webgpu.createShaderModule })
   ).unwrap();
   try {
-    expect(Array.from((await replay.readResourceAtWork(resource, 6)).unwrap().bytes)).toEqual(
-      Array.from(live),
-    );
-    const lookupResource = model.works[7]?.bindings.find((b) => b.binding === 2)?.resourceId;
+    expect(
+      Array.from((await replay.readResourceAtWork(resource, traceWork.workIndex)).unwrap().bytes),
+    ).toEqual(Array.from(live));
+    const lookupResource = lookupWork.bindings.find((b) => b.binding === 2)?.resourceId;
     assert(lookupResource);
-    expect(Array.from((await replay.readResourceAtWork(lookupResource, 7)).unwrap().bytes)).toEqual(
-      Array.from(mapped),
-    );
-    const validityResource = model.works[7]?.bindings.find((b) => b.binding === 6)?.resourceId;
+    expect(
+      Array.from(
+        (await replay.readResourceAtWork(lookupResource, lookupWork.workIndex)).unwrap().bytes,
+      ),
+    ).toEqual(Array.from(mapped));
+    const validityResource = lookupWork.bindings.find((b) => b.binding === 6)?.resourceId;
     assert(validityResource);
-    const prefix = (await replay.readResourceAtWork(validityResource, 0)).unwrap().bytes;
+    const prefix = (
+      await replay.readResourceAtWork(validityResource, firstMaterial.workIndex)
+    ).unwrap().bytes;
     expect(half(prefix, (8 * cards.width + 8) * 8 + 6)).toBe(1);
     expect(half(prefix, ((16 + 8) * cards.width + 2 * 16 + 8) * 8 + 6)).toBe(0);
     for (let i = 0; i < 4; i++) {
-      const textureResource = model.works[7]?.bindings.find((b) => b.binding === i + 3)?.resourceId;
+      const textureResource = lookupWork.bindings.find((b) => b.binding === i + 3)?.resourceId;
       assert(textureResource);
       expect(
-        Array.from((await replay.readResourceAtWork(textureResource, 7)).unwrap().bytes),
+        Array.from(
+          (await replay.readResourceAtWork(textureResource, lookupWork.workIndex)).unwrap().bytes,
+        ),
       ).toEqual(Array.from(planes[i] ?? []));
     }
   } finally {

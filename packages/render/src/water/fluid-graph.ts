@@ -14,10 +14,11 @@ import type {
   TextureFormat,
 } from '@forgeax/engine-rhi';
 import {
+  deriveTextureLayout,
   err,
   ok,
   type Result,
-  type TextureAsset,
+  type SampledTextureAsset,
   type WaterFluidTarget,
   type WaterFluidTargetSource,
 } from '@forgeax/engine-types';
@@ -52,12 +53,18 @@ interface WaterFluidRasterFrame extends WaterFluidGraphFrame {
     'device' | 'immediateShaderModuleFactory' | 'shaderModuleFactory'
   >;
 }
+export interface WaterFluidNoiseBinding {
+  readonly texture: Texture;
+  readonly asset: SampledTextureAsset;
+}
+
 type SharedContext = Pick<
   RenderPipelineBuildContext<RenderPipelineFrame>,
   'viewIdentity' | 'getFeatureGraphTextureBinding'
 > & {
   readonly graph: RenderGraphBuilder<WaterFluidGraphFrame>;
   readonly waterFluid: WaterFluidRenderFrame;
+  readonly heldSimulations?: ReadonlySet<string>;
   readonly waterInfoPublication: WaterInfoFramePublication | undefined;
   readonly resolveShallowFoamSource?: (source: WaterAdvancedShallowFoamSource) =>
     | Readonly<{
@@ -67,7 +74,7 @@ type SharedContext = Pick<
     | undefined;
   readonly resolveImpulseNoise?: (
     entry: WaterFluidRenderFrame['simulations'][number],
-  ) => { readonly texture: Texture; readonly asset: TextureAsset } | undefined;
+  ) => WaterFluidNoiseBinding | undefined;
 };
 
 interface FluidSource {
@@ -255,7 +262,12 @@ function params(
     52,
   );
   values.set(
-    [(current[0] - previous[0]) / extent[0], (current[2] - previous[2]) / extent[1], 0, 0],
+    [
+      (current[0] - previous[0]) / extent[0],
+      (current[2] - previous[2]) / extent[1],
+      recipe.configurationVersion,
+      0,
+    ],
     56,
   );
   values.set(
@@ -588,10 +600,15 @@ function simulate(
             ['foam1', 'foam'],
             ['foam-output', 'foam'],
           ]
-        : []),
+        : [['foam-neutral', 'foam']]),
     ] as readonly (readonly [string, WaterFluidTarget])[]) {
       const created = make(name, kind);
       if (!created.ok) return created;
+    }
+    if (recipe.solverMode === 'ripple') {
+      const black = target(graph, `${label}-wave-shallow-black`, CLEAR_DESCRIPTOR, [1, 1]);
+      if (!black.ok) return black;
+      rt.set('wave-shallow-black', black.value);
     }
     return undefined;
   };
@@ -601,6 +618,33 @@ function simulate(
     const value = rt.get(name);
     return value === undefined ? invalid(`${label} target ${name}`).unwrap() : value;
   };
+  const projectFields = (): Result<SimulationProjection, RenderGraphError> => {
+    // A held simulation retains the same physical usages and material fields.
+    // It emits no submitted-step markers, so pending impulses stay queued.
+    for (const [name, retained] of rt) {
+      const keep = graph.addComputePass(`${label}-retain-${name}`, {
+        accesses: [{ resource: retained.view, usage: 'sampled-read' }],
+        encodeDirect: () => {},
+      });
+      if (!keep.ok) return keep;
+    }
+    return ok({
+      id,
+      frame,
+      worldIndex,
+      worldIdentity: entry.worldIdentity,
+      fields: [
+        get('normal-height'),
+        recipe.solverMode === 'shallow'
+          ? get(`velocity${frame.roles.velocityReadSide}`)
+          : get('velocity-forces'),
+        get('forces'),
+        get(recipe.foamEnabled ? 'foam-output' : 'foam-neutral'),
+        get('normal-previous'),
+      ],
+    });
+  };
+  if (context.heldSimulations?.has(id)) return projectFields();
   const row = infoRow(publication, worldIndex, entry.worldIdentity, frame);
   const captureFluidWaveInputs = () => {
     const waveBody = publication?.waveBodies.find(
@@ -622,14 +666,6 @@ function simulate(
     if (recipe.foamEnabled && (waveBody === undefined || waveBody.waveSet.waves.length > 32))
       return invalid(`${id} legacy wave input (at most 32 waves)`);
     const uploadLegacyWaveInputs = () => {
-      const waveHeight =
-        recipe.solverMode === 'shallow'
-          ? undefined
-          : target(graph, `${label}-wave-shallow-black`, CLEAR_DESCRIPTOR, [1, 1]);
-      if (waveHeight !== undefined) {
-        if (!waveHeight.ok) return waveHeight;
-        rt.set('wave-shallow-black', waveHeight.value);
-      }
       const waveValues = new Float32Array(Math.max(4, (waveBody?.waveSet.waves.length ?? 0) * 8));
       waveBody?.waveSet.waves.forEach((wave, index) => {
         waveValues.set(
@@ -673,6 +709,7 @@ function simulate(
   const initializeFluidTargets = () => {
     if (frame.initialize)
       for (const [name, destination] of rt) {
+        if (name === 'foam-neutral') continue;
         const record = { render, id: `${id}/initialize/${name}` };
         if (name.startsWith('height') && recipe.solverMode === 'shallow' && terrain !== undefined) {
           const values = upload(
@@ -775,16 +812,7 @@ function simulate(
                 height: noise.asset.shape.extent.height,
                 depthOrArrayLayers: 1,
               },
-              mipLevelCount:
-                noise.asset.mips.kind === 'packed'
-                  ? noise.asset.mips.levelCount
-                  : noise.asset.mips.kind === 'generate'
-                    ? Math.floor(
-                        Math.log2(
-                          Math.max(noise.asset.shape.extent.width, noise.asset.shape.extent.height),
-                        ),
-                      ) + 1
-                    : 1,
+              mipLevelCount: deriveTextureLayout(noise.asset).unwrap().levels.length,
               usage: 0x04,
             },
             () => noise.texture,
@@ -964,47 +992,11 @@ function simulate(
   };
   const foamFailure = addFluidFoamStages();
   if (foamFailure !== undefined) return foamFailure;
-  const finalVelocity =
-    recipe.solverMode === 'shallow'
-      ? get(`velocity${frame.roles.velocityReadSide}`)
-      : get('velocity-forces');
-  const initializeNeutralFluidFoam = () => {
-    if (!recipe.foamEnabled) {
-      const neutral = make('foam-neutral', 'foam');
-      if (!neutral.ok) return neutral;
-      const cleared = clearTarget(graph, `${label}-foam-neutral-clear`, neutral.value);
-      if (!cleared.ok) return cleared;
-    }
-    return undefined;
-  };
-  const neutralFailure = initializeNeutralFluidFoam();
-  if (neutralFailure !== undefined) return neutralFailure;
-  const retainFluidTargets = () => {
-    // Retained targets keep their usage signature and cannot alias across compiled graphs.
-    for (const [name, retained] of rt) {
-      const keep = graph.addComputePass(`${label}-retain-${name}`, {
-        accesses: [{ resource: retained.view, usage: 'sampled-read' }],
-        encodeDirect: () => {},
-      });
-      if (!keep.ok) return keep;
-    }
-    return undefined;
-  };
-  const retentionFailure = retainFluidTargets();
-  if (retentionFailure !== undefined) return retentionFailure;
-  return ok({
-    id,
-    frame,
-    worldIndex,
-    worldIdentity: entry.worldIdentity,
-    fields: [
-      get('normal-height'),
-      finalVelocity,
-      get('forces'),
-      get(recipe.foamEnabled ? 'foam-output' : 'foam-neutral'),
-      get('normal-previous'),
-    ],
-  });
+  if (!recipe.foamEnabled) {
+    const cleared = clearTarget(graph, `${label}-foam-neutral-clear`, get('foam-neutral'));
+    if (!cleared.ok) return cleared;
+  }
+  return projectFields();
 }
 
 function addContactFoam(
@@ -1268,10 +1260,9 @@ export function addWaterFluidSharedGraph(
         undefined,
         width,
         height,
-        {
-          render,
-          id: `${item.id}/material-field${field}`,
-        },
+        context.heldSimulations?.has(item.id)
+          ? undefined
+          : { render, id: `${item.id}/material-field${field}` },
       );
       if (!copied.ok) return copied;
     }

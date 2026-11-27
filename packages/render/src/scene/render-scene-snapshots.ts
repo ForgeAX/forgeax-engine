@@ -1,8 +1,9 @@
 import type { box3 } from '@forgeax/engine-math';
 import { captureBatchGeometry } from '../gpu-driven/batch-execution';
 import { freezePreparedGpuDrivenDraw, ownGpuDrivenVertexInputs } from '../gpu-driven/prepared-draw';
-import { uniqueInstanceIdentities } from '../instances';
-import type { MaterialResource } from '../material-resource';
+import { sealSourceDraws } from '../gpu-driven/source-draw-indices';
+import { captureInstanceGenerations, instanceRowsSurvived } from '../instance-generations';
+import { type MaterialResource, materialHasTemporalDisplacement } from '../material-resource';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type {
   InstancesSnapshot,
@@ -11,12 +12,15 @@ import type {
   RenderableTemporalSnapshot,
 } from '../render-system-extract';
 import { materialDisplacementRadius } from '../standard-displacement-bounds';
+import { CapturedSceneTransform, type ScenePoseWriter } from './captured-transform';
+import { FrameSet } from './frame-set';
 import type { GenerationalWeakMap } from './generational-weak-map';
 import type { MaterialFrame } from './material-dispatch';
+import { SceneDrawSlot, slotContent, slotTransform } from './mesh-draw';
 import type { MeshGeometry } from './mesh-frame';
 import { effectiveMeshMaterials, meshMaterialGeometry } from './mesh-materials';
-import { ownPose } from './pose-slab';
-import type { RenderSceneBounds, RenderSceneSlot } from './render-scene-types';
+import type { GpuSceneMotion, RenderSceneBounds, RenderSceneSlot } from './render-scene-types';
+import type { RowContent } from './row-contents';
 import type { SceneSlotFrame } from './scene-slots';
 import { sharedAabb } from './shared-aabb';
 
@@ -24,42 +28,6 @@ import { sharedAabb } from './shared-aabb';
 export interface FrameCacheTally {
   hits: number;
   misses: number;
-}
-
-function sameInstanceIdentitySet(
-  current: Uint32Array | undefined,
-  previous: Uint32Array | undefined,
-): boolean {
-  // An instanced producer without generation tokens cannot prove that a
-  // compacted/reordered row is the same logical object. Keep that legacy
-  // snapshot conservative: the record stage will seed its previous matrix
-  // instead of borrowing a velocity from an unknown ordinal.
-  if (current === undefined || previous === undefined) return false;
-  if (current === previous) return uniqueInstanceIdentities(current);
-  const currentSet = new Set(current);
-  const previousSet = new Set(previous);
-  if (
-    currentSet.size !== current.length ||
-    previousSet.size !== previous.length ||
-    current.some((identity) => identity === 0) ||
-    previous.some((identity) => identity === 0)
-  ) {
-    return false;
-  }
-  if (current.length === previous.length) {
-    let sameOrder = true;
-    for (let index = 0; index < current.length; index += 1) {
-      if (current[index] !== previous[index]) {
-        sameOrder = false;
-        break;
-      }
-    }
-    if (sameOrder) return true;
-  }
-  // Reorder and retirement are valid when every current token is unique and
-  // survives. The set is built only on the topology-change path; steady pose
-  // updates stay on the linear same-order check and do not allocate.
-  return current.every((identity) => previousSet.has(identity));
 }
 
 export function writeBounds(bounds: RenderSceneBounds | undefined, out: box3.Box3): boolean {
@@ -74,15 +42,29 @@ export function writeBounds(bounds: RenderSceneBounds | undefined, out: box3.Box
 }
 
 export function cullingDisplacementRadius(
-  snapshot: RenderableSnapshot,
+  snapshot: RowContent,
   geometry: MeshGeometry | undefined,
   materials: MaterialFrame | undefined,
   requirePositionProof = false,
 ): number {
-  const effective =
-    geometry === undefined
-      ? snapshot
-      : effectiveMeshMaterials(snapshot, geometry, meshMaterialGeometry(snapshot));
+  return boundDisplacementRadius(
+    cullingMaterialBinding(snapshot, geometry),
+    materials,
+    requirePositionProof,
+  );
+}
+
+export function cullingMaterialBinding(snapshot: RowContent, geometry: MeshGeometry | undefined) {
+  return geometry === undefined || snapshot.materialOverrides === undefined
+    ? snapshot
+    : effectiveMeshMaterials(snapshot, geometry, meshMaterialGeometry(snapshot));
+}
+
+export function boundDisplacementRadius(
+  effective: Pick<RowContent, 'materials' | 'material'>,
+  materials: MaterialFrame | undefined,
+  requirePositionProof = false,
+): number {
   let radius = 0;
   for (let index = 0; index < Math.max(1, effective.materials.length); index++) {
     const resource = effective.materials[index] ?? effective.material;
@@ -98,43 +80,20 @@ export function cullingDisplacementRadius(
 function materialHasDisplacement(resource: MaterialResource, materials?: MaterialFrame): boolean {
   const material = materials === undefined ? resource.snapshot : materials.get(resource)?.snapshot;
   if (material === undefined) throw new Error('Temporal draw has no accepted material version');
-  return (
-    (material.paramSnapshot?.displacementScale ?? 0) !== 0 &&
-    (material.textureSources?.has('displacementTexture') === true ||
-      material.videoTextureFields?.has('displacementTexture') === true)
-  );
+  return materialHasTemporalDisplacement(material);
 }
 
-/** A fixed MaterialFrame answers each material table once; per-frame temporal reads reuse it. */
-const displacementByFrame = new WeakMap<MaterialFrame, WeakMap<object, boolean>>();
-
+/** Consume the actual material slots. Borrowed material values can change in place. */
 export function hasDisplacementSource(
   snapshot: Pick<RenderableSnapshot, 'material' | 'materials'>,
   materials?: MaterialFrame,
 ): boolean {
-  let answers: WeakMap<object, boolean> | undefined;
-  if (materials !== undefined) {
-    answers = displacementByFrame.get(materials);
-    if (answers === undefined) {
-      answers = new WeakMap();
-      displacementByFrame.set(materials, answers);
-    }
+  const slots = snapshot.materials;
+  if (slots.length === 0) return materialHasDisplacement(snapshot.material, materials);
+  for (let index = 0; index < slots.length; index++) {
+    if (materialHasDisplacement(slots[index] as MaterialResource, materials)) return true;
   }
-  // Without a fixed frame the live resource snapshot is read on every call.
-  const key = snapshot.materials.length === 0 ? snapshot.material : snapshot.materials;
-  const cached = answers?.get(key);
-  if (cached !== undefined) return cached;
-  let found = false;
-  if (snapshot.materials.length === 0)
-    found = materialHasDisplacement(snapshot.material, materials);
-  else
-    for (const resource of snapshot.materials)
-      if (materialHasDisplacement(resource, materials)) {
-        found = true;
-        break;
-      }
-  answers?.set(key, found);
-  return found;
+  return false;
 }
 
 export interface CachedWorldBounds {
@@ -148,7 +107,7 @@ export interface CachedWorldBounds {
 
 interface TemporalMemo {
   readonly source: RenderableSnapshot;
-  readonly submitted: RenderableSnapshot | undefined;
+  readonly submitted: RenderableSnapshot | RenderableSnapshot['transform'] | undefined;
   readonly submittedGeneration: number | undefined;
   readonly wasVisible: boolean;
   readonly displacementSource: boolean;
@@ -167,6 +126,10 @@ export type TemporalCache = GenerationalWeakMap<RenderSceneSlot, TemporalMemo>;
 /** Submissions a temporal draw reader may lag and still diff instead of re-reading. */
 const HISTORY_LINK_DEPTH = 4;
 
+/** Native view selections retain their fixed addresses. Borrowed iterables
+ * record each generation at its public read, including reentrant Scene writes. */
+export type SubmittedVisibility = FrameSet | ReadonlyMap<number, number>;
+
 export class SubmittedHistory {
   private readonly changed = new Map<number, RenderSceneSlot | undefined>();
   /** The history this submission replaced; linked only across roster submissions. */
@@ -182,17 +145,23 @@ export class SubmittedHistory {
    * submitted row was visible. `previous` is the history this submission
    * replaces; with no visible map on either side, the two link.
    */
-  static submitted(
-    visible?: ReadonlyMap<number, number>,
-    previous?: SubmittedHistory,
-  ): SubmittedHistory {
+  static submitted(visible?: SubmittedVisibility, previous?: SubmittedHistory): SubmittedHistory {
+    // A completed submission can publish the same previous poses and roster.
+    // The first subsequent row write still records its exact pre-change value.
+    if (
+      previous !== undefined &&
+      !previous.isCut &&
+      previous.changed.size === 0 &&
+      visible === previous.visible
+    )
+      return previous;
     const next = new SubmittedHistory(false, visible);
     // A cut records no rows, so nothing submitted under it can be diffed.
     if (
-      visible === undefined &&
       previous !== undefined &&
       !previous.isCut &&
-      previous.visible === undefined
+      ((visible === undefined && previous.visible === undefined) ||
+        (visible instanceof FrameSet && previous.visible instanceof FrameSet))
     ) {
       next.predecessor = previous;
       // A bounded chain: a reader further behind relinks by a full re-read.
@@ -206,7 +175,7 @@ export class SubmittedHistory {
 
   private constructor(
     readonly isCut: boolean,
-    private readonly visible?: ReadonlyMap<number, number>,
+    private readonly visible?: SubmittedVisibility,
   ) {}
 
   /**
@@ -218,15 +187,18 @@ export class SubmittedHistory {
    */
   changesSince(before: SubmittedHistory, visit: (slot: number) => void): boolean {
     if (before === this) return true;
-    const chain: SubmittedHistory[] = [];
     let cursor: SubmittedHistory | undefined = this;
-    while (cursor !== undefined && cursor !== before) {
-      chain.push(cursor);
-      cursor = cursor.predecessor;
+    while (cursor !== undefined && cursor !== before) cursor = cursor.predecessor;
+    if (cursor === undefined) return false;
+    cursor = this;
+    while (cursor !== undefined) {
+      for (const slot of cursor.changed.keys()) visit(slot);
+      if (cursor === before) break;
+      const prior: SubmittedHistory | undefined = cursor.predecessor;
+      if (cursor.visible instanceof FrameSet && prior?.visible instanceof FrameSet)
+        cursor.visible.changesSince(prior.visible, visit);
+      cursor = prior;
     }
-    if (cursor !== before) return false;
-    for (const history of [before, ...chain])
-      for (const slot of history.changed.keys()) visit(slot);
     return true;
   }
 
@@ -241,9 +213,26 @@ export class SubmittedHistory {
     return this.changed.has(slot) ? this.changed.get(slot) : current.slotAt(slot);
   }
 
+  /** Previous facts for an already resolved current row, without another Scene index read. */
+  before(row: RenderSceneSlot): RenderSceneSlot | undefined {
+    if (this.isCut) return undefined;
+    return this.changed.has(row.slot) ? this.changed.get(row.slot) : row;
+  }
+
+  admitted(submitted: RenderSceneSlot): boolean {
+    return (
+      !this.isCut &&
+      (this.visible === undefined ||
+        (this.visible instanceof FrameSet
+          ? this.visible.has(submitted.slot)
+          : this.visible.get(submitted.slot) === submitted.generation))
+    );
+  }
+
   wasVisible(slot: number, generation: number, current: SceneSlotFrame): boolean {
     if (this.isCut) return false;
-    return this.visible === undefined
+    if (this.visible instanceof FrameSet && !this.visible.has(slot)) return false;
+    return this.visible === undefined || this.visible instanceof FrameSet
       ? this.at(slot, current)?.generation === generation
       : this.visible.get(slot) === generation;
   }
@@ -252,25 +241,25 @@ export class SubmittedHistory {
 export function temporalDrawSnapshot(
   snapshot: RenderableSnapshot,
   counters: FrameCacheTally | undefined,
-  current: SceneSlotFrame,
+  slot: RenderSceneSlot,
   history: SubmittedHistory,
   materials: MaterialFrame | undefined,
   cache: TemporalCache,
 ): RenderableSnapshot {
   // Hidden authored rows keep their source identity but own no accepted draw materials.
   if (snapshot.authorVisible === false) return snapshot;
-  const slot = current.lookup(snapshot.entityKey);
-  if (slot === undefined) return snapshot;
-  const submitted = history.at(slot.slot, current);
-  const wasVisible =
-    submitted?.generation === slot.generation &&
-    history.wasVisible(slot.slot, slot.generation, current);
+  const submitted = history.before(slot);
+  const wasVisible = submitted?.generation === slot.generation && history.admitted(submitted);
+  // The pose wrapper is unique to an issued native row. A memo must not keep
+  // the previous row key alive and thereby chain its earlier submission history.
+  const submittedSource =
+    submitted instanceof SceneDrawSlot ? submitted.transform : submitted?.snapshot;
   const displacementSource = hasDisplacementSource(snapshot, materials);
   const memo = cache.get(slot);
   if (
     memo !== undefined &&
     memo.source === snapshot &&
-    memo.submitted === submitted?.snapshot &&
+    memo.submitted === submittedSource &&
     memo.submittedGeneration === submitted?.generation &&
     memo.wasVisible === wasVisible &&
     memo.displacementSource === displacementSource
@@ -281,11 +270,11 @@ export function temporalDrawSnapshot(
   if (counters !== undefined) counters.misses += 1;
   const value = {
     ...snapshot,
-    temporal: createTemporalSnapshot(slot, false, current, history, displacementSource),
+    temporal: createTemporalSnapshot(slot, submitted, wasVisible, displacementSource),
   };
   cache.set(slot, {
     source: snapshot,
-    submitted: submitted?.snapshot,
+    submitted: submittedSource,
     submittedGeneration: submitted?.generation,
     wasVisible,
     displacementSource,
@@ -294,51 +283,38 @@ export function temporalDrawSnapshot(
   return value;
 }
 
+const NO_REACTIVE_REASONS: readonly RenderableReactiveReason[] = Object.freeze([]);
+
 export function createTemporalSnapshot(
   slot: RenderSceneSlot,
-  resetHistory: boolean,
-  current: SceneSlotFrame,
-  history: SubmittedHistory,
+  submitted: RenderSceneSlot | undefined,
+  wasVisible: boolean,
   displacementSource: boolean,
-): RenderableTemporalSnapshot {
-  const submitted = resetHistory ? undefined : history.at(slot.slot, current);
+): RenderableTemporalSnapshot;
+export function createTemporalSnapshot(
+  slot: RenderSceneSlot,
+  submitted: RenderSceneSlot | undefined,
+  wasVisible: boolean,
+  displacementSource: boolean,
+  into: GpuSceneMotion,
+): GpuSceneMotion;
+export function createTemporalSnapshot(
+  slot: RenderSceneSlot,
+  submitted: RenderSceneSlot | undefined,
+  wasVisible: boolean,
+  displacementSource: boolean,
+  into?: GpuSceneMotion,
+): RenderableTemporalSnapshot | GpuSceneMotion {
   const sameGeneration = submitted?.generation === slot.generation;
-  const wasVisible = sameGeneration && history.wasVisible(slot.slot, slot.generation, current);
-  const reasons: RenderableReactiveReason[] = [];
-  if (!sameGeneration) {
-    reasons.push(submitted === undefined ? 'new-slot' : 'generation-reuse');
-  } else if (!wasVisible) {
-    reasons.push('reentered');
-  }
-  if (
-    sameGeneration &&
-    submitted !== undefined &&
-    submitted.snapshot.assetHandle !== slot.snapshot.assetHandle
-  ) {
-    reasons.push('geometry-revision');
-  }
-  if (
-    sameGeneration &&
-    submitted !== undefined &&
-    submitted.snapshot.materials !== slot.snapshot.materials
-  ) {
-    reasons.push('material-revision');
-  }
-  // Runtime texture bytes may change without a material revision. The
-  // current displaced local position cannot stand in for its unknown prior
-  // shape; expose invalid motion and reject color history through the same
-  // submitted-scene authority used by rigid, instance and skin consumers.
-  if (displacementSource) reasons.push('displacement-source');
+  const current = slotContent(slot);
+  const previous = submitted === undefined ? undefined : slotContent(submitted);
+  const geometryChanged = sameGeneration && previous?.assetHandle !== current.assetHandle;
+  const materialsChanged = sameGeneration && previous?.materials !== current.materials;
+  // Displacement bytes can change independently of the material version.
   const seedCurrent =
-    !sameGeneration ||
-    !wasVisible ||
-    reasons.includes('geometry-revision') ||
-    reasons.includes('material-revision') ||
-    reasons.includes('displacement-source');
-  const previous = seedCurrent || submitted === undefined ? slot.snapshot : submitted.snapshot;
-  const previousWorld = submitted?.snapshot.transform.world;
-  const currentInstances = slot.snapshot.instances;
-  const submittedInstances = submitted?.snapshot.instances;
+    !sameGeneration || !wasVisible || geometryChanged || materialsChanged || displacementSource;
+  const currentInstances = current.instances;
+  const submittedInstances = previous?.instances;
   // A collection-owned column is retained by reference and the projection
   // store recycles it two revisions later; a submission that lags further
   // (failed or skipped submit) is a temporal cut, never a stale read.
@@ -358,24 +334,47 @@ export function createTemporalSnapshot(
           currentInstances.collectionId === submittedInstances.collectionId) &&
         currentInstances.transforms.length >= currentInstances.instanceCount * 16 &&
         submittedInstances.transforms.length >= submittedInstances.instanceCount * 16 &&
-        sameInstanceIdentitySet(currentInstances.generations, submittedInstances.generations));
-  const motionValid = !seedCurrent && previousWorld !== undefined && instancesCompatible;
+        currentInstances.generations?.length === currentInstances.instanceCount &&
+        submittedInstances.generations?.length === submittedInstances.instanceCount &&
+        instanceRowsSurvived(currentInstances.generations, submittedInstances.generations));
+  const motionValid = !seedCurrent && submitted !== undefined && instancesCompatible;
+  const previousInstances =
+    seedCurrent || submittedRecycled ? currentInstances : submittedInstances;
+  if (into !== undefined) {
+    into.motionValid = motionValid;
+    into.reactive = seedCurrent;
+    into.previousInstances = previousInstances;
+    return into;
+  }
+  const priorTransform =
+    seedCurrent || submitted === undefined ? undefined : slotTransform(submitted);
+  let reactiveReasons = NO_REACTIVE_REASONS;
+  if (seedCurrent) {
+    const reasons: RenderableReactiveReason[] = [];
+    if (!sameGeneration) reasons.push(submitted === undefined ? 'new-slot' : 'generation-reuse');
+    else if (!wasVisible) reasons.push('reentered');
+    if (geometryChanged) reasons.push('geometry-revision');
+    if (materialsChanged) reasons.push('material-revision');
+    if (displacementSource) reasons.push('displacement-source');
+    reactiveReasons = reasons;
+  }
   return {
     previousSource: seedCurrent ? 'current-seed' : 'last-submitted',
     motionValid,
-    reactive: reasons.length > 0,
-    reactiveReasons: reasons,
+    reactive: seedCurrent,
+    reactiveReasons,
     previousTransform:
-      seedCurrent || previousWorld === undefined
-        ? previous.transform
-        : { ...previous.transform, world: previousWorld },
+      seedCurrent || priorTransform === undefined
+        ? slotTransform(slot)
+        : submitted instanceof SceneDrawSlot
+          ? priorTransform
+          : { ...priorTransform, world: priorTransform.world },
     // A collection identity/count break is a temporal cut for that
     // renderable. The record stage receives the current snapshot as its
     // baseline, while stable collections retain the submitted column and
     // use identity generations to map reordered entries and seed replaced
     // entries.
-    previousInstances:
-      seedCurrent || submittedRecycled ? slot.snapshot.instances : previous.instances,
+    previousInstances,
   };
 }
 
@@ -394,7 +393,7 @@ export function ownInstances(instances: InstancesSnapshot): InstancesSnapshot {
     transforms: new Float32Array(instances.transforms),
     ...(instances.generations === undefined
       ? {}
-      : { generations: new Uint32Array(instances.generations) }),
+      : { generations: captureInstanceGenerations(instances.generations) }),
   };
 }
 
@@ -408,9 +407,9 @@ const ownedDrawTables = new WeakMap<
 function ownGpuDrivenDraws(
   draws: NonNullable<RenderableSnapshot['gpuDrivenDraws']>,
 ): NonNullable<RenderableSnapshot['gpuDrivenDraws']> {
+  const prior = ownedDrawTables.get(draws);
+  if (prior !== undefined) return prior;
   const shared = Object.isFrozen(draws) && draws.every((draw) => Object.isFrozen(draw));
-  const cached = shared ? ownedDrawTables.get(draws) : undefined;
-  if (cached !== undefined) return cached;
   const owned = draws.map((draw) => ({
     ...draw,
     geometry: captureBatchGeometry(draw.geometry),
@@ -424,17 +423,23 @@ function ownGpuDrivenDraws(
           }),
         }),
   }));
-  if (shared) ownedDrawTables.set(draws, owned);
-  return owned;
+  const sealed = sealSourceDraws(owned);
+  if (shared) ownedDrawTables.set(draws, sealed);
+  return sealed;
 }
 
-export function ownSnapshot(snapshot: RenderableSnapshot): RenderableSnapshot {
+export function ownSnapshot(
+  snapshot: RenderableSnapshot,
+  poses: ScenePoseWriter,
+): RenderableSnapshot {
+  const pose = CapturedSceneTransform.storage(snapshot.transform);
   const { temporal: _temporal, skinBinding: sourceBinding, ...current } = snapshot;
   let skinBinding: RenderableSnapshot['skinBinding'];
   if (sourceBinding !== undefined) {
     const { skeleton, joints } = sourceBinding;
     skinBinding = Object.freeze({
       skeleton,
+      ...(sourceBinding.affinePoint ? { affinePoint: true } : {}),
       joints: Object.freeze([...joints]),
     });
   }
@@ -443,7 +448,10 @@ export function ownSnapshot(snapshot: RenderableSnapshot): RenderableSnapshot {
     ...(snapshot.gpuDrivenDraws === undefined
       ? {}
       : { gpuDrivenDraws: ownGpuDrivenDraws(snapshot.gpuDrivenDraws) }),
-    transform: { ...snapshot.transform, world: ownPose(snapshot.transform.world) },
+    transform: poses.capture(
+      CapturedSceneTransform.column(pose),
+      CapturedSceneTransform.offset(pose),
+    ),
     ...(snapshot.localAabb === undefined ? {} : { localAabb: sharedAabb(snapshot.localAabb) }),
     ...(snapshot.instances === undefined ? {} : { instances: ownInstances(snapshot.instances) }),
     ...(snapshot.spriteInstances === undefined
@@ -474,66 +482,59 @@ export function ownPointsLinesSnapshot(
   };
 }
 
-export function intersects(left: RenderSceneBounds, right: RenderSceneBounds): boolean {
-  return (
-    left.min[0] <= right.max[0] &&
-    left.max[0] >= right.min[0] &&
-    left.min[1] <= right.max[1] &&
-    left.max[1] >= right.min[1] &&
-    left.min[2] <= right.max[2] &&
-    left.max[2] >= right.min[2]
-  );
+const detachedBox = new Float64Array(6);
+
+export function worldBounds(snapshot: RenderableSnapshot): RenderSceneBounds | undefined {
+  if (!writeTransformedWorldBounds(detachedBox, snapshot.localAabb, snapshot.transform.world))
+    return undefined;
+  return {
+    min: [detachedBox[0] as number, detachedBox[1] as number, detachedBox[2] as number],
+    max: [detachedBox[3] as number, detachedBox[4] as number, detachedBox[5] as number],
+  };
 }
 
-export function worldBounds(
-  snapshot: RenderableSnapshot,
-  target?: RenderSceneBounds,
-  local = snapshot.localAabb,
-): RenderSceneBounds | undefined {
-  if (local === undefined || local.length < 6) return undefined;
-  const world = snapshot.transform.world;
-  const min = (target?.min ?? [0, 0, 0]) as [number, number, number];
-  const max = (target?.max ?? [0, 0, 0]) as [number, number, number];
-  const centerX = ((local[0] ?? 0) + (local[3] ?? 0)) * 0.5;
-  const centerY = ((local[1] ?? 0) + (local[4] ?? 0)) * 0.5;
-  const centerZ = ((local[2] ?? 0) + (local[5] ?? 0)) * 0.5;
-  const extentX = ((local[3] ?? 0) - (local[0] ?? 0)) * 0.5;
-  const extentY = ((local[4] ?? 0) - (local[1] ?? 0)) * 0.5;
-  const extentZ = ((local[5] ?? 0) - (local[2] ?? 0)) * 0.5;
-  const worldCenterX =
-    (world[0] ?? 0) * centerX +
-    (world[4] ?? 0) * centerY +
-    (world[8] ?? 0) * centerZ +
-    (world[12] ?? 0);
-  const worldCenterY =
-    (world[1] ?? 0) * centerX +
-    (world[5] ?? 0) * centerY +
-    (world[9] ?? 0) * centerZ +
-    (world[13] ?? 0);
-  const worldCenterZ =
-    (world[2] ?? 0) * centerX +
-    (world[6] ?? 0) * centerY +
-    (world[10] ?? 0) * centerZ +
-    (world[14] ?? 0);
-  const worldExtentX =
-    Math.abs(world[0] ?? 0) * extentX +
-    Math.abs(world[4] ?? 0) * extentY +
-    Math.abs(world[8] ?? 0) * extentZ;
-  const worldExtentY =
-    Math.abs(world[1] ?? 0) * extentX +
-    Math.abs(world[5] ?? 0) * extentY +
-    Math.abs(world[9] ?? 0) * extentZ;
-  const worldExtentZ =
-    Math.abs(world[2] ?? 0) * extentX +
-    Math.abs(world[6] ?? 0) * extentY +
-    Math.abs(world[10] ?? 0) * extentZ;
-  min[0] = worldCenterX - worldExtentX;
-  min[1] = worldCenterY - worldExtentY;
-  min[2] = worldCenterZ - worldExtentZ;
-  max[0] = worldCenterX + worldExtentX;
-  max[1] = worldCenterY + worldExtentY;
-  max[2] = worldCenterZ + worldExtentZ;
-  return target ?? { min, max };
+/** Read the addressed matrix and local extents once and write all six world coordinates. */
+export function writeTransformedWorldBounds(
+  out: { [lane: number]: number },
+  local: RowContent['localAabb'],
+  world: Float32Array,
+  offset = 0,
+): boolean {
+  if (local === undefined || local.length < 6) return false;
+  const xx = world[offset] ?? 0;
+  const xy = world[offset + 1] ?? 0;
+  const xz = world[offset + 2] ?? 0;
+  const yx = world[offset + 4] ?? 0;
+  const yy = world[offset + 5] ?? 0;
+  const yz = world[offset + 6] ?? 0;
+  const zx = world[offset + 8] ?? 0;
+  const zy = world[offset + 9] ?? 0;
+  const zz = world[offset + 10] ?? 0;
+  const minX = local[0] ?? 0;
+  const minY = local[1] ?? 0;
+  const minZ = local[2] ?? 0;
+  const maxX = local[3] ?? 0;
+  const maxY = local[4] ?? 0;
+  const maxZ = local[5] ?? 0;
+  const centerX = (minX + maxX) * 0.5;
+  const centerY = (minY + maxY) * 0.5;
+  const centerZ = (minZ + maxZ) * 0.5;
+  const extentX = (maxX - minX) * 0.5;
+  const extentY = (maxY - minY) * 0.5;
+  const extentZ = (maxZ - minZ) * 0.5;
+  const worldCenterX = xx * centerX + yx * centerY + zx * centerZ + (world[offset + 12] ?? 0);
+  const worldCenterY = xy * centerX + yy * centerY + zy * centerZ + (world[offset + 13] ?? 0);
+  const worldCenterZ = xz * centerX + yz * centerY + zz * centerZ + (world[offset + 14] ?? 0);
+  const worldExtentX = Math.abs(xx) * extentX + Math.abs(yx) * extentY + Math.abs(zx) * extentZ;
+  const worldExtentY = Math.abs(xy) * extentX + Math.abs(yy) * extentY + Math.abs(zy) * extentZ;
+  const worldExtentZ = Math.abs(xz) * extentX + Math.abs(yz) * extentY + Math.abs(zz) * extentZ;
+  out[0] = worldCenterX - worldExtentX;
+  out[1] = worldCenterY - worldExtentY;
+  out[2] = worldCenterZ - worldExtentZ;
+  out[3] = worldCenterX + worldExtentX;
+  out[4] = worldCenterY + worldExtentY;
+  out[5] = worldCenterZ + worldExtentZ;
+  return true;
 }
 
 export function boundsFromArray(bounds: ArrayLike<number>): RenderSceneBounds | undefined {

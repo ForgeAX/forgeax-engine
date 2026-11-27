@@ -20,6 +20,7 @@ import {
   materialShaderSource,
   materialShaderUvSetCount,
   materialShaderVertexInputRequired,
+  projectStandardCoverageDefines,
   type RegisteredMaterialShaderEntry,
   type ShaderCatalog,
   type ShaderCatalogDevice,
@@ -42,7 +43,10 @@ import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../gpu-stage
 import type { RhiErrorListenerRegistry } from '../lifecycle';
 import { assertStorageBufferCap } from '../light-buffer-layout';
 import { materialVertexConstants } from '../material-stage-constants';
-import { buildPbrMaterialUserRegionEntries } from '../pbr-pipeline';
+import {
+  buildPbrMaterialUserRegionEntries,
+  isCanonicalStandardPbrMaterialShader,
+} from '../pbr-pipeline';
 import { colorFormatsForPassKind, type PipelineSpec, passKindPolicyTable } from '../pipeline-spec';
 import {
   deriveExtendedLightingCapability,
@@ -79,7 +83,7 @@ export type SeedShaderModule = ShaderDeviceAdapterInternal['seedModule'];
 
 export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
   /** Borrow only an already completed exact-source module from this live generation. */
-  completedModule(key: string, source: ShaderSource): ShaderModule | undefined;
+  completedModule(key: string, source: string | ShaderSource): ShaderModule | undefined;
   /**
    * feat-20260609 R3-fixup: seed the adapter's moduleCache with an
    * already-compiled ShaderModule under `label`. Used by the eager
@@ -95,7 +99,7 @@ export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
   hasModule(label: string): boolean;
   /** Only this live generation-owned asynchronous request may be retried. */
   isPending(error: RhiError): boolean;
-  pendingCompletion(): Promise<Result<void, RhiError>> | undefined;
+  pendingCompletion(signal?: RhiError): Promise<Result<void, RhiError>> | undefined;
   invalidateModule(label: string): void;
   /** Retire the explicit generation warmup roster and pending callbacks. */
   dispose(): void;
@@ -278,8 +282,16 @@ export function makeShaderDeviceAdapter(
     completedModule(key, source): ShaderModule | undefined {
       if (disposed) return undefined;
       const previous = sources.get(key);
-      if (previous === undefined || (previous !== source && !previous.sameText(source)))
+      if (
+        previous === undefined ||
+        (typeof source === 'string'
+          ? !previous.matches(source)
+          : previous !== source && !previous.sameText(source))
+      )
         return undefined;
+      const validated =
+        mode === 'immediate' ? completedValidatedModule?.(key, previous) : undefined;
+      if (validated !== undefined) return validated;
       const module = moduleCache.get(key)?.deref();
       if (module !== undefined) requested.add(key);
       return module;
@@ -300,7 +312,13 @@ export function makeShaderDeviceAdapter(
       const signal = pendingSignals.get(error);
       return !disposed && signal !== undefined && pending.get(signal.key) === signal.request;
     },
-    pendingCompletion() {
+    pendingCompletion(error) {
+      if (error !== undefined) {
+        const signal = pendingSignals.get(error);
+        return !disposed && signal !== undefined && pending.get(signal.key) === signal.request
+          ? signal.request.completion
+          : undefined;
+      }
       const completions = [...pending.values()].flatMap((operation) =>
         operation.completion === undefined ? [] : [operation.completion],
       );
@@ -547,16 +565,70 @@ export async function prepareMaterialShaders(
     throw loaded.error;
   }
 
-  // ── Step 1b: material shader variant resolution + registration ───────────
-  // feat-20260609-hdrp-cluster-fragment-ggx M1 / w7: the boot resolver selects
-  // the non-clustered variant; clustered Standard activation resolves its own
-  // variant later at record time.
+  installBootMaterialShaderVariants(registry, rhiDevice, {
+    storageBufferCapable,
+    webgl2Downlevel,
+    extendedLightingShaderAvailable,
+    projectorAvailable,
+    materialShaderUvSetCounts,
+  });
+
+  // ── Step 1c: register forgeax::default-shadow-caster from its manifest identity ──
+  // feat-20260609-pipeline-driven-pass-selector-shadowcaster-via-mat M3 / T-007:
+  // The reserved material-shader identifier is the SSOT. Content heuristics are
+  // invalid here: a game-authored vertex-only shader can legitimately expose
+  // position without normal (billboards and procedural VFX commonly do), and
+  // must never be mistaken for the engine shadow caster merely because it is
+  // encountered first in the flat manifest.
+  const shadowCasterIdentifier = 'forgeax::default-shadow-caster';
+  if (!registry.findMaterialArtifact(shadowCasterIdentifier).ok) {
+    const manifestEntry = Array.from(registry.materialShaderManifestEntries()).find(
+      (candidate) => candidate.identifier === shadowCasterIdentifier,
+    );
+    if (manifestEntry !== undefined) {
+      // shadow_caster evaluates the same default Surface as Standard. Keep
+      // its generated MaterialParameters contract aligned with the Standard
+      // pipeline even when a legacy manifest omitted the material entry.
+      const entryPoints = manifestEntry.entryPoints ?? manifestEntry.receipt?.entryPoints;
+      registry.installMaterialArtifact(shadowCasterIdentifier, {
+        source: manifestEntry.composedWgsl,
+        sourceReference: materialShaderSource(manifestEntry),
+        ...(entryPoints === undefined ? {} : { entryPoints }),
+        paramSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
+        ...(manifestEntry.receipt === undefined ? {} : { receipt: manifestEntry.receipt }),
+      });
+    }
+  }
+}
+
+/** Admit each boot-selected material variant without visiting Pack-owned program families. */
+function installBootMaterialShaderVariants(
+  registry: ShaderCatalog,
+  rhiDevice: RhiDevice,
+  {
+    storageBufferCapable,
+    webgl2Downlevel,
+    extendedLightingShaderAvailable,
+    projectorAvailable,
+    materialShaderUvSetCounts,
+  }: {
+    readonly storageBufferCapable: boolean;
+    readonly webgl2Downlevel: boolean;
+    readonly extendedLightingShaderAvailable: boolean;
+    readonly projectorAvailable: boolean;
+    readonly materialShaderUvSetCounts: Map<string, number>;
+  },
+): void {
   for (const msEntry of registry.materialShaderManifestEntries()) {
     // bug-20260610: skip synthetic non-material engine entries piggy-backing
     // on the materialShaders channel for variant surfacing (shadow_caster).
     // They use the `forgeax::engine-` prefix and are consumed by Step 2's
     // engine-entry compile path, NOT by installMaterialArtifact.
-    if (msEntry.identifier.startsWith('forgeax::engine-')) continue;
+    if (
+      msEntry.identifier.startsWith('forgeax::engine-') ||
+      registry.isSourceBackedMaterialArtifact(msEntry.identifier)
+    )
+      continue;
     // The same closed resolver drives every manifest axis at boot. This keeps
     // registration aligned with record-time capability/feature selection and
     // supplies explicit defaults for opt-in axes such as shadow alpha-mask and
@@ -607,15 +679,14 @@ export async function prepareMaterialShaders(
         chosen?.receipt?.entryPoints ??
         msEntry.entryPoints ??
         msEntry.receipt?.entryPoints;
+      const receipt = chosen?.receipt ?? msEntry.receipt;
       registry.installMaterialArtifact(msEntry.identifier, {
         forwardFog: selected.forwardFog ?? selected.receipt?.forwardFog,
         source: wgsl,
         sourceReference: materialShaderSource(selected),
         ...(entryPoints === undefined ? {} : { entryPoints }),
         paramSchema,
-        ...(chosen?.receipt === undefined && msEntry.receipt === undefined
-          ? {}
-          : { receipt: chosen?.receipt ?? msEntry.receipt }),
+        ...(receipt === undefined ? {} : { receipt }),
       });
       // feat-20260629 M4: store uvSetCount from naga reflection for
       // auto-fill in getMaterialShaderPipeline clamp-to-last alias.
@@ -626,33 +697,6 @@ export async function prepareMaterialShaders(
       // (charter P3 explicit failure). The derived output is discarded; the
       // SSOT consumer is buildPbrPipelineLayouts later.
       derive(paramSchema);
-    }
-  }
-
-  // ── Step 1c: register forgeax::default-shadow-caster from its manifest identity ──
-  // feat-20260609-pipeline-driven-pass-selector-shadowcaster-via-mat M3 / T-007:
-  // The reserved material-shader identifier is the SSOT. Content heuristics are
-  // invalid here: a game-authored vertex-only shader can legitimately expose
-  // position without normal (billboards and procedural VFX commonly do), and
-  // must never be mistaken for the engine shadow caster merely because it is
-  // encountered first in the flat manifest.
-  const shadowCasterIdentifier = 'forgeax::default-shadow-caster';
-  if (!registry.findMaterialArtifact(shadowCasterIdentifier).ok) {
-    const manifestEntry = Array.from(registry.materialShaderManifestEntries()).find(
-      (candidate) => candidate.identifier === shadowCasterIdentifier,
-    );
-    if (manifestEntry !== undefined) {
-      // shadow_caster evaluates the same default Surface as Standard. Keep
-      // its generated MaterialParameters contract aligned with the Standard
-      // pipeline even when a legacy manifest omitted the material entry.
-      const entryPoints = manifestEntry.entryPoints ?? manifestEntry.receipt?.entryPoints;
-      registry.installMaterialArtifact(shadowCasterIdentifier, {
-        source: manifestEntry.composedWgsl,
-        sourceReference: materialShaderSource(manifestEntry),
-        ...(entryPoints === undefined ? {} : { entryPoints }),
-        paramSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
-        ...(manifestEntry.receipt === undefined ? {} : { receipt: manifestEntry.receipt }),
-      });
     }
   }
 }
@@ -804,6 +848,7 @@ export function isSharedMaterialUserRegionCompatible(
  */
 const BOOT_OFF_RECORD_TIME_AXES = [
   'GPU_DRIVEN_SCENE_INDEX_EXPLICIT',
+  'FORWARD_INLINE_SSR',
   'GPU_SCENE_DIRECT',
   'ALPHA_MASK',
   'DIRECTIONAL_SHADOW_SIMPLE',
@@ -1064,13 +1109,11 @@ function sceneTablePipelineLayout(
 ): PipelineLayout | null | undefined {
   switch (layoutKind) {
     case 'gpu-driven-pbr':
+    case 'gpu-driven-cluster-pbr':
       return state.gpuDrivenPbrPipelineLayout ?? null;
     case 'gpu-driven-skin':
-      return state.gpuDrivenPbrSkinPipelineLayout ?? null;
-    case 'gpu-driven-cluster-pbr':
-      return state.gpuDrivenClusterPbrPipelineLayout ?? null;
     case 'gpu-driven-cluster-skin':
-      return state.gpuDrivenClusterPbrSkinPipelineLayout ?? null;
+      return state.gpuDrivenPbrSkinPipelineLayout ?? null;
     case 'scene-direct-unlit':
       return state.sceneDirectPipelineLayout ?? null;
     case 'scene-direct-cluster-unlit':
@@ -1085,8 +1128,6 @@ interface SceneTablePipelineLayouts {
   readonly sceneDirectPipelineLayout?: PipelineLayout | null;
   readonly sceneDirectClusterPipelineLayout?: PipelineLayout | null;
   readonly gpuDrivenPbrSkinPipelineLayout?: PipelineLayout | null;
-  readonly gpuDrivenClusterPbrPipelineLayout?: PipelineLayout | null;
-  readonly gpuDrivenClusterPbrSkinPipelineLayout?: PipelineLayout | null;
 }
 
 export function selectPipelineLayoutForVariant(
@@ -1101,8 +1142,6 @@ export function selectPipelineLayoutForVariant(
     readonly sceneDirectPipelineLayout?: PipelineLayout | null;
     readonly sceneDirectClusterPipelineLayout?: PipelineLayout | null;
     readonly gpuDrivenPbrSkinPipelineLayout?: PipelineLayout | null;
-    readonly gpuDrivenClusterPbrPipelineLayout?: PipelineLayout | null;
-    readonly gpuDrivenClusterPbrSkinPipelineLayout?: PipelineLayout | null;
     readonly hdrpSkinPipelineLayout?: PipelineLayout | null;
     readonly hdrpSkinProbePipelineLayout?: PipelineLayout | null;
   } | null,
@@ -1202,7 +1241,11 @@ export function resolveCachedMaterialShaderVariant(
  */
 // Receiver shape and lean lighting are independent opt-ins. Each requested
 // row is checked independently against the publication rules below.
-const RULE_GATED_OPT_IN_AXES = ['DIRECTIONAL_SHADOW_SIMPLE', 'LEAN_LIGHTING'] as const;
+const RULE_GATED_OPT_IN_AXES = [
+  'FORWARD_INLINE_SSR',
+  'DIRECTIONAL_SHADOW_SIMPLE',
+  'LEAN_LIGHTING',
+] as const;
 
 /**
  * Producer-owned admission axes: the boot program leaves them off and only a
@@ -1219,6 +1262,7 @@ function isProducerOptInAxis(axis: string): boolean {
     axis === 'GPU_SCENE_DIRECT' ||
     axis === 'COVERAGE_ONLY' ||
     axis === 'VISIBLE_SURFACE_AVAILABLE' ||
+    axis === 'FORWARD_INLINE_SSR' ||
     axis === 'WATER_WAVES_AVAILABLE' ||
     axis === 'WATER_INFO_RGBA16' ||
     axis === 'STANDARD_LEAN_INPUTS'
@@ -1280,6 +1324,18 @@ function parseMaterialVariantSelection(
     if (separator > 0) requested[part.slice(0, separator)] = part.slice(separator + 1) === 'true';
   }
   return requested;
+}
+
+function formatMaterialVariantSelection(
+  filtered: Readonly<Record<string, boolean>>,
+  requestedVariantSet: string | undefined,
+): string | undefined {
+  const sorted = Object.entries(filtered).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return sorted.every(([, value]) => value)
+    ? requestedVariantSet === undefined
+      ? undefined
+      : ''
+    : sorted.map(([name, value]) => `${name}=${value}`).join('+');
 }
 
 /**
@@ -1358,13 +1414,10 @@ export function resolveMaterialShaderVariantSet(
                                 // Only Engine-owned admission axes default to disabled.
                                 (requested[axis] ?? true);
   }
+  if ('identifier' in variants && isCanonicalStandardPbrMaterialShader(variants.identifier))
+    projectStandardCoverageDefines(filtered);
   resolveRuleGatedOptIns(filtered, requested, variants);
-  const sorted = Object.entries(filtered).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return sorted.every(([, value]) => value)
-    ? requestedVariantSet === undefined
-      ? undefined
-      : ''
-    : sorted.map(([name, value]) => `${name}=${value}`).join('+');
+  return formatMaterialVariantSelection(filtered, requestedVariantSet);
 }
 
 /**
@@ -1438,25 +1491,23 @@ export function manifestVariantShaderEntry(
   entry: RegisteredMaterialShaderEntry,
 ): RegisteredMaterialShaderEntry {
   if (variantSet === undefined) return entry;
-  for (const manifestEntry of registry.materialShaderManifestEntries()) {
-    if (manifestEntry.identifier !== pipelineShaderId) continue;
-    const variant = findVariantByKey(manifestEntry, variantSet);
-    if (!variant) return entry;
-    return {
-      get source() {
-        return variant.composedWgsl;
-      },
-      program: registry.materialProgram(
-        materialShaderSource(variant),
-        variant.entryPoints ?? variant.receipt?.entryPoints,
-        variant.forwardFog ?? variant.receipt?.forwardFog,
-      ),
-      paramSchema: entry.paramSchema,
-      paramSchemaProjection: entry.paramSchemaProjection,
-      ...(variant.receipt === undefined ? {} : { receipt: variant.receipt }),
-    };
-  }
-  return entry;
+  const manifestEntry = registry.materialShaderManifestEntry(pipelineShaderId);
+  const variant =
+    manifestEntry === undefined ? undefined : findVariantByKey(manifestEntry, variantSet);
+  if (variant === undefined) return entry;
+  return {
+    get source() {
+      return variant.composedWgsl;
+    },
+    program: registry.materialProgram(
+      materialShaderSource(variant),
+      variant.entryPoints ?? variant.receipt?.entryPoints,
+      variant.forwardFog ?? variant.receipt?.forwardFog,
+    ),
+    paramSchema: entry.paramSchema,
+    paramSchemaProjection: entry.paramSchemaProjection,
+    ...(variant.receipt === undefined ? {} : { receipt: variant.receipt }),
+  };
 }
 
 /** Shader axis of a material PSO spec; absent entries and constants stay absent. */

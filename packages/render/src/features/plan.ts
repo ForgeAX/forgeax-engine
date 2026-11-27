@@ -30,7 +30,7 @@ import {
 import type { RenderFeatureGpuBufferInitialization } from './types';
 
 export type RenderFeatureResourceUsage = GraphBufferAccess | GraphTextureAccess;
-export type FullscreenRenderFeatureStage = 'before-temporal' | 'after-output';
+export type FullscreenRenderFeatureStage = 'before-temporal' | 'before-output' | 'after-output';
 
 /**
  * Renderer-owned binding layout contract for a material shader.
@@ -55,6 +55,8 @@ export type RenderFeatureFullscreenRead =
   | {
       readonly key: string;
       readonly sampleType?: 'depth' | 'float-3d-repeat' | 'unfilterable-float';
+      /** Use binding 0 for the sole depth input. */
+      readonly primary?: true;
     };
 
 /** A named graph target or an authorized semantic sampled-read target. */
@@ -79,6 +81,8 @@ export interface RenderFeatureFullscreenProgramDeclaration {
   readonly usesView?: boolean;
   /** Read-only storage buffers appended after the regular color/depth reads. */
   readonly storageBindings?: readonly number[];
+  /** Current uniform bytes for an automatic chain pass. Must match params.byteSize. */
+  readonly frameParams?: Uint8Array;
   readonly params?: {
     readonly byteSize: number;
     readonly defaultValue: Uint8Array;
@@ -411,6 +415,8 @@ export interface RenderFeaturePlanContext {
   readonly createNativePlan?: () => RenderFeatureNativePlanBuilder;
   /** Resolve an exact asset in the corresponding source World or accepted publication. */
   readonly resolveAsset?: (handle: number, revision?: number) => Result<Asset, unknown>;
+  /** Resolve a published material and its realm-bound compiler recipe at the accepted revision. */
+  readonly resolveMaterialTemplate?: import('../publication/resource-scope').RenderResourceScope['resolveMaterialTemplate'];
   /** Resolve an exact resident texture view through the Renderer asset/residency owner. */
   readonly resolveResidentTextureView?: (
     sourceWorldIndex: number,
@@ -951,7 +957,14 @@ function cloneSignaturePrimitive(
     : { kind: 'primitive', token, numberValue: result.numberValue };
 }
 
+function fullscreenProgramTopology(resource: RenderFeatureFullscreenProgramDeclaration) {
+  if (!Object.hasOwn(resource, 'frameParams')) return resource;
+  const { frameParams: _frameParams, ...topology } = resource;
+  return topology;
+}
+
 function signatureResourceValue(resource: RenderFeatureResourceDeclaration): unknown {
+  if (resource.kind === 'fullscreen-program') return fullscreenProgramTopology(resource);
   if (resource.kind === 'scene-depth') return { ...resource, camera: undefined };
   if (resource.kind !== 'buffer') return resource;
   // Match resourceTopology exactly: buffer payloads are upload evidence, not
@@ -1214,6 +1227,24 @@ function equalSortedUsage(usage: unknown, snapshot: RenderFeaturePlanSignatureNo
   return true;
 }
 
+function resourceFramePayloadKey(kind: unknown): string | undefined {
+  switch (kind) {
+    case 'buffer':
+      return 'data';
+    case 'fullscreen-program':
+      return 'frameParams';
+    case 'scene-depth':
+      return 'camera';
+    case 'compute':
+    case 'copy':
+    case 'raster':
+    case 'shadow-caster':
+      return 'enabled';
+    default:
+      return undefined;
+  }
+}
+
 function equalResourceNode(resource: unknown, snapshot: RenderFeaturePlanSignatureNode): boolean {
   if (
     isOwnedRenderFeatureProgramData(resource) &&
@@ -1230,17 +1261,7 @@ function equalResourceNode(resource: unknown, snapshot: RenderFeaturePlanSignatu
     return false;
   }
   const source = resource as Readonly<Record<string, unknown>>;
-  const payloadKey =
-    source.kind === 'buffer'
-      ? 'data'
-      : source.kind === 'scene-depth'
-        ? 'camera'
-        : source.kind === 'compute' ||
-            source.kind === 'copy' ||
-            source.kind === 'raster' ||
-            source.kind === 'shadow-caster'
-          ? 'enabled'
-          : undefined;
+  const payloadKey = resourceFramePayloadKey(source.kind);
   if (payloadKey === undefined) return equalSignatureNode(source, snapshot);
 
   // Camera motion and buffer uploads change frame data, not graph topology.
@@ -1422,6 +1443,7 @@ function resourceTopology(
   resource: RenderFeatureResourceDeclaration,
   metrics?: RenderFeaturePlanSignatureMetrics,
 ): unknown {
+  if (resource.kind === 'fullscreen-program') return fullscreenProgramTopology(resource);
   if (resource.kind === 'scene-depth') return { ...resource, camera: undefined };
   if (resource.kind === 'buffer') {
     if (metrics !== undefined && resource.data !== undefined) {
@@ -1490,130 +1512,174 @@ function bindingAccess(type: GPUBufferBindingType | undefined): GraphBufferAcces
 export function renderFeaturePlanDeclarations(
   plan: RenderFeatureWorkPlan,
 ): ReadonlyMap<string, RenderFeatureResourceDeclaration> {
-  return new Map(plan.resources.map((resource) => [resource.name, resource]));
+  const declarations = new Map<string, RenderFeatureResourceDeclaration>();
+  for (const resource of plan.resources) declarations.set(resource.name, resource);
+  return declarations;
 }
 
-/** Aggregate the owning per-pass derivation for one complete plan. */
+type RenderFeatureAccessVisitor = (
+  resource: RenderFeatureDerivedAccess['resource'],
+  usage: RenderFeatureResourceUsage,
+) => void;
+
+/** Walk the current descriptors in execution order, without storing per-pass access lists. */
+export function visitRenderFeaturePlanAccess(
+  plan: RenderFeatureWorkPlan,
+  visit: RenderFeatureAccessVisitor,
+): void {
+  let declarations: ReadonlyMap<string, RenderFeatureResourceDeclaration> | undefined;
+  for (const pass of plan.passes)
+    declarations = visitRenderFeaturePassAccess(plan, pass, declarations, visit);
+}
+
+/** Return a detached ordered access list for callers that keep the result. */
 export function deriveRenderFeaturePlanAccess(
   plan: RenderFeatureWorkPlan,
 ): readonly RenderFeatureDerivedAccess[] {
-  const declarations = renderFeaturePlanDeclarations(plan);
-  return Object.freeze(
-    plan.passes.flatMap((pass) => [...deriveRenderFeaturePassAccess(plan, pass, declarations)]),
-  );
+  const accesses: RenderFeatureDerivedAccess[] = [];
+  visitRenderFeaturePlanAccess(plan, (resource, usage) => accesses.push({ resource, usage }));
+  return Object.freeze(accesses);
 }
 
-/**
- * Derive graph access from descriptor roles; producers never author a parallel ledger.
- * A caller deriving every pass of one plan passes its declarations once.
- */
 export function deriveRenderFeaturePassAccess(
   plan: RenderFeatureWorkPlan,
   pass: RenderFeaturePassDeclaration,
   declarations?: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
 ): readonly RenderFeatureDerivedAccess[] {
-  if (pass.kind === 'copy') {
-    const accesses: RenderFeatureDerivedAccess[] = [];
-    for (const readback of pass.textureReadbacks ?? [])
-      accesses.push({ resource: readback.target, usage: 'copy-src' });
-    for (const copy of pass.copies) {
-      accesses.push(
-        { resource: copy.source, usage: 'copy-src' },
-        { resource: copy.destination, usage: 'copy-dst' },
-      );
-    }
-    return Object.freeze(accesses);
-  }
-  // Copy and draw-less raster passes never consult declarations.
-  const resources: ReadonlyMap<string, RenderFeatureResourceDeclaration> =
-    pass.kind === 'compute' || pass.draws.length > 0
-      ? (declarations ?? renderFeaturePlanDeclarations(plan))
-      : new Map();
-  if (pass.kind === 'compute') {
-    return deriveComputePassAccess(resources, pass);
-  }
-
   const accesses: RenderFeatureDerivedAccess[] = [];
-  for (const attachment of pass.kind === 'raster' ? pass.colorAttachments : []) {
-    accesses.push({ resource: attachment.target, usage: 'color-attachment' });
-  }
-  if (pass.kind === 'raster' && pass.depthStencilAttachment !== undefined) {
-    accesses.push({
-      resource: pass.depthStencilAttachment.target,
-      usage: pass.sampledTargets?.some(
-        (target) => typeof target === 'string' && target === pass.depthStencilAttachment?.target,
-      )
-        ? 'depth-stencil-read'
-        : 'depth-stencil-write',
-    });
-  }
-  for (const target of pass.kind === 'raster' ? (pass.sampledTargets ?? []) : []) {
-    if (typeof target !== 'string') continue;
-    accesses.push({ resource: target, usage: 'sampled-read' });
-  }
-  appendGraphicsDrawAccesses(pass, resources, accesses);
+  visitRenderFeaturePassAccess(plan, pass, declarations, (resource, usage) =>
+    accesses.push({ resource, usage }),
+  );
   return Object.freeze(accesses);
 }
 
-function deriveComputePassAccess(
+function visitRenderFeaturePassAccess(
+  plan: RenderFeatureWorkPlan,
+  pass: RenderFeaturePassDeclaration,
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration> | undefined,
+  visit: RenderFeatureAccessVisitor,
+): ReadonlyMap<string, RenderFeatureResourceDeclaration> | undefined {
+  if (pass.kind === 'copy') {
+    if (pass.textureReadbacks !== undefined)
+      for (const readback of pass.textureReadbacks) visit(readback.target, 'copy-src');
+    for (const copy of pass.copies) {
+      visit(copy.source, 'copy-src');
+      visit(copy.destination, 'copy-dst');
+    }
+    return resources;
+  }
+  if (pass.kind === 'compute') {
+    resources ??= renderFeaturePlanDeclarations(plan);
+    visitComputePassAccess(resources, pass, visit);
+    return resources;
+  }
+  if (pass.kind === 'raster') {
+    for (const attachment of pass.colorAttachments) visit(attachment.target, 'color-attachment');
+    const depth = pass.depthStencilAttachment;
+    const sampled = pass.sampledTargets;
+    if (depth !== undefined)
+      visit(
+        depth.target,
+        sampled?.includes(depth.target) ? 'depth-stencil-read' : 'depth-stencil-write',
+      );
+    if (sampled !== undefined)
+      for (const target of sampled) if (typeof target === 'string') visit(target, 'sampled-read');
+  }
+  if (pass.draws.length > 0) {
+    resources ??= renderFeaturePlanDeclarations(plan);
+    visitGraphicsDrawAccesses(pass, resources, visit);
+  }
+  return resources;
+}
+
+type ComputeLayoutSlots = readonly BindGroupLayoutEntry[] | Map<number, BindGroupLayoutEntry>;
+
+/** Packed layouts address slots directly. Sparse layouts retain the first declaration at each address. */
+function computeLayoutSlots(
+  entries: readonly BindGroupLayoutEntry[] | undefined,
+): ComputeLayoutSlots | undefined {
+  if (entries === undefined) return undefined;
+  let ordinal = 0;
+  for (const entry of entries) {
+    if (entry.binding !== ordinal) {
+      const slots = new Map<number, BindGroupLayoutEntry>();
+      for (const slot of entries) {
+        const address = slot.binding;
+        if (!slots.has(address)) slots.set(address, slot);
+      }
+      return slots;
+    }
+    ordinal++;
+  }
+  return entries;
+}
+
+function computeLayoutEntry(
+  slots: ComputeLayoutSlots | undefined,
+  binding: number,
+): BindGroupLayoutEntry | undefined {
+  return slots instanceof Map ? slots.get(binding) : slots?.[binding];
+}
+
+function visitComputePassAccess(
   resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
   pass: Extract<RenderFeaturePassDeclaration, { readonly kind: 'compute' }>,
-): readonly RenderFeatureDerivedAccess[] {
-  const accesses: RenderFeatureDerivedAccess[] = [];
+  visit: RenderFeatureAccessVisitor,
+): void {
   const program = resources.get(pass.program);
-  const bindingNames = new Set([pass.bindings]);
-  for (const dispatch of pass.dispatches)
-    if (dispatch.bindings !== undefined) bindingNames.add(dispatch.bindings);
-  const layoutEntries =
-    program?.kind === 'compute-program' ? (program.program.bindings?.[0]?.entries ?? []) : [];
-  for (const name of bindingNames) {
-    const bindings = resources.get(name);
-    if (bindings?.kind === 'compute-bindings') {
-      for (const entry of bindings.entries) {
-        const usage = bindingAccess(
-          layoutEntries.find((candidate) => candidate.binding === entry.binding)?.buffer?.type,
-        );
-        if (usage !== undefined) accesses.push({ resource: entry.resource, usage });
-        const declaration = resources.get(entry.resource);
-        if (declaration?.kind === 'texture') {
-          const layout = layoutEntries.find((candidate) => candidate.binding === entry.binding);
-          const role = layout?.storageTexture?.access;
-          accesses.push({
-            resource: declaration.name,
-            usage:
-              role === 'write-only'
-                ? 'storage-write'
-                : role === 'read-only'
-                  ? 'storage-read'
-                  : role === 'read-write'
-                    ? 'storage-read-write'
-                    : 'sampled-read',
-          });
-        }
-        if (
-          declaration?.kind === 'prepared-gpu-resource' &&
-          declaration.logicalTarget !== undefined
-        ) {
-          const layout = layoutEntries.find((candidate) => candidate.binding === entry.binding);
-          const usage =
-            layout?.storageTexture?.access === 'write-only'
-              ? 'storage-write'
-              : layout?.storageTexture?.access === 'read-only'
-                ? 'storage-read'
-                : layout?.storageTexture?.access === 'read-write'
-                  ? 'sampled-storage-read-write'
-                  : 'sampled-read';
-          accesses.push({ resource: declaration.logicalTarget, usage });
-        }
-      }
-    }
-  }
+  const base = pass.bindings;
+  let overrides: Set<string> | undefined;
   for (const dispatch of pass.dispatches) {
-    if (dispatch.kind === 'indirect') {
-      accesses.push({ resource: dispatch.resource, usage: 'indirect-read' });
+    const name = dispatch.bindings;
+    if (name !== undefined && name !== base) {
+      overrides ??= new Set();
+      overrides.add(name);
     }
   }
-  return Object.freeze(accesses);
+  const slots = computeLayoutSlots(
+    program?.kind === 'compute-program' ? program.program.bindings?.[0]?.entries : undefined,
+  );
+  visitComputeBindingAccess(resources, base, slots, visit);
+  if (overrides !== undefined)
+    for (const name of overrides) visitComputeBindingAccess(resources, name, slots, visit);
+  for (const dispatch of pass.dispatches)
+    if (dispatch.kind === 'indirect') visit(dispatch.resource, 'indirect-read');
+}
+
+function visitComputeBindingAccess(
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+  name: string,
+  slots: ComputeLayoutSlots | undefined,
+  visit: RenderFeatureAccessVisitor,
+): void {
+  const bindings = resources.get(name);
+  if (bindings?.kind !== 'compute-bindings') return;
+  for (const entry of bindings.entries) {
+    const layout = computeLayoutEntry(slots, entry.binding);
+    const usage = bindingAccess(layout?.buffer?.type);
+    if (usage !== undefined) visit(entry.resource, usage);
+    const declaration = resources.get(entry.resource);
+    const owned = declaration?.kind === 'texture';
+    const target = owned
+      ? declaration.name
+      : declaration?.kind === 'prepared-gpu-resource'
+        ? declaration.logicalTarget
+        : undefined;
+    if (target === undefined) continue;
+    switch (layout?.storageTexture?.access) {
+      case 'write-only':
+        visit(target, 'storage-write');
+        break;
+      case 'read-only':
+        visit(target, 'storage-read');
+        break;
+      case 'read-write':
+        visit(target, owned ? 'storage-read-write' : 'sampled-storage-read-write');
+        break;
+      default:
+        visit(target, 'sampled-read');
+    }
+  }
 }
 
 /** Check names, references and logical targets without copying the plan. */
@@ -1659,11 +1725,7 @@ function validPlanResource(
   targets: ReadonlySet<string>,
 ): boolean {
   if (!validName(resource.name) || resources.has(resource.name)) return false;
-  if (
-    resource.kind === 'fullscreen-program' &&
-    resource.chain !== undefined &&
-    resource.chain !== true
-  )
+  if (resource.kind === 'fullscreen-program' && !validFullscreenProgramResource(resource))
     return false;
   if (
     resource.kind === 'feature-texture-reference' &&
@@ -1682,6 +1744,18 @@ function validPlanResource(
       ? targets.has(resource.logicalTarget)
       : isSceneDataTarget(resource.logicalTarget) ||
         isRenderFeatureTextureReference(resource.logicalTarget))
+  );
+}
+
+function validFullscreenProgramResource(
+  resource: RenderFeatureFullscreenProgramDeclaration,
+): boolean {
+  if (resource.chain !== undefined && resource.chain !== true) return false;
+  return (
+    resource.frameParams === undefined ||
+    (resource.chain === true &&
+      resource.frameParams instanceof Uint8Array &&
+      resource.frameParams.byteLength === resource.params?.byteSize)
   );
 }
 
@@ -1747,14 +1821,27 @@ function validComputePass(
     return false;
   }
   const entryPoints = new Set(program.program.entryPoints);
-  const validated = new Set<object>();
   const immutableProgram = isOwnedRenderFeatureProgramData(program.program);
+  const fixedSlots = immutableProgram
+    ? computeLayoutSlots(program.program.bindings?.[0]?.entries)
+    : undefined;
+  let validated: Set<object> | undefined;
   const validateBindings = (
     candidate: Extract<RenderFeatureResourceDeclaration, { readonly kind: 'compute-bindings' }>,
   ): boolean => {
-    if (immutableProgram && validated.has(candidate)) return true;
-    if (!validComputeBindingEntries(candidate, program, resources)) return false;
-    if (immutableProgram && isOwnedRenderFeatureProgramData(candidate)) validated.add(candidate);
+    if (validated?.has(candidate)) return true;
+    for (const entry of candidate.entries) {
+      // An owned program has fixed slots. Borrowed programs can replace the layout
+      // while the caller supplies a binding row, including on a later dispatch.
+      const layout = immutableProgram
+        ? computeLayoutEntry(fixedSlots, entry.binding)
+        : program.program.bindings?.[0]?.entries.find((slot) => slot.binding === entry.binding);
+      if (!computeBindingMatchesLayout(resources.get(entry.resource), layout)) return false;
+    }
+    if (immutableProgram && isOwnedRenderFeatureProgramData(candidate)) {
+      validated ??= new Set();
+      validated.add(candidate);
+    }
     return true;
   };
   if (!validateBindings(bindings)) return false;
@@ -1771,21 +1858,6 @@ function validComputePass(
         return false;
     }
     if (!validDispatchSource(dispatch, resources)) return false;
-  }
-  return true;
-}
-
-/** Does every binding entry name a resource whose kind matches its layout slot? */
-function validComputeBindingEntries(
-  bindings: Extract<RenderFeatureResourceDeclaration, { readonly kind: 'compute-bindings' }>,
-  program: Extract<RenderFeatureResourceDeclaration, { readonly kind: 'compute-program' }>,
-  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
-): boolean {
-  for (const entry of bindings.entries) {
-    const layout = program.program.bindings?.[0]?.entries.find(
-      (candidate) => candidate.binding === entry.binding,
-    );
-    if (!computeBindingMatchesLayout(resources.get(entry.resource), layout)) return false;
   }
   return true;
 }
@@ -2028,45 +2100,42 @@ function validBufferCopyDeclaration(
   return true;
 }
 
-function appendGraphicsDrawAccesses(
+function visitGraphicsDrawAccesses(
   pass: Extract<RenderFeaturePassDeclaration, { kind: 'raster' | 'shadow-caster' }>,
   resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
-  accesses: RenderFeatureDerivedAccess[],
+  visit: RenderFeatureAccessVisitor,
 ): void {
   for (const draw of pass.draws) {
     for (const bindingName of draw.bindings) {
       const binding = resources.get(bindingName);
       if (binding?.kind !== 'graphics-bindings') continue;
-      for (const buffer of (binding.values.bufferBindings ??
-        []) as unknown as readonly import('./prepared-graphics').RenderFeatureGraphicsStorageBinding[])
-        accesses.push({
-          resource: buffer.resource,
-          usage: buffer.access === 'read' ? 'storage-read' : 'storage-read-write',
-        });
+      const buffers = binding.values.bufferBindings as unknown as
+        | readonly import('./prepared-graphics').RenderFeatureGraphicsStorageBinding[]
+        | undefined;
+      if (buffers !== undefined)
+        for (const buffer of buffers)
+          visit(buffer.resource, buffer.access === 'read' ? 'storage-read' : 'storage-read-write');
     }
     for (const vertex of draw.vertexData) {
       const declaration = resources.get(vertex.resource);
-      accesses.push({
-        resource:
-          declaration?.kind === 'vertex-data' && declaration.buffer !== undefined
-            ? declaration.buffer
-            : vertex.resource,
-        usage: 'vertex-read',
-      });
+      visit(
+        declaration?.kind === 'vertex-data' && declaration.buffer !== undefined
+          ? declaration.buffer
+          : vertex.resource,
+        'vertex-read',
+      );
     }
     if (draw.indexData !== undefined) {
       const declaration = resources.get(draw.indexData.resource);
-      accesses.push({
-        resource:
-          declaration?.kind === 'index-data' && declaration.buffer !== undefined
-            ? declaration.buffer
-            : draw.indexData.resource,
-        usage: 'index-read',
-      });
+      visit(
+        declaration?.kind === 'index-data' && declaration.buffer !== undefined
+          ? declaration.buffer
+          : draw.indexData.resource,
+        'index-read',
+      );
     }
-    if (draw.draw.kind === 'draw-indirect' || draw.draw.kind === 'draw-indexed-indirect') {
-      accesses.push({ resource: draw.draw.resource, usage: 'indirect-read' });
-    }
+    if (draw.draw.kind === 'draw-indirect' || draw.draw.kind === 'draw-indexed-indirect')
+      visit(draw.draw.resource, 'indirect-read');
   }
 }
 

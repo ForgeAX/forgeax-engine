@@ -105,17 +105,19 @@ export type AccelerationStructureUpdateMode = 'rebuild' | 'refit';
 /** BLAS vertex positions. Extended formats are not admitted. */
 export type BlasVertexFormat = 'float32x3';
 
-/** Size declaration of one opaque triangle geometry, fixed at BLAS creation. */
+/** Size and opacity declaration of one triangle geometry, fixed at BLAS creation. */
 export interface BlasTriangleGeometrySize {
   readonly vertexFormat: BlasVertexFormat;
   readonly vertexCount: number;
+  /** Default true. False exposes actual triangle candidates for shader qualification. */
+  readonly opaque?: boolean | undefined;
   /** Indexed geometry; omit for a non-indexed triangle list. */
   readonly index?: { readonly format: GPUIndexFormat; readonly count: number } | undefined;
 }
 
 export interface BlasDescriptor {
   readonly label?: string | undefined;
-  /** One or more opaque triangle geometries; build entries supply data in the same order. */
+  /** One or more triangle geometries; build entries supply data in the same order. */
   readonly geometries: readonly BlasTriangleGeometrySize[];
   readonly preference?: AccelerationStructureBuildPreference | undefined;
   readonly updateMode?: AccelerationStructureUpdateMode | undefined;
@@ -231,6 +233,7 @@ export function validateRayQueryShader(
 
 /** Primitive count of one declared geometry, or undefined when the declaration is malformed. */
 function primitiveCount(size: BlasTriangleGeometrySize): number | undefined {
+  if (size.opaque !== undefined && typeof size.opaque !== 'boolean') return undefined;
   if (size.vertexFormat !== 'float32x3' || !isCount(size.vertexCount, 3)) return undefined;
   const count = size.index === undefined ? size.vertexCount : size.index.count;
   if (!isCount(count, 3) || count % 3 !== 0) return undefined;

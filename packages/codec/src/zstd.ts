@@ -118,7 +118,8 @@ export function copyRetainedZstdBytes(source: Uint8Array, copy: Uint8Array, offs
   const window = retained.get(source);
   if (window === undefined) return;
   if (!Number.isSafeInteger(offset) || offset < 0 || offset + copy.length > source.length) return;
-  for (let i = 0; i < copy.length; i++) if (source[offset + i] !== copy[i]) return;
+  if (source.buffer !== copy.buffer || copy.byteOffset !== source.byteOffset + offset)
+    for (let i = 0; i < copy.length; i++) if (source[offset + i] !== copy[i]) return;
   retained.set(copy, window.slice(copy, offset));
 }
 
@@ -137,6 +138,18 @@ export async function decompressRetainedZstd(bytes: Uint8Array): Promise<CodecRe
   } catch {
     return codecError('codec-init-failed', { stage: 'dynamic-import-fzstd' });
   }
+  return decodeRetained(encoded, decompress);
+}
+
+/** Initialize once before a synchronous consumer selects an embedded compressed record. */
+export async function prepareRetainedZstdDecoder(): Promise<
+  (bytes: Uint8Array) => CodecResult<Uint8Array>
+> {
+  const decompress = await getDecompressor();
+  return (bytes) => decodeRetained(new Uint8Array(bytes), decompress);
+}
+
+function decodeRetained(encoded: Uint8Array, decompress: ZstdDecompress): CodecResult<Uint8Array> {
   let decoded: Uint8Array;
   try {
     decoded = decompress(encoded);
@@ -145,7 +158,8 @@ export async function decompressRetainedZstd(bytes: Uint8Array): Promise<CodecRe
       reason: 'zstd decompression failed: corrupt or invalid compressed data',
     });
   }
-  if (encoded.byteLength >= decoded.byteLength) return { ok: true, value: decoded };
+  if (typeof WeakRef !== 'function' || encoded.byteLength >= decoded.byteLength)
+    return { ok: true, value: decoded };
   // Keep the initialized synchronous decoder and compressed frame, not decoded.
   const length = decoded.byteLength;
   const identity = Object.freeze({});

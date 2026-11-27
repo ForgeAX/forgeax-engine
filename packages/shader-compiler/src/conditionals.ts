@@ -9,11 +9,17 @@ import { stripWgslComments } from '@forgeax/engine-types';
  * nested numeric `#if` cannot steal an outer `#ifdef`'s `#else`.
  */
 
-/** Return only real preprocessor directive lines, with comments removed. */
+/** Return real directive lines without allocating the rest of the WGSL body. */
 export function shaderDirectiveLines(source: string): string[] {
-  return stripWgslComments(source)
-    .split(/\r?\n/)
-    .filter((line) => /^\s*#/.test(line));
+  if (!source.includes('#')) return [];
+  const uncommented = stripWgslComments(source);
+  return Array.from(uncommented.matchAll(/(?:^|\n)([^\S\n]*#[^\n]*)/g), (match) => {
+    const line = match[1] ?? '';
+    // Match split(/\r?\n/): remove CR only before an actual LF.
+    return line.endsWith('\r') && uncommented[match.index + match[0].length] === '\n'
+      ? line.slice(0, -1)
+      : line;
+  });
 }
 
 interface ConditionalFrame {

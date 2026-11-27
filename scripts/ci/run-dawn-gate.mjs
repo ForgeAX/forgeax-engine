@@ -6,10 +6,20 @@ import { fileURLToPath } from 'node:url';
 import { dawnOrdinaryWorkers } from '../lib/runner-resources.mjs';
 import { coreValidationFiles } from './core-validation.mjs';
 import { reportDawnEnvironment } from './dawn-environment-diagnostics.mjs';
-import { DAWN_GATE_GROUPS, DAWN_GATE_SHARDS, DAWN_VITEST_CONFIG } from './dawn-gate-roster.mjs';
+import {
+  DAWN_GATE_GROUPS,
+  DAWN_GATE_SHARDS,
+  DAWN_VITEST_CONFIG,
+  dawnAuthoringCapturesOutsideCi,
+  dawnGateGroupPriority,
+  dawnNativeExecutionOrder,
+} from './dawn-gate-roster.mjs';
+import { graphicsEnvironment, verifyBundle } from './local-graphics.mjs';
 import { isRetryableOutput, runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 import { DAWN_TEST_PARTITIONS, runDawnPartitions } from './run-dawn-partitions.mjs';
 import { runDirectLightDawn } from './run-direct-light-dawn.mjs';
+
+export { dawnNativeExecutionOrder } from './dawn-gate-roster.mjs';
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const VITEST = resolve(ROOT, 'node_modules/vitest/vitest.mjs');
@@ -42,7 +52,8 @@ export function dawnVitestArgs(group, { ordinaryWorkers = 1 } = {}) {
   if (ordinaryWorkers !== 1 && ordinaryWorkers !== 2) {
     throw new Error('Dawn ordinary workers must be exactly 1 or 2');
   }
-  const parallel = group.vitestShard !== undefined && ordinaryWorkers === 2;
+  const parallel =
+    group.vitestShard !== undefined && ordinaryWorkers === 2 && !group.serialOrdinary;
   return [
     VITEST,
     'run',
@@ -71,17 +82,6 @@ export function dawnNativeConcurrency(environment, ordinaryWorkers) {
     environment.FORGEAX_DAWN_LIGHTWEIGHT === '1'
     ? 2
     : 1;
-}
-
-export function dawnNativeExecutionOrder(groups, forecasts) {
-  const native = groups.filter((group) => group.vitestShard === undefined);
-  const priority = (group) =>
-    Math.max(forecasts.get(group.id) ?? 0, group.placementReserveSeconds ?? 0);
-  return [
-    ...native.slice(0, 2),
-    ...native.slice(2).sort((left, right) => priority(right) - priority(left)),
-    ...groups.filter((group) => group.vitestShard !== undefined),
-  ];
 }
 
 async function dawnCapacityGroups(groups, nativeConcurrency, environment) {
@@ -148,21 +148,40 @@ export async function executeDawnGroups(
 
 export function dawnGroupEnvironment(group, environment, ordinaryWorkers, nativeConcurrency = 1) {
   const rasterThreads = Number(environment.LP_NUM_THREADS);
-  return {
+  const limitSoftwareGpuWorkers =
+    group.limitSoftwareGpuWorkers || (nativeConcurrency === 2 && group.nativeProcessSlots === 1);
+  const rasterThreadLimit =
+    group.softwareGpuHeapRasterThreads ?? (limitSoftwareGpuWorkers ? 4 : undefined);
+  const env = {
     ...environment,
     ...group.env,
+    ...(group.serialOrdinary ? { FORGEAX_DAWN_SERIAL_ORDINARY: String(ordinaryWorkers) } : {}),
     ...(group.vitestShard !== undefined && ordinaryWorkers === 2
       ? { LP_NUM_THREADS: '4', FORGEAX_SHADER_COMPILE_WORKERS: '1' }
       : {}),
-    ...(nativeConcurrency === 2 && group.nativeProcessSlots === 1
-      ? {
+    ...(rasterThreadLimit === undefined
+      ? {}
+      : {
           LP_NUM_THREADS: String(
-            Number.isInteger(rasterThreads) && rasterThreads > 0 ? Math.min(4, rasterThreads) : 4,
+            Number.isInteger(rasterThreads) && rasterThreads > 0
+              ? Math.min(rasterThreadLimit, rasterThreads)
+              : rasterThreadLimit,
           ),
-          FORGEAX_SHADER_COMPILE_WORKERS: '1',
-        }
+        }),
+    ...(limitSoftwareGpuWorkers ? { FORGEAX_SHADER_COMPILE_WORKERS: '1' } : {}),
+    ...(group.softwareGpuHeapRasterThreads !== undefined
+      ? { MALLOC_ARENA_MAX: '2', MALLOC_TRIM_THRESHOLD_: '131072' }
       : {}),
   };
+  const bundle = group.lockedGraphics && env.FORGEAX_CI_GRAPHICS_ROOT;
+  if (!bundle) return env;
+  verifyBundle(bundle);
+  const selected = graphicsEnvironment(bundle, env);
+  console.log(
+    '[dawn-graphics]',
+    JSON.stringify({ owner: group.id, icd: selected.VK_DRIVER_FILES }),
+  );
+  return selected;
 }
 
 export function selectDawnGroups(id, shard) {
@@ -187,13 +206,7 @@ export function selectDawnShard(value) {
     );
   }
   const ids = new Set(DAWN_GATE_SHARDS[index - 1]);
-  return DAWN_GATE_GROUPS.filter((group) => ids.has(group.id)).sort(
-    // Long Modeling captures retain first start when a larger reserved native
-    // owner shares their lane; every other reservation still precedes backfill.
-    (left, right) =>
-      Number(right.id.startsWith('modeling-')) - Number(left.id.startsWith('modeling-')) ||
-      (right.placementReserveSeconds ?? 0) - (left.placementReserveSeconds ?? 0),
-  );
+  return DAWN_GATE_GROUPS.filter((group) => ids.has(group.id)).sort(dawnGateGroupPriority);
 }
 
 function dawnExecutionEnvironment(id, environment) {
@@ -202,8 +215,16 @@ function dawnExecutionEnvironment(id, environment) {
 
 export function dawnExecutionGroups(id, shard, environment = process.env) {
   const selectionEnvironment = dawnExecutionEnvironment(id, environment);
+  const authoringOnly = new Set(
+    id === undefined ? dawnAuthoringCapturesOutsideCi(environment) : [],
+  );
   return selectDawnGroups(id, shard)
-    .map((group) => ({ ...group, files: coreValidationFiles(group.files, selectionEnvironment) }))
+    .map((group) => ({
+      ...group,
+      files: coreValidationFiles(group.files, selectionEnvironment).filter(
+        (file) => !authoringOnly.has(file),
+      ),
+    }))
     .filter((group) => group.vitestShard !== undefined || group.files.length > 0);
 }
 
@@ -219,6 +240,7 @@ export async function runDawnGate({ group: selectedGroup, shard, continueOnFailu
       'FORGEAX_DAWN_COMPACT',
       'FORGEAX_DAWN_PARTITION',
       'FORGEAX_DAWN_PARTITION_SCOPE',
+      'FORGEAX_DAWN_SERIAL_ORDINARY',
     ])
       delete environment[name];
     return environment;
@@ -231,25 +253,6 @@ export async function runDawnGate({ group: selectedGroup, shard, continueOnFailu
   const nativeConcurrency = dawnNativeConcurrency(environment, ordinaryWorkers);
   if (!environmentDiagnostics && nativeConcurrency === 2)
     reportDawnEnvironment(ROOT, 'start', true);
-  if (environment.FORGEAX_SHARED_APP_INPUTS_MANIFEST) {
-    const prepared = await runBrowserCommand(
-      [
-        process.execPath,
-        'scripts/forgeax/prepare-shader-release-inputs.mjs',
-        '--build',
-        // Only the renderer's disabled-shadow control needs a separate base
-        // fleet. Other lanes consume the shared point projection unchanged.
-        ...(groups.some(({ id }) => id === 'renderer') ? [] : ['--profile', 'point-ssao']),
-        '--input',
-        'node_modules/.cache/forgeax-build/dawn-shaders',
-        '--shared-input-manifest',
-        environment.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
-      ],
-      { cwd: ROOT, env: environment, label: 'Dawn shader profile producer' },
-    );
-    if (prepared.status !== 0)
-      throw new Error(`Dawn shader preparation failed; ${prepared.failure}`);
-  }
   const failures = await executeDawnGroups(
     await dawnCapacityGroups(groups, nativeConcurrency, environment),
     async (group) => {

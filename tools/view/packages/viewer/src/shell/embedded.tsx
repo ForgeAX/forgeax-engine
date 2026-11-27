@@ -73,6 +73,7 @@ const embeddedShell: Plugin = {
           return <OverlayRootProvider root={element}><ThemeProvider defaultTheme="system" persist applyToDocument className="fx-view-root">
             <ViewerShell slotRegistry={registry} pageRegistry={pageRegistry} pageHost={pageHost} panelHost={panelHost}
               responsiveAutoTuck={config.layout?.responsiveAutoTuck}
+              engineVersion={config.engineVersion}
               hostConnection={hostConnection}
               workspaceClient={client}
               selectedPageType={selectedTabId === VIEW_DISPLAY_TAB_ID ? 'display' : 'scene'}

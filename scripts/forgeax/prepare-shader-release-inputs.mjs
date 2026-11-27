@@ -104,6 +104,7 @@ if (process.argv.includes('--build')) {
       [
         `--max-old-space-size=${shaderProducerHeapSize(resources)}`,
         'scripts/build-shared-inputs.mjs',
+        '--compiled-shaders',
         '--root',
         root,
         '--out',

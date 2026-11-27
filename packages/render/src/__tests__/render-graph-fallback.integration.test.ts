@@ -8,7 +8,7 @@ describe('Standard PBR fallback graph integration contract', () => {
       resolve(import.meta.dirname, '../../../shader/src/standard-surface.wgsl'),
       'utf8',
     );
-    expect(source).toContain('sampleIblDiffuse');
+    expect(source).toContain('sampleStandardDiffuseIrradiance');
     expect(source).toContain('sampleIblSpecular');
     expect(source).toContain('S_fallback');
     expect(source).toContain('REFLECTION_FALLBACK_AVAILABLE');

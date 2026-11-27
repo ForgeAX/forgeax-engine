@@ -3,6 +3,8 @@ import { createPlaneGeometry, packInterleavedVertexAttributes } from '@forgeax/e
 import { halfFloat } from '@forgeax/engine-math';
 import {
   Camera,
+  ClippingPlanes,
+  clippingPlanesData,
   DirectionalLight,
   Materials,
   MeshFilter,
@@ -24,7 +26,7 @@ import {
   workOutputs,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { Mobility, MobilityKindValue, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
 import { derive, type MeshAsset, type TextureAsset } from '@forgeax/engine-types';
@@ -88,12 +90,12 @@ function sceneColorWork(model: ReturnType<typeof buildFrameModel>, renderPath: s
     work.pipeline.shaders.some((shader) =>
       renderPath === 'forward'
         ? (shader.entryPoint === 'fs_main' || shader.entryPoint === 'fs_opaque') &&
-          shader.source?.includes('displaceVertex')
+          shader.source?.includes('evaluateStandardVertexPosition')
         : shader.entryPoint?.startsWith('fs_standard_deferred'),
     ),
   );
-  // Preparation and the completed picture can share this bounded capture.
-  // Inspect the final scene output in either lane, after its geometry writes.
+  // The final color draw can use a flat Surface after a displaced draw. Keep
+  // both so replay observes the attachment after all Standard geometry writes.
   return required(works.at(-1));
 }
 
@@ -293,6 +295,9 @@ export async function verifyStandardDisplacement(
     })
     .unwrap();
   const dense = createPlaneGeometry(2, 2, 16, 16).unwrap();
+  // Use the oracle's per-triangle index topology for the lighting comparison.
+  // Metal can give different displacement derivatives on the shared-index mesh.
+  const denseLighting = oracleMesh(dense, 0, 0, 'source');
   const coarse = createPlaneGeometry(2, 2).unwrap();
   const mesh = testAssets(world).create(dense).unwrap();
   const object = world
@@ -317,6 +322,11 @@ export async function verifyStandardDisplacement(
   world
     .spawn(
       { component: Transform, data: { pos: [0, 0, 4] } },
+      // Keep one native shadow receiver across rigid and skinned controls.
+      {
+        component: ClippingPlanes,
+        data: clippingPlanesData({ planes: [[1, 0, 0, 100]] }),
+      },
       {
         component: Camera,
         data: {
@@ -335,7 +345,7 @@ export async function verifyStandardDisplacement(
       },
     )
     .unwrap();
-  world
+  const light = world
     .spawn({
       component: DirectionalLight,
       data: {
@@ -368,32 +378,60 @@ export async function verifyStandardDisplacement(
     { name: 'negative', scale: -0.4, bias: 0.2, mapped: true },
     { name: 'bias', scale: 0, bias: 0.3, mapped: true },
     { name: 'uv1', scale: 0.8, bias: 0, mapped: true, uv1: true },
+    { name: 'dense-lighting', scale: 0.8, bias: 0, mapped: true, lightingOnly: true },
+    {
+      name: 'oracle-lighting',
+      scale: 0.8,
+      bias: 0,
+      mapped: false,
+      oracle: 'face' as const,
+      lightingOnly: true,
+    },
   ];
+  const selectDisplacementGeometry = (entry: (typeof cases)[number]) => {
+    let geometry = entry.oracle
+      ? oracleMesh(dense, entry.scale, entry.bias, entry.oracle)
+      : entry.lightingOnly
+        ? denseLighting
+        : entry.coarse
+          ? coarse
+          : dense;
+    if (entry.uv1) {
+      const attributes = {
+        ...dense.attributes,
+        uv1: Float32Array.from(dense.attributes.uv as Float32Array, (v, i) =>
+          i % 2 === 0 ? 1 - v : v,
+        ),
+      };
+      geometry = {
+        ...dense,
+        attributes,
+        vertices: packInterleavedVertexAttributes(
+          attributes,
+          (dense.attributes.uv as Float32Array).length / 2,
+        ).unwrap().vertices,
+      };
+    }
+    return geometry;
+  };
   try {
     for (const renderPath of ['forward', 'deferred'] as const) {
-      renderValue(renderer.setProfile({ ...profile, renderPath, ssao: false }));
+      world.set(light, DirectionalLight, { castShadow: true }).unwrap();
+      renderValue(
+        renderer.setProfile({ ...profile, renderPath, ambientOcclusion: { enabled: false } }),
+      );
       for (const entry of cases) {
-        let geometry = entry.oracle
-          ? oracleMesh(dense, entry.scale, entry.bias, entry.oracle)
-          : entry.coarse
-            ? coarse
-            : dense;
-        if (entry.uv1) {
-          const attributes = {
-            ...dense.attributes,
-            uv1: Float32Array.from(dense.attributes.uv as Float32Array, (v, i) =>
-              i % 2 === 0 ? 1 - v : v,
-            ),
-          };
-          geometry = {
-            ...dense,
-            attributes,
-            vertices: packInterleavedVertexAttributes(
-              attributes,
-              (dense.attributes.uv as Float32Array).length / 2,
-            ).unwrap().vertices,
-          };
+        // The retained-shadow case authors a fixed caster; ordinary GPU casters stay movable.
+        if (entry.gpu && renderPath === 'forward')
+          world
+            .addComponent(object, { component: Mobility, data: { kind: MobilityKindValue.static } })
+            .unwrap();
+        if (entry.lightingOnly) {
+          // The face-normal oracle and source-normal caster produce different
+          // shadow bias. Compare their lighting with the same unshadowed input.
+          world.set(light, DirectionalLight, { castShadow: false }).unwrap();
         }
+        let geometry = selectDisplacementGeometry(entry);
         if (entry.skin) {
           const count = (dense.attributes.position as Float32Array).length / 3;
           const attributes = {
@@ -785,13 +823,18 @@ export async function verifyStandardDisplacement(
         ).toBeGreaterThan(0.02);
         facts.peak = Math.max(...pixels);
         if (entry.skin) world.removeComponent(object, Skin).unwrap();
+        if (entry.gpu && renderPath === 'forward') world.removeComponent(object, Mobility).unwrap();
         report.push(facts);
         await save('report.json', new TextEncoder().encode(JSON.stringify(report, null, 2)));
       }
       const value = (name: string) => required(results.get(`${renderPath}/${name}`));
       expect(difference(value('flat'), value('zero'))).toBeLessThanOrEqual(0.002);
       expect(difference(value('coarse-flat'), value('coarse'))).toBeLessThanOrEqual(0.002);
-      expect(difference(value('dense'), value('oracle'))).toBeLessThanOrEqual(0.05);
+      const oracleDelta = difference(value('dense-lighting'), value('oracle-lighting'));
+      expect(
+        oracleDelta,
+        `${renderPath} displaced lighting against the face-normal oracle`,
+      ).toBeLessThanOrEqual(0.05);
       expect(difference(value('dense'), value('dense-gpu'))).toBeLessThanOrEqual(0.005);
       expect(difference(value('dense'), value('skin'))).toBeLessThanOrEqual(0.05);
       expect(difference(value('flat/shadow'), value('dense/shadow'))).toBeGreaterThan(1e-5);
@@ -815,7 +858,8 @@ export async function verifyStandardDisplacement(
       report.push({
         renderPath,
         addedSilhouettePixels,
-        oracleDelta: difference(value('dense'), value('oracle')),
+        oracleDelta,
+        shadowedOracleDelta: difference(value('dense'), value('oracle')),
         gpuDelta: difference(value('dense'), value('dense-gpu')),
         shadowOracleDelta: difference(value('dense/shadow'), value('shadow-oracle/shadow')),
         faceNormalShadowDelta: difference(value('oracle/shadow'), value('shadow-oracle/shadow')),

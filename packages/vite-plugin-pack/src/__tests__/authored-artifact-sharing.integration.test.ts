@@ -4,9 +4,9 @@ import { join } from 'node:path';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
-import { createServer } from 'vite';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { createPluginPackInternal } from '../plugin-pack.js';
+import { createPackTestServer } from './vite-fixtures.js';
 
 const encoder = vi.hoisted(() => ({ calls: 0 }));
 vi.mock('node:zlib', async () => {
@@ -56,13 +56,7 @@ it.each([
         projectDdcRoot: join(root, 'project-ddc'),
       },
     });
-    const server = await createServer({
-      root,
-      configFile: false,
-      logLevel: 'silent',
-      plugins: [plugin],
-      server: { host: '127.0.0.1', port: 0 },
-    });
+    const server = await createPackTestServer(root, plugin);
     try {
       await server.listen();
       await plugin.ready();
@@ -98,25 +92,22 @@ it.each([
       await server.close();
     }
   };
-  try {
-    await mkdir(assets);
-    for (const index of [0, 1]) await writeFile(join(assets, `${index}.pack.ts`), source(index));
-    await open();
-    expect(encoder.calls).toBe(1);
-    expect(cook).toHaveBeenCalledTimes(2);
-    await open();
-    expect(encoder.calls).toBe(1);
-    expect(cook).toHaveBeenCalledTimes(2);
-    await writeFile(
-      join(assets, '1.pack.ts'),
-      change === 'bytes' ? source(1, 9) : source(1, 7, 'text/plain'),
-    );
-    const changed = await open();
-    expect(encoder.calls).toBe(2);
-    expect(cook).toHaveBeenCalledTimes(3);
-    expect(changed[0]).toEqual(new Uint8Array(2048).fill(7));
-    expect(changed[1]).toEqual(new Uint8Array(2048).fill(change === 'bytes' ? 9 : 7));
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
+  await mkdir(assets);
+  for (const index of [0, 1]) await writeFile(join(assets, `${index}.pack.ts`), source(index));
+  await open();
+  expect(encoder.calls).toBe(1);
+  expect(cook).toHaveBeenCalledTimes(2);
+  await open();
+  expect(encoder.calls).toBe(1);
+  expect(cook).toHaveBeenCalledTimes(2);
+  await writeFile(
+    join(assets, '1.pack.ts'),
+    change === 'bytes' ? source(1, 9) : source(1, 7, 'text/plain'),
+  );
+  const changed = await open();
+  expect(encoder.calls).toBe(2);
+  expect(cook).toHaveBeenCalledTimes(3);
+  expect(changed[0]).toEqual(new Uint8Array(2048).fill(7));
+  expect(changed[1]).toEqual(new Uint8Array(2048).fill(change === 'bytes' ? 9 : 7));
 }, 90_000);

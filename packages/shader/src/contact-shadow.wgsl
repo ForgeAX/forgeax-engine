@@ -11,10 +11,16 @@ fn contactShadowLinearDepth(value : f32, near : f32, far : f32, orthographic : b
 // directional light resolving occlusion finer than the shadow-map texel.
 // The march interpolates clip coordinates, so each sample's w is the exact
 // view distance of the ray point; only the scene sample needs linearizing.
-fn directionalContactShadow(view : View, sceneDepth : texture_depth_2d, position : vec3<f32>, normal : vec3<f32>, originPixel : vec2<i32>, frame : f32) -> f32 {
+struct ContactShadowHit {
+  pixel : vec2<i32>,
+  visibility : f32,
+};
+
+fn traceDirectionalContactShadow(view : View, sceneDepth : texture_depth_2d, position : vec3<f32>, normal : vec3<f32>, originPixel : vec2<i32>, frame : f32) -> ContactShadowHit {
+  let miss = ContactShadowHit(vec2<i32>(0), 1.0);
   let rayLength = view.directionalShadowFilter.w;
   let toLight = normalize(-view.lightDir);
-  if (dot(normal, toLight) <= 0.0) { return 1.0; }
+  if (dot(normal, toLight) <= 0.0) { return miss; }
   let near = view.temporalProjection.x;
   let far = view.temporalProjection.y;
   let orthographic = view.temporalProjection.z > 0.5;
@@ -33,7 +39,7 @@ fn directionalContactShadow(view : View, sceneDepth : texture_depth_2d, position
   let screenStart = clipStart.xy / clipStart.w;
   let screenEnd = clipEnd.xy / clipEnd.w;
   let pixelSpan = length((screenEnd - screenStart) * dims * 0.5);
-  if (pixelSpan < 1.5) { return 1.0; }
+  if (pixelSpan < 1.5) { return miss; }
   let steps = clamp(ceil(pixelSpan / 4.0), 3.0, CONTACT_SHADOW_MAX_STEPS);
   let noiseCoord = vec2<f32>(originPixel) + 5.588238 * frame;
   let jitter = fract(52.9829189 * fract(dot(noiseCoord, vec2<f32>(0.06711056, 0.00583715))));
@@ -58,9 +64,17 @@ fn directionalContactShadow(view : View, sceneDepth : texture_depth_2d, position
     if (delta > 0.0 && delta < thickness) {
       // Near hits darken fully; hits toward the ray end fade so the shadow
       // edge follows the configured length instead of cutting off.
-      return t * t;
+      return ContactShadowHit(pixel, t * t);
     }
   }
-  return 1.0;
+  return miss;
+}
+
+fn directionalContactShadow(view : View, sceneDepth : texture_depth_2d, position : vec3<f32>, normal : vec3<f32>, originPixel : vec2<i32>, frame : f32, casterData : texture_2d<u32>, compact : bool) -> f32 {
+  let hit = traceDirectionalContactShadow(view, sceneDepth, position, normal, originPixel, frame);
+  // Default GBuffer A.a bit 0 is the contact-caster flag.
+  if (compact && hit.visibility < 1.0 &&
+      (textureLoad(casterData, hit.pixel, 0).r & 0x40000000u) == 0u) { return 1.0; }
+  return hit.visibility;
 }
 

@@ -17,6 +17,23 @@ fn depthPyramidLevelSize(pyramid : texture_2d<f32>, level : u32) -> vec2<u32> {
   return max(textureDimensions(pyramid, 0) >> vec2<u32>(level), vec2<u32>(1u));
 }
 
+// A padded HZB has fixed two-pixel cells and a clamped border. Keep ray UVs
+// in the actual viewport; use the active cell count to address the texture.
+fn depthPyramidViewportCells(
+  pyramid: texture_2d<f32>, level: u32, sourceSize: vec2u,
+) -> vec2f {
+  let levelSize = vec2f(depthPyramidLevelSize(pyramid, level));
+  let padded = any(textureDimensions(pyramid, 0) > max(sourceSize / 2u, vec2u(1u)));
+  return select(levelSize, vec2f(sourceSize) / exp2(f32(level + 1u)), padded);
+}
+
+fn depthPyramidViewportCell(
+  uv: vec2f, pyramid: texture_2d<f32>, level: u32, sourceSize: vec2u,
+) -> vec2u {
+  let maxCell = depthPyramidLevelSize(pyramid, level) - 1u;
+  return min(vec2u(max(uv * depthPyramidViewportCells(pyramid, level, sourceSize), vec2f(0.0))), maxCell);
+}
+
 // The texel of a level that owns a normalized coordinate, clamped to the level.
 fn depthPyramidCell(uv : vec2<f32>, levelSize : vec2<u32>) -> vec2<u32> {
   let last = levelSize - vec2<u32>(1u);
@@ -59,4 +76,14 @@ fn linearizeViewDepth(value : f32, projection : vec4<f32>) -> f32 {
     projection.z > 0.5,
   );
   return depthPyramidDepthOrEmpty(distance);
+}
+
+// Inverse of linearizeViewDepth for consumers that reconstruct from clip Z.
+fn projectViewDepth(distance : f32, projection : vec4<f32>) -> f32 {
+  let near = projection.x;
+  let far = projection.y;
+  if (!(distance > 0.0 && distance < DEPTH_PYRAMID_EMPTY_DEPTH &&
+       near > 0.0 && far > near)) { return 0.0; }
+  let orthographic = (far - distance) / (far - near);
+  return select(orthographic * near / distance, orthographic, projection.z > 0.5);
 }

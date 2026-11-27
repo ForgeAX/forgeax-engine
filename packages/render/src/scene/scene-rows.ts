@@ -1,112 +1,129 @@
-import type { World } from '@forgeax/engine-ecs';
+import type { FrameArena, World } from '@forgeax/engine-ecs';
 import { type box3, mat4 } from '@forgeax/engine-math';
+import type { PresentationSpan } from '@forgeax/engine-scene/internal';
 import type { MeshAsset } from '@forgeax/engine-types';
 import { ok } from '@forgeax/engine-types';
-import { fingerprintNumericArray, InstanceBoundsCache } from '../instances-derived-bounds';
+import {
+  type InstanceBoundsCacheInspection,
+  writeInstancesUnionBounds,
+} from '../instances-derived-bounds';
 import { expandPointsLinesBounds } from '../points-lines/bounds';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { expandDisplacementBounds } from '../standard-displacement-bounds';
+import { CapturedSceneTransform, ScenePoseWriter } from './captured-transform';
 import type { RetainedRowFacts } from './frame-list';
 import { FrameSet } from './frame-set';
 import type { MaterialFrame } from './material-dispatch';
-import { meshDrawSnapshot } from './mesh-draw';
-import { MeshFrame } from './mesh-frame';
+import { slotContent, slotDrawSnapshot, slotPoseColumn, slotPoseOffset } from './mesh-draw';
+import { MeshFrame, type MeshGeometry } from './mesh-frame';
 import {
-  boundsFromArray,
   cullingDisplacementRadius,
-  intersects,
+  cullingMaterialBinding,
   ownInstances,
   ownPointsLinesSnapshot,
   ownSnapshot,
-  worldBounds,
+  writeTransformedWorldBounds,
 } from './render-scene-snapshots';
 import type {
   RenderSceneApplyResult,
   RenderSceneBounds,
   RenderSceneOperation,
   RenderSceneSlot,
+  ReservedSceneRow,
+  SceneRowGeometry,
 } from './render-scene-types';
 import type { RowContent } from './row-contents';
 import { RowContents } from './row-contents';
-import { scenePoseChunk, scenePoseOffset, stageScenePoses } from './scene-pose-admission';
-import { reflectedPose, type SceneSlotFrame, SceneSlots } from './scene-slots';
+import {
+  createInlineScenePoseChunk,
+  PreviousPoseRows,
+  SCENE_POSE_CHUNK_ROWS,
+  type StagedScenePoses,
+  scenePoseChunk,
+  scenePoseOffset,
+  stageScenePoses,
+} from './scene-pose-admission';
+import {
+  reflectedPose,
+  type SceneGeneratedSource,
+  type SceneSlotFrame,
+  type SceneSlotReservation,
+  SceneSlots,
+} from './scene-slots';
 import type { SkinSceneFrame } from './skin-scene-inputs';
 
-/**
- * The RenderBounds column: six numbers per slot plus the facts that proved
- * them (row record, geometry identity, displacement radius, material frame).
- * No per-row object; a row write invalidates its entry.
- */
 const BOUNDS_SCRATCH = new Float64Array(6);
-/** Consumed before the next derivation: copied into the column and the caller's box. */
-const WORLD_BOUNDS_SCRATCH: RenderSceneBounds = { min: [0, 0, 0], max: [0, 0, 0] };
 
-class RowBounds {
-  /** Row version that proved each box; 0 = none. */
-  private versions = new Float64Array(64);
-  private geometry = new Float64Array(64);
-  materials = new Float64Array(64);
-  radius = new Float64Array(64);
-  private known = new Uint8Array(64);
-  private boxes = new Float64Array(64 * 6);
+/** Exact original publication facts, not a currentness or resource-residency authority. */
+const publications = new WeakMap<ReservedSceneRow, WeakRef<RenderSceneSlot>>();
 
-  valid(slot: number, version: number, geometry: number): boolean {
-    return version !== 0 && this.versions[slot] === version && this.geometry[slot] === geometry;
+export function sceneRowPublicationMatches(
+  source: ReservedSceneRow,
+  record: RenderSceneSlot,
+): boolean {
+  return publications.get(source)?.deref() === record;
+}
+
+const BOUNDS_PAGE_ROWS = 64;
+const BOUNDS_COLUMN_BYTES = BOUNDS_PAGE_ROWS * Float64Array.BYTES_PER_ELEMENT;
+const BOUNDS_PAGE_BYTES =
+  3 * BOUNDS_COLUMN_BYTES +
+  6 * BOUNDS_PAGE_ROWS * Float32Array.BYTES_PER_ELEMENT +
+  BOUNDS_PAGE_ROWS;
+
+/** World unions for instance sets. Ordinary affine boxes write directly to the consumer. */
+class RowBoundsPage {
+  private readonly backing = new ArrayBuffer(BOUNDS_PAGE_BYTES);
+  private readonly versions = new Float64Array(this.backing, 0, BOUNDS_PAGE_ROWS);
+  private readonly geometry = new Float64Array(this.backing, BOUNDS_COLUMN_BYTES, BOUNDS_PAGE_ROWS);
+  readonly radius = new Float64Array(this.backing, 2 * BOUNDS_COLUMN_BYTES, BOUNDS_PAGE_ROWS);
+  private readonly boxes = new Float32Array(
+    this.backing,
+    3 * BOUNDS_COLUMN_BYTES,
+    6 * BOUNDS_PAGE_ROWS,
+  );
+  private readonly known = new Uint8Array(this.backing, BOUNDS_PAGE_BYTES - BOUNDS_PAGE_ROWS);
+  private occupied = 0;
+
+  valid(lane: number, version: number, geometry: number): boolean {
+    return version !== 0 && this.versions[lane] === version && this.geometry[lane] === geometry;
   }
 
-  /** Copy the cached box; false when the row's bounds are unknown. */
-  read(slot: number, out: { [lane: number]: number }): boolean {
-    if (this.known[slot] !== 1) return false;
-    const offset = slot * 6;
-    for (let lane = 0; lane < 6; lane++) out[lane] = this.boxes[offset + lane] as number;
+  read(lane: number, out: { [index: number]: number }): boolean {
+    if (this.known[lane] !== 1) return false;
+    const start = lane * 6;
+    for (let i = 0; i < 6; i++) out[i] = this.boxes[start + i] as number;
     return true;
   }
 
   write(
-    slot: number,
+    lane: number,
     version: number,
     geometry: number,
     radius: number,
-    materials: number,
-    bounds: RenderSceneBounds | undefined,
+    bounds: Float32Array | undefined,
   ): void {
-    this.ensure(slot);
-    this.versions[slot] = version;
-    this.geometry[slot] = geometry;
-    this.radius[slot] = radius;
-    this.materials[slot] = materials;
-    this.known[slot] = bounds === undefined ? 0 : 1;
+    if (this.versions[lane] === 0) this.occupied++;
+    this.versions[lane] = version;
+    this.geometry[lane] = geometry;
+    this.radius[lane] = radius;
+    this.known[lane] = bounds === undefined ? 0 : 1;
     if (bounds === undefined) return;
-    const offset = slot * 6;
-    this.boxes[offset] = bounds.min[0];
-    this.boxes[offset + 1] = bounds.min[1];
-    this.boxes[offset + 2] = bounds.min[2];
-    this.boxes[offset + 3] = bounds.max[0];
-    this.boxes[offset + 4] = bounds.max[1];
-    this.boxes[offset + 5] = bounds.max[2];
+    const start = lane * 6;
+    this.boxes.set(bounds, start);
   }
 
-  invalidate(slot: number): void {
-    if (slot < this.versions.length) this.versions[slot] = 0;
+  has(lane: number): boolean {
+    return this.versions[lane] !== 0;
   }
 
-  private ensure(slot: number): void {
-    if (slot < this.known.length) return;
-    let capacity = this.known.length;
-    while (capacity <= slot) capacity *= 2;
-    const grow = <T extends Float64Array | Uint8Array>(from: T, to: T): T => {
-      to.set(from);
-      return to;
-    };
-    this.versions = grow(this.versions, new Float64Array(capacity));
-    this.geometry = grow(this.geometry, new Float64Array(capacity));
-    this.materials = grow(this.materials, new Float64Array(capacity));
-    this.radius = grow(this.radius, new Float64Array(capacity));
-    this.known = grow(this.known, new Uint8Array(capacity));
-    this.boxes = grow(this.boxes, new Float64Array(capacity * 6));
+  release(lane: number): boolean {
+    this.versions[lane] = 0;
+    this.occupied--;
+    return this.occupied === 0;
   }
 }
 
@@ -115,8 +132,9 @@ interface PendingIdentity {
   /** The live row address this identity resolved to before the batch. */
   readonly slot: number | undefined;
   readonly initial: RenderSceneSlot | undefined;
-  /** Content-bearing snapshot; its own pose is superseded by `pose` when set. */
-  current: RenderableSnapshot | undefined;
+  /** A full or instance edit supplies replacement content. A pose edit borrows the initial columns. */
+  replacement: RenderableSnapshot | undefined;
+  live: boolean;
   /** Latest pose source of this batch, read at `poseOffset`. */
   pose: ArrayLike<number> | undefined;
   poseOffset: number;
@@ -133,6 +151,13 @@ export interface WorldTransformSpan {
   readonly worlds: Readonly<Float32Array>;
   /** Selected physical rows, consumed synchronously before publication buffers recycle. */
   readonly rows?: readonly number[];
+}
+
+export interface SceneRowPreparation {
+  readonly row: ReservedSceneRow;
+  isCurrent(): boolean;
+  publish(geometry?: SceneRowGeometry): RenderSceneApplyResult;
+  release(): void;
 }
 
 const EMPTY_APPLY: RenderSceneApplyResult = Object.freeze({
@@ -152,16 +177,17 @@ const EMPTY_APPLY: RenderSceneApplyResult = Object.freeze({
 });
 
 function localDisplacedBounds(
-  snapshot: RenderSceneSlot['snapshot'],
+  snapshot: RowContent,
   geometry: ReturnType<MeshFrame['get']>,
   radius: number,
+  scratch: Float32Array,
 ) {
   let local =
     geometry === undefined || snapshot.morph !== undefined || snapshot.terrainSection !== undefined
       ? snapshot.localAabb
-      : expandDisplacementBounds(geometry.bounds, radius);
+      : expandDisplacementBounds(geometry.bounds, radius, scratch);
   if (local !== undefined && geometry !== undefined && snapshot.pointsLines !== undefined)
-    local = expandPointsLinesBounds(local, snapshot.pointsLines.style);
+    local = expandPointsLinesBounds(local, snapshot.pointsLines.style, scratch);
   return local;
 }
 
@@ -175,6 +201,8 @@ function localDisplacedBounds(
  * and a `RenderSceneSlot` is a read view built on request. Views keep only
  * view-private derived state over these rows.
  */
+export type SceneRowWriteAccess = Pick<SceneRows, 'prepareRow' | 'apply' | 'commitTransformSpans'>;
+
 export class SceneRows {
   private meshes = new MeshFrame();
   /** Holder counts per Mesh handle; numeric keys, no per-row key string. */
@@ -182,19 +210,122 @@ export class SceneRows {
   private preparation = new FrameSet();
   private slots = new SceneSlots();
   private readonly contents = new RowContents();
-  private bounds = new RowBounds();
-  private readonly instanceBoundsCache = new InstanceBoundsCache();
+  private readonly poses = new ScenePoseWriter();
+  private readonly bounds = new Map<number, RowBoundsPage>();
+  private readonly localBoundsScratch = new Float32Array(6);
+  private readonly unionScratch = new Float32Array(6);
+  private readonly instanceBoundsWork = { hits: 0, misses: 0, derives: 0, invalidations: 0 };
   private skinBoundsScratch:
     | { matrix: ReturnType<typeof mat4.create>; inverse: ReturnType<typeof mat4.create> }
     | undefined;
   private revisionValue = 0;
   /** Commit-local pending identities by live slot; emptied when each commit ends. */
+  private inlinePoses: Float64Array | undefined;
   private readonly pendingBySlot: (PendingIdentity | number | undefined)[] = [];
   private committing = false;
+  private readonly preparedRows = new Map<number, SceneRowPreparation>();
 
   constructor(private source?: RenderResourceScope) {}
   setSource(source: RenderResourceScope | undefined): void {
     this.source = source;
+  }
+
+  /** Reserve identity without accepting content, geometry, a journal change or a view row. */
+  prepareRow(snapshot: RenderableSnapshot): SceneRowPreparation {
+    const entityKey = snapshot.entityKey;
+    this.assertUnreserved(entityKey);
+    if (this.committing || this.lookup(entityKey) !== undefined)
+      throw new Error('Scene row preparation requires an absent identity and an idle owner');
+    const owned = Object.freeze(ownSnapshot(snapshot, this.poses));
+    if (owned.entityKey !== entityKey) throw new Error('Scene row identity changed during capture');
+    this.assertUnreserved(entityKey);
+    if (this.committing || this.lookup(entityKey) !== undefined)
+      throw new Error('Scene row preparation changed during source capture');
+    const allocation = this.slots.reserve();
+    let scope: { owner: SceneRows; row: ReservedSceneRow } | undefined = {
+      owner: this,
+      row: Object.freeze({
+        entityKey,
+        slot: allocation.slot,
+        generation: allocation.generation,
+        snapshot: owned,
+      }),
+    };
+    const current = () =>
+      scope?.owner.preparedRows.get(entityKey) === api && allocation.isCurrent();
+    const api: SceneRowPreparation = Object.freeze({
+      get row() {
+        if (scope === undefined) throw new Error('Scene row preparation is closed');
+        return scope.row;
+      },
+      isCurrent: current,
+      publish: (publication?: SceneRowGeometry) => {
+        const target = scope;
+        if (target === undefined || !current() || target.owner.committing)
+          throw new Error('Scene row preparation is not current');
+        target.owner.committing = true;
+        try {
+          const geometry =
+            publication === undefined
+              ? undefined
+              : target.owner.publicationGeometry(target.row, publication);
+          if (scope !== target || !current())
+            throw new Error('Scene row preparation changed during geometry qualification');
+          const source = target.row.snapshot;
+          const record = target.owner.allocate(source, undefined, 0, allocation, geometry);
+          publications.set(target.row, new WeakRef(record));
+          target.owner.revisionValue++;
+          target.owner.preparedRows.delete(entityKey);
+          scope = undefined;
+          return {
+            ...EMPTY_APPLY,
+            created: 1,
+            createdSlots: [record],
+            journal: target.owner.slots.journal,
+          };
+        } finally {
+          target.owner.committing = false;
+        }
+      },
+      release: () => {
+        const target = scope;
+        if (
+          target?.owner.preparedRows.get(entityKey) === api &&
+          target.owner.lookup(entityKey) !== undefined
+        )
+          throw new Error('A partially published Scene row retains its cleanup responsibility');
+        allocation.release();
+        if (target?.owner.preparedRows.get(entityKey) === api)
+          target.owner.preparedRows.delete(entityKey);
+        scope = undefined;
+      },
+    });
+    this.preparedRows.set(entityKey, api);
+    return api;
+  }
+
+  private assertUnreserved(entityKey: number): void {
+    if (this.preparedRows.has(entityKey))
+      throw new Error('Scene identity belongs to an unpublished row preparation');
+  }
+
+  private publicationGeometry(row: ReservedSceneRow, publication: SceneRowGeometry): MeshGeometry {
+    const { source, geometry } = publication;
+    const scope = this.source;
+    const handle = row.snapshot.assetHandle;
+    if (source !== row || handle !== geometry.handle || scope === undefined)
+      throw new Error('Prepared Scene publication does not match its reserved source');
+    const revision = scope.assetRevision(handle);
+    const accepted = this.meshes.get(handle);
+    const provenance = geometry.source;
+    if (
+      this.source !== scope ||
+      provenance?.identity !== scope.identity ||
+      provenance.revision !== revision ||
+      (accepted !== undefined && accepted !== geometry)
+    )
+      throw new Error('Prepared Scene geometry is not the current canonical source');
+    return geometry;
   }
 
   get revision(): number {
@@ -221,22 +352,59 @@ export class SceneRows {
   }
 
   private setMesh(handle: number, mesh: MeshAsset | undefined): void {
-    this.meshes = mesh === undefined ? this.meshes.without(handle) : this.meshes.with(handle, mesh);
-    this.slots.setMeshLods(
-      handle,
-      mesh === undefined ? undefined : (this.meshes.get(handle)?.lods?.length ?? 0) > 0,
-    );
+    const before = this.meshes;
+    const scope = this.source;
+    const revision = mesh === undefined ? undefined : scope?.assetRevision(handle);
+    const resolved = revision === undefined ? undefined : scope?.resolveAsset<MeshAsset>(handle);
+    const provenance =
+      scope !== undefined && revision !== undefined && resolved?.ok && resolved.value === mesh
+        ? { identity: scope.identity, revision }
+        : undefined;
+    const captured = before.get(handle);
+    const sameSource =
+      provenance !== undefined &&
+      captured?.source?.identity === provenance.identity &&
+      captured.source.revision === provenance.revision &&
+      captured.materials.length === 0;
+    const next =
+      mesh === undefined
+        ? before.without(handle)
+        : sameSource
+          ? before
+          : before.with(handle, mesh, undefined, provenance);
+    const lods = mesh === undefined ? undefined : (next.get(handle)?.lods?.length ?? 0) > 0;
+    if (
+      this.meshes !== before ||
+      this.source !== scope ||
+      (revision !== undefined && scope?.assetRevision(handle) !== revision)
+    )
+      throw new Error('Scene Mesh ownership changed during geometry capture');
+    this.slots.setMeshLods(handle, lods);
+    this.meshes = next;
   }
 
-  private acquireMesh(assetHandle: number | undefined): void {
+  private acquireMesh(assetHandle: number | undefined, geometry?: MeshGeometry): void {
     if (assetHandle === undefined) return;
     const holders = this.meshHolders.get(assetHandle) ?? 0;
-    this.meshHolders.set(assetHandle, holders + 1);
-    if (holders > 0) return;
+    if (holders > 0) {
+      this.meshHolders.set(assetHandle, holders + 1);
+      return;
+    }
+    if (geometry !== undefined) {
+      this.meshes = this.meshes.withGeometry(geometry);
+      this.slots.setMeshLods(assetHandle, (geometry.lods?.length ?? 0) > 0);
+      this.meshHolders.set(assetHandle, 1);
+      return;
+    }
     const scope = this.source;
-    if (scope === undefined) return;
-    const asset = scope.resolveAsset<MeshAsset>(assetHandle);
-    if (asset.ok && asset.value.kind === 'mesh') this.setMesh(assetHandle, asset.value);
+    const before = this.meshes;
+    if (scope !== undefined) {
+      const asset = scope.resolveAsset<MeshAsset>(assetHandle);
+      if (this.source !== scope || this.meshes !== before)
+        throw new Error('Scene Mesh ownership changed during asset resolution');
+      if (asset.ok && asset.value.kind === 'mesh') this.setMesh(assetHandle, asset.value);
+    }
+    this.meshHolders.set(assetHandle, 1);
   }
 
   private releaseMesh(assetHandle: number | undefined): void {
@@ -280,8 +448,12 @@ export class SceneRows {
     return this.slots.freeCount;
   }
 
-  hasSource(kind: 'terrain' | 'glyph' | 'tilemap'): boolean {
+  hasSource(kind: SceneGeneratedSource): boolean {
     return this.slots.hasSource(kind);
+  }
+
+  get cullingBoundsBackingBytes(): number {
+    return this.bounds.size * BOUNDS_PAGE_BYTES;
   }
 
   inspectPages(): ReturnType<SceneSlots['inspect']> {
@@ -300,6 +472,9 @@ export class SceneRows {
     memory?: World,
   ): RenderSceneApplyResult {
     if (operations.length === 0 && spans.length === 0) return EMPTY_APPLY;
+    for (const operation of operations)
+      if (operation.kind === 'update' && operation.snapshot !== undefined)
+        this.assertUnreserved(operation.entityKey);
     if (owned && operations.length === 0 && memory !== undefined)
       return this.commitTransformSpans(spans, memory);
 
@@ -319,69 +494,104 @@ export class SceneRows {
             ...operation,
             ...(operation.snapshot === undefined
               ? {}
-              : { snapshot: ownSnapshot(operation.snapshot) }),
+              : { snapshot: ownSnapshot(operation.snapshot, this.poses) }),
             ...(operation.instances === undefined
               ? {}
               : { instances: ownInstances(operation.instances) }),
           };
         });
+    for (const operation of preparedOperations)
+      if (operation.kind === 'update' && operation.snapshot !== undefined)
+        this.assertUnreserved(operation.entityKey);
     return this.commit(preparedOperations, spans);
   }
 
-  /** Validated receiver spans only: source windows remain owned until this call returns. */
-  private commitTransformSpans(
-    spans: readonly WorldTransformSpan[],
-    world: World,
-  ): RenderSceneApplyResult {
+  /** Local ECS presentation runs contain each entity once in stable query order. */
+  commitPresentationSpans(spans: readonly PresentationSpan[]): RenderSceneApplyResult {
     if (spans.length === 0) return EMPTY_APPLY;
-    // Tiny admissions cost less as ordinary records than a scope plus numeric chunks.
-    let demand = 0;
-    for (const span of spans) {
-      demand += span.rows?.length ?? span.entities.length;
-      if (demand > 64) break;
-    }
-    if (demand <= 64) return this.commit([], spans);
     if (this.committing) throw new Error('Scene commit cannot reenter');
     this.committing = true;
     try {
-      return world
-        .withFrameArena(() => {
-          const staged = stageScenePoses(this.slots, spans, world.frameArena, this.pendingBySlot);
-          if (!staged.ok) return staged;
-          const { initial, chunks, ignored } = staged.value;
-          if (initial.length === 0)
-            return ok(
-              ignored === 0 ? EMPTY_APPLY : { ...EMPTY_APPLY, ignoredLateUpdates: ignored },
-            );
-          const updatedSlots: RenderSceneSlot[] = [];
-          const contentUpdatedSlots: RenderSceneSlot[] = [];
-          const previous = new Map<RenderSceneSlot, RenderSceneSlot>();
-          for (let index = 0; index < initial.length; index++) {
-            const before = initial[index] as RenderSceneSlot;
-            const chunk = scenePoseChunk(chunks, index);
-            const base = scenePoseOffset(index);
-            const span = spans[chunk[base] as number] as WorldTransformSpan;
-            const after = this.slots.writePose(before.slot, span.worlds, chunk[base + 1] as number);
-            this.bounds.invalidate(before.slot);
-            updatedSlots.push(after);
-            previous.set(after, before);
-            if (chunk[base + 2] === 1) contentUpdatedSlots.push(after);
-          }
-          this.revisionValue++;
-          return ok({
-            ...EMPTY_APPLY,
-            updated: updatedSlots.length,
-            ignoredLateUpdates: ignored,
-            updatedSlots,
-            contentUpdatedSlots,
-            previous,
-            journal: this.slots.journal,
-          });
-        })
-        .unwrap();
+      const initial: RenderSceneSlot[] = [];
+      const updated: RenderSceneSlot[] = [];
+      const content: RenderSceneSlot[] = [];
+      const ignored = this.slots.writePresentationSpans(spans, initial, updated, content);
+      return this.poseDelta(initial, updated, content, ignored);
     } finally {
       this.committing = false;
     }
+  }
+
+  commitTransformSpans(spans: readonly WorldTransformSpan[], world: World): RenderSceneApplyResult {
+    if (spans.length === 0) return EMPTY_APPLY;
+    // Small and dense spans use the same versioned row writer. Only overflow needs an arena scope.
+    let demand = 0;
+    for (const span of spans) {
+      demand += span.rows?.length ?? span.entities.length;
+      if (demand > SCENE_POSE_CHUNK_ROWS) break;
+    }
+    if (this.committing) throw new Error('Scene commit cannot reenter');
+    this.committing = true;
+    try {
+      if (demand <= SCENE_POSE_CHUNK_ROWS) {
+        this.inlinePoses ??= createInlineScenePoseChunk();
+        return this.writeTransformSpans(spans, this.inlinePoses).unwrap();
+      }
+      return world.withFrameArena(() => this.writeTransformSpans(spans, world.frameArena)).unwrap();
+    } finally {
+      this.committing = false;
+    }
+  }
+
+  private writeTransformSpans(
+    spans: readonly WorldTransformSpan[],
+    storage: FrameArena | Float64Array,
+  ) {
+    const staged = stageScenePoses(this.slots, spans, storage, this.pendingBySlot);
+    if (!staged.ok) return staged;
+    const { initial, ignored } = staged.value;
+    if (initial.length === 0)
+      return ok(ignored === 0 ? EMPTY_APPLY : { ...EMPTY_APPLY, ignoredLateUpdates: ignored });
+    const updatedSlots: RenderSceneSlot[] = [];
+    const contentUpdatedSlots: RenderSceneSlot[] = [];
+    this.writeStagedPoses(staged.value, updatedSlots, contentUpdatedSlots);
+    return ok(this.poseDelta(initial, updatedSlots, contentUpdatedSlots, ignored));
+  }
+
+  private writeStagedPoses(
+    { initial, chunks, columns }: StagedScenePoses,
+    updatedSlots: RenderSceneSlot[],
+    contentUpdatedSlots: RenderSceneSlot[],
+  ): void {
+    for (let index = 0; index < initial.length; index++) {
+      const before = initial[index] as RenderSceneSlot;
+      const chunk = scenePoseChunk(chunks, index);
+      const base = scenePoseOffset(index);
+      const worlds = columns[chunk[base] as number] as Readonly<Float32Array>;
+      const after = this.slots.writePose(before.slot, worlds, chunk[base + 1] as number);
+      updatedSlots.push(after);
+      if (chunk[base + 2] === 1) contentUpdatedSlots.push(after);
+    }
+  }
+
+  private poseDelta(
+    initial: readonly RenderSceneSlot[],
+    updatedSlots: readonly RenderSceneSlot[],
+    contentUpdatedSlots: readonly RenderSceneSlot[],
+    ignored: number,
+  ): RenderSceneApplyResult {
+    if (updatedSlots.length === 0)
+      return ignored === 0 ? EMPTY_APPLY : { ...EMPTY_APPLY, ignoredLateUpdates: ignored };
+    this.revisionValue++;
+    return {
+      ...EMPTY_APPLY,
+      updated: updatedSlots.length,
+      ignoredLateUpdates: ignored,
+      updatedSlots,
+      contentUpdatedSlots,
+      previous: new PreviousPoseRows(updatedSlots, initial),
+      journal: this.slots.journal,
+    };
   }
 
   private commit(
@@ -426,9 +636,10 @@ export class SceneRows {
         entityKey,
         slot,
         initial,
-        current: initial?.snapshot,
-        pose: undefined,
-        poseOffset: 0,
+        replacement: undefined,
+        live: initial !== undefined,
+        pose: initial === undefined ? undefined : slotPoseColumn(initial),
+        poseOffset: initial === undefined ? 0 : slotPoseOffset(initial),
         removed: false,
         contentChanged: false,
         instanceChanged: false,
@@ -440,7 +651,13 @@ export class SceneRows {
       return pending;
     };
     try {
-      return this.commitPending(preparedOperations, spans, pendingFor, pendingOrder);
+      return this.commitPending(
+        preparedOperations,
+        spans,
+        pendingFor,
+        pendingOrder,
+        pendingEntities,
+      );
     } finally {
       for (const pending of pendingOrder)
         if (pending.slot !== undefined) pendingBySlot[pending.slot] = undefined;
@@ -452,14 +669,14 @@ export class SceneRows {
     spans: readonly WorldTransformSpan[],
     pendingFor: (entityKey: number) => PendingIdentity,
     pendingOrder: readonly PendingIdentity[],
+    pendingEntities: ReadonlyMap<number, PendingIdentity>,
   ): RenderSceneApplyResult {
     let ignoredLateUpdates = 0;
 
     const updateWorld = (pending: PendingIdentity, source: ArrayLike<number>, offset: number) => {
-      const current = pending.current;
-      if (current === undefined) return;
-      const target = pending.pose ?? current.transform.world;
-      const targetOffset = pending.pose === undefined ? 0 : pending.poseOffset;
+      const target = pending.pose;
+      if (target === undefined) return;
+      const targetOffset = pending.poseOffset;
       for (let lane = 0; lane < 16; lane += 1) {
         if (target[targetOffset + lane] === (source[offset + lane] ?? 0)) continue;
         pending.pose = source;
@@ -474,27 +691,49 @@ export class SceneRows {
     for (const operation of preparedOperations) {
       const pending = pendingFor(operation.entityKey);
       if (operation.kind === 'remove') {
-        pending.current = undefined;
+        pending.live = false;
+        pending.replacement = undefined;
         pending.pose = undefined;
         pending.removed = true;
         continue;
       }
       if (operation.snapshot !== undefined) {
-        pending.current = operation.snapshot;
-        pending.pose = undefined;
+        pending.live = true;
+        pending.replacement = operation.snapshot;
+        const pose = CapturedSceneTransform.storage(operation.snapshot.transform);
+        pending.pose = CapturedSceneTransform.column(pose);
+        pending.poseOffset = CapturedSceneTransform.offset(pose);
         pending.contentChanged = true;
       }
-      if (pending.current === undefined) {
+      if (!pending.live) {
         ignoredLateUpdates += 1;
         continue;
       }
       if (operation.instances !== undefined) {
-        pending.current = { ...pending.current, instances: operation.instances };
+        const source = pending.replacement ?? pending.initial?.snapshot;
+        if (source === undefined) throw new Error('A live instance edit requires an authored row');
+        pending.replacement = { ...source, instances: operation.instances };
         pending.instanceChanged = true;
       }
       if (operation.world !== undefined) updateWorld(pending, operation.world, 0);
     }
-    ignoredLateUpdates += this.stageTransformSpans(spans, pendingFor, updateWorld);
+    let poses: StagedScenePoses | undefined;
+    if (spans.length > 0) {
+      this.inlinePoses ??= createInlineScenePoseChunk();
+      poses = stageScenePoses(
+        this.slots,
+        spans,
+        this.inlinePoses,
+        this.pendingBySlot,
+        (entity, edit, span, offset) => {
+          const pending = edit ?? pendingEntities.get(entity);
+          if (!pending?.live) return false;
+          updateWorld(pending, span.worlds, offset);
+          return true;
+        },
+      ).unwrap();
+      ignoredLateUpdates += poses.ignored;
+    }
 
     let created = 0;
     let updated = 0;
@@ -508,20 +747,20 @@ export class SceneRows {
     const recreatedSlots: RenderSceneSlot[] = [];
     const previous = new Map<RenderSceneSlot, RenderSceneSlot>();
     for (const pending of pendingOrder) {
-      const current = pending.current;
+      const current = pending.replacement;
       if (pending.initial === undefined) {
-        if (current === undefined) continue;
+        if (!pending.live || current === undefined) continue;
         createdSlots.push(this.allocate(current, pending.pose, pending.poseOffset));
         created += 1;
         continue;
       }
-      if (current === undefined) {
+      if (!pending.live) {
         this.release(pending.initial.slot);
         removedSlots.push(pending.initial);
         removed += 1;
         continue;
       }
-      if (pending.removed) {
+      if (pending.removed && current !== undefined) {
         this.release(pending.initial.slot);
         const recreatedSlot = this.allocate(current, pending.pose, pending.poseOffset);
         recreatedSlots.push(recreatedSlot);
@@ -531,14 +770,16 @@ export class SceneRows {
       }
       if (!pending.contentChanged && !pending.instanceChanged && !pending.transformChanged)
         continue;
-      const slot = pending.initial.slot;
       const updatedSlot = this.writePending(pending, current, pending.initial);
-      this.bounds.invalidate(slot);
       updatedSlots.push(updatedSlot);
       previous.set(updatedSlot, pending.initial);
       if (pending.contentChanged) contentUpdatedSlots.push(updatedSlot);
       else if (pending.instanceChanged) instanceUpdatedSlots.push(updatedSlot);
       updated += 1;
+    }
+    if (poses !== undefined) {
+      this.writeStagedPoses(poses, updatedSlots, contentUpdatedSlots);
+      updated += poses.initial.length;
     }
     if (created + updated + removed + recreated === 0)
       return ignoredLateUpdates === 0 ? EMPTY_APPLY : { ...EMPTY_APPLY, ignoredLateUpdates };
@@ -555,60 +796,22 @@ export class SceneRows {
       instanceUpdatedSlots,
       removedSlots,
       recreatedSlots,
-      previous,
+      previous: poses?.initial.length
+        ? new PreviousPoseRows(updatedSlots, poses.initial, previous.size ? previous : undefined)
+        : previous,
       resynced: 0,
       journal: this.slots.journal,
     };
   }
 
-  /** Compare canonical pose columns before hydrating unchanged row observations. */
-  private stageTransformSpans(
-    spans: readonly WorldTransformSpan[],
-    pendingFor: (entityKey: number, knownSlot?: number) => PendingIdentity,
-    updateWorld: (pending: PendingIdentity, source: ArrayLike<number>, offset: number) => void,
-  ): number {
-    let ignored = 0;
-    for (const span of spans) {
-      const count = span.rows?.length ?? span.entities.length;
-      for (let cursor = 0; cursor < count; cursor++) {
-        const row = span.rows?.[cursor] ?? cursor;
-        const entity = span.entities[row];
-        if (entity === undefined) continue;
-        const slot = this.slots.slotOf(entity);
-        // Earlier operations/spans own their staged pose, not the current columns.
-        const staged = slot === undefined ? undefined : this.pendingBySlot[slot];
-        if (typeof staged === 'number') throw new Error('Scene pose staging is already active');
-        let pending = slot === undefined ? pendingFor(entity) : staged;
-        if (pending !== undefined && pending.current === undefined) {
-          ignored++;
-          continue;
-        }
-        const worlds = span.worlds;
-        const change =
-          slot !== undefined && pending === undefined
-            ? this.slots.comparePose(slot, worlds, row * 16)
-            : undefined;
-        if (change === 'unchanged') continue;
-        pending ??= pendingFor(entity, slot);
-        if (change === 'pose' || change === 'parity') {
-          pending.pose = worlds;
-          pending.poseOffset = row * 16;
-          pending.transformChanged = true;
-          pending.contentChanged ||= change === 'parity';
-        } else updateWorld(pending, worlds, row * 16);
-      }
-    }
-    return ignored;
-  }
-
   private writePending(
     pending: PendingIdentity,
-    current: RenderableSnapshot,
+    current: RenderableSnapshot | undefined,
     initial: RenderSceneSlot,
   ): RenderSceneSlot {
     const slot = initial.slot;
     let updatedSlot: RenderSceneSlot;
-    if (current !== initial.snapshot) {
+    if (current !== undefined) {
       const before = this.slots.content(slot);
       const content = this.contents.acquire(current);
       if (before?.assetHandle !== content.assetHandle) {
@@ -620,8 +823,10 @@ export class SceneRows {
         generation: initial.generation,
         content,
         pose: pending.pose ?? current.transform.world,
-        poseOffset: pending.pose === undefined ? 0 : pending.poseOffset,
+        poseOffset: pending.poseOffset,
       });
+      if (before?.instances !== undefined && content.instances === undefined)
+        this.releaseInstanceBounds(slot);
       if (before !== undefined) this.contents.release(before);
       this.updatePreparation(slot, content);
     } else updatedSlot = this.slots.writePose(slot, pending.pose ?? [], pending.poseOffset);
@@ -631,7 +836,11 @@ export class SceneRows {
   /** Reconcile the current identity set while retaining slots for survivors. */
   reconcile(snapshots: Iterable<RenderableSnapshot>): void {
     const desired = new Map<number, RenderableSnapshot>();
-    for (const snapshot of snapshots) desired.set(snapshot.entityKey, ownSnapshot(snapshot));
+    for (const snapshot of snapshots) {
+      this.assertUnreserved(snapshot.entityKey);
+      desired.set(snapshot.entityKey, ownSnapshot(snapshot, this.poses));
+    }
+    for (const entity of desired.keys()) this.assertUnreserved(entity);
     for (const slot of this.slots.capture()) {
       if (slot === undefined) continue;
       if (!desired.has(slot.entityKey)) this.release(slot.slot);
@@ -648,14 +857,17 @@ export class SceneRows {
         this.releaseMesh(before?.assetHandle);
         this.acquireMesh(content.assetHandle);
       }
+      const pose = CapturedSceneTransform.storage(snapshot.transform);
       this.slots.write(existing.slot, {
         entityKey: snapshot.entityKey,
         generation: existing.generation,
         content,
-        pose: snapshot.transform.world,
+        pose: CapturedSceneTransform.column(pose),
+        poseOffset: CapturedSceneTransform.offset(pose),
       });
+      if (before?.instances !== undefined && content.instances === undefined)
+        this.releaseInstanceBounds(existing.slot);
       if (before !== undefined) this.contents.release(before);
-      this.bounds.invalidate(existing.slot);
       this.updatePreparation(existing.slot, content);
     }
     this.revisionValue += 1;
@@ -663,12 +875,15 @@ export class SceneRows {
 
   /** Release every row. */
   dispose(): void {
+    this.preparedRows.clear();
     this.slots.clear();
     this.contents.clear();
-    this.bounds = new RowBounds();
-    this.instanceBoundsCache.invalidate();
+    this.poses.clear();
+    if (this.bounds.size > 0) this.instanceBoundsWork.invalidations++;
+    this.bounds.clear();
     this.skinBoundsScratch = undefined;
     this.pendingBySlot.length = 0;
+    this.inlinePoses = undefined;
     this.meshes = new MeshFrame();
     this.meshHolders.clear();
     this.preparation = new FrameSet();
@@ -676,34 +891,76 @@ export class SceneRows {
 
   private allocate(
     snapshot: RenderableSnapshot,
-    pose: ArrayLike<number> = snapshot.transform.world,
+    pose?: ArrayLike<number>,
     poseOffset = 0,
+    reservation?: SceneSlotReservation,
+    geometry?: MeshGeometry,
   ): RenderSceneSlot {
+    if (pose === undefined) {
+      const storage = CapturedSceneTransform.storage(snapshot.transform);
+      pose = CapturedSceneTransform.column(storage);
+      poseOffset = CapturedSceneTransform.offset(storage);
+    }
     const content = this.contents.acquire(snapshot);
-    this.acquireMesh(content.assetHandle);
-    const { slot, generation } = this.slots.allocate();
-    const record = this.slots.write(slot, {
-      entityKey: snapshot.entityKey,
-      generation,
-      content,
-      pose,
-      poseOffset,
-    });
-    this.bounds.invalidate(slot);
-    this.updatePreparation(slot, content);
-    return record;
+    const before = this.meshes;
+    let acquired = false;
+    let after = before;
+    let address: Pick<SceneSlotReservation, 'slot' | 'generation'> | undefined = reservation;
+    try {
+      this.acquireMesh(content.assetHandle, geometry);
+      acquired = true;
+      after = this.meshes;
+      address ??= this.slots.allocate();
+      const { slot, generation } = address;
+      const write = { entityKey: snapshot.entityKey, generation, content, pose, poseOffset };
+      const record =
+        reservation === undefined ? this.slots.write(slot, write) : reservation.publish(write);
+      this.updatePreparation(slot, content);
+      return record;
+    } catch (cause) {
+      // A written/unknown row retains its content, Mesh and address responsibility.
+      if (address !== undefined && this.slots.content(address.slot) !== undefined) throw cause;
+      const failures = [cause];
+      const restore = this.meshes === after;
+      if (acquired) {
+        try {
+          this.releaseMesh(content.assetHandle);
+        } catch (cleanup) {
+          failures.push(cleanup);
+        }
+      }
+      try {
+        this.contents.release(content);
+      } catch (cleanup) {
+        failures.push(cleanup);
+      }
+      if (restore && failures.length === 1) this.meshes = before;
+      if (failures.length > 1)
+        throw new AggregateError(failures, 'Scene row allocation and rollback failed', { cause });
+      throw cause;
+    }
   }
 
   private release(slot: number): void {
     const content = this.slots.content(slot);
-    const record = this.slots.get(slot);
-    if (content === undefined || record === undefined) return;
+    if (content === undefined) return;
     this.releaseMesh(content.assetHandle);
     this.slots.remove(slot);
+    this.releaseInstanceBounds(slot);
     this.contents.release(content);
-    this.bounds.invalidate(slot);
     this.preparation = this.preparation.without(slot);
-    this.instanceBoundsCache.invalidate(record.entityKey);
+  }
+
+  private releaseInstanceBounds(slot: number): void {
+    const page = Math.floor(slot / BOUNDS_PAGE_ROWS);
+    const owned = this.bounds.get(page);
+    if (owned === undefined || !owned.has(slot % BOUNDS_PAGE_ROWS)) return;
+    this.instanceBoundsWork.invalidations++;
+    if (owned.release(slot % BOUNDS_PAGE_ROWS)) this.bounds.delete(page);
+  }
+
+  get lodCandidateCount(): number {
+    return this.slots.lodCandidateCount;
   }
 
   /** Facts the rows maintain while writing, so frame consumers need not walk them. */
@@ -711,19 +968,22 @@ export class SceneRows {
     current: SceneSlotFrame,
     meshes: MeshFrame,
     project: (record: RenderSceneSlot) => RenderableSnapshot = (record) =>
-      meshDrawSnapshot(record.snapshot, meshes),
+      slotDrawSnapshot(record, meshes),
   ): RetainedRowFacts<RenderableSnapshot> {
-    const lodCandidateCount = this.slots.lodCandidateCount;
+    const lodCandidateCount = this.lodCandidateCount;
     const indexes = {
       terrain: current.indexedSlots('terrain') ?? this.slots.indexedSlots('terrain'),
       capsule: current.indexedSlots('capsule') ?? this.slots.indexedSlots('capsule'),
       pointsLines: current.indexedSlots('pointsLines') ?? this.slots.indexedSlots('pointsLines'),
       skin: current.indexedSlots('skin') ?? this.slots.indexedSlots('skin'),
       raster: current.indexedSlots('raster'),
+      viewSource: current.indexedSlots('viewSource'),
     };
     return {
       lodCandidateCount,
+      terrainRowCount: indexes.terrain.size,
       rasterRowCount: indexes.raster?.size,
+      allDefaultRenderLayers: current.allDefaultRenderLayers,
       *sparseRows(kind) {
         const index = indexes[kind];
         if (index === undefined) {
@@ -749,8 +1009,8 @@ export class SceneRows {
     return Object.freeze(snapshots);
   }
 
-  instanceBoundsStatistics(): ReturnType<InstanceBoundsCache['inspect']> {
-    return this.instanceBoundsCache.inspect();
+  instanceBoundsStatistics(): InstanceBoundsCacheInspection {
+    return { ...this.instanceBoundsWork };
   }
 
   /**
@@ -773,69 +1033,59 @@ export class SceneRows {
       : undefined;
   }
 
-  /**
-   * The row's RenderBounds column, derived on demand from its pose, geometry
-   * and fixed material radius. The current row caches its box in the slot's
-   * numeric column; another record of that slot (a captured older frame)
-   * derives into scratch without replacing the current row's value.
-   */
   private resolveBounds(
     slot: RenderSceneSlot,
     meshes: MeshFrame,
     materials: MaterialFrame | undefined,
     out: { [lane: number]: number },
+    snapshot = slotContent(slot),
   ): boolean {
-    const snapshot = slot.snapshot;
-    // A static Skin Binding never grants permission to use bind-pose bounds.
-    // Its caller must provide the fixed recording root to the numeric writer.
     if (snapshot.skinBinding !== undefined) return false;
     const geometry = meshes.get(snapshot.assetHandle);
-    const columns = this.bounds;
-    const index = slot.slot;
-    const current = this.slots.version(index) === slot.version;
-    const geometryId = geometry === undefined ? 0 : getOpaqueResourceIdentity(geometry);
-    const materialsId = materials === undefined ? -1 : getOpaqueResourceIdentity(materials);
-    const cached = current && columns.valid(index, slot.version, geometryId);
-    // The slot, geometry and fixed material frame all match, so the material
-    // radius is the one already proven; mutable material roots re-derive it.
-    if (
-      cached &&
-      materials !== undefined &&
-      !materials.hasBorrowedValues &&
-      columns.materials[index] === materialsId
-    )
-      return columns.read(index, out);
-    const radius = cullingDisplacementRadius(snapshot, geometry, materials);
-    if (cached && columns.radius[index] === radius) {
-      columns.materials[index] = materialsId;
-      return columns.read(index, out);
+    const radius = this.contents.displacementRadius(
+      snapshot,
+      cullingMaterialBinding(snapshot, geometry),
+      materials,
+    );
+    if (snapshot.instances === undefined) {
+      const local = localDisplacedBounds(snapshot, geometry, radius, this.localBoundsScratch);
+      return writeTransformedWorldBounds(out, local, slotPoseColumn(slot), slotPoseOffset(slot));
     }
-    let candidate: RenderSceneBounds | undefined;
-    const local = localDisplacedBounds(snapshot, geometry, radius);
-    if (local !== undefined && snapshot.instances !== undefined) {
-      if (snapshot.instances.instanceCount !== 0) {
-        const derived = this.instanceBoundsCache.get({
-          entityKey: snapshot.entityKey,
-          meshGeneration: fingerprintNumericArray(local) ^ ((snapshot.assetHandle ?? 0) >>> 0),
-          transformGeneration: fingerprintNumericArray(snapshot.transform.world),
-          matrixGeneration: snapshot.instances.revision ?? snapshot.instances.archVersion,
-          meshAabb: local,
-          entityWorld: snapshot.transform.world,
-          transforms: snapshot.instances.transforms,
-        });
-        candidate = boundsFromArray(derived ?? []);
+    const index = slot.slot;
+    const page = Math.floor(index / BOUNDS_PAGE_ROWS);
+    const lane = index % BOUNDS_PAGE_ROWS;
+    const current = this.slots.version(index) === slot.version;
+    const columns = current ? this.bounds.get(page) : undefined;
+    const geometryId = geometry === undefined ? 0 : getOpaqueResourceIdentity(geometry);
+    if (columns?.valid(lane, slot.version, geometryId) && columns.radius[lane] === radius) {
+      this.instanceBoundsWork.hits++;
+      return columns.read(lane, out);
+    }
+    let candidate: Float32Array | undefined;
+    const local = localDisplacedBounds(snapshot, geometry, radius, this.localBoundsScratch);
+    if (local !== undefined && snapshot.instances.instanceCount !== 0) {
+      this.instanceBoundsWork.misses++;
+      this.instanceBoundsWork.derives++;
+      candidate = writeInstancesUnionBounds(
+        this.unionScratch,
+        local,
+        slotPoseColumn(slot),
+        snapshot.instances.transforms,
+        slotPoseOffset(slot),
+      );
+    }
+    // A held frame can answer a historical query without taking storage from a live owner.
+    // A borrowed material or geometry reader can release the row while deriving the result.
+    if (current && this.slots.version(index) === slot.version) {
+      let owned = this.bounds.get(page);
+      if (owned === undefined) {
+        owned = new RowBoundsPage();
+        this.bounds.set(page, owned);
       }
-    } else if (local !== undefined) candidate = worldBounds(snapshot, WORLD_BOUNDS_SCRATCH, local);
-    // Unknown or empty facts read as undefined (conservative no-cull) and prove no material frame.
-    const proven = candidate === undefined ? -1 : materialsId;
-    if (current) columns.write(index, slot.version, geometryId, radius, proven, candidate);
+      owned.write(lane, slot.version, geometryId, radius, candidate);
+    }
     if (candidate === undefined) return false;
-    out[0] = candidate.min[0];
-    out[1] = candidate.min[1];
-    out[2] = candidate.min[2];
-    out[3] = candidate.max[0];
-    out[4] = candidate.max[1];
-    out[5] = candidate.max[2];
+    if (candidate !== out) for (let i = 0; i < 6; i++) out[i] = candidate[i] as number;
     return true;
   }
 
@@ -850,9 +1100,9 @@ export class SceneRows {
     materials?: MaterialFrame,
     skin?: SkinSceneFrame,
   ): boolean {
-    const snapshot = slot.snapshot;
+    const snapshot = slotContent(slot);
     if (snapshot.skinBinding === undefined) {
-      return this.resolveBounds(slot, meshes, materials, out);
+      return this.resolveBounds(slot, meshes, materials, out, snapshot);
     }
     if (
       skin === undefined ||
@@ -872,16 +1122,26 @@ export class SceneRows {
       out,
       scratch.matrix,
       scratch.inverse,
+      snapshot.skinBinding.affinePoint ? slotPoseColumn(slot) : undefined,
+      slotPoseOffset(slot),
     );
   }
 
   querySpatial(bounds: RenderSceneBounds, current = this.slots.capture()): RenderSceneSlot[] {
     const records: RenderSceneSlot[] = [];
+    const candidate = new Float64Array(6);
     for (const record of current) {
-      if (record === undefined) continue;
-      const candidate = this.cullingWorldBoundsAt(record);
-      if (candidate === null || candidate === undefined) continue;
-      if (intersects(candidate, bounds)) records.push(record);
+      if (record === undefined || !this.resolveBounds(record, this.meshes, undefined, candidate))
+        continue;
+      if (
+        (candidate[0] as number) <= bounds.max[0] &&
+        (candidate[3] as number) >= bounds.min[0] &&
+        (candidate[1] as number) <= bounds.max[1] &&
+        (candidate[4] as number) >= bounds.min[1] &&
+        (candidate[2] as number) <= bounds.max[2] &&
+        (candidate[5] as number) >= bounds.min[2]
+      )
+        records.push(record);
     }
     return records;
   }

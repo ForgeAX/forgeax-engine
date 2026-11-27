@@ -1,4 +1,4 @@
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import {
   type AdmittedLightTextureResamplePrograms,
   admitSerializedLightTextureResamplePrograms,
@@ -6,6 +6,6 @@ import {
 
 /** Admit the exact serialized engine manifest used by production Dawn fixtures. */
 export async function loadBuiltLightTextureResamplePrograms(): Promise<AdmittedLightTextureResamplePrograms> {
-  const manifest = await buildEngineShaderManifest();
+  const manifest = await buildEngineShaderTemplateManifest();
   return admitSerializedLightTextureResamplePrograms(JSON.stringify(manifest), 'engine-built');
 }

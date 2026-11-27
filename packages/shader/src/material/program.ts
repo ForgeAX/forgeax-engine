@@ -6,6 +6,7 @@ import {
   ShaderSource,
   stripWgslComments,
 } from '@forgeax/engine-types';
+import { admitMaterialShaderEntries } from './depth-entries.js';
 import { type DeclaredVertexInput, declaredMaterialVertexInputs } from './vertex-inputs.js';
 
 const NO_TEXTURE_DECLARATIONS: readonly ParamSchemaEntry[] = Object.freeze([]);
@@ -238,12 +239,14 @@ export function withMaterialShaderEntryPoints(
           ),
         }),
       );
+  const captured = Object.freeze(reads);
+  admitMaterialShaderEntries(captured);
   return Object.freeze(
     Object.defineProperties(
       {},
       {
         ...Object.getOwnPropertyDescriptors(program),
-        entryPoints: { value: Object.freeze(reads), enumerable: true },
+        entryPoints: { value: captured, enumerable: true },
       },
     ),
   ) as MaterialShaderProgram;
@@ -276,7 +279,8 @@ function analyzeMaterialShaderSource(
     (match) => Number(match[1]),
   );
   const skin = bindings.includes(1) || bindings.includes(2);
-  const cluster = bindings.some((binding) => binding >= 3);
+  // The View ABI reserves these slots for packed light data and cluster parameters.
+  const cluster = /@group\s*\(\s*0\s*\)\s*@binding\s*\(\s*(?:30|33)\s*\)\s*var\b/u.test(code);
   return {
     vertexInputs: Object.freeze(
       Object.fromEntries(

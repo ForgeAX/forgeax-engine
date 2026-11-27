@@ -37,6 +37,7 @@ import {
   RendererOperationError,
 } from '../errors/render';
 import { MotionBlurValidationError } from '../features/motion-blur/motion-blur-params';
+import type { StandardProfile } from '../pipeline/standard-profile';
 import {
   isStandardLightCount,
   STANDARD_MAX_LIGHT_COUNT,
@@ -54,9 +55,10 @@ import type {
   RenderProfile,
   RenderResult,
 } from '../render-contract';
-import { resolveSsaoParameters } from '../ssao-config';
+import { hasStandardAoKeys, resolveSsaoParameters } from '../ssao-config';
 import { captureTargetEnvironment } from '../targets/capture-environment';
 import type { RendererHostImplementation } from './host-contract';
+import { bindLevelSourceAccess } from './level-source-access';
 import { createRendererLifecycle, isRendererStateOperational } from './renderer-lifecycle';
 
 /** Narrow the concrete host to the lease/receipt-only public contract. */
@@ -234,6 +236,7 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
       const fault = first === undefined ? undefined : dynamicGeometryFault(first.world as World);
       return fault === undefined ? renderer.prepareDynamicGeometryCandidates(inputs) : err(fault);
     },
+    reservePublishedMeshTransfer: (bytes) => renderer.reservePublishedMeshTransfer(bytes),
     preparePublishedMeshResidency: async (input, inputOwnership, options) => {
       const prepared = await afterScheduledPreparation(() =>
         renderer.preparePublishedMeshResidency(input, inputOwnership, options),
@@ -468,6 +471,9 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
         ? { ...snapshot, state: lifecycle.state() }
         : snapshot;
     },
+    requestViewportHit: (request, signal) =>
+      renderer.requestViewportHit?.(request, signal) ??
+      Promise.resolve({ kind: 'unavailable', reason: 'backend' }),
     observeGeometry: (receipt) =>
       renderer.observeGeometry?.(receipt) ??
       Promise.resolve(
@@ -576,7 +582,7 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
       return disposeInFlight;
     },
   };
-  return facade;
+  return bindLevelSourceAccess(facade, renderer.levelSourceAccess);
 }
 
 // ─── feat-20260520-directional-light-shadow-mapping M1c / w8 helpers ────────
@@ -673,17 +679,25 @@ const RENDER_PROFILE_KEYS = new Set([
   'configurationRevision',
   'outputContract',
   'featureReadOnlyDepthBatching',
+  'roughRefraction',
   'featureReadOnlyDepthBatchDiagnostic',
   'pipelineId',
   'lightCount',
   'renderPath',
+  'gbufferFormat',
+  'atmosphere',
+  'deferredDirectionalShadowReceiver',
+  'forwardDirectionalShadowReceiver',
+  'forwardShadowViewFade',
+  'forwardShadowSpotFilter',
   'subsurfaceQuality',
   'visibleSurface',
   'diffuseGi',
   'probePlacement',
   'pbr',
+  'contactShadows',
   'ibl',
-  'ssao',
+  'ambientOcclusion',
   'volumetricFog',
   'gpuOcclusion',
   'gbufferBatchOrderDiagnostic',
@@ -696,6 +710,8 @@ function validateConfigurationProfile(profile: RenderProfile): string | undefine
     (!Number.isSafeInteger(profile.configurationRevision) || profile.configurationRevision < 1)
   )
     return 'configurationRevision must be a positive safe integer';
+  if (profile.contactShadows !== undefined && typeof profile.contactShadows !== 'boolean')
+    return 'RenderProfile.contactShadows must be boolean';
   const qualityFailure = validateRenderQualityBudgets(profile.quality);
   if (qualityFailure !== undefined) return qualityFailure;
   return undefined;
@@ -714,6 +730,8 @@ export function validateRenderProfile(profile: RenderProfile): string | undefine
   const configurationFailure = validateConfigurationProfile(profile);
   if (configurationFailure !== undefined) return configurationFailure;
   let failure = validateStandardPipelineSelection(profile);
+  if (failure !== undefined) return failure;
+  failure = validateAtmosphereProfile(profile.atmosphere);
   if (failure !== undefined) return failure;
   failure = validateVolumetricFogProfile(profile.volumetricFog);
   if (failure !== undefined) return failure;
@@ -759,12 +777,67 @@ function validateStandardPipelineSelection(profile: RenderProfile): string | und
     return "RenderProfile.renderPath must be 'forward' or 'deferred'";
   }
   if (
+    profile.gbufferFormat !== undefined &&
+    (profile.renderPath !== 'deferred' || profile.gbufferFormat !== 'default')
+  )
+    return "RenderProfile.gbufferFormat must be 'default' with renderPath 'deferred'";
+  if (
+    profile.forwardDirectionalShadowReceiver !== undefined &&
+    profile.forwardDirectionalShadowReceiver !== 'screen'
+  )
+    return 'RenderProfile.forwardDirectionalShadowReceiver must be screen when specified';
+  if (profile.forwardShadowViewFade !== undefined && profile.forwardShadowViewFade !== true)
+    return 'RenderProfile.forwardShadowViewFade must be true when specified';
+  if (profile.forwardShadowSpotFilter !== undefined && profile.forwardShadowSpotFilter !== 'gather')
+    return 'RenderProfile.forwardShadowSpotFilter must be gather when specified';
+  if (
+    profile.deferredDirectionalShadowReceiver !== undefined &&
+    profile.deferredDirectionalShadowReceiver !== 'projected'
+  )
+    return 'RenderProfile.deferredDirectionalShadowReceiver must be projected when specified';
+  if (
     profile.subsurfaceQuality !== undefined &&
     profile.subsurfaceQuality !== 'low' &&
     profile.subsurfaceQuality !== 'high'
   )
     return 'RenderProfile.subsurfaceQuality must be low or high';
   return undefined;
+}
+
+function validateAtmosphereProfile(atmosphere: RenderProfile['atmosphere']): string | undefined {
+  if (atmosphere === undefined) return;
+  if (typeof atmosphere !== 'object' || atmosphere === null)
+    return 'RenderProfile.atmosphere must be an object';
+  for (const [key, value] of Object.entries(atmosphere)) {
+    if (!validAtmosphereSetting(key, value))
+      return `RenderProfile.atmosphere contains an invalid '${key}'`;
+  }
+  return undefined;
+}
+
+function validAtmosphereSetting(key: string, value: unknown): boolean {
+  switch (key) {
+    case 'aerialPerspectiveQuality':
+      return value === undefined || value === 'fast' || value === 'rgb';
+    case 'skyAtmosphereAffectsHeightFog':
+      return value === undefined || typeof value === 'boolean';
+    case 'aerialPerspectiveStartM':
+      return validAtmosphereNumber(value, 0, 1e8);
+    case 'aerialPerspectiveRangeM':
+      return validAtmosphereNumber(value, 1, 1e8);
+    case 'traceSampleCountScale':
+      return validAtmosphereNumber(value, 0, 32);
+    case 'sampleCountMaxPerSlice':
+      return (
+        value === undefined || (Number.isInteger(value) && validAtmosphereNumber(value, 1, 64))
+      );
+    default:
+      return false;
+  }
+}
+
+function validAtmosphereNumber(value: unknown, min: number, max: number): boolean {
+  return value === undefined || (typeof value === 'number' && value >= min && value <= max);
 }
 
 function validateVolumetricFogProfile(volume: RenderProfile['volumetricFog']): string | undefined {
@@ -784,6 +857,8 @@ function validateVolumetricFogProfile(volume: RenderProfile['volumetricFog']): s
 
 /** Optional boolean switches for experiments and diagnostics. */
 function validateDiagnosticFlags(profile: RenderProfile): string | undefined {
+  if (profile.roughRefraction !== undefined && typeof profile.roughRefraction !== 'boolean')
+    return 'RenderProfile.roughRefraction must be boolean';
   if (
     profile.featureReadOnlyDepthBatching !== undefined &&
     typeof profile.featureReadOnlyDepthBatching !== 'boolean'
@@ -894,29 +969,34 @@ function validateDiffuseGiProfile(profile: RenderProfile): string | undefined {
   if (profile.diffuseGi === undefined) return undefined;
   const gi = validateDiffuseGi(profile.diffuseGi);
   if (!gi.ok) return gi.error.detail.cause;
-  if (profile.renderPath !== 'deferred' || profile.ibl || !profile.pbr)
-    return 'Diffuse GI requires deferred PBR with IBL disabled';
+  if (profile.renderPath !== 'deferred' || !profile.pbr) return 'Diffuse GI requires deferred PBR';
   return undefined;
 }
 
 function validateSsaoProfile(profile: RenderProfile): string | undefined {
+  const settings = profile.ambientOcclusion;
   if (
-    typeof profile.ssao !== 'boolean' &&
-    (typeof profile.ssao !== 'object' || profile.ssao === null || Array.isArray(profile.ssao))
+    typeof settings !== 'object' ||
+    settings === null ||
+    Array.isArray(settings) ||
+    typeof settings.enabled !== 'boolean'
   )
-    return 'RenderProfile.ssao must be boolean or AO parameters';
-  if (typeof profile.ssao === 'object') {
-    const resolved = resolveSsaoParameters(profile.ssao);
-    if (!resolved.ok) return resolved.error.hint;
-    if (Object.keys(profile.ssao).some((key) => !Object.hasOwn(resolved.value, key)))
-      return 'RenderProfile.ssao contains an unsupported parameter';
-  }
+    return 'RenderProfile.ambientOcclusion requires a boolean enabled field';
+  if (!hasStandardAoKeys(settings))
+    return 'Use Standard SSAO or GTAO on indirect lighting; remove legacy AO parameters';
+  const resolved = resolveSsaoParameters(settings);
+  if (!resolved.ok) return resolved.error.hint;
+  if (Object.keys(settings).some((key) => key !== 'enabled' && !Object.hasOwn(resolved.value, key)))
+    return 'RenderProfile.ambientOcclusion contains an unsupported parameter';
   return undefined;
 }
 
 export function freezeRenderProfile(profile: RenderProfile): RenderProfile {
   return Object.freeze({
     ...profile,
+    ...(profile.atmosphere === undefined
+      ? {}
+      : { atmosphere: Object.freeze({ ...profile.atmosphere }) }),
     ...(profile.quality === undefined
       ? {}
       : {
@@ -960,18 +1040,73 @@ export function freezeRenderProfile(profile: RenderProfile): RenderProfile {
                 }),
           }),
         }),
-    // Only the exact gather reads per-pixel visible-surface identity; field,
-    // screen-probe and baked gathers keep the caller's visibleSurface choice.
+    // Software Screen receivers reconstruct from the real deferred primitive,
+    // rather than treating the depth-derived point as an exact World origin.
     ...(profile.diffuseGi === undefined
       ? {}
       : {
-          ...(profile.diffuseGi.gather === 'exact' ? { visibleSurface: true } : {}),
+          ...(profile.diffuseGi.gather === 'exact' ||
+          (profile.diffuseGi.gather === 'screen-probe' &&
+            profile.diffuseGi.field.hardwareRayTracing === false)
+            ? { visibleSurface: true }
+            : {}),
           diffuseGi: freezeDiffuseGi(profile.diffuseGi),
         }),
-    ssao: typeof profile.ssao === 'object' ? Object.freeze({ ...profile.ssao }) : profile.ssao,
+    ambientOcclusion: Object.freeze({
+      ...profile.ambientOcclusion,
+      ...(profile.ambientOcclusion.gtao === undefined
+        ? {}
+        : { gtao: Object.freeze({ ...profile.ambientOcclusion.gtao }) }),
+    }),
     ...(profile.volumetricFog === undefined
       ? {}
       : { volumetricFog: Object.freeze({ ...profile.volumetricFog }) }),
     postStages: Object.freeze([...profile.postStages]) as RenderProfile['postStages'],
   });
+}
+
+/** One view locks its writer/graph dependency for the existing Renderer frame.
+ * The installation epoch is the accepted configuration authority; a readonly
+ * annotation or shallow object identity is not a configuration revision. */
+export function createScreenReceiverProfile(required: () => boolean) {
+  let frame = -1,
+    configuration = -1,
+    generation = -1;
+  let base: StandardProfile | undefined, locked: StandardProfile | undefined;
+  let derivedBase: StandardProfile | undefined,
+    derivedConfiguration = -1;
+  let derived: StandardProfile | undefined;
+  return (
+    profile: StandardProfile | undefined,
+    nextFrame: number,
+    installation: number,
+    deviceGeneration: number,
+  ) => {
+    if (
+      frame === nextFrame &&
+      base === profile &&
+      configuration === installation &&
+      generation === deviceGeneration
+    )
+      return locked;
+    frame = nextFrame;
+    base = profile;
+    configuration = installation;
+    generation = deviceGeneration;
+    if (
+      profile?.diffuseGi?.gather !== 'screen-probe' ||
+      profile.visibleSurface === true ||
+      !required()
+    ) {
+      locked = profile;
+      return locked;
+    }
+    if (derivedBase !== profile || derivedConfiguration !== installation) {
+      derivedBase = profile;
+      derivedConfiguration = installation;
+      derived = Object.freeze({ ...profile, visibleSurface: true });
+    }
+    locked = derived;
+    return locked;
+  };
 }

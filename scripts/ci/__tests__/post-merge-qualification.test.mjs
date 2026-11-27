@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { postMergeQualification } from '../post-merge-qualification.mjs';
+import { postMergeQualification, qualifiedViewExecution } from '../post-merge-qualification.mjs';
 
 const repository = 'ForgeAX/forgeax-engine';
 const pr = { number: 4917, head: { sha: 'head', ref: 'fix/example' } };
@@ -107,8 +107,40 @@ test('API failure writes an explicit full-CI decision without failing the optimi
     );
     assert.equal(child.status, 0, child.stderr);
     assert.equal(JSON.parse(child.stdout).skip, false);
-    assert.equal(readFileSync(output, 'utf8'), 'skip_checks=false\n');
+    assert.equal(
+      readFileSync(output, 'utf8'),
+      'skip_checks=false\nskip_view=false\nview_run_id=\n',
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('exact-tree View reuse requires four original paired executions and their current tails', () => {
+  const steps = (name) => ({ name, conclusion: 'success' });
+  const job = (name, names) => ({
+    name,
+    run_id: 12,
+    head_sha: 'head',
+    status: 'completed',
+    conclusion: 'success',
+    steps: names.map(steps),
+  });
+  const jobs = [
+    job('view-integration', ['Require current View checks']),
+    ...[0, 1, 2, 3].map((shard) =>
+      job(`view-integration-${shard}`, [
+        'Verify paired candidate and resource-preview roster',
+        shard === 1
+          ? 'DevKit project play browser journeys (uninstrumented)'
+          : 'Runtime Pack Worker dev/build JS/TS browser gate',
+      ]),
+    ),
+  ];
+  assert.equal(qualifiedViewExecution(jobs, 12, 'head'), true);
+  assert.equal(qualifiedViewExecution(jobs, 12, 'old-head'), false);
+  assert.equal(qualifiedViewExecution([...jobs, jobs[1]], 12, 'head'), false);
+  assert.equal(qualifiedViewExecution(jobs.slice(0, -1), 12, 'head'), false);
+  jobs[1].steps[1].conclusion = 'skipped';
+  assert.equal(qualifiedViewExecution(jobs, 12, 'head'), false);
 });

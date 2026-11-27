@@ -560,7 +560,7 @@ describe('Round-2 F-3 / Issue 3: createRenderer e2e dawn (T-M5-1)', () => {
     },
     async () => {
       // Lazy-load the runtime + manifest builder (matches fxaa-pixel-diff
-      // pattern). buildEngineShaderManifest produces the data: URL the
+      // pattern). buildEngineShaderTemplateManifest produces the data: URL the
       // renderer's shaderManifestUrl needs.
       const { World } = await import('@forgeax/engine-ecs');
       const componentsModule = await import('@forgeax/engine-render');
@@ -570,18 +570,10 @@ describe('Round-2 F-3 / Issue 3: createRenderer e2e dawn (T-M5-1)', () => {
       const { PointLight } = componentsModule;
       const { PointLightShadow } = await import('@forgeax/engine-render');
       const { constructRuntimeRendererHost } = await import('../renderer-host');
-      const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-      // CI's shared app inputs include the point profile, so this check reads
-      // the base projection directly: casters rasterize, but nothing samples them.
-      const sharedInputs = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
-      delete process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
-      let manifest: Awaited<ReturnType<typeof buildEngineShaderManifest>>;
-      try {
-        manifest = await buildEngineShaderManifest();
-      } finally {
-        if (sharedInputs !== undefined)
-          process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST = sharedInputs;
-      }
+      const { buildEngineShaderTemplateManifest } = await import(
+        '@forgeax/engine-vite-plugin-shader'
+      );
+      const manifest = await buildEngineShaderTemplateManifest({ pointShadows: false });
       const manifestUrl = createShaderManifestUrl(manifest);
 
       const TEX_USAGE_E2E = TEX_USAGE_RENDER_ATTACHMENT | TEX_USAGE_COPY_SRC;

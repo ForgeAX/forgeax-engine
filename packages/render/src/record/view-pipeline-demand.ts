@@ -1,5 +1,8 @@
+import type { RhiDevice } from '@forgeax/engine-rhi';
+import { STANDARD_CLUSTER_TEXTURE_WIDTH } from '../pipeline/standard-lighting/texture';
 import type { StandardProfile } from '../pipeline/standard-profile';
 import type { LightRoster } from '../render-system-extract';
+import { shadowWindings } from './shadow-culling';
 
 export function visibleSurfacePipelineDemand(profile: StandardProfile | undefined): boolean {
   return profile?.visibleSurface === true;
@@ -27,9 +30,10 @@ export function hasShadowPipelineDemand(
 export function standardLightingPipelineDemand(
   camera: boolean,
   lights: Pick<LightRoster, 'point' | 'spot' | 'rect' | 'additionalDirectional'>,
-  ssao: boolean,
-  storageBuffer: boolean,
+  needsScreenTransport: boolean,
+  device: Pick<RhiDevice, 'caps' | 'limits'>,
   pbrPipelineLayout: unknown,
+  hasClusterAbi: boolean,
 ): { readonly lightingKind: 'clustered' | 'no-local-lights'; readonly hasLocalLights: boolean } {
   const hasLocalLights =
     lights.point.length +
@@ -39,7 +43,14 @@ export function standardLightingPipelineDemand(
     0;
   return {
     lightingKind:
-      camera && ((storageBuffer && pbrPipelineLayout !== null) || hasLocalLights || ssao)
+      camera &&
+      ((pbrPipelineLayout !== null &&
+        (device.caps.storageBuffer ||
+          (hasClusterAbi &&
+            pbrPipelineLayout !== undefined &&
+            (device.limits.maxTextureDimension2D ?? 0) >= STANDARD_CLUSTER_TEXTURE_WIDTH))) ||
+        hasLocalLights ||
+        needsScreenTransport)
         ? 'clustered'
         : 'no-local-lights',
     hasLocalLights: camera && hasLocalLights,
@@ -50,10 +61,9 @@ export function standardLightingPipelineDemand(
 export function shadowPipelineReflections(
   lights: Pick<LightRoster, 'pointShadow' | 'spot'>,
   directionalViews: number,
-): ReadonlySet<boolean> {
-  const reflected = new Set<boolean>();
-  if (lights.pointShadow.length > 0) reflected.add(true);
-  if (directionalViews > 0 || lights.spot.some((spot) => spot.lightViewProj !== undefined))
-    reflected.add(false);
-  return reflected;
+): readonly boolean[] {
+  return shadowWindings(
+    lights.pointShadow.length > 0,
+    directionalViews > 0 || lights.spot.some((spot) => spot.lightViewProj !== undefined),
+  );
 }

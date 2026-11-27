@@ -9,6 +9,7 @@ import { createRenderSurfaceError, type RenderSurfaceExpectedError } from '../er
 import { BARREL_DISTORTION_POST_PROCESS_ID } from '../features/barrel-distortion';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import { deriveStandardTopologyInput } from '../pipeline/standard-lighting/topology';
+import { AUTO_EXPOSURE_PARAMETERS_BYTES } from '../pipeline/standard-output/auto-exposure/gpu';
 import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import {
@@ -61,7 +62,7 @@ function topology(
   const planned: Omit<RenderPipelineTopology, 'opaque'> & { opaque?: OpaquePassPlan } = {
     pipelineId: STANDARD_PIPELINE_ID,
     standardProfile: profile,
-    config: profile.ssao ? { ssao: { enabled: true } } : undefined,
+    config: { ambientOcclusion: profile.ambientOcclusion },
     surface: {
       width: 1,
       height: 1,
@@ -166,7 +167,9 @@ async function build(
   const histogram = graph.createBuffer('standard-auto-exposure-histogram', { size: 1024 });
   const state = graph.createBuffer('standard-auto-exposure-state', { size: 32 });
   const candidate = graph.createBuffer('standard-auto-exposure-candidate', { size: 16 });
-  const parameters = graph.createBuffer('standard-auto-exposure-parameters', { size: 32 });
+  const parameters = graph.createBuffer('standard-auto-exposure-parameters', {
+    size: AUTO_EXPOSURE_PARAMETERS_BYTES,
+  });
   const lutTexture = graph.createTexture('standard-color-lut-source', {
     format: 'rgba16float',
     size: { width: 2, height: 2, depthOrArrayLayers: 2 },
@@ -373,17 +376,11 @@ async function build(
 it.each([
   'forward',
   'deferred',
-] as const)('uses three single-sample scalar spiral AO stages on %s', async (renderPath) => {
+] as const)('publishes full-size SSAO from the expected level plan on %s', async (renderPath) => {
   const profile: StandardProfile = {
     ...DEFAULT_STANDARD_PROFILE,
     renderPath,
-    ssao: {
-      algorithm: 'spiral-ssao',
-      quality: 'high',
-      resolutionScale: 0.5,
-      radius: 0.9,
-      intensity: 1.6,
-    },
+    ambientOcclusion: { enabled: true, method: 'ssao', levels: 3 },
   };
   const base = topology(profile);
   const result = await build(profile, {
@@ -391,34 +388,23 @@ it.each([
     lane: { ...base.lane, multisample: true },
     camera: { antialias: renderPath === 'forward' ? 'msaa-fxaa' : 'fxaa' },
   });
-  expect(result.ok, result.ok ? '' : String(result.error)).toBe(true);
-  const info = result.unwrap().inspect();
-  expect(
-    info.passes.filter((pass) => pass.name.startsWith('ssao-')).map((pass) => pass.name),
-  ).toEqual([
-    'ssao-parameters',
-    'ssao-linear-depth',
-    'ssao-calc',
-    'ssao-blur-horizontal',
-    'ssao-blur',
-  ]);
-  for (const label of ['ssao-raw', 'ssao-horizontal', 'ssao-blurred']) {
-    expect(info.resources.find((resource) => resource.label === label)).toMatchObject({
-      descriptor: { format: 'r8unorm', size: { width: 641, height: 361 } },
+  const graph = result.unwrap();
+  const info = graph.inspect();
+  const names = info.passes.map((pass) => pass.name);
+  expect(names).toContain('hzb-seed');
+  expect(names).not.toContain('hzb-reduce-chain');
+  expect(names).not.toContain('ssao-blur');
+  expect(info.resources.find((resource) => resource.label === 'ssao-calc')).toMatchObject({
+    descriptor: { format: 'r8unorm', size: { width: 1281, height: 721 } },
+  });
+  expect(names.includes('ssao-half')).toBe(renderPath === 'deferred');
+  expect(names.includes('ssao-quarter')).toBe(renderPath === 'deferred');
+  if (renderPath === 'deferred') {
+    expect(info.resources.find((resource) => resource.label === 'ssao-setup-half')).toMatchObject({
+      descriptor: { format: 'rgba16float', size: { width: 641, height: 361 } },
     });
   }
-  expect(info.resources.find((resource) => resource.label === 'ssao-linear-depth')).toMatchObject({
-    descriptor: { format: 'r16float', size: { width: 641, height: 361 } },
-  });
-  const calc = info.passes.find((pass) => pass.name === 'ssao-calc');
-  expect(calc?.accesses.filter((access) => access.usage === 'sampled-read')).toHaveLength(1);
-  expect(info.passes.find((pass) => pass.name === 'ssao-blur-horizontal')?.dependencies).toContain(
-    'ssao-calc',
-  );
-  expect(info.passes.find((pass) => pass.name === 'ssao-blur')?.dependencies).toContain(
-    'ssao-blur-horizontal',
-  );
-  expect((await result.unwrap().retire()).ok).toBe(true);
+  (await graph.retire()).unwrap();
 });
 
 function importedTaaHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
@@ -555,8 +541,11 @@ describe('visible-surface graph admission', () => {
     }
   });
 
-  it('runs field diffuse GI without visible surfaces on a device lacking primitive-index', async () => {
-    const received: { identity: boolean; motion: string }[] = [];
+  it.each([
+    false,
+    true,
+  ])('runs field diffuse GI without primitive-index (Default GBuffer %s)', async (compact) => {
+    const received: { identity: boolean; motion: GPUTextureFormat; compact: boolean }[] = [];
     const result = await build(
       {
         ...profile,
@@ -589,6 +578,7 @@ describe('visible-surface graph admission', () => {
         },
       },
       {
+        ...(compact ? { compactGbuffer: 'standard-gbuffer/4' as const } : {}),
         lane: { ...lane, primitiveIndex: false, maxColorAttachments: 6 },
         camera: { antialias: 'none', bloom: 'off' },
       },
@@ -600,7 +590,8 @@ describe('visible-surface graph admission', () => {
       (targets) => {
         received.push({
           identity: targets.identity !== undefined,
-          motion: targets.motion.texture === undefined ? '' : 'standard-scene-temporal',
+          motion: targets.motion.format,
+          compact: targets.compactGbuffer === true,
         });
         return ok(undefined);
       },
@@ -611,9 +602,12 @@ describe('visible-surface graph admission', () => {
       const info = result.value.inspect();
       expect(info.resources.some((resource) => resource.label === 'visible-surface')).toBe(false);
       expect(info.resources).toContainEqual(
-        expect.objectContaining({ label: 'standard-scene-temporal' }),
+        expect.objectContaining({
+          label: compact ? 'ssr-scene-temporal' : 'standard-scene-temporal',
+        }),
       );
-      expect(received).toEqual([{ identity: false, motion: 'standard-scene-temporal' }]);
+      expect(info.resources.some(({ label }) => label === 'ray-receiver-normal')).toBe(compact);
+      expect(received).toEqual([{ identity: false, motion: 'rgba16float', compact }]);
     } finally {
       (await result.value.retire()).unwrap();
     }
@@ -747,7 +741,7 @@ describe('scene fullscreen temporal placement', () => {
 describe('subsurface receiver-channel attachment admission', () => {
   it('derives the complete post-ROI17 attachment tuple from every producer format', () => {
     expect(SUBSURFACE_DEFERRED_COLOR_FORMATS).toEqual([
-      'rgba32float',
+      'rgba16float',
       'rg32uint',
       'r32uint',
       'r32uint',
@@ -755,22 +749,22 @@ describe('subsurface receiver-channel attachment admission', () => {
       'rg32uint',
     ]);
     expect(SUBSURFACE_ATTACHMENT_BYTES).toEqual({
-      surface: 48,
-      temporal: 56,
-      visibleSurface: 64,
-      visibleSurfaceTemporal: 72,
+      surface: 40,
+      temporal: 48,
+      visibleSurface: 56,
+      visibleSurfaceTemporal: 64,
     });
   });
 
   it.each([
-    [false, 47, false, false],
-    [false, 48, true, false],
-    [false, 52, true, false],
-    [false, 56, true, true],
-    [true, 63, false, false],
-    [true, 64, true, false],
-    [true, 68, true, false],
-    [true, 72, true, true],
+    [false, 39, false, false],
+    [false, 40, true, false],
+    [false, 44, true, false],
+    [false, 48, true, true],
+    [true, 55, false, false],
+    [true, 56, true, false],
+    [true, 60, true, false],
+    [true, 64, true, true],
   ] as const)('keeps receiver channels and temporal fallback for visible=%s / %i bytes', async (visibleSurface, bytes, admitted, merged) => {
     const result = await buildTaa(
       { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', visibleSurface },
@@ -802,7 +796,7 @@ describe('subsurface receiver-channel attachment admission', () => {
       expect(
         gbuffer?.accesses.some((access) => access.resource === 'standard-scene-temporal'),
       ).toBe(merged);
-      expect(info.passes.find((pass) => pass.name === 'subsurface-diffusion')).toBeDefined();
+      expect(info.passes.find((pass) => pass.name === 'subsurface-vertical')).toBeDefined();
       expect(info.passes.find((pass) => pass.name === 'standard-scene-data')).toBeDefined();
     } finally {
       (await result.value.retire()).unwrap();
@@ -811,6 +805,144 @@ describe('subsurface receiver-channel attachment admission', () => {
 });
 
 describe('forgeax::standard graph', () => {
+  it.each([
+    false,
+    true,
+  ])('declares the fixed 24-byte A-D record with extra channels=%s', async (channels) => {
+    const result = await build(
+      { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' },
+      {
+        compactGbuffer: 'standard-gbuffer/4',
+        ...(channels ? { compactReceiver: 'channels' } : {}),
+        camera: { antialias: 'fxaa' },
+        lane: {
+          compute: true,
+          storageBuffer: true,
+          multisample: false,
+          maxColorAttachments: channels ? 6 : 5,
+          maxColorAttachmentBytesPerSample: channels ? 28 : 24,
+        },
+      },
+    );
+    const graph = result.unwrap();
+    try {
+      const info = graph.inspect();
+      const writes = info.passes
+        .find((pass) => pass.name === 'g-buffer')
+        ?.accesses.filter((access) => access.usage === 'color-attachment');
+      expect(writes?.map(({ resource }) => resource)).toEqual([
+        'hdrp-scene-color',
+        'gbuffer-a',
+        'gbuffer-b',
+        'gbuffer-c',
+        'gbuffer-d',
+        ...(channels ? ['deferred-lighting-channels'] : []),
+      ]);
+      expect(info.resources.some(({ label }) => label === 'gbuffer-receiver-geometry')).toBe(false);
+      const colors = info.resources.filter(({ label }) =>
+        writes?.some(({ resource }) => resource === label),
+      );
+      expect(
+        colors.filter((entry) => 'format' in entry && entry.format === 'r32uint'),
+      ).toHaveLength(channels ? 5 : 4);
+      expect(
+        colors.filter((entry) => 'format' in entry && entry.format === 'rgba16float'),
+      ).toHaveLength(1);
+    } finally {
+      (await graph.retire()).unwrap();
+    }
+  });
+
+  it('adds a shared receiver target for local probes and lighting channels outside A-D', async () => {
+    const result = await build(
+      { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' },
+      {
+        compactGbuffer: 'standard-gbuffer/4',
+        compactReceiver: 'context',
+        reflectionFallback: { enabled: true, localProbes: true },
+        camera: { antialias: 'fxaa' },
+        lane: {
+          compute: true,
+          storageBuffer: true,
+          multisample: false,
+          maxColorAttachments: 6,
+          maxColorAttachmentBytesPerSample: 32,
+        },
+      },
+    );
+    const graph = result.unwrap();
+    try {
+      const info = graph.inspect();
+      expect(info.passes.find(({ name }) => name === 'g-buffer')?.accesses).toContainEqual({
+        resource: 'deferred-surface-context',
+        usage: 'color-attachment',
+      });
+      expect(info.passes.find(({ name }) => name === 'lighting')?.accesses).toContainEqual({
+        resource: 'deferred-surface-context',
+        usage: 'sampled-read',
+      });
+      expect(info.resources).toContainEqual(
+        expect.objectContaining({ label: 'deferred-surface-context', format: 'rg32uint' }),
+      );
+      expect(info.resources.some(({ label }) => label === 'deferred-lighting-channels')).toBe(
+        false,
+      );
+    } finally {
+      (await graph.retire()).unwrap();
+    }
+  });
+
+  it('writes Default GBuffer velocity during the depth prepass even when MRT capacity is available', async () => {
+    const result = await buildTaa(
+      { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' },
+      {
+        camera: { antialias: 'taa', bloom: 'off' },
+        compactGbuffer: 'standard-gbuffer/4',
+        lane: {
+          compute: true,
+          storageBuffer: true,
+          multisample: false,
+          maxColorAttachments: 8,
+          maxColorAttachmentBytesPerSample: 56,
+        },
+      },
+    );
+    const graph = result.unwrap();
+    try {
+      const { passes } = graph.inspect();
+      const depth = passes.find((pass) => pass.name === 'standard-depth-prepass');
+      const velocity = passes.find((pass) => pass.name === 'standard-depth-velocity');
+      const base = passes.find((pass) => pass.name === 'g-buffer');
+      expect(depth?.accesses.filter(({ usage }) => usage === 'color-attachment')).toEqual([]);
+      expect(velocity?.accesses).toContainEqual({
+        resource: 'scene-velocity',
+        usage: 'color-attachment',
+      });
+      expect(velocity?.accesses).toContainEqual({
+        resource: 'hdrp-depth',
+        usage: 'depth-stencil-write',
+      });
+      expect(velocity?.executionIndex).toBeGreaterThan(depth?.executionIndex ?? Infinity);
+      expect(base?.executionIndex).toBeGreaterThan(velocity?.executionIndex ?? Infinity);
+      expect(base?.accesses.filter(({ usage }) => usage === 'color-attachment')).toHaveLength(5);
+      expect(passes.some((pass) => pass.name === 'standard-scene-data')).toBe(false);
+      const resolve = passes.find((pass) => pass.name === 'taa-resolve');
+      expect(resolve?.accesses).toContainEqual({
+        resource: 'scene-velocity',
+        usage: 'sampled-read',
+      });
+      expect(passes.some((pass) => pass.name === 'standard-velocity-reconstruction')).toBe(false);
+      expect(graph.inspect().resources).toContainEqual(
+        expect.objectContaining({
+          label: 'scene-velocity',
+          format: 'r32uint',
+        }),
+      );
+    } finally {
+      (await graph.retire()).unwrap();
+    }
+  });
+
   it.each([
     [6, 36, false],
     [7, 36, false],
@@ -1089,7 +1221,6 @@ describe('forgeax::standard graph', () => {
             near: 0.1,
             far: 100,
             screenSpaceReflection: {
-              waterTemporal: 0,
               maxDistance: 40,
               thickness: 0.2,
               maxRoughness: 0.6,
@@ -1114,19 +1245,25 @@ describe('forgeax::standard graph', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const names = result.value.inspect().passes.map((pass) => pass.name);
-    expect(names).toContain('depth-pyramid-seed');
+    expect(names).toContain('hzb-seed');
     expect(names).toContain('ssr-trace');
     expect(names).toContain('standard-scene-data');
     expect(names).toContain('ssr-compose');
     expect(names.indexOf('skybox')).toBeLessThan(names.indexOf('lighting'));
-    expect(names.indexOf('lighting')).toBeLessThan(names.indexOf('depth-pyramid-seed'));
+    expect(names.filter((name) => name === 'hzb-seed')).toHaveLength(1);
+    expect(names.indexOf('hzb-seed')).toBeLessThan(names.indexOf('lighting'));
+    for (const name of ['ssao-calc', 'ssr-trace']) {
+      expect(
+        result.value.inspect().passes.find((pass) => pass.name === name)?.accesses,
+      ).toContainEqual({ resource: 'hzb', usage: 'sampled-read' });
+    }
     expect(names.indexOf('ssr-compose')).toBeLessThan(names.indexOf('forward'));
     expect(names).toContain('reflection-fallback-observation');
     expect(result.value.inspect().resources.map((resource) => resource.label)).toEqual(
-      expect.arrayContaining(['depth-pyramid', 'ssr-trace', 'reflection-fallback-linear-hdr']),
+      expect.arrayContaining(['hzb', 'ssr-trace', 'reflection-fallback-linear-hdr']),
     );
-    for (const label of ['ssr-trace', 'ssr-hit-reactivity', 'depth-pyramid']) {
-      const size = label === 'depth-pyramid' ? internal / 2 : internal;
+    for (const label of ['ssr-trace', 'ssr-hit-reactivity', 'hzb']) {
+      const size = label === 'hzb' ? 2 ** (Math.ceil(Math.log2(internal)) - 1) : internal;
       expect(
         result.value.inspect().resources.find((resource) => resource.label === label),
       ).toMatchObject({ descriptor: { size: { width: size, height: size } } });
@@ -1142,7 +1279,7 @@ describe('forgeax::standard graph', () => {
         ssr: {
           status: 'admitted',
           lane: 'forward',
-          config: { maxDistance: 1, thickness: 0.1, maxRoughness: 1, waterTemporal: 0 },
+          config: { maxDistance: 1, thickness: 0.1, maxRoughness: 1 },
           viewRange: 100,
           work: {
             attachmentCount: 3,
@@ -1549,7 +1686,10 @@ describe('forgeax::standard graph', () => {
       DEFAULT_STANDARD_PROFILE,
       {
         camera: { tonemap: 'none', antialias, bloom: 'off' },
-        config: { postEffects: ['test-effect'] },
+        config: {
+          postEffects: ['test-effect', 'test-second-effect'],
+          ambientOcclusion: { enabled: false },
+        },
         lane: { compute: storageBuffer, storageBuffer, multisample: false, maxColorAttachments: 8 },
         surface: {
           width: 1,
@@ -1571,29 +1711,33 @@ describe('forgeax::standard graph', () => {
     const resources = info.resources;
     const input = resources.find((resource) => resource.label === 'standard-post-effects-input');
     expect(input).toMatchObject({
-      derivedUsage: 0x10 | 0x01,
+      derivedUsage: 0x10 | 0x04,
+      format: 'rgba8unorm',
     });
     expect(names.indexOf('debug-overlay')).toBeLessThan(names.indexOf('output-transform'));
     const fxaaIndex = names.indexOf('fxaa');
-    expect(names.indexOf('output-transform')).toBeLessThan(
-      fxaaIndex === -1 ? names.indexOf('post-effect-copy-0') : fxaaIndex,
-    );
-    if (fxaaIndex !== -1) expect(fxaaIndex).toBeLessThan(names.indexOf('post-effect-copy-0'));
-    expect(names.indexOf('post-effect-copy-0')).toBeLessThan(names.indexOf('post-effect-0'));
-    expect(info.passes.find((pass) => pass.name === 'post-effect-copy-0')?.accesses).toContainEqual(
-      { resource: 'standard-post-effects-input', usage: 'copy-src' },
-    );
-    expect(info.passes.find((pass) => pass.name === 'post-effect-0')?.accesses).toContainEqual({
+    const encodedProducer = fxaaIndex === -1 ? 'output-transform' : 'fxaa';
+    expect(names.indexOf(encodedProducer)).toBeLessThan(names.indexOf('post-effect-0'));
+    expect(names.some((name) => name.startsWith('post-effect-copy-'))).toBe(false);
+    expect(resources.some(({ label }) => label.startsWith('post-effect-scratch-'))).toBe(false);
+    expect(info.passes.find(({ name }) => name === 'post-effect-0')?.accesses).toContainEqual({
+      resource: 'standard-post-effects-input',
+      usage: 'sampled-read',
+    });
+    expect(info.passes.find(({ name }) => name === 'post-effect-1')?.accesses).toContainEqual({
+      resource: 'post-effect-output-0',
+      usage: 'sampled-read',
+    });
+    expect(info.passes.find(({ name }) => name === 'post-effect-1')?.accesses).toContainEqual({
       resource: 'surface',
       usage: 'color-attachment',
     });
+    expect(
+      resources.find(({ label }) => label === 'post-effect-output-0')?.descriptor,
+    ).toMatchObject({ format: 'rgba8unorm', domain: 'display-encoded' });
     expect(resources.map((resource) => resource.label)).not.toContain('surface.display');
     expect(resources.map((resource) => resource.label)).not.toContain('ldr-color');
     expect(resources.map((resource) => resource.label)).toContain('standard-post-effects-input');
-    expect(resources.map((resource) => resource.label)).toContain('post-effect-scratch-0');
-    expect(resources.find((resource) => resource.label === 'post-effect-scratch-0')?.format).toBe(
-      input?.format,
-    );
   });
 
   it('presents a resolved no-tone MSAA scene through the shared output boundary', async () => {
@@ -1772,16 +1916,13 @@ describe('forgeax::standard graph', () => {
     }
   });
 
-  it.each([
-    false,
-    true,
-  ])('keeps vertex fog and MSAA scene batching with native scene-color AO=%s', async (ao) => {
+  it.each([false, true])('keeps vertex fog and MSAA scene batching with SSAO=%s', async (ao) => {
     const compiled = (
       await build(
         {
           ...DEFAULT_STANDARD_PROFILE,
           renderPath: 'forward',
-          ssao: ao,
+          ambientOcclusion: { enabled: ao },
           outputContract: 'standard-output-v2',
         },
         {
@@ -1789,7 +1930,7 @@ describe('forgeax::standard graph', () => {
           unfoggedOpaque: true,
           config: {
             outputContract: 'standard-output-v2',
-            ssao: { enabled: ao, algorithm: 'spiral-ssao', application: 'scene-color' },
+            ambientOcclusion: { enabled: ao, method: 'ssao' },
           },
           camera: { antialias: 'msaa-fxaa', bloom: 'off' },
           lane: { compute: true, storageBuffer: true, multisample: true, maxColorAttachments: 8 },
@@ -1808,24 +1949,14 @@ describe('forgeax::standard graph', () => {
           'transparent',
         ]);
       expect(names).not.toContain('atmosphere-opaque-composition');
-      expect(names).not.toContain('forward-ao-depth-resolve');
-      expect(
-        compiled
-          .inspect()
-          .resources.some((resource) => resource.label === 'forward-ao-depth-resolve-depth'),
-      ).toBe(false);
-      for (const stage of [
-        'ssao-linear-depth',
-        'ssao-calc',
-        'ssao-blur-horizontal',
-        'ssao-blur',
-        'ssao-scene-color',
-      ])
-        expect(names.filter((name) => name === stage)).toHaveLength(ao ? 1 : 0);
+      expect(names.includes('forward-screen-depth-resolve')).toBe(ao);
+      expect(names.includes('ssao-calc')).toBe(ao);
+      expect(names).not.toContain('ssao-scene-color');
       if (ao) {
-        expect(names.indexOf('ssao-linear-depth')).toBeGreaterThan(names.indexOf('transparent'));
-        expect(names.indexOf('ssao-scene-color')).toBeGreaterThan(names.indexOf('transparent'));
-        expect(names.indexOf('ssao-scene-color')).toBeLessThan(names.indexOf('standard-grade'));
+        expect(names.indexOf('forward-screen-depth-resolve')).toBeLessThan(
+          names.indexOf('ssao-calc'),
+        );
+        expect(names.indexOf('ssao-calc')).toBeLessThan(names.indexOf('main'));
       }
     } finally {
       (await compiled.retire()).unwrap();
@@ -1948,7 +2079,11 @@ describe('forgeax::standard graph', () => {
   });
 
   it('publishes the independent raw-depth producer before both Surface passes', async () => {
-    for (const renderPath of ['forward', 'deferred'] as const) {
+    for (const [renderPath, compact] of [
+      ['forward', false],
+      ['deferred', false],
+      ['deferred', true],
+    ] as const) {
       const result = await build(
         { ...DEFAULT_STANDARD_PROFILE, renderPath },
         {
@@ -1959,6 +2094,7 @@ describe('forgeax::standard graph', () => {
             viewFormat: 'bgra8unorm-srgb',
           },
           singleLayerMedium: true,
+          ...(compact ? { compactGbuffer: 'standard-gbuffer/4' as const } : {}),
         },
       );
       expect(result.ok).toBe(true);
@@ -2172,7 +2308,7 @@ it.each([
   true,
 ])('places ordinary MSAA sky/opaque/transparent in one physical scene pass with AO=%s', async (ao) => {
   const result = await build(
-    { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: ao },
+    { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ambientOcclusion: { enabled: ao } },
     {
       camera: { antialias: 'msaa-fxaa', bloom: 'off' },
       lane: { compute: true, storageBuffer: true, multisample: true, maxColorAttachments: 8 },
@@ -2194,7 +2330,7 @@ it.each([
 
 it.each([false, true])('shares single-sample temporal depth under MSAA with AO=%s', async (ao) => {
   const result = await build(
-    { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: ao },
+    { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ambientOcclusion: { enabled: ao } },
     {
       camera: { antialias: 'msaa-fxaa', bloom: 'off' },
       lane: { compute: true, storageBuffer: true, multisample: true, maxColorAttachments: 8 },
@@ -2205,24 +2341,41 @@ it.each([false, true])('shares single-sample temporal depth under MSAA with AO=%
   if (!result.ok) return;
   try {
     const info = result.value.inspect();
-    const producer = info.passes.find((pass) => pass.name === 'standard-scene-data');
-    expect(producer?.accesses).toContainEqual({
-      resource: 'standard-scene-surface-depth',
+    const screenDepth = 'forward-screen-depth-resolve-depth';
+    const pass = (name: string) => info.passes.find((pass) => pass.name === name);
+    expect(pass('standard-depth-prepass')).toBeUndefined();
+    expect(pass('standard-depth-velocity')?.accesses).toContainEqual({
+      resource: 'scene-depth',
       usage: 'depth-stencil-write',
     });
+    expect(pass('standard-scene-surface-center')).toBeUndefined();
+    expect(pass('forward-screen-depth-resolve')?.accesses).toEqual(
+      expect.arrayContaining([
+        { resource: 'scene-depth', usage: 'sampled-read' },
+        { resource: 'scene-temporal-msaa', usage: 'sampled-read' },
+        { resource: screenDepth, usage: 'depth-stencil-write' },
+        { resource: 'standard-scene-temporal', usage: 'color-attachment' },
+      ]),
+    );
+    if (ao)
+      expect(pass('ssao-calc')?.accesses).toContainEqual({
+        resource: screenDepth,
+        usage: 'sampled-read',
+      });
     expect(info.resources).toContainEqual(
       expect.objectContaining({
-        label: 'standard-scene-surface-depth',
+        label: screenDepth,
         descriptor: expect.objectContaining({ sampleCount: 1 }),
       }),
     );
-    expect(info.passes.filter((pass) => pass.name === 'standard-scene-surface-data')).toHaveLength(
-      1,
-    );
+    expect(pass('motion-blur')?.accesses).toContainEqual({
+      resource: 'standard-scene-temporal',
+      usage: 'sampled-read',
+    });
     expect(
       info.resources.some((resource) => resource.label === 'standard-scene-surface-normal'),
     ).toBe(false);
-    expect(info.resources.some((resource) => resource.label === 'ssao-raw')).toBe(ao);
+    expect(info.resources.some((resource) => resource.label === 'ssao-calc')).toBe(ao);
     expect(info.resources.some((resource) => resource.label.startsWith('taa-history'))).toBe(false);
   } finally {
     (await result.value.retire()).unwrap();
@@ -2232,28 +2385,22 @@ it.each([false, true])('shares single-sample temporal depth under MSAA with AO=%
 it.each([
   'forward',
   'deferred',
-] as const)('applies scene-color AO once before temporal/output on %s', async (renderPath) => {
-  const profile: StandardProfile = {
-    ...DEFAULT_STANDARD_PROFILE,
-    renderPath,
-    ssao: { algorithm: 'spiral-ssao', application: 'scene-color', resolutionScale: 0.5 },
-  };
-  const result = await build(profile);
-  expect(result.ok, result.ok ? '' : String(result.error)).toBe(true);
-  const info = result.unwrap().inspect();
-  const composite = info.passes.find((p) => p.name === 'ssao-scene-color');
-  expect(composite).toBeDefined();
-  const aoResource = info.resources.find((r) => r.label === 'ssao-blurred');
-  expect(aoResource).toBeDefined();
-  expect(
-    info.passes
-      .filter((p) => p.accesses.some((a) => a.resource === 'ssao-blurred'))
-      .map((p) => p.name),
-  ).toEqual(['ssao-blur', 'ssao-scene-color']);
-  expect(info.passes.findIndex((p) => p.name === 'ssao-scene-color')).toBeLessThan(
-    info.passes.findIndex((p) => p.name === 'bloom-horizontal-0'),
+] as const)('routes screen visibility directly to lighting on %s', async (renderPath) => {
+  const graph = (
+    await build({
+      ...DEFAULT_STANDARD_PROFILE,
+      renderPath,
+      ambientOcclusion: { enabled: true, method: 'ssao' },
+    })
+  ).unwrap();
+  const { passes } = graph.inspect();
+  const receiver = renderPath === 'forward' ? 'main' : 'lighting';
+  const consumers = passes.filter(({ accesses }) =>
+    accesses.some(({ resource, usage }) => resource === 'ssao-calc' && usage === 'sampled-read'),
   );
-  expect((await result.unwrap().retire()).ok).toBe(true);
+  expect(consumers.some(({ name }) => name === receiver)).toBe(true);
+  expect(passes.some(({ name }) => name === 'ssao-scene-color')).toBe(false);
+  (await graph.retire()).unwrap();
 });
 
 it.each([

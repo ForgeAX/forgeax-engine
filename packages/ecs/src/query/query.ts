@@ -112,6 +112,8 @@ export interface Query<
    * identity-addressed read, not a version scan.
    */
   at(entity: EntityHandle): QueryRow<R, W, O> | undefined;
+  /** Apply at() selection in input order. Each synchronous traversal lends one row to its visitor. */
+  forEachAt(entities: Iterable<EntityHandle>, visit: (row: QueryRow<R, W, O>) => void): void;
   spans(): Result<Iterable<QuerySpan<R, W>>, QuerySpanUnavailableError>;
   /**
    * Accept every change visible now without visiting it: the next temporal
@@ -633,10 +635,24 @@ class ExecutableQuery<
     };
   };
 
-  at(entity: EntityHandle): QueryRow<R, W, O> | undefined {
+  private matchingArchetype(entity: EntityHandle): Archetype | undefined {
     const archetype = this.world[worldInternal].getEntityArchetype(entity);
-    if (archetype === undefined || !this.archetypeMatches(archetype)) return undefined;
-    return new QueryRowFacade<R, W, O>(this.world).bind(entity, archetype);
+    return archetype !== undefined && this.archetypeMatches(archetype) ? archetype : undefined;
+  }
+
+  at(entity: EntityHandle): QueryRow<R, W, O> | undefined {
+    const archetype = this.matchingArchetype(entity);
+    return archetype === undefined
+      ? undefined
+      : new QueryRowFacade<R, W, O>(this.world).bind(entity, archetype);
+  }
+
+  forEachAt(entities: Iterable<EntityHandle>, visit: (row: QueryRow<R, W, O>) => void): void {
+    const row = new QueryRowFacade<R, W, O>(this.world);
+    for (const entity of entities) {
+      const archetype = this.matchingArchetype(entity);
+      if (archetype !== undefined) visit(row.bind(entity, archetype));
+    }
   }
 
   markObserved(): void {

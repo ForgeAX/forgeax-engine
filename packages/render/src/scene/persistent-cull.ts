@@ -1,5 +1,10 @@
 import { box3, frustum } from '@forgeax/engine-math';
 import { buildCameraFrusta } from '../camera-frusta';
+import {
+  assertRenderResidencySelection,
+  type RenderResidencySelection,
+  residencySelected,
+} from '../gpu-driven/batch-residency';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type {
   CameraAdmission,
@@ -8,31 +13,44 @@ import type {
   ExtractedFrame,
   GpuOwnedFrame,
   RenderableSnapshot,
+  ResidualCameraAdmission,
 } from '../render-system-extract';
-import { materialDisplacementRadius } from '../standard-displacement-bounds';
+import { sameMaterialCullingBounds } from '../standard-displacement-bounds';
 import { SubsurfaceSelection } from '../subsurface/selection';
+import { CullProjection } from './cull-projection';
 import { withRenderableIndex } from './dispatch-entry';
 import type { FrameList } from './frame-list';
 import { FrameSet } from './frame-set';
-import type { MaterialFrame } from './material-dispatch';
+import {
+  capturedDispatchAddresses,
+  MaterialFrame,
+  projectCapturedViewDispatch,
+  writeCapturedCasterRanks,
+} from './material-dispatch';
+import { slotContent } from './mesh-draw';
 import type { MeshFrame } from './mesh-frame';
 import type { PersistentShadowCasterProjection } from './render-scene';
-import { worldBounds, writeBounds } from './render-scene-snapshots';
+import { writeTransformedWorldBounds } from './render-scene-snapshots';
 import type { RenderSceneSlot } from './render-scene-types';
+import { sceneDrawContentOf } from './render-scene-view';
 import { ResidualBoundsProof } from './residual-bounds-proof';
+import type { RowContent } from './row-contents';
 import type { SceneSlotFrame } from './scene-slots';
+import { SelectedSceneDrawRows } from './selected-draw-rows';
 import { buildShadowFrusta } from './shadow-visibility';
 import type { SkinSceneFrame } from './skin-scene-inputs';
 
-let cullProjectedIndexScratch = new Int32Array(0);
+export interface ViewCullStorage {
+  value: PersistentCullMemo | undefined;
+  scratch?: CullProjection | undefined;
+  casterWords?: Uint32Array | undefined;
+  shadowFrusta?: frustum.Frustum[] | undefined;
+  active?: boolean;
+}
 
-/**
- * Previous cull output keyed by its exact inputs. Camera motion changes the
- * frustum every frame, but the admitted set is usually unchanged; reusing the
- * output arrays keeps every identity-keyed consumer downstream (visibility
- * projection, residency validation, render bundles) on its cached path.
- */
+/** Last published row addresses and dispatch for this view. */
 export interface PersistentCullMemo {
+  readonly residencySelection: RenderResidencySelection | undefined;
   readonly meshes: MeshFrame | undefined;
   readonly sourceSubsurface: SubsurfaceSelection;
   readonly authorSubsurface: SubsurfaceSelection;
@@ -41,12 +59,14 @@ export interface PersistentCullMemo {
   readonly sourceOwner: object;
   readonly sourceRevision: number;
   readonly sourceDispatch: DispatchList;
-  readonly projectedIndex: Int32Array;
-  readonly shadowOnly: ReadonlySet<number>;
-  readonly renderables: RenderableSnapshot[];
-  readonly dispatch: DispatchEntry[];
-  /** Private address scratch; published entries themselves stay immutable. */
-  readonly dispatchRemapping: ReadonlyMap<DispatchEntry, DispatchEntry>;
+  /** Source of each remapped output address, bounded by this view's emitted work. */
+  readonly remappedSources?: DispatchEntry[];
+  readonly projection: CullProjection;
+  readonly rowCount: number;
+  readonly renderables: FrameList<RenderableSnapshot>;
+  readonly dispatch: DispatchList;
+  readonly nativeSlots?: SceneSlotFrame['identities'] | undefined;
+  readonly members?: FrameSet | undefined;
 }
 
 interface PersistentCullResult {
@@ -54,19 +74,17 @@ interface PersistentCullResult {
   subsurface: PersistentShadowCasterProjection['content']['subsurface'];
 }
 
-const casterIndexCache = new WeakMap<DispatchList, ReadonlySet<number>>();
+function assertResidencyCurrent(selection: RenderResidencySelection | undefined): void {
+  if (selection !== undefined) assertRenderResidencySelection(selection);
+}
 
-/** Fixed dispatch lists are retained across pose frames; scan their casters once. */
-function shadowCasterIndices(dispatch: DispatchList): ReadonlySet<number> {
-  let indices = casterIndexCache.get(dispatch);
-  if (indices === undefined) {
-    const collected = new Set<number>();
-    for (const draw of dispatch)
-      if (draw.tags.LightMode === 'ShadowCaster') collected.add(draw.renderableIndex);
-    indices = collected;
-    casterIndexCache.set(dispatch, indices);
-  }
-  return indices;
+function activeResidencyRecord(
+  record: RenderSceneSlot | undefined,
+  selection: RenderResidencySelection | undefined,
+): RenderSceneSlot | undefined {
+  return record !== undefined && residencySelected(selection, slotContent(record).residencyGroup)
+    ? record
+    : undefined;
 }
 
 function snapshotWorldBounds(
@@ -74,8 +92,13 @@ function snapshotWorldBounds(
   _index: number,
   out: box3.Box3,
 ): boolean {
-  return writeBounds(worldBounds(snapshot), out);
+  return (
+    snapshot.frustumCulled !== false &&
+    writeTransformedWorldBounds(out, snapshot.localAabb, snapshot.transform.world)
+  );
 }
+
+type SlotBoundsWriter = (row: RenderSceneSlot, out: box3.Box3) => boolean;
 
 export function cullPersistentFrame(
   frame: ExtractedFrame,
@@ -85,22 +108,52 @@ export function cullPersistentFrame(
     index: number,
     out: box3.Box3,
   ) => boolean = snapshotWorldBounds,
-  memo?: { value: PersistentCullMemo | undefined },
+  memo?: ViewCullStorage,
   gpuCulled?: (snapshot: RenderableSnapshot) => boolean,
   meshes?: MeshFrame,
   sourceOwner: object = frame.renderables,
   sourceRevision = 0,
+  residencySelection?: RenderResidencySelection,
+  boundsOfSlot?: SlotBoundsWriter,
 ): PersistentCullResult {
-  return new PersistentFrameCull(
-    frame,
-    materials,
-    boundsOf,
-    memo,
-    gpuCulled,
-    meshes,
-    sourceOwner,
-    sourceRevision,
-  ).run();
+  assertResidencyCurrent(residencySelection);
+  const rows = frame.renderables.length;
+  const owner = memo?.active ? undefined : memo;
+  const previous = owner?.value;
+  let scratch = owner?.scratch;
+
+  if (
+    scratch === undefined ||
+    scratch.capacity < rows ||
+    (scratch.capacity > 16384 && scratch.capacity > rows * 4)
+  )
+    scratch = new CullProjection(Math.max(rows, Math.min(rows * 2, (scratch?.capacity ?? 0) * 2)));
+  if (owner !== undefined) owner.active = true;
+  try {
+    return new PersistentFrameCull(
+      frame,
+      materials,
+      boundsOf,
+      owner,
+      gpuCulled,
+      meshes,
+      sourceOwner,
+      sourceRevision,
+      residencySelection,
+      scratch,
+      boundsOfSlot,
+    ).run();
+  } finally {
+    if (owner !== undefined) {
+      owner.active = false;
+      if ((owner.casterWords?.length ?? 0) > Math.max(512, Math.ceil(rows / 32) * 4))
+        owner.casterWords = undefined;
+      // The emitted frame owns renderables and dispatch. Only the cull owner reads addresses.
+      const available = owner.value?.projection === scratch ? previous?.projection : scratch;
+      owner.scratch =
+        (available?.capacity ?? 0) > Math.max(16384, rows * 4) ? undefined : available;
+    }
+  }
 }
 
 /** One cull of a persistent frame: camera/shadow admission, then memoized projection. */
@@ -108,36 +161,24 @@ class PersistentFrameCull {
   private readonly previous: PersistentCullMemo | undefined;
   private readonly newSources: boolean;
   private readonly sourceSubsurface: SubsurfaceSelection;
-  private readonly authorSubsurface: SubsurfaceSelection;
-  private readonly planes: ReturnType<typeof buildCameraFrusta>;
+  private authorSubsurface: SubsurfaceSelection;
+  private clippedAuthorRow = false;
   // Shadow casters are not constrained by the display camera. Keep the
   // primary camera cull intact, but admit a caster that is outside every
   // camera frustum when its bounds intersect one of the active light-space
   // frusta. This is especially important for point-light cube faces: the
   // caster can be behind the camera while still occluding the receiver.
-  private casterIndices: ReadonlySet<number> | undefined;
+  private casterWords: Uint32Array | undefined;
   private shadowFrusta: ReturnType<typeof buildShadowFrusta> | undefined;
-  private readonly shadowOnly = new Set<number>();
-  private readonly hidden = new Set<number>();
-  private readonly hiddenSections = new Map<number, Set<number>>();
-  private readonly hiddenNativeDraws = new Map<number, Set<string>>();
-  // GPU-owned candidates are culled by their view pass. Their CPU test is
-  // deferred: only camera-visibility readers and frustum statistics pay it.
-  private readonly deferredSources: RenderableSnapshot[] = [];
-  private readonly deferredIndices: number[] = [];
-  // Readers pass their own snapshot of the same row (for example a scene
-  // slot), so look candidates up by entity identity, not object identity.
-  private deferredByEntity: Map<number, number> | undefined;
-  private deferredBySection: Map<number, Map<number, number>> | undefined;
-  private readonly deferredVisible = new Map<number, boolean | undefined>();
-  private readonly deferredAabb = box3.create();
-  private deferredStats: { readonly culled: number; readonly total: number } | undefined;
-  private readonly projectedIndex: Int32Array;
+  private readonly visibility: FrameCameraVisibility;
+  private readonly cameraPlanes: readonly Float32Array[];
   private readonly worldAabb = box3.create();
   private total = 0;
   private culled = 0;
   private visibleCount = 0;
-  private sameProjection: boolean;
+  private hasHiddenSlots = false;
+  private columns: ReturnType<typeof sceneDrawContentOf>;
+  private shadowOnlyRows = false;
   private visible: RenderableSnapshot[] | undefined;
 
   constructor(
@@ -148,140 +189,436 @@ class PersistentFrameCull {
       index: number,
       out: box3.Box3,
     ) => boolean,
-    private readonly memo: { value: PersistentCullMemo | undefined } | undefined,
+    private readonly memo: ViewCullStorage | undefined,
     private readonly gpuCulled: ((snapshot: RenderableSnapshot) => boolean) | undefined,
     private readonly meshes: MeshFrame | undefined,
     private readonly sourceOwner: object,
     private readonly sourceRevision: number,
+    private readonly residencySelection: RenderResidencySelection | undefined,
+    private readonly projection: CullProjection,
+    private readonly boundsOfSlot: SlotBoundsWriter | undefined,
   ) {
     const previous = memo?.value;
     this.previous = previous;
     this.newSources =
       previous?.sourceOwner !== sourceOwner ||
       previous?.sourceRevision !== sourceRevision ||
+      previous?.residencySelection !== residencySelection ||
       previous?.meshes !== meshes;
     this.sourceSubsurface =
       this.newSources || previous === undefined
         ? new SubsurfaceSelection()
         : previous.sourceSubsurface;
     this.authorSubsurface =
-      this.newSources || previous === undefined
-        ? new SubsurfaceSelection()
-        : previous.authorSubsurface;
-    this.planes = buildCameraFrusta(frame.cameras);
-    const candidates = frame.renderables;
-    if (cullProjectedIndexScratch.length < candidates.length) {
-      cullProjectedIndexScratch = new Int32Array(candidates.length);
-    }
-    this.projectedIndex = cullProjectedIndexScratch;
-    this.projectedIndex.fill(-1, 0, candidates.length);
-    this.sameProjection =
-      previous !== undefined && previous.projectedIndex.length === candidates.length;
+      this.newSources || previous === undefined ? this.sourceSubsurface : previous.authorSubsurface;
+    this.cameraPlanes = buildCameraFrusta(frame.cameras);
+    this.visibility = new FrameCameraVisibility(residencySelection);
+    this.projection.reset(frame.renderables.length);
   }
 
   run(): PersistentCullResult {
-    let index = -1;
-    for (const candidate of this.frame.renderables) {
-      index++;
-      if (candidate !== undefined) this.projectCandidate(candidate, index);
+    const sequence = this.frame.renderables;
+    const writeBounds = this.boundsOfSlot;
+    const rows =
+      writeBounds !== undefined && this.gpuCulled === undefined
+        ? sceneDrawContentOf(sequence)
+        : undefined;
+    let index = 0;
+    let admission: CameraAdmission | undefined;
+    if (rows?.permitsSlotCull(this.residencySelection) && writeBounds !== undefined) {
+      this.columns = rows;
+      const slotAdmission = rows.source.length === rows.source.identities.size;
+      for (const row of rows.source)
+        this.projectSlot(rows, row, index++, writeBounds, slotAdmission);
+      if (slotAdmission) {
+        const hidden = this.hasHiddenSlots
+          ? this.projection.slots(rows.source, true)
+          : new FrameSet();
+        if (this.visibility.acceptSlots(rows.source.identities, hidden))
+          admission = { sceneOwner: this.sourceOwner, residency: this.residencySelection, hidden };
+      }
+    } else {
+      for (const candidate of sequence) {
+        if (candidate !== undefined) this.projectCandidate(candidate, index);
+        index++;
+      }
     }
-    const frustumStats = this.frustumStats();
+    // Scratch belongs to this cull owner and never escapes into a published frame.
+    if (this.memo !== undefined) this.memo.shadowFrusta = this.shadowFrusta;
+    const frustumStats = this.visibility.frustumStats(this.culled, this.total);
     const materials = this.materials;
     this.sourceSubsurface.adopt(materials);
     this.authorSubsurface.adopt(materials);
     const previous = this.previous;
     // Dispatch addresses depend only on the projection, not on row snapshots.
+    const equalRanks = this.projection.finish(
+      sequence.length,
+      previous?.rowCount === sequence.length ? previous.projection : undefined,
+    );
     const sameAddresses =
-      previous !== undefined &&
-      this.sameProjection &&
-      previous.shadowOnly.size === this.shadowOnly.size &&
-      previous.renderables.length === this.visibleCount;
-    const sameVisibility = sameAddresses && this.visible === undefined;
-    const admittedSubsurface = sameVisibility
-      ? previous.admittedSubsurface
-      : new SubsurfaceSelection();
-    if (sameVisibility) admittedSubsurface.adopt(materials);
-    if (sameVisibility && previous.sourceDispatch === this.frame.dispatch)
-      return this.reuseVisibility(previous, admittedSubsurface, frustumStats);
+      previous !== undefined && equalRanks && previous.renderables.length === this.visibleCount;
+    const columns = this.columns;
+    const sameVisibility =
+      sameAddresses &&
+      (columns === undefined
+        ? this.visible === undefined && previous.nativeSlots === undefined
+        : previous.nativeSlots === columns.source.identities &&
+          previous.sourceRenderables === sequence);
+    let members: FrameSet | undefined;
+    let selected: FrameList<RenderableSnapshot>;
+    if (columns === undefined) {
+      selected = sameVisibility
+        ? previous.renderables
+        : (this.visible ?? previous?.renderables.slice(0, this.visibleCount) ?? []);
+    } else if (this.visibleCount === sequence.length) {
+      selected = sequence;
+    } else {
+      members =
+        sameAddresses && previous.nativeSlots === columns.source.identities
+          ? previous.members
+          : undefined;
+      members ??= this.projection.slots(columns.source, false);
+      selected = sameVisibility
+        ? previous.renderables
+        : new SelectedSceneDrawRows(
+            columns,
+            members,
+            sameAddresses &&
+              previous.sourceDispatch === this.frame.dispatch &&
+              previous.members === members &&
+              previous.renderables instanceof SelectedSceneDrawRows
+              ? previous.renderables.dispatchDomain
+              : undefined,
+          );
+    }
+    // A subset of an authored set with zero profiles and no errors has zero demand.
+    // If a material later activates scattering, intersect the current visibility even
+    // when the addresses are identical to the last frame that had no demand.
+    let admittedSubsurface = this.authorSubsurface;
+    if (this.clippedAuthorRow && this.authorSubsurface.demand !== 0) {
+      if (
+        sameVisibility &&
+        !this.newSources &&
+        previous.admittedSubsurface !== previous.authorSubsurface
+      ) {
+        admittedSubsurface = previous.admittedSubsurface;
+      } else {
+        admittedSubsurface = new SubsurfaceSelection();
+        if (columns !== undefined)
+          columns.findDrawContent(
+            true,
+            (_entity, content) => {
+              admittedSubsurface.add(content, materials, this.meshes);
+              return undefined;
+            },
+            members,
+          );
+        else for (const source of selected) admittedSubsurface.add(source, materials, this.meshes);
+      }
+      admittedSubsurface.adopt(materials);
+    }
+    const sourceDispatch = this.frame.dispatch;
+    const passProjection =
+      columns !== undefined &&
+      selected === sequence &&
+      !this.shadowOnlyRows &&
+      capturedDispatchAddresses(sourceDispatch, columns.source)
+        ? { dispatch: sourceDispatch, remappedSources: undefined }
+        : sameAddresses && previous.sourceDispatch === sourceDispatch
+          ? previous
+          : this.remapDispatch(
+              selected instanceof SelectedSceneDrawRows &&
+                columns !== undefined &&
+                capturedDispatchAddresses(sourceDispatch, columns.source)
+                ? selected.dispatchDomain
+                : undefined,
+            );
+    if (this.memo !== undefined) {
+      this.memo.value = {
+        meshes: this.meshes,
+        sourceSubsurface: this.sourceSubsurface,
+        authorSubsurface: this.authorSubsurface,
+        admittedSubsurface,
+        sourceRenderables: sequence,
+        sourceOwner: this.sourceOwner,
+        sourceRevision: this.sourceRevision,
+        residencySelection: this.residencySelection,
+        sourceDispatch,
+        ...(passProjection.remappedSources === undefined
+          ? {}
+          : { remappedSources: passProjection.remappedSources }),
+        projection: sameAddresses ? previous.projection : this.projection,
+        rowCount: sequence.length,
+        renderables: selected,
+        dispatch: passProjection.dispatch,
+        nativeSlots: columns?.source.identities,
+        members,
+      };
+    }
+    return this.result(
+      {
+        ...this.frame,
+        renderables: selected,
+        dispatch: passProjection.dispatch,
+        frustumStats,
+        cameraVisible: this.visibility.cameraVisible,
+        cameraAdmission: admission,
+      },
+      admittedSubsurface,
+    );
+  }
 
-    const selected = sameVisibility
-      ? previous.renderables
-      : (this.visible ?? previous?.renderables.slice(0, this.visibleCount) ?? []);
-    if (!sameVisibility)
-      for (const source of selected) admittedSubsurface.add(source, materials, this.meshes);
-
-    admittedSubsurface.adopt(materials);
-    if (sameAddresses && previous.sourceDispatch === this.frame.dispatch)
-      return this.reuseAddresses(previous, selected, admittedSubsurface, frustumStats);
-    return this.remapDispatch(selected, admittedSubsurface, frustumStats);
+  private projectSlot(
+    rows: NonNullable<ReturnType<typeof sceneDrawContentOf>>,
+    row: RenderSceneSlot,
+    index: number,
+    writeBounds: SlotBoundsWriter,
+    slotAdmission: boolean,
+  ): void {
+    const content = slotContent(row);
+    if (content.terrainSection !== undefined || content.generatedMesh !== undefined) {
+      this.projectCandidate(rows.project(row), index);
+      return;
+    }
+    if (!this.authorAdmits(content, rows)) return;
+    const shadowOnly = this.cameraAdmission(
+      content,
+      row.entityKey,
+      index,
+      content.frustumCulled !== false && writeBounds(row, this.worldAabb),
+      slotAdmission,
+    );
+    rows.validateCullContent(content);
+    if (shadowOnly !== undefined) this.admitAddress(index, shadowOnly);
   }
 
   private projectCandidate(candidate: RenderableSnapshot, index: number): void {
+    if (!this.authorAdmits(candidate)) return;
+    if (this.gpuCulled?.(candidate) === true) {
+      // The GPU owns this cull; its camera statistic is available on demand.
+      this.visibility.defer(candidate, index, this.boundsOf, this.cameraPlanes);
+      this.admit(candidate, index, false);
+      return;
+    }
+    const shadowOnly = this.cameraAdmission(
+      candidate,
+      candidate.entityKey,
+      index,
+      this.boundsOf(candidate, index, this.worldAabb),
+    );
+    if (shadowOnly !== undefined) this.admit(candidate, index, shadowOnly);
+  }
+
+  private authorAdmits(
+    candidate: RowContent,
+    rows?: NonNullable<ReturnType<typeof sceneDrawContentOf>>,
+  ): boolean {
+    if (!residencySelected(this.residencySelection, candidate.residencyGroup)) {
+      return false;
+    }
     if (this.newSources) {
-      this.sourceSubsurface.add(candidate, this.materials, this.meshes);
-      if (candidate.authorVisible !== false)
-        this.authorSubsurface.add(candidate, this.materials, this.meshes);
+      const source = rows?.cullContent(candidate) ?? candidate;
+      if (candidate.authorVisible === false && this.authorSubsurface === this.sourceSubsurface)
+        this.authorSubsurface = this.sourceSubsurface.fork();
+      this.sourceSubsurface.add(source, this.materials, this.meshes);
+      if (candidate.authorVisible !== false && this.authorSubsurface !== this.sourceSubsurface)
+        this.authorSubsurface.add(source, this.materials, this.meshes);
     }
     if (candidate.authorVisible === false) {
       this.culled += 1;
-      this.noteDropped(index);
-      return;
+      return false;
     }
-    let isVisible = true;
-    let isShadowVisible = false;
-    // A GPU-owned candidate stays in the plan (its view pass culls it against
-    // the same bounds), but the CPU test still feeds `frustumStats` so the
-    // statistic does not depend on which lane executed the cull.
-    const gpuOwned = this.gpuCulled?.(candidate) === true;
-    if (gpuOwned) {
-      // Always admitted; its view pass owns the frustum test.
-      this.deferredSources.push(candidate);
-      this.deferredIndices.push(index);
-    } else if (this.boundsOf(candidate, index, this.worldAabb)) {
-      this.total += 1;
-      isVisible = this.cameraIntersects(this.worldAabb);
-      if (!isVisible) isShadowVisible = this.shadowCasterVisible(index);
-    }
-    if (!isVisible) {
-      this.culled += 1;
-      this.hide(candidate);
-      if (!gpuOwned) {
-        if (!isShadowVisible) {
-          this.noteDropped(index);
-          return;
-        }
-        this.shadowOnly.add(index);
-      }
-    }
-    this.admit(candidate, index);
+    return true;
   }
 
-  /** Does the box intersect any camera frustum (an empty roster admits everything)? */
-  private cameraIntersects(aabb: box3.Box3): boolean {
-    if (this.planes.length === 0) return true;
-    for (const cameraPlanes of this.planes) {
-      if (
-        cameraPlanes.length === 0 ||
-        frustum.intersectsBox(cameraPlanes as frustum.Frustum, aabb as box3.Box3Like)
-      )
-        return true;
-    }
-    return false;
+  /** A bounded row outside display frusta may still cast into a visible light. */
+  private cameraAdmission(
+    candidate: RowContent,
+    entity: number,
+    index: number,
+    bounded: boolean,
+    slotAdmission = false,
+  ): boolean | undefined {
+    if (!bounded) return false;
+    this.total++;
+    if (cameraBoundsVisible(this.cameraPlanes, this.worldAabb)) return false;
+    this.culled++;
+    if (slotAdmission && candidate.nativeDraw === undefined) {
+      this.projection.hide(index);
+      this.hasHiddenSlots = true;
+    } else this.visibility.hide(entity, candidate);
+    if (this.shadowCasterVisible(index)) return true;
+    this.clippedAuthorRow = true;
+    return undefined;
   }
 
   /** Is this camera-culled row a shadow caster inside an active light frustum? */
   private shadowCasterVisible(index: number): boolean {
-    this.casterIndices ??= shadowCasterIndices(this.frame.dispatch);
-    if (!this.casterIndices.has(index)) return false;
-    this.shadowFrusta ??= buildShadowFrusta(this.frame.lights, this.frame.cameras[0]);
-    return this.shadowFrusta.some((lightPlanes) =>
-      frustum.intersectsBox(lightPlanes, this.worldAabb as box3.Box3Like),
+    if (this.casterWords === undefined) {
+      const count = this.frame.renderables.length;
+      const words = Math.ceil(count / 32);
+      const resident = this.memo?.casterWords;
+      const flags =
+        resident !== undefined &&
+        resident.length >= words &&
+        resident.length <= Math.max(512, words * 4)
+          ? resident
+          : new Uint32Array(words);
+      flags.fill(0, 0, words);
+      if (!writeCapturedCasterRanks(this.frame.dispatch, flags, count)) {
+        for (const draw of this.frame.dispatch) {
+          const row = draw.renderableIndex;
+          if (draw.tags.LightMode === 'ShadowCaster' && row >= 0 && row < count) {
+            const word = row >>> 5;
+            flags[word] = (flags[word] ?? 0) | (1 << (row & 31));
+          }
+        }
+      }
+      this.casterWords = flags;
+      if (this.memo !== undefined) this.memo.casterWords = flags;
+    }
+    if (((this.casterWords[index >>> 5] ?? 0) & (1 << (index & 31))) === 0) return false;
+    this.shadowFrusta ??= buildShadowFrusta(
+      this.frame.lights,
+      this.frame.cameras[0],
+      this.memo?.shadowFrusta,
     );
+    for (const planes of this.shadowFrusta)
+      if (frustum.intersectsBox(planes, this.worldAabb as box3.Box3Like)) return true;
+    return false;
   }
 
-  private hide(candidate: RenderableSnapshot): void {
-    const key = candidate.entityKey;
+  private admit(source: RenderableSnapshot, index: number, shadowOnly: boolean): void {
+    const previous = this.previous;
+    const visibleCount = this.admitAddress(index, shadowOnly);
+    if (this.columns !== undefined) return;
+    if (
+      this.visible === undefined &&
+      (previous?.nativeSlots !== undefined || previous?.renderables.at(visibleCount) !== source)
+    )
+      this.visible = previous?.renderables.slice(0, visibleCount) ?? [];
+    this.visible?.push(source);
+  }
+
+  private admitAddress(index: number, shadowOnly: boolean): number {
+    const visibleCount = this.visibleCount++;
+    if (shadowOnly) this.shadowOnlyRows = true;
+    this.projection.admit(index, shadowOnly);
+    return visibleCount;
+  }
+
+  private result(
+    frame: ExtractedFrame,
+    admittedSubsurface: SubsurfaceSelection,
+  ): PersistentCullResult {
+    assertResidencyCurrent(this.residencySelection);
+    return {
+      frame,
+      subsurface: {
+        source: this.sourceSubsurface.demand,
+        authorVisible: this.authorSubsurface.demand,
+        admitted: admittedSubsurface.demand,
+      },
+    };
+  }
+
+  private remapDispatch(domain: symbol | undefined) {
+    const frame = this.frame;
+    const projectAddress = (index: number, shadow: boolean) =>
+      index >= frame.renderables.length ? -1 : this.projection.address(index, shadow);
+    const native = projectCapturedViewDispatch(
+      frame.dispatch,
+      projectAddress,
+      this.previous,
+      domain,
+    );
+    if (native !== undefined)
+      return { dispatch: Object.freeze(native), remappedSources: undefined };
+    const dispatch: DispatchEntry[] = [];
+    let remappedSources: DispatchEntry[] | undefined;
+    // A stable input sequence can also keep addresses when visibility changes.
+    const prior = this.previous?.sourceDispatch === frame.dispatch ? this.previous : undefined;
+    let priorOutput = 0;
+    let previousEntry: DispatchEntry | undefined;
+    const projectRank = (candidateIndex: number, shadow: boolean): number => {
+      const oldAddress =
+        prior !== undefined && candidateIndex < prior.rowCount
+          ? prior.projection.address(candidateIndex, shadow)
+          : -1;
+      previousEntry = oldAddress >= 0 ? prior?.dispatch.at(priorOutput++) : undefined;
+      return projectAddress(candidateIndex, shadow);
+    };
+    const append = (entry: DispatchEntry, rank: number): void => {
+      if (rank === entry.renderableIndex) {
+        dispatch.push(entry);
+        return;
+      }
+      const oldEntry =
+        previousEntry ??
+        (this.previous?.remappedSources?.[dispatch.length] === entry
+          ? this.previous.dispatch.at(dispatch.length)
+          : undefined);
+      if (this.memo !== undefined) {
+        remappedSources ??= [];
+        remappedSources[dispatch.length] = entry;
+      }
+      dispatch.push(
+        oldEntry?.renderableIndex === rank ? oldEntry : withRenderableIndex(entry, rank),
+      );
+    };
+    for (const entry of frame.dispatch) {
+      const rank = projectRank(entry.renderableIndex, entry.tags.LightMode === 'ShadowCaster');
+      if (rank >= 0) append(entry, rank);
+    }
+    // Published once; readers may key derived classifications on its identity.
+    Object.freeze(dispatch);
+    return { dispatch, remappedSources };
+  }
+}
+
+/** An issued camera test can also read the same authored fields at a known Scene address. */
+export interface SlotCameraVisibility {
+  readonly addresses: SceneSlotFrame['identities'] | undefined;
+  readonly cameraVisible: (source: RenderableSnapshot) => boolean;
+  admitsSlot(content: RowContent, row: RenderSceneSlot): boolean;
+}
+export type CameraVisibility = ((source: RenderableSnapshot) => boolean) & {
+  slots?: SlotCameraVisibility;
+};
+
+/** Only these facts escape culling through the frame's camera visibility and statistics readers. */
+class FrameCameraVisibility {
+  private hidden?: Set<number>;
+  addresses: SceneSlotFrame['identities'] | undefined;
+  private hiddenSlots: FrameSet | undefined;
+
+  /** Keyed siblings and generated rows keep their individual visibility answers. */
+  acceptSlots(identities: SceneSlotFrame['identities'], hidden: FrameSet): boolean {
+    this.addresses = identities;
+    if (this.deferred === undefined) this.cameraVisible.slots = this;
+    this.hiddenSlots = hidden;
+    return !this.hidden && !this.hiddenSections && !this.hiddenNativeDraws;
+  }
+  private hiddenSections?: Map<number, Set<number>>;
+  private hiddenNativeDraws?: Map<number, Set<string>>;
+  private deferred?: DeferredCameraRows;
+
+  constructor(private readonly residencySelection: RenderResidencySelection | undefined) {}
+
+  defer(
+    source: RenderableSnapshot,
+    index: number,
+    bounds: typeof snapshotWorldBounds,
+    planes: readonly Float32Array[],
+  ): void {
+    this.deferred ??= new DeferredCameraRows(bounds, planes, this.residencySelection);
+    this.deferred.sources.push(source);
+    this.deferred.indices.push(index);
+  }
+
+  hide(key: number, candidate: Pick<RowContent, 'nativeDraw' | 'terrainSection'>): void {
     if (candidate.nativeDraw !== undefined) {
+      this.hiddenNativeDraws ??= new Map();
       let draws = this.hiddenNativeDraws.get(key);
       if (draws === undefined) {
         draws = new Set<string>();
@@ -291,9 +628,11 @@ class PersistentFrameCull {
       return;
     }
     if (candidate.terrainSection === undefined) {
+      this.hidden ??= new Set();
       this.hidden.add(key);
       return;
     }
+    this.hiddenSections ??= new Map();
     let sections = this.hiddenSections.get(key);
     if (sections === undefined) {
       sections = new Set();
@@ -302,39 +641,64 @@ class PersistentFrameCull {
     sections.add(candidate.terrainSection.index);
   }
 
-  /** A dropped row breaks projection reuse only if the previous cull admitted it. */
-  private noteDropped(index: number): void {
-    if ((this.previous?.projectedIndex[index] ?? -1) !== -1) this.sameProjection = false;
-  }
-
-  private admit(source: RenderableSnapshot, index: number): void {
-    const previous = this.previous;
-    const visibleCount = this.visibleCount;
-    this.projectedIndex[index] = visibleCount;
-    if (
-      previous?.projectedIndex[index] !== visibleCount ||
-      previous.shadowOnly.has(index) !== this.shadowOnly.has(index)
-    )
-      this.sameProjection = false;
-    if (this.visible === undefined && previous?.renderables[visibleCount] !== source)
-      this.visible = previous?.renderables.slice(0, visibleCount) ?? [];
-    this.visible?.push(source);
-    this.visibleCount += 1;
-  }
-
-  readonly cameraVisible = (source: RenderableSnapshot): boolean => {
-    const deferred = this.deferredAt(source);
-    if (deferred !== undefined) return this.testDeferred(deferred) !== false;
-    const key = source.entityKey;
-    if (source.nativeDraw !== undefined)
-      return this.hiddenNativeDraws.get(key)?.has(source.nativeDraw.key) !== true;
-    return source.terrainSection === undefined
-      ? !this.hidden.has(key)
-      : this.hiddenSections.get(key)?.has(source.terrainSection.index) !== true;
+  readonly cameraVisible: CameraVisibility = (source) => {
+    if (!residencySelected(this.residencySelection, source.residencyGroup)) return false;
+    const deferred = this.deferred;
+    if (deferred !== undefined) {
+      const at = deferred.find(source);
+      if (at !== undefined) return deferred.visible(at) !== false;
+    }
+    return this.visibleAddress(source, source.entityKey);
   };
 
-  private deferredAt(source: RenderableSnapshot): number | undefined {
-    if (this.deferredSources.length === 0) return undefined;
+  admitsSlot(content: RowContent, row: RenderSceneSlot): boolean {
+    return (
+      residencySelected(this.residencySelection, content.residencyGroup) &&
+      this.visibleAddress(content, row.entityKey, row.slot)
+    );
+  }
+
+  private visibleAddress(source: RowContent, key: number, address?: number): boolean {
+    if (source.nativeDraw !== undefined)
+      return this.hiddenNativeDraws?.get(key)?.has(source.nativeDraw.key) !== true;
+    if (source.terrainSection !== undefined)
+      return this.hiddenSections?.get(key)?.has(source.terrainSection.index) !== true;
+    if (this.hidden?.has(key)) return false;
+    if (this.hiddenSlots === undefined || this.hiddenSlots.size === 0) return true;
+    const slot = address ?? this.addresses?.get(key);
+    return slot === undefined || !this.hiddenSlots.has(slot);
+  }
+
+  frustumStats(cpuCulled: number, cpuTotal: number): ExtractedFrame['frustumStats'] {
+    const deferred = this.deferred;
+    if (deferred === undefined) return { culled: cpuCulled, total: cpuTotal };
+    return {
+      get culled() {
+        return cpuCulled + deferred.statistics().culled;
+      },
+      get total() {
+        return cpuTotal + deferred.statistics().total;
+      },
+    };
+  }
+}
+
+// Only a frame with GPU-deferred CPU queries retains source rows and camera planes.
+class DeferredCameraRows {
+  readonly sources: RenderableSnapshot[] = [];
+  readonly indices: number[] = [];
+  private deferredByEntity?: Map<number, number>;
+  private deferredBySection?: Map<number, Map<number, number>>;
+  private readonly deferredVisible: (boolean | null | undefined)[] = [];
+  private readonly deferredAabb = box3.create();
+  private deferredStats?: { readonly culled: number; readonly total: number };
+  constructor(
+    private readonly bounds: typeof snapshotWorldBounds,
+    private readonly planes: readonly Float32Array[],
+    private readonly residencySelection: RenderResidencySelection | undefined,
+  ) {}
+
+  find(source: RenderableSnapshot): number | undefined {
     if (this.deferredByEntity === undefined || this.deferredBySection === undefined)
       this.indexDeferred();
     const key = source.entityKey;
@@ -348,8 +712,8 @@ class PersistentFrameCull {
     const bySection = new Map<number, Map<number, number>>();
     this.deferredByEntity = byEntity;
     this.deferredBySection = bySection;
-    for (let i = 0; i < this.deferredSources.length; i++) {
-      const deferred = this.deferredSources[i] as RenderableSnapshot;
+    for (let i = 0; i < this.sources.length; i++) {
+      const deferred = this.sources[i] as RenderableSnapshot;
       const key = deferred.entityKey;
       if (deferred.terrainSection === undefined) {
         byEntity.set(key, i);
@@ -364,26 +728,25 @@ class PersistentFrameCull {
     }
   }
 
-  private testDeferred(position: number): boolean | undefined {
-    if (this.deferredVisible.has(position)) return this.deferredVisible.get(position);
-    const source = this.deferredSources[position] as RenderableSnapshot;
-    const visible = this.boundsOf(
-      source,
-      this.deferredIndices[position] as number,
-      this.deferredAabb,
-    )
-      ? this.cameraIntersects(this.deferredAabb)
+  visible(position: number): boolean | undefined {
+    assertResidencyCurrent(this.residencySelection);
+    const result = this.deferredVisible[position];
+    if (result !== undefined) return result ?? undefined;
+    const source = this.sources[position] as RenderableSnapshot;
+    const visible = this.bounds(source, this.indices[position] as number, this.deferredAabb)
+      ? cameraBoundsVisible(this.planes, this.deferredAabb)
       : undefined;
-    this.deferredVisible.set(position, visible);
+    this.deferredVisible[position] = visible ?? null;
     return visible;
   }
 
-  private deferredStatistics(): { readonly culled: number; readonly total: number } {
+  statistics(): { readonly culled: number; readonly total: number } {
+    assertResidencyCurrent(this.residencySelection);
     if (this.deferredStats === undefined) {
       let deferredCulled = 0;
       let deferredTotal = 0;
-      for (let i = 0; i < this.deferredSources.length; i++) {
-        const visible = this.testDeferred(i);
+      for (let i = 0; i < this.sources.length; i++) {
+        const visible = this.visible(i);
         if (visible === undefined) continue;
         deferredTotal++;
         if (!visible) deferredCulled++;
@@ -392,165 +755,12 @@ class PersistentFrameCull {
     }
     return this.deferredStats;
   }
-
-  private frustumStats(): ExtractedFrame['frustumStats'] {
-    const cull = this;
-    const cpuCulled = this.culled;
-    const cpuTotal = this.total;
-    return {
-      get culled() {
-        return (
-          cpuCulled + (cull.deferredSources.length === 0 ? 0 : cull.deferredStatistics().culled)
-        );
-      },
-      get total() {
-        return cpuTotal + (cull.deferredSources.length === 0 ? 0 : cull.deferredStatistics().total);
-      },
-    };
-  }
-
-  private result(
-    frame: ExtractedFrame,
-    admittedSubsurface: SubsurfaceSelection,
-  ): PersistentCullResult {
-    return {
-      frame,
-      subsurface: {
-        source: this.sourceSubsurface.demand,
-        authorVisible: this.authorSubsurface.demand,
-        admitted: admittedSubsurface.demand,
-      },
-    };
-  }
-
-  private reuseVisibility(
-    previous: PersistentCullMemo,
-    admittedSubsurface: SubsurfaceSelection,
-    frustumStats: ExtractedFrame['frustumStats'],
-  ): PersistentCullResult {
-    const frame = this.frame;
-    if (this.memo !== undefined)
-      this.memo.value = {
-        ...previous,
-        sourceRenderables: frame.renderables,
-        meshes: this.meshes,
-        sourceOwner: this.sourceOwner,
-        sourceRevision: this.sourceRevision,
-        sourceSubsurface: this.sourceSubsurface,
-        authorSubsurface: this.authorSubsurface,
-      };
-    return this.result(
-      {
-        ...frame,
-        renderables: previous.renderables,
-        dispatch: previous.dispatch,
-        frustumStats,
-        cameraVisible: this.cameraVisible,
-      },
-      admittedSubsurface,
-    );
-  }
-
-  private reuseAddresses(
-    previous: PersistentCullMemo,
-    selected: RenderableSnapshot[],
-    admittedSubsurface: SubsurfaceSelection,
-    frustumStats: ExtractedFrame['frustumStats'],
-  ): PersistentCullResult {
-    const frame = this.frame;
-    if (this.memo !== undefined)
-      this.memo.value = {
-        ...previous,
-        meshes: this.meshes,
-        sourceSubsurface: this.sourceSubsurface,
-        authorSubsurface: this.authorSubsurface,
-        admittedSubsurface,
-        sourceRenderables: frame.renderables,
-        sourceOwner: this.sourceOwner,
-        sourceRevision: this.sourceRevision,
-        shadowOnly: this.shadowOnly,
-        renderables: selected,
-      };
-    return this.result(
-      {
-        ...frame,
-        renderables: selected,
-        dispatch: previous.dispatch,
-        frustumStats,
-        cameraVisible: this.cameraVisible,
-      },
-      admittedSubsurface,
-    );
-  }
-
-  private remapDispatch(
-    selected: RenderableSnapshot[],
-    admittedSubsurface: SubsurfaceSelection,
-    frustumStats: ExtractedFrame['frustumStats'],
-  ): PersistentCullResult {
-    const frame = this.frame;
-    const dispatch: DispatchEntry[] = [];
-    // Strong per-run table: only the entries this cull remapped stay reachable,
-    // with no ephemeron churn when a scene edit shifts every later address.
-    const previousRemapping = this.previous?.dispatchRemapping;
-    const dispatchRemapping = new Map<DispatchEntry, DispatchEntry>();
-    for (const entry of frame.dispatch) {
-      const candidateIndex = entry.renderableIndex;
-      // Shadow-only candidates must never enter the main forward/transparent
-      // dispatch. Their ShadowCaster entries remain available to the depth
-      // passes, which consume the same validated ordered list.
-      if (this.shadowOnly.has(candidateIndex) && entry.tags.LightMode !== 'ShadowCaster') {
-        continue;
-      }
-      const renderableIndex = this.projectedIndex[candidateIndex];
-      if (renderableIndex === undefined || renderableIndex < 0) {
-        continue;
-      }
-      if (renderableIndex === entry.renderableIndex) {
-        dispatch.push(entry);
-      } else {
-        let mapped = previousRemapping?.get(entry);
-        if (mapped?.renderableIndex !== renderableIndex)
-          mapped = withRenderableIndex(entry, renderableIndex);
-        dispatchRemapping.set(entry, mapped);
-        dispatch.push(mapped);
-      }
-    }
-    // Published once; readers may key derived classifications on its identity.
-    Object.freeze(dispatch);
-    if (this.memo !== undefined) {
-      this.memo.value = {
-        meshes: this.meshes,
-        sourceSubsurface: this.sourceSubsurface,
-        authorSubsurface: this.authorSubsurface,
-        admittedSubsurface,
-        sourceRenderables: frame.renderables,
-        sourceOwner: this.sourceOwner,
-        sourceRevision: this.sourceRevision,
-        sourceDispatch: frame.dispatch,
-        projectedIndex: this.projectedIndex.slice(0, frame.renderables.length),
-        shadowOnly: this.shadowOnly,
-        renderables: selected,
-        dispatch,
-        dispatchRemapping,
-      };
-    }
-    return this.result(
-      {
-        ...frame,
-        renderables: selected,
-        dispatch,
-        frustumStats,
-        cameraVisible: this.cameraVisible,
-      },
-      admittedSubsurface,
-    );
-  }
 }
 
 /** Fixed camera admission over native Scene slots; shared by display and capture views. */
 export interface SlotCullState {
-  readonly admission: CameraAdmission;
+  readonly residencySelection: RenderResidencySelection | undefined;
+  readonly admission: ResidualCameraAdmission;
   readonly planes: readonly Float32Array[];
   readonly slots: SceneSlotFrame;
   readonly materials: MaterialFrame;
@@ -569,9 +779,11 @@ export interface ResidualCullMemo extends SlotCullState {
 }
 
 interface ResidualCullBounds {
+  readonly residencySelection?: RenderResidencySelection;
   readonly meshes: MeshFrame;
   readonly skin: SkinSceneFrame | undefined;
   readonly unavailable: FrameSet;
+  readonly boundsOfSlot?: SlotBoundsWriter;
 }
 
 function sameResidualSkin(before: SlotCullState, bounds: ResidualCullBounds): boolean {
@@ -587,16 +799,11 @@ function sameResidualSkin(before: SlotCullState, bounds: ResidualCullBounds): bo
 function sameResidualMaterials(before: MaterialFrame, current: MaterialFrame): boolean {
   if (before.hasBorrowedValues || current.hasBorrowedValues) return false;
   if (before === current) return true;
+  const revision = MaterialFrame.cullingRevision(before);
+  if (revision !== 0 && revision === MaterialFrame.cullingRevision(current)) return true;
   let same = true;
   current.changesSince(before, (left, right) => {
-    if (left?.snapshot === right?.snapshot) return;
-    if (
-      left === undefined ||
-      right === undefined ||
-      left.snapshot.positionBounds !== right.snapshot.positionBounds ||
-      materialDisplacementRadius(left.snapshot) !== materialDisplacementRadius(right.snapshot)
-    )
-      same = false;
+    if (!sameMaterialCullingBounds(left?.snapshot, right?.snapshot)) same = false;
   });
   return same;
 }
@@ -633,7 +840,10 @@ function residualChanges(
   bounds: ResidualCullBounds,
 ): Set<number> | undefined {
   const dirty = new Set<number>();
-  if (before.slots !== slots && !slots.changesSince(before.slots, (slot) => dirty.add(slot)))
+  if (
+    before.slots !== slots &&
+    !slots.visitChangedVersions(before.slots, (slot) => dirty.add(slot))
+  )
     return undefined;
   residual.changesSince(before.admission.residual, (slot) => dirty.add(slot));
   bounds.unavailable.changesSince(before.unavailable, (slot) => dirty.add(slot));
@@ -649,16 +859,25 @@ function testResidualRows(
   before: ResidualCullFacts | undefined,
   dirty: ReadonlySet<number> | undefined,
   boundsOf: SlotCullInput['boundsOf'],
+  boundsOfSlot: SlotBoundsWriter | undefined,
   intersects: (aabb: box3.Box3) => boolean,
   meshes: MeshFrame,
+  residencySelection: RenderResidencySelection | undefined,
 ): ResidualCullFacts {
   if (dirty?.size === 0 && before !== undefined) return before;
   const aabb = box3.create();
   const proof = new ResidualBoundsProof(dirty === undefined ? undefined : before?.bounds);
   const test = (record: RenderSceneSlot): boolean => {
+    const content = slotContent(record);
     const known =
-      record.snapshot.authorVisible !== false && boundsOf(record.snapshot, -1, aabb, record);
-    proof.record(record.snapshot, meshes, known ? aabb : undefined);
+      content.frustumCulled !== false &&
+      content.authorVisible !== false &&
+      (boundsOfSlot !== undefined &&
+      content.terrainSection === undefined &&
+      content.generatedMesh === undefined
+        ? boundsOfSlot(record, aabb)
+        : boundsOf(record.snapshot, -1, aabb, record));
+    proof.record(content, meshes, known ? aabb : undefined);
     return known;
   };
   if (dirty === undefined) {
@@ -666,7 +885,8 @@ function testResidualRows(
     const bounded: number[] = [];
     const skin: number[] = [];
     for (const record of records()) {
-      if (record.snapshot.skinBinding !== undefined) skin.push(record.slot);
+      if (!residencySelected(residencySelection, slotContent(record).residencyGroup)) continue;
+      if (slotContent(record).skinBinding !== undefined) skin.push(record.slot);
       if (!test(record)) continue;
       bounded.push(record.slot);
       if (!intersects(aabb)) hidden.push(record.slot);
@@ -682,9 +902,10 @@ function testResidualRows(
   const bounded = new Map<number, boolean>();
   const skin = new Map<number, boolean>();
   for (const slot of dirty) {
-    const record = residual.has(slot) && !unavailable.has(slot) ? slots.slotAt(slot) : undefined;
+    const candidate = residual.has(slot) && !unavailable.has(slot) ? slots.slotAt(slot) : undefined;
+    const record = activeResidencyRecord(candidate, residencySelection);
     const known = record !== undefined && test(record);
-    skin.set(slot, record?.snapshot.skinBinding !== undefined);
+    skin.set(slot, record !== undefined && slotContent(record).skinBinding !== undefined);
     bounded.set(slot, known);
     hidden.set(slot, known && !intersects(aabb));
   }
@@ -712,24 +933,25 @@ export interface SlotCullInput extends ResidualCullBounds {
 }
 
 export function cameraBoundsVisible(planes: readonly Float32Array[], aabb: box3.Box3): boolean {
-  return (
-    planes.length === 0 ||
-    planes.some(
-      (camera) =>
-        camera.length === 0 ||
-        frustum.intersectsBox(camera as frustum.Frustum, aabb as box3.Box3Like),
+  for (const camera of planes)
+    if (
+      camera.length === 0 ||
+      frustum.intersectsBox(camera as frustum.Frustum, aabb as box3.Box3Like)
     )
-  );
+      return true;
+  return planes.length === 0;
 }
 
 /** Reuse the native row journal, resource proofs and persistent visibility sets for every view. */
 export function cullSceneSlots(input: SlotCullInput, before?: SlotCullState): SlotCullState {
   const { planes, materials, slots, candidates: residual, boundsOf } = input;
   const bounds = input;
+  assertResidencyCurrent(bounds.residencySelection);
   const sameFrusta = before !== undefined && samePlanes(before.planes, planes);
   const fixedBounds = !materials.hasBorrowedValues && before?.materials.hasBorrowedValues === false;
   let dirty =
     before !== undefined &&
+    before.residencySelection === bounds.residencySelection &&
     sameResidualMaterials(before.materials, materials) &&
     (before.meshes === bounds.meshes ||
       (fixedBounds && before.facts.bounds.meshesUnchanged(before.meshes, bounds.meshes)))
@@ -751,11 +973,13 @@ export function cullSceneSlots(input: SlotCullInput, before?: SlotCullState): Sl
     previousFacts,
     dirty,
     boundsOf,
+    input.boundsOfSlot,
     (aabb) => cameraBoundsVisible(planes, aabb),
     bounds.meshes,
+    bounds.residencySelection,
   );
   const hiddenSlots = facts.hiddenSlots;
-  const admission: CameraAdmission =
+  const admission: ResidualCameraAdmission =
     previous !== undefined &&
     sameFrusta &&
     previous.hidden === hiddenSlots &&
@@ -766,7 +990,9 @@ export function cullSceneSlots(input: SlotCullInput, before?: SlotCullState): Sl
           residual,
           frusta: sameFrusta && previous !== undefined ? previous.frusta : {},
         };
+  assertResidencyCurrent(bounds.residencySelection);
   return {
+    residencySelection: bounds.residencySelection,
     admission,
     planes,
     slots,
@@ -795,6 +1021,7 @@ export function cullResidualFrame(
   memo: { value: ResidualCullMemo | undefined },
   bounds: ResidualCullBounds,
 ): PersistentCullResult {
+  assertResidencyCurrent(bounds.residencySelection);
   const planes = buildCameraFrusta(frame.cameras);
   const state = cullSceneSlots(
     {
@@ -821,6 +1048,7 @@ export function cullResidualFrame(
   const ownedVisible = new Map<number, boolean | undefined>();
   const ownedAabb = box3.create();
   const ownedVisibility = (source: RenderableSnapshot, key: number): boolean | undefined => {
+    if (!residencySelected(bounds.residencySelection, source.residencyGroup)) return false;
     if (ownedVisible.has(key)) return ownedVisible.get(key);
     const visible = boundsOf(source, -1, ownedAabb)
       ? cameraBoundsVisible(planes, ownedAabb)
@@ -829,18 +1057,21 @@ export function cullResidualFrame(
     return visible;
   };
   const cameraVisible = (source: RenderableSnapshot): boolean => {
+    if (!residencySelected(bounds.residencySelection, source.residencyGroup)) return false;
     const slot = gpuOwned.slots.identitySlot(source.entityKey);
     if (slot !== undefined && hiddenSlots.has(slot)) return false;
     return isResidualSlot(slot) || ownedVisibility(source, source.entityKey) !== false;
   };
   let ownedStats: { readonly culled: number; readonly total: number } | undefined;
   const ownedStatistics = () => {
+    assertResidencyCurrent(bounds.residencySelection);
     if (ownedStats !== undefined) return ownedStats;
     let ownedCulled = 0;
     let ownedTotal = 0;
     for (const source of frame.renderables) {
       const key = source.entityKey;
       if (
+        !residencySelected(bounds.residencySelection, source.residencyGroup) ||
         source.authorVisible === false ||
         isResidualSlot(gpuOwned.slots.identitySlot(source.entityKey))
       )
@@ -871,6 +1102,7 @@ export function cullResidualFrame(
     },
     subsurface: { source: demand, authorVisible: demand, admitted: demand },
   };
+  assertResidencyCurrent(bounds.residencySelection);
   memo.value = { ...state, subsurface };
   return result;
 }

@@ -35,12 +35,13 @@ afterEach(() => vi.restoreAllMocks());
     ];
   }
 
-  describe('Camera schema (36 fields: projection, exposure, color grading, post-process, target, targetLayer, clearColor, and aspect-sync)', () => {
-    it('Camera.schema has 36 fields including auto exposure and color grading state', () => {
-      expect(Object.keys(Camera.fields).length).toBe(36);
+  describe('Camera schema (39 fields: projection, exposure, color grading, post-process, target, targetLayer, clearColor, and aspect-sync)', () => {
+    it('Camera.schema has 39 fields including auto exposure and color grading state', () => {
+      expect(Object.keys(Camera.fields).length).toBe(39);
       expect(componentFieldType(Camera, 'cullMask')).toBe('f64');
       expect(componentFieldType(Camera, 'targetLayer')).toBe('u32');
       expect(componentFieldType(Camera, 'postProcessing')).toBe('bool');
+      expect(componentFieldType(Camera, 'orderOpaqueByLayer')).toBe('bool');
       expect(componentFieldType(Camera, 'fov')).toBe('f32');
       expect(componentFieldType(Camera, 'aspect')).toBe('f32');
       expect(componentFieldType(Camera, 'near')).toBe('f32');
@@ -62,11 +63,13 @@ afterEach(() => vi.restoreAllMocks());
       expect(componentFieldType(Camera, 'temperature')).toBe('f32');
       expect(componentFieldType(Camera, 'tint')).toBe('f32');
       expect(componentFieldType(Camera, 'colorLut')).toBe('asset<texture>');
+      expect(componentFieldType(Camera, 'generatedColorLut')).toBe('asset<gpu-texture>');
       expect(componentFieldType(Camera, 'colorLutStrength')).toBe('f32');
       expect(componentFieldType(Camera, 'antialias')).toBe('f32');
       expect(componentFieldType(Camera, 'historyVersion')).toBe('u32');
       // feat-20260531-bloom-first-declarative-render-graph-pass / w2.
       expect(componentFieldType(Camera, 'bloom')).toBe('f32');
+      expect(componentFieldType(Camera, 'bloomQuality')).toBe('f32');
       expect(componentFieldType(Camera, 'bloomThreshold')).toBe('f32');
       expect(componentFieldType(Camera, 'bloomIntensity')).toBe('f32');
       expect(componentFieldType(Camera, 'bloomSmoothWidth')).toBe('f32');

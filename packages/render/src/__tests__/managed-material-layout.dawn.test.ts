@@ -83,7 +83,7 @@ it('GPU culling follows resized material content without reuploading candidates 
   scene.sync({ ...delta, materials }).unwrap();
   const topology = new BatchTopology();
   topology.apply(delta);
-  const plan = topology.query(topology.sourcePlan(), undefined);
+  const plan = topology.query(topology.sourcePlan(), undefined).active;
   expect(plan.candidateCount).toBe(2);
   const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
   const readback = device

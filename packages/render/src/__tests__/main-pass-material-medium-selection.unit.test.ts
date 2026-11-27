@@ -5,6 +5,7 @@ import {
 } from '@forgeax/engine-shader';
 import { derive, err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { projectSurfaceMaterialBindings, retainProjectedMaterialSlots } from '../pbr-pipeline';
 import {
   buildPerSubmeshMaterialBg,
   type PerSubmeshMaterialBgDeps,
@@ -40,6 +41,7 @@ function dependencies(
     ...(options.selectedShader === SHA_MEDIUM_SHADER
       ? {
           shaderRegistry: {
+            materialArtifactDeclaration: () => undefined,
             findMaterialArtifact: (shaderId: string) =>
               shaderId !== SHA_MEDIUM_SHADER
                 ? err(new Error('Unknown selected shader'))
@@ -67,8 +69,19 @@ function dependencies(
         }
       : {}),
   };
+  const materialBindGroupLayout = resource();
+  if (options.selectedShader === SHA_MEDIUM_SHADER) {
+    // Bind-group assembly consumes the slots retained during layout creation.
+    const registry = (runtime as unknown as TestDependencies['runtime']).shaderRegistry;
+    const entries = [{ binding: 0 }, { binding: derive([]).userRegionBindingEnd + 9 }];
+    retainProjectedMaterialSlots(
+      materialBindGroupLayout,
+      projectSurfaceMaterialBindings(entries, registry, SHA_MEDIUM_SHADER),
+    );
+  }
   const pipelineState = {
-    materialBindGroupLayout: resource(),
+    skylightFallback: null,
+    materialBindGroupLayout,
     materialUniformBuffer: { buffer: resource() },
     meshStorageBuffer: { buffer: resource() },
     viewUniformBuffer: resource(),
@@ -87,15 +100,13 @@ function dependencies(
     materialSlice: 256,
     videoHighPerfAvailable: false,
     skylightResources: {
-      irradianceView: resource(),
+      skySh: resource(),
       irradianceSampler: resource(),
       prefilterView: resource(),
-      skylightPrefilterView: resource(),
       prefilterSampler: resource(),
       brdfLutView: resource(),
       intensityBuffer: resource(),
     },
-    materialBgShared: new Map(),
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     bindGroupCounts: { createBindGroup: 0, keys: [] },
     frameState: {},
@@ -210,6 +221,7 @@ describe('main-pass Surface material selection', () => {
     );
     Object.assign(deps.runtime, {
       shaderRegistry: {
+        materialArtifactDeclaration: () => undefined,
         findMaterialArtifact: findArtifact,
         materialShaderManifestEntry: () => undefined,
       },

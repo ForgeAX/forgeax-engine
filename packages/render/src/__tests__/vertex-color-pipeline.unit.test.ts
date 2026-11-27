@@ -103,6 +103,27 @@ describe('render vertex-color projection contract', () => {
     });
   });
 
+  it('preserves other axes and the first explicit color value when normalizing authored keys', () => {
+    const plain = deriveVertexLayoutProjection(baseAttributes());
+    const axis = 'VERTEX_COLOR_AVAILABLE=false';
+    const other = 'CUSTOM_VERTEX_COLOR_AVAILABLE=true';
+    for (const key of [
+      `+${other}++${axis}++FEATURE=true+`,
+      `${axis}+${other}+${axis}+FEATURE=true`,
+      `${other}+FEATURE=true+${axis}+VERTEX_COLOR_AVAILABLE=true`,
+    ]) {
+      expect(variantSetFromVertexLayoutProjection(plain, key).unwrap()).toBe(
+        `${other}+FEATURE=true+${axis}`,
+      );
+    }
+    const invalid = variantSetFromVertexLayoutProjection(
+      plain,
+      `${other}+VERTEX_COLOR_AVAILABLE=falsey+${axis}`,
+    );
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) expect(invalid.error.detail.authoredValue).toBe('falsey');
+  });
+
   it('does not allocate color stream bytes for a plain mesh', () => {
     const plain = packInterleavedVertexAttributes(baseAttributes(), 1);
     expect(plain.ok).toBe(true);

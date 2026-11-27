@@ -85,15 +85,13 @@ function dependencies(
     materialSlice: 256,
     videoHighPerfAvailable: false,
     skylightResources: {
-      irradianceView: resource(),
+      skySh: resource(),
       irradianceSampler: resource(),
       prefilterView: resource(),
-      skylightPrefilterView: resource(),
       prefilterSampler: resource(),
       brdfLutView: resource(),
       intensityBuffer: resource(),
     },
-    materialBgShared: new Map(),
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     bindGroupCounts: { createBindGroup: 0, keys: [] },
     frameState: {},
@@ -259,9 +257,9 @@ describe('material parameter selection complexity', () => {
           : 'textureView';
       expect(actual?.resource.kind, `binding ${expected.binding}`).toBe(kind);
     }
-    expect(entries.find((entry) => entry.binding === 11)?.resource.value).toBe(
-      deps.skylightResources.irradianceView,
-    );
+    expect(entries.find((entry) => entry.binding === 11)?.resource.value).toMatchObject({
+      buffer: deps.skylightResources.skySh,
+    });
     expect(entries.find((entry) => entry.binding === 12)?.resource.value).toBe(
       deps.skylightResources.irradianceSampler,
     );
@@ -339,23 +337,21 @@ describe('material parameter selection complexity', () => {
       { name: 'array', type: 'texture2d_array' },
       { name: 'normalTexture', type: 'texture2d' },
       { name: 'baseColorTexture', type: 'texture2d' },
-      { name: 'anisotropyTexture', type: 'texture2d' },
     ];
     const deps = customDependencies(schema);
     buildMaterialBg(deps, snapshot(), 1);
-    expect(textureValues(deps, 6)).toEqual([
+    expect(textureValues(deps, 5)).toEqual([
       deps.pipelineState.skylightFallback?.irradianceView,
       deps.pipelineState.defaultWhite3dTextureView,
       deps.pipelineState.defaultWhite2dArrayTextureView,
       deps.pipelineState.defaultNormalTextureView,
       deps.pipelineState.fallbackTextureView,
-      deps.pipelineState.defaultAnisotropyTextureView,
     ]);
     schema[0] = { name: 'cube', type: 'texture2d' };
     const replacement = {} as TextureView;
     deps.pipelineState.defaultWhite3dTextureView = replacement;
     buildMaterialBg(deps, snapshot(), 2);
-    expect(textureValues(deps, 6).slice(0, 2)).toEqual([
+    expect(textureValues(deps, 5).slice(0, 2)).toEqual([
       deps.pipelineState.defaultWhiteTextureView,
       replacement,
     ]);

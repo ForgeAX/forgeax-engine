@@ -1,5 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { clientLabels } from './client-i18n';
 
 import {
   type EnginePreviewStatus,
@@ -21,7 +22,11 @@ interface ClientContext {
 
 export const inject = ['slots'];
 
-export function apply(ctx: ClientContext): void {
+export interface ClientConfig {
+  readonly locale?: string;
+}
+
+export function apply(ctx: ClientContext, config: ClientConfig = {}): void {
   ctx.slots.inject('shell.overlay', () =>
     ctx.slots.register(
       {
@@ -30,12 +35,14 @@ export function apply(ctx: ClientContext): void {
         order: 80,
         label: 'ForgeAX Engine',
       },
-      ForgeAXPanel,
+      () => <ForgeAXPanel locale={config.locale ?? 'en'} />,
     ),
   );
 }
 
-function ForgeAXPanel(): React.JSX.Element {
+function ForgeAXPanel({ locale }: { readonly locale: string }): React.JSX.Element {
+  const [language, setLanguage] = useState(locale);
+  const labels = clientLabels(language);
   const [open, setOpen] = useState(true);
   const [realm, setRealm] = useState<FederationStatus>();
   const [engine, setEngine] = useState<EnginePreviewStatus>();
@@ -106,12 +113,13 @@ function ForgeAXPanel(): React.JSX.Element {
   return (
     <section
       data-forgeax-panel="mounted"
+      lang={labels.lang}
       style={{
         position: 'fixed',
         right: 18,
         bottom: 18,
         zIndex: 100,
-        width: open ? 680 : 210,
+        width: open ? 'min(680px, calc(100vw - 36px))' : 210,
         border: '1px solid rgba(94, 234, 212, 0.42)',
         borderRadius: 16,
         overflow: 'hidden',
@@ -125,6 +133,8 @@ function ForgeAXPanel(): React.JSX.Element {
       <header
         style={{
           display: 'flex',
+          flexWrap: 'wrap',
+          gap: 8,
           alignItems: 'center',
           justifyContent: 'space-between',
           padding: '11px 14px',
@@ -141,11 +151,26 @@ function ForgeAXPanel(): React.JSX.Element {
               fontSize: 12,
             }}
           >
-            {realm?.ready === true ? '● bridge ready' : '○ connecting'}
+            {realm?.ready === true ? labels.ready : labels.connecting}
           </span>
         </div>
-        <button type="button" onClick={() => setOpen((value) => !value)} style={buttonStyle}>
-          {open ? 'Hide preview' : 'Show preview'}
+        <select
+          aria-label={labels.language}
+          data-forgeax-language="true"
+          value={labels.lang}
+          onChange={(event) => setLanguage(event.target.value)}
+          style={buttonStyle}
+        >
+          <option value="en">{labels.languageEnglish}</option>
+          <option value="zh-CN">{labels.languageChinese}</option>
+        </select>
+        <button
+          data-forgeax-preview-toggle="true"
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          style={buttonStyle}
+        >
+          {open ? labels.hidePreview : labels.showPreview}
         </button>
       </header>
       {open ? (
@@ -159,17 +184,21 @@ function ForgeAXPanel(): React.JSX.Element {
               marginBottom: 10,
             }}
           >
-            <Fact label="binding" value={realm?.engine.binding ?? 'pending'} />
-            <Fact label="frameId" value={String(projection?.frameId ?? 0)} />
-            <Fact label="tick" value={String(projection?.tick ?? 0)} />
-            <Fact label="state" value={String(projection?.state ?? 0)} />
+            <Fact
+              id="binding"
+              label={labels.binding}
+              value={labels[realm?.engine.binding ?? 'pending']}
+            />
+            <Fact id="frameId" label={labels.frameId} value={String(projection?.frameId ?? 0)} />
+            <Fact id="tick" label={labels.tick} value={String(projection?.tick ?? 0)} />
+            <Fact id="state" label={labels.state} value={String(projection?.state ?? 0)} />
           </div>
           {engineEndpoint !== undefined ? (
             <iframe
               ref={iframe}
               data-forgeax-engine-frame="real"
               src={engineEndpoint}
-              title="Running ForgeAX Engine"
+              title={labels.previewTitle}
               onLoad={() => {
                 iframe.current?.contentWindow?.postMessage(
                   { protocol: FEDERATION_PROTOCOL_VERSION, kind: 'forgeax-engine-poll' },
@@ -197,7 +226,7 @@ function ForgeAXPanel(): React.JSX.Element {
                 background: 'radial-gradient(circle at center, #123047, #020617 70%)',
               }}
             >
-              Embedded headless Engine · no placeholder pixels
+              {labels.headless}
             </div>
           )}
           <footer
@@ -209,7 +238,8 @@ function ForgeAXPanel(): React.JSX.Element {
             }}
           >
             <span style={{ color: '#94a3b8', fontSize: 12 }}>
-              DSH native Loader · lease {realm?.leases ?? 0} · protocol {realm?.protocol ?? '–'}
+              {labels.loader} · {labels.leases} {realm?.leases ?? 0} · {labels.protocol}{' '}
+              {realm?.protocol ?? '–'}
             </span>
             <button
               data-forgeax-control="toggle"
@@ -217,7 +247,7 @@ function ForgeAXPanel(): React.JSX.Element {
               onClick={control}
               style={buttonStyle}
             >
-              Toggle Engine state
+              {labels.toggleState}
             </button>
           </footer>
         </div>
@@ -227,9 +257,11 @@ function ForgeAXPanel(): React.JSX.Element {
 }
 
 function Fact({
+  id,
   label,
   value,
 }: {
+  readonly id: string;
   readonly label: string;
   readonly value: string;
 }): React.JSX.Element {
@@ -245,7 +277,10 @@ function Fact({
       >
         {label}
       </div>
-      <div style={{ color: '#f8fafc', fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>
+      <div
+        data-forgeax-fact={id}
+        style={{ color: '#f8fafc', fontSize: 13, fontVariantNumeric: 'tabular-nums' }}
+      >
         {value}
       </div>
     </div>

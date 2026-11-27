@@ -1,4 +1,4 @@
-import { projectCookedPackageEntry, projectPackageCatalog } from '@forgeax/engine-pack/build';
+import { projectPackageCatalog } from '@forgeax/engine-pack/build';
 import { authoringCapabilityForAssetKind } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 
@@ -139,33 +139,6 @@ describe('catalog builder v2', () => {
       sourcePath: 'generated.pack.ts',
       revision,
       lifecycle: 'current',
-    });
-  });
-
-  it('projects a complete cooked package as one current row with receipt and refs', () => {
-    const row = projectCookedPackageEntry(
-      {
-        guid: 'cooked-guid',
-        kind: 'mesh',
-        sourcePath: 'generated.pack.ts',
-        packageUrl: '/source.pack.json',
-      },
-      {
-        packageUrl: '/assets/cooked.pack.json',
-        cookReceiptUrl: '/assets/cooked.receipt.json',
-        revision: { digest: 'sha256:generation', observedAt: 7, rootId: 'generated.pack.ts' },
-        refs: ['dependency-guid'],
-      },
-    );
-
-    expect(row).toMatchObject({
-      packageUrl: '/assets/cooked.pack.json',
-      cookReceiptUrl: '/assets/cooked.receipt.json',
-      refs: ['dependency-guid'],
-      subject: 'imported-output',
-      execution: 'cooked',
-      lifecycle: 'current',
-      revision: { digest: 'sha256:generation' },
     });
   });
 });

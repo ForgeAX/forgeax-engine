@@ -5,8 +5,9 @@ import { mkdir, mkdtemp, rm, unlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CATALOG_DELTA_EVENT } from '../catalog-transport.js';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { createRevisionObserver, type DevWatchListener } from '../dev/revision-observer.js';
+import { CATALOG_DELTA_EVENT } from '../plugin-contract.js';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
 
 const WATCHER_EVENT_TIMEOUT_MS = 30_000;
@@ -220,24 +221,17 @@ describe('dev watcher regression', () => {
     }
   });
 
-  it('reconciles a source changed during a deferred batch exactly once', async () => {
+  it.each([
+    'reconcile',
+    'close',
+  ] as const)('settles a deferred watcher batch when asked to %s', async (action) => {
     const source = join(root, 'assets', 'hero.png');
     const unrelated = join(root, 'assets', 'level.reel.json');
-    const batches: Array<{ readonly sources: readonly { readonly filename: string }[] }> = [];
+    const batches: string[][] = [];
     let change: DevWatchListener | undefined;
-    let releaseBatch!: () => void;
-    let batchEntered!: () => void;
-    const batchEnteredPromise = new Promise<void>((resolve) => {
-      batchEntered = resolve;
-    });
-    const batchReleasePromise = new Promise<void>((resolve) => {
-      releaseBatch = resolve;
-    });
-    const fakeWatcher = {
-      close: () => {},
-      on: () => fakeWatcher,
-      unref: () => {},
-    } as unknown as FSWatcher;
+    const entered = testGate();
+    const release = testGate();
+    const fakeWatcher = { close() {}, on: () => fakeWatcher, unref() {} } as unknown as FSWatcher;
     vi.useFakeTimers({
       toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
     });
@@ -245,10 +239,10 @@ describe('dev watcher regression', () => {
       roots: [join(root, 'assets')],
       debounceMs: 10,
       onBatch: async (batch) => {
-        batches.push({ sources: batch.sources });
+        batches.push(batch.sources.map(({ filename }) => filename));
         if (batches.length === 1) {
-          batchEntered();
-          await batchReleasePromise;
+          entered.resolve();
+          await release.promise;
         }
       },
       watchFactory: (_root, listener) => {
@@ -258,80 +252,29 @@ describe('dev watcher regression', () => {
     });
     try {
       await stop.ready;
-      await writeFile(unrelated, '{"version":2}');
-      change?.('change', unrelated);
-      await stop.reconcile();
-      await vi.advanceTimersByTimeAsync(10);
-      await batchEnteredPromise;
-
-      await writeFile(source, new Uint8Array([2]));
-      const reconciled = stop.reconcile();
-      releaseBatch();
-      await reconciled;
-      await stop.drain();
-
-      const sourcePaths = batches.flatMap((batch) =>
-        batch.sources
-          .map((candidate) => candidate.filename)
-          .filter((filename) => filename === source),
-      );
-      expect(sourcePaths).toEqual([source]);
-    } finally {
-      await stop.close();
-      vi.useRealTimers();
-    }
-  });
-
-  it('does not reschedule reconciliation after stopping a deferred batch', async () => {
-    const unrelated = join(root, 'assets', 'level.reel.json');
-    const batches: Array<{ readonly sources: readonly { readonly filename: string }[] }> = [];
-    let change: DevWatchListener | undefined;
-    let releaseBatch!: () => void;
-    let batchEntered!: () => void;
-    const batchEnteredPromise = new Promise<void>((resolve) => {
-      batchEntered = resolve;
-    });
-    const batchReleasePromise = new Promise<void>((resolve) => {
-      releaseBatch = resolve;
-    });
-    const fakeWatcher = {
-      close: () => {},
-      on: () => fakeWatcher,
-      unref: () => {},
-    } as unknown as FSWatcher;
-    vi.useFakeTimers({
-      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
-    });
-    const stop = createRevisionObserver({
-      roots: [join(root, 'assets')],
-      debounceMs: 10,
-      onBatch: async (batch) => {
-        batches.push({ sources: batch.sources });
-        batchEntered();
-        await batchReleasePromise;
-      },
-      watchFactory: (_root, listener) => {
-        change = listener;
-        return fakeWatcher;
-      },
-    });
-    try {
-      await stop.ready;
-      // A different size guarantees a stat change even on coarse-mtime filesystems.
+      // A different size guarantees a stat change on coarse-mtime filesystems.
       await writeFile(unrelated, '{"version":20}');
       change?.('change', unrelated);
       await stop.reconcile();
       await vi.advanceTimersByTimeAsync(10);
-      await batchEnteredPromise;
+      await entered.promise;
 
-      const closing = stop.close();
-      releaseBatch();
-      await closing;
-
-      expect(batches).toHaveLength(1);
-      expect(vi.getTimerCount()).toBe(0);
+      if (action === 'reconcile') {
+        await writeFile(source, new Uint8Array([2]));
+        const reconciled = stop.reconcile();
+        release.resolve();
+        await reconciled;
+        await stop.drain();
+        expect(batches.flat().filter((filename) => filename === source)).toEqual([source]);
+      } else {
+        const closing = stop.close();
+        release.resolve();
+        await closing;
+        expect(batches).toHaveLength(1);
+        expect(vi.getTimerCount()).toBe(0);
+      }
     } finally {
-      releaseBatch();
+      release.resolve();
       await stop.close();
       vi.useRealTimers();
     }

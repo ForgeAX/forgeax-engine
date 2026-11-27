@@ -6,9 +6,11 @@ import { gunzipSync, type ZlibOptions } from 'node:zlib';
 import { imageImporter } from '@forgeax/engine-image/image-importer';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
 import { createStandaloneRuntimeAssetBinding, type Importer } from '@forgeax/engine-types';
-import { createServer, type ViteDevServer } from 'vite';
+import type { ViteDevServer } from 'vite';
 import { expect, it, vi } from 'vitest';
+import { metaFixture } from '../../../pack/src/__tests__/support/direct-pack-fixture.js';
 import { pluginPack } from '../plugin-pack.js';
+import { createPackTestServer } from './vite-fixtures.js';
 
 const encoder = vi.hoisted(() => ({ calls: 0 }));
 vi.mock('node:zlib', async () => {
@@ -110,13 +112,9 @@ it('shares validated restored bytes across Meta routes without retaining stale c
       await writeFile(join(assets, source), hdr(11));
       await writeFile(
         join(assets, `${source}.meta.json`),
-        JSON.stringify({
-          schemaVersion: '1.0.0',
-          kind: 'external-asset-package',
-          importer: 'image',
-          source,
-          importSettings: { colorSpace: 'linear', mipmap: 'none' },
-          subAssets: [{ guid, sourceIndex: 0, kind: 'equirect' }],
+        metaFixture(source, 'image', [{ guid, sourceIndex: 0, kind: 'equirect' }], {
+          colorSpace: 'linear',
+          mipmap: 'none',
         }),
       );
     }
@@ -129,13 +127,7 @@ it('shares validated restored bytes across Meta routes without retaining stale c
         runtimeBinding: binding,
         ddc: { projectDdcRoot: ddc },
       });
-      server = await createServer({
-        root,
-        configFile: false,
-        logLevel: 'silent',
-        plugins: [plugin],
-        server: { host: '127.0.0.1', port: 0 },
-      });
+      server = await createPackTestServer(root, plugin);
       await server.listen();
       const base = server.resolvedUrls?.local?.[0];
       if (!base) throw Error('Missing real Vite URL');

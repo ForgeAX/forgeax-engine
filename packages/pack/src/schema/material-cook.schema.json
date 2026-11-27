@@ -602,7 +602,7 @@
                           "enum": ["ray-hit", "card-capture"]
                         },
                         "profile": {
-                          "enum": ["forgeax-material-ray-v1"]
+                          "enum": ["forgeax-material-ray-v1", "forgeax-material-card-v4"]
                         },
                         "toolchain": {
                           "enum": ["naga-oil"]
@@ -611,6 +611,20 @@
                           "enum": ["none"]
                         }
                       },
+                      "oneOf": [
+                        {
+                          "properties": {
+                            "pass": { "const": "ray-hit" },
+                            "profile": { "const": "forgeax-material-ray-v1" }
+                          }
+                        },
+                        {
+                          "properties": {
+                            "pass": { "const": "card-capture" },
+                            "profile": { "const": "forgeax-material-card-v4" }
+                          }
+                        }
+                      ],
                       "additionalProperties": false
                     }
                   ]

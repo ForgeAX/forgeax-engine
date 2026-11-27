@@ -3,6 +3,13 @@ interface StableRange {
   readonly count: number;
 }
 
+/** Private address custody; accepting transfers release responsibility to the ordinary owner. */
+export interface StableRangeReservation extends StableRange {
+  isCurrent(): boolean;
+  accept(): void;
+  release(): void;
+}
+
 interface FreeRange {
   start: number;
   count: number;
@@ -113,6 +120,8 @@ function popSpare(heap: number[]): void {
 /** Reusable physical ranges; changing one allocation never compacts another. */
 export class StableRangeAllocator {
   private next = 0;
+  private acceptedEnd = 0;
+  private epoch: object = {};
   private free: FreeRange | undefined;
   /** Released small ranges by exact count, outside the tree until reused or flushed.
    * Reuse takes the lowest start, like first fit, so dirty uploads stay compact. */
@@ -127,6 +136,40 @@ export class StableRangeAllocator {
   constructor(private readonly spareLimit = 0) {}
 
   allocate(count: number, alignment = 1): number {
+    const start = this.allocateRange(count, alignment);
+    if (count > 0) this.acceptedEnd = Math.max(this.acceptedEnd, start + count);
+    return start;
+  }
+
+  reserve(count: number, alignment = 1): StableRangeReservation {
+    if (!Number.isSafeInteger(count) || count < 0)
+      throw new RangeError('private range count must be a nonnegative integer');
+    const start = this.allocateRange(count, alignment);
+    const epoch = this.epoch;
+    let owner: StableRangeAllocator | undefined = this;
+    const current = () => owner?.epoch === epoch;
+    return Object.freeze({
+      start,
+      count,
+      isCurrent: current,
+      accept: () => {
+        if (!current() || owner === undefined) throw new Error('Private range is not current');
+        if (count > 0) owner.acceptedEnd = Math.max(owner.acceptedEnd, start + count);
+        owner = undefined;
+      },
+      release: () => {
+        if (current()) owner?.release(start, count);
+        owner = undefined;
+      },
+    });
+  }
+
+  /** Physical address demand, including unpublished reservations. */
+  reservedCapacity(): number {
+    return this.next;
+  }
+
+  private allocateRange(count: number, alignment: number): number {
     if (count <= 0) return 0;
     if (!Number.isSafeInteger(alignment) || alignment < 1)
       throw new RangeError('range alignment must be a positive integer');
@@ -221,7 +264,7 @@ export class StableRangeAllocator {
   }
 
   requiredCapacity(): number {
-    return this.next;
+    return this.acceptedEnd;
   }
   /** End of the last live range; released tail capacity remains available for reuse. */
   allocatedEnd(): number {
@@ -230,8 +273,34 @@ export class StableRangeAllocator {
     while (tail?.right !== undefined) tail = tail.right;
     return tail !== undefined && tail.start + tail.count === this.next ? tail.start : this.next;
   }
+  /** Rehome disposable scratch to an earlier free range. Live scene addresses never move. */
+  moveScratchLower(start: number, count: number): number {
+    const hole = firstFit(this.free, count, 1);
+    if (hole === undefined || hole.start >= start) return start;
+    const lower = this.allocate(count);
+    if (lower >= start) {
+      this.release(lower, count);
+      return start;
+    }
+    this.release(start, count);
+    return lower;
+  }
+
+  /** Return an unused physical tail without moving live ranges or private reservations. */
+  releaseTail(): number {
+    const end = this.allocatedEnd();
+    if (end !== this.next) {
+      this.free = remove(this.free, end);
+      this.next = end;
+      this.acceptedEnd = Math.min(this.acceptedEnd, end);
+    }
+    return end;
+  }
+
   reset(start = 0): void {
     this.next = start;
+    this.acceptedEnd = start;
+    this.epoch = {};
     this.free = undefined;
     this.spare.clear();
     this.spareCount = 0;

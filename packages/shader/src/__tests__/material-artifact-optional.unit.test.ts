@@ -13,6 +13,7 @@ describe('optional registered material artifact lookup', () => {
     } finally {
       strict.mockRestore();
     }
+    expect(registry.findMaterialArtifact('runtime::uncompiled', 'optional')).toBeUndefined();
     const failure = registry.findMaterialArtifact('runtime::uncompiled');
     expect(failure.ok).toBe(false);
     if (failure.ok) throw Error('strict lookup must report the absent shader');
@@ -31,6 +32,9 @@ describe('optional registered material artifact lookup', () => {
     });
     const artifact = registry.materialArtifact('runtime::late');
     expect(artifact).toBe(registry.findMaterialArtifact('runtime::late').unwrap());
+    expect(registry.findMaterialArtifact('runtime::late', 'optional')).toBe(
+      registry.findMaterialArtifact('runtime::late'),
+    );
     expect(Object.isFrozen(artifact)).toBe(true);
     expect(artifact?.paramSchema[0]?.name).toBe('color');
     const receiver = new ShaderRegistry({ manifestUrl: undefined });

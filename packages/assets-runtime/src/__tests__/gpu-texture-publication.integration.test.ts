@@ -64,6 +64,10 @@ it('publishes and loads a GPU texture recipe without a pixel artifact or CPU byt
     expect(texture).not.toHaveProperty('data');
     expect(texture.shape).toEqual(shape);
     expect(texture.mips).toEqual({ kind: 'generate' });
+    expect(registry.read(handle, ['shape', 'format']).unwrap()).toEqual({
+      shape,
+      format: 'rgba8unorm-srgb',
+    });
     expect(JSON.stringify(prepared)).not.toContain('application/x-forgeax-rgba');
     expect(JSON.stringify(prepared)).not.toContain('"data"');
     const generator = (
@@ -92,7 +96,7 @@ it('publishes and loads a GPU texture recipe without a pixel artifact or CPU byt
         transient: { height: { shape: larger, format: 'r16float' } },
       })
       .unwrap();
-    expect(registry.read(handle).unwrap().shape).toEqual(larger);
+    expect(registry.read(handle, ['shape']).unwrap()).toEqual({ shape: larger });
     expect(registry.read(orm).unwrap().shape).toEqual(larger);
     const accepted = registry.read(generator).unwrap();
     // Removing an in-use output must reject the entire group, retaining every sibling.
@@ -102,7 +106,7 @@ it('publishes and loads a GPU texture recipe without a pixel artifact or CPU byt
       }).ok,
     ).toBe(false);
     expect(registry.read(generator).unwrap()).toEqual(accepted);
-    expect(registry.read(handle).unwrap().shape).toEqual(larger);
+    expect(registry.read(handle, ['shape']).unwrap()).toEqual({ shape: larger });
     expect(registry.replace(generator, { kind: 'texture-generator', values: {} } as never).ok).toBe(
       false,
     );

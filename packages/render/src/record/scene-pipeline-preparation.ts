@@ -7,15 +7,39 @@ import type { ScenePassRequest } from './scene-pass-work';
 
 /** Immutable request facts declared by this exact typed graph pass, without a frame plan. */
 export interface ScenePipelineDemand {
+  readonly bundleDescriptor?: import('@forgeax/engine-rhi').RenderBundleEncoderDescriptor;
+  readonly gpuFragmentEntryPoint?: string | undefined;
+  readonly gpuPhase?: import('../render-pipeline').GpuDrivenDrawPhase;
   readonly pass: ScenePassRequest;
+  readonly bindings?: Pick<
+    import('../typed-render-graph-primitives').TypedScenePassOptions,
+    | 'directionalShadow'
+    | 'spotShadow'
+    | 'cloudShadow'
+    | 'ssao'
+    | 'ssrSource'
+    | 'environment'
+    | 'atmosphereReads'
+    | 'transmissionBackdrop'
+    | 'surfacePair'
+    | 'surfaceNearestLayer'
+    | 'surfaceNearestDepth'
+  >;
   readonly formats: readonly GPUTextureFormat[];
   readonly sampleCount: RenderPipelineTarget['sampleCount'];
   readonly fragmentEntryPoint: string | undefined;
   readonly coverageOnly: boolean;
   readonly transparentDepthWrite: boolean;
   readonly seededDepth?: boolean;
+  readonly opaqueDepthPrimed?: boolean;
   readonly selection?: ScenePassSelection;
 }
+
+/** Facts available once Record has validated the current view's draws. */
+export type ScenePipelineSourceContext = Pick<
+  _InternalRenderPipelineContext,
+  'frameState' | 'runtime' | 'validatedOrdered'
+>;
 
 /** Return true only when this preparation matches a candidate material raster lane. */
 export type ScenePipelinePreparation = ((
@@ -25,6 +49,8 @@ export type ScenePipelinePreparation = ((
   readonly demand?: ScenePipelineDemand;
   /** Graph-owned utility programs do not participate in candidate material matching. */
   readonly kind?: 'utility';
+  /** Request CPU work before building the native scene pipelines or bindings. */
+  readonly prepareSource?: (context: ScenePipelineSourceContext) => void;
 };
 
 // Metadata belongs to this exact graph build, alongside its actual raster declarations.

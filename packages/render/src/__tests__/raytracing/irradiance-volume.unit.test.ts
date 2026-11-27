@@ -24,6 +24,7 @@ import {
   irradianceVolumeContribution,
   irradianceVolumeDigest,
   irradianceVolumeProbeBlocks,
+  irradianceVolumeProbeMeta,
   sphericalFibonacci,
   validateIrradianceLattice,
 } from '../../raytracing/irradiance-volume';
@@ -50,6 +51,20 @@ function integrated(radianceOf: (dz: number) => number, status = 0) {
 }
 
 describe('irradiance volume integration', () => {
+  it('projects format-1 diagnostic counts to zero relocation without rewriting the asset', () => {
+    for (const status of [0, 2, 3]) {
+      const volume = integrated(() => 0.75, status);
+      const before = encodeIrradianceVolume(volume).unwrap().slice();
+      const diagnostics = volume.meta.slice();
+      const projected = irradianceVolumeProbeMeta(volume);
+      for (let probe = 0; probe < volume.probeCount; probe++)
+        expect
+          .soft(Array.from(projected.subarray(probe * 4, probe * 4 + 4)))
+          .toEqual([diagnostics[probe * 4], diagnostics[probe * 4 + 1], 0, 0]);
+      expect(volume.meta).toEqual(diagnostics);
+      expect(encodeIrradianceVolume(volume).unwrap()).toEqual(before);
+    }
+  });
   it('reproduces a constant environment exactly (D = L) with clamped moments', () => {
     const volume = integrated(() => 0.75);
     expect(volume.probeCount).toBe(6);

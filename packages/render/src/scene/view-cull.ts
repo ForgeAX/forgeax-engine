@@ -5,19 +5,21 @@ import type { ExtractedFrame, GpuOwnedFrame, RenderableSnapshot } from '../rende
 import { type FrameList, FrameListBase, FrameProjection, ProjectionIterator } from './frame-list';
 import { FrameIntersection, FrameSet } from './frame-set';
 import type { MaterialFrame } from './material-dispatch';
+import { slotContent } from './mesh-draw';
 import type { MeshFrame } from './mesh-frame';
 import {
   cullPersistentFrame,
   cullResidualFrame,
-  type PersistentCullMemo,
   type ResidualCullMemo,
+  type ViewCullStorage,
 } from './persistent-cull';
-import { worldBounds, writeBounds } from './render-scene-snapshots';
+import { writeBounds, writeTransformedWorldBounds } from './render-scene-snapshots';
 import type { RenderSceneSlot } from './render-scene-types';
-import { type RenderScene, sceneRow } from './render-scene-view';
+import { type RenderScene, sceneDrawContentOf, sceneRow } from './render-scene-view';
 import { ResidualRoster } from './residual-roster';
 import type { CompositionEntry } from './scene-composition';
-import type { SceneSlotFrame } from './scene-slots';
+import { type SceneSlotFrame, SlotIdentityKeys } from './scene-slots';
+import { SelectedSceneDrawRows } from './selected-draw-rows';
 import type { SkinSceneFrame } from './skin-scene-inputs';
 
 /** Read accepted fixed slot membership without rebuilding one array per frame. */
@@ -61,21 +63,24 @@ class ResidualReadRoster {
       return before.value;
     const previous = before?.value ?? new FrameSet();
     const edits = new Map<number, boolean>();
-    const changed = (slot: number) => {
-      const present = residual.has(slot) && !unavailable.has(slot) && slots.versionAt(slot) !== 0;
+    const changed = (slot: number, version?: number) => {
+      const present =
+        residual.has(slot) && !unavailable.has(slot) && (version ?? slots.versionAt(slot)) !== 0;
       if (previous.has(slot) !== present) edits.set(slot, present);
     };
+    // Membership publications report presence, while Scene publications supply row versions.
+    const read = (slot: number) => changed(slot);
     if (
       before === undefined ||
-      (slots !== before.slots && !slots.changesSince(before.slots, changed))
+      (slots !== before.slots && !slots.visitChangedVersions(before.slots, changed))
     ) {
-      for (const slot of residual.borrowKeys()) changed(slot);
+      for (const slot of residual.borrowKeys()) read(slot);
       if (before !== undefined)
         for (const slot of before.value.borrowKeys())
           if (!residual.has(slot)) edits.set(slot, false);
     } else {
-      residual.changesSince(before.residual, changed);
-      unavailable.changesSince(before.unavailable, changed);
+      residual.changesSince(before.residual, read);
+      unavailable.changesSince(before.unavailable, read);
     }
     const value = edits.size === 0 ? previous : previous.edit(edits);
     this.before = { slots, residual, unavailable, value };
@@ -116,11 +121,27 @@ export class ViewCull {
   private readonly residual = new ResidualRoster();
   private readonly skinResidual = new FrameIntersection();
   private readonly readable = new ResidualReadRoster();
-  private readonly memo: { value: PersistentCullMemo | undefined } = { value: undefined };
+  private readonly memo: ViewCullStorage = { value: undefined };
   private readonly residualMemo: { value: ResidualCullMemo | undefined } = { value: undefined };
+
+  /** The cull has already resolved the authored and material inputs for these
+   * exact rows. Generated rows and borrowed iterators keep their own identity walk. */
+  activeIdentities(rows: FrameList<RenderableSnapshot>): SlotIdentityKeys | undefined {
+    const cull = this.memo.value;
+    if (cull?.nativeSlots === undefined || cull.renderables !== rows) return undefined;
+    const columns = sceneDrawContentOf(cull.sourceRenderables);
+    if (
+      columns === undefined ||
+      columns.source.length !== columns.source.identities.size ||
+      (rows !== cull.sourceRenderables && !SelectedSceneDrawRows.native(rows))
+    )
+      return undefined;
+    return new SlotIdentityKeys(columns.source, cull.members, true);
+  }
 
   cull(input: ViewCullInput): ViewCullResult {
     const { frame, materials, meshes, skin, projection, shared } = input;
+    const residencySelection = shared.topology.captureResidencySelection();
     // Frame rank is roster rank, so a ranked candidate verifies its row
     // instead of searching the identity tree.
     const roster = projection.slotsSnapshot();
@@ -130,18 +151,23 @@ export class ViewCull {
       out: box3.Box3,
       row?: RenderSceneSlot,
     ): boolean => {
+      if (snapshot.frustumCulled === false) return false;
       const slot =
         sceneRow(row ?? (index >= 0 ? roster.at(index) : undefined), snapshot) ??
         projection.slotOf(snapshot);
       if (snapshot.terrainSection !== undefined || snapshot.generatedMesh !== undefined)
-        return writeBounds(worldBounds(snapshot), out);
+        return writeTransformedWorldBounds(out, snapshot.localAabb, snapshot.transform.world);
       return slot === undefined
         ? writeBounds(projection.cullingWorldBounds(snapshot), out)
         : projection.writeCullingWorldBoundsAt(slot, out, meshes, materials, skin);
     };
+    const boundsOfSlot = (row: RenderSceneSlot, out: box3.Box3): boolean =>
+      projection.writeCullingWorldBoundsAt(row, out, meshes, materials, skin);
     const selection = input.gpuSelection;
     if (selection !== undefined && !input.hasGeneratedDraws) {
       this.memo.value = undefined;
+      this.memo.scratch = undefined;
+      this.memo.casterWords = undefined;
       return cullResidualFrame(
         frame,
         materials,
@@ -149,7 +175,7 @@ export class ViewCull {
         this.gpuOwnedFrame(input, selection),
         selection,
         this.residualMemo,
-        { meshes, skin, unavailable: shared.unavailableSlots },
+        { meshes, skin, unavailable: shared.unavailableSlots, residencySelection, boundsOfSlot },
       );
     }
     this.residualMemo.value = undefined;
@@ -164,6 +190,8 @@ export class ViewCull {
         ? frame.renderables
         : shared.materialDispatch,
       shared.materialDispatch.revisionValue(),
+      residencySelection,
+      boundsOfSlot,
     );
   }
 
@@ -222,7 +250,7 @@ export class ViewCull {
       *residualSkin() {
         if (skin === undefined) {
           for (const record of recordsOf(selection)) {
-            if (record.snapshot.skinBinding === undefined) continue;
+            if (slotContent(record).skinBinding === undefined) continue;
             const row = rowAt(record.slot);
             if (row !== undefined) yield row;
           }

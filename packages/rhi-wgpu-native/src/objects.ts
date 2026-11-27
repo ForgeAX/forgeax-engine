@@ -222,6 +222,7 @@ export class NativeGPUBuffer extends DeviceChild {
 export class NativeGPUTexture extends DeviceChild {
   private expired = false;
   private readonly borrowed: boolean;
+  private readonly borrowedResources: Set<number> | undefined;
   readonly width: number;
   readonly height: number;
   readonly depthOrArrayLayers: number;
@@ -252,6 +253,7 @@ export class NativeGPUTexture extends DeviceChild {
       descriptor.label,
     );
     this.borrowed = nativeId !== undefined;
+    this.borrowedResources = this.borrowed ? new Set() : undefined;
     this.width = size.width;
     this.height = size.height;
     this.depthOrArrayLayers = size.depthOrArrayLayers;
@@ -267,6 +269,7 @@ export class NativeGPUTexture extends DeviceChild {
   createView(descriptor: GPUTextureViewDescriptor = {}): NativeGPUTextureView {
     if (this.expired) throw domError('InvalidStateError', 'The native surface texture has expired');
     const id = this.device.native.createView(this.nativeId, JSON.stringify(descriptor));
+    this.retainBorrowedResource(this.device, id);
     this.device.touch();
     return new NativeGPUTextureView(
       this.device,
@@ -286,14 +289,25 @@ export class NativeGPUTexture extends DeviceChild {
     this.device.touch();
   }
 
-  /** Presentation retires the borrowed table entry, never the native window. */
+  /** Retire the image and its views before the swapchain can be reconfigured. */
   expire(): void {
     if (this.expired) return;
     this.expired = true;
     if (this.borrowed) {
+      // Retained JS views must not retain DXGI swapchain images across resize.
+      // Their retired native IDs still fail validation if submitted afterwards.
+      for (const id of this.borrowedResources ?? []) this.device.releaseId(id);
+      this.borrowedResources?.clear();
       this.device.native.textureDestroy(this.nativeId);
       this.device.releaseId(this.nativeId);
     }
+  }
+
+  /** Borrowed backing must retire even when a view, bundle or pending command survives in JS. */
+  retainBorrowedResource(device: NativeGPUDevice, id: number): void {
+    if (!this.borrowed || device !== this.device || id === 0) return;
+    if (this.expired) device.releaseId(id);
+    else this.borrowedResources?.add(id);
   }
 }
 
@@ -309,6 +323,24 @@ export class NativeGPUTextureView extends DeviceChild {
   }
 }
 
+/** The existing retained reference graph owns submission and borrowed-backing retirement. */
+export function referencedTextures(references: unknown): ReadonlySet<NativeGPUTexture> {
+  const textures = new Set<NativeGPUTexture>();
+  const visited = new Set<object>();
+  const visit = (value: unknown): void => {
+    if (value === null || typeof value !== 'object' || visited.has(value)) return;
+    visited.add(value);
+    if (value instanceof NativeGPUTexture) textures.add(value);
+    else if (value instanceof NativeGPUTextureView) textures.add(value.texture);
+    else if (value instanceof NativeGPUObject) visit(value.refs);
+    else if (Array.isArray(value)) for (const entry of value) visit(entry);
+    else if (!(value instanceof DeviceChild))
+      for (const entry of Object.values(value)) visit(entry);
+  };
+  visit(references);
+  return textures;
+}
+
 /** Opaque children that carry only their id (samplers, layouts, bind groups, ...). */
 export class NativeGPUObject extends DeviceChild {
   // Keeps referenced JS objects reachable while this native object may use them.
@@ -319,6 +351,8 @@ export class NativeGPUObject extends DeviceChild {
     readonly refs?: unknown,
   ) {
     super(device, id, label);
+    if (refs !== undefined)
+      for (const texture of referencedTextures(refs)) texture.retainBorrowedResource(device, id);
   }
 }
 

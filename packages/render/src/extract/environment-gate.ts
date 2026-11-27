@@ -56,7 +56,7 @@ export function createEnvironmentQuery<
   const construct = (world: World) => world.query<R, readonly [], O>(owned);
   const queries = new WeakMap<World, ReturnType<typeof construct>>();
   return (world: World): ReturnType<typeof construct> => {
-    noteQueryInputs(world, owned);
+    noteQueryInputs(world, owned, true);
     const cached = queries.get(world);
     if (cached?.ok && !isQueryIterating(cached.value)) return cached;
     // Error callbacks can extract this same World while the outer cursor lives.
@@ -73,11 +73,15 @@ export function queryEnvironment<
   const W extends readonly Component[] = readonly [],
   const O extends readonly Component[] = readonly [],
 >(world: World, descriptor: QueryDescriptor<R, W, O>) {
-  noteQueryInputs(world, descriptor);
+  noteQueryInputs(world, descriptor, false);
   return world.query(descriptor);
 }
 
-function noteQueryInputs(world: World, descriptor: QueryDescriptor) {
+function noteQueryInputs(
+  world: World,
+  descriptor: QueryDescriptor,
+  readsPresentationPose: boolean,
+) {
   const reads = observedInputs(world);
   if (reads !== undefined) {
     for (let roleIndex = 0; roleIndex < QUERY_INPUT_ROLES.length; roleIndex++) {
@@ -87,7 +91,12 @@ function noteQueryInputs(world: World, descriptor: QueryDescriptor) {
       if (components === undefined) continue;
       for (let index = 0; index < components.length; index++) {
         const component = components[index];
-        if (component !== undefined) reads.components.add(component);
+        // Stock queries observe pose values at the entity that supplied them.
+        // Candidate membership still observes changes to required and optional joins.
+        if (component === undefined) continue;
+        if (readsPresentationPose && (component === Transform || component === GlobalTransform))
+          continue;
+        reads.components.add(component);
       }
     }
     const candidates = descriptor.read ?? descriptor.with;
@@ -201,7 +210,7 @@ export class EnvironmentGate<T, M extends object = object> {
     const outer = observation;
     const inputs: InputReads | undefined = this.trackInputs
       ? {
-          components: new Set([Transform, GlobalTransform, TransformInterpolation]),
+          components: new Set(),
           candidates: new Set(),
           globals: new Set(),
         }
@@ -231,8 +240,8 @@ export class EnvironmentGate<T, M extends object = object> {
         : inputsEqual
           ? previous?.globals
           : createStateProjection(world, [...inputs.globals]);
-    source?.read().accept();
-    globals?.read().accept();
+    source?.acceptFullRead();
+    globals?.acceptFullRead();
     const extraction: Extraction<T> = {
       value: result.value,
       structureEpoch,

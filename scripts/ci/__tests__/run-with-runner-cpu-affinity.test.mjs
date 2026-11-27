@@ -44,7 +44,7 @@ test('directional CSM uses the existing quota-bound GPU process owner without ch
   );
   assert.doesNotMatch(artifacts, /directional-csm-browser/);
 
-  assert.deepEqual(job.strategy.matrix.shard, [0, 1, 2, 3]);
+  assert.match(job.strategy.matrix.shard, /fromJSON\(needs\.core-build\.outputs\.browser_shards\)/);
 });
 
 test('CPU pressure keeps cgroup v2 counters separate from host contention', () => {

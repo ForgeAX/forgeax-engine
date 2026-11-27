@@ -1,13 +1,20 @@
 import type {
   GraphBuffer,
   GraphTexture,
+  GraphTextureDescriptor,
   GraphTextureView,
   RenderGraphBuilder,
 } from '@forgeax/engine-render-graph';
 import type { Buffer, Texture, TextureView } from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-types';
+import { computeBindGroup } from '../compute-graph-state';
+import { createRasterState, type RasterState } from '../raster-graph-state';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
-import type { RenderPipelineFrame } from '../render-pipeline';
+import {
+  createRenderPipelineTarget,
+  type RenderPipelineFrame,
+  type RenderPipelineTarget,
+} from '../render-pipeline';
 import type { createRayDiffuseComposite } from './diffuse-composite';
 import type { ExactRayDiffuseTargets, RayDiffuseTargets } from './diffuse-graph';
 import { DIFFUSE_HISTORY_BYTES } from './diffuse-reconstruction';
@@ -20,6 +27,77 @@ export interface RayGraphShared {
   readonly recordBytes: number;
   readonly view: GraphBuffer;
   readonly pixelCount: number;
+}
+
+const RAY_RECEIVER_NORMAL_WGSL = `
+@group(0) @binding(0) var normals: texture_2d<u32>;
+@group(0) @binding(1) var materials: texture_2d<u32>;
+
+@vertex fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4f {
+  let xy = vec2f(f32(index & 1u) * 2.0, f32(index & 2u));
+  return vec4f(xy * vec2f(2, -2) + vec2f(-1, 1), 0, 1);
+}
+
+@fragment fn fs_main(@builtin(position) position: vec4f) -> @location(0) vec2u {
+  let pixel = vec2i(position.xy);
+  let b = textureLoad(materials, pixel, 0).r;
+  let model = (b >> 24u) & 15u;
+  if (model == 0u) { return vec2u(0u); }
+  let a = textureLoad(normals, pixel, 0).r;
+  // Transport keeps its normal, validity and roughness in one texel.
+  // Standard-G-buffer/4 model 5 carries subsurface and model 6 carries two-sided diffuse.
+  let classified = model == 1u || model == 5u || model == 6u;
+  let backfaceDiffuse = model == 5u || model == 6u;
+  let flags = select(0u, 0x10000u, classified) | select(0u, 0x20000u, backfaceDiffuse);
+  return vec2u((a & 0x3fffffffu) | 0x40000000u, ((b >> 16u) & 255u) | flags);
+}
+`;
+
+/** Exact, cached and screen-probe transport share this on-demand receiver guide. */
+export function addRayReceiverNormalProjection(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  normal: GraphTextureView,
+  material: GraphTextureView,
+  size: GraphTextureDescriptor['size'],
+) {
+  const label = 'ray-receiver-normal';
+  const target = createRenderPipelineTarget(graph, label, { format: 'rg32uint', size });
+  if (!target.ok) return target;
+  const output = target.value;
+  let state: RasterState | undefined;
+  const added = graph.addRasterPass(label, {
+    accesses: [
+      { resource: normal, usage: 'sampled-read' },
+      { resource: material, usage: 'sampled-read' },
+      { resource: output.view, usage: 'color-attachment' },
+    ],
+    colorAttachments: [{ view: output.view, loadOp: 'clear', storeOp: 'store' }],
+    encodeDirect(pass, frame, resources) {
+      state ??= createRasterState(
+        frame,
+        RAY_RECEIVER_NORMAL_WGSL,
+        label,
+        [0, 1].map((binding) => ({ binding, visibility: 2, texture: { sampleType: 'uint' } })),
+        'vs_main',
+        'fs_main',
+        [output.format],
+      );
+      pass.setPipeline(state.pipeline);
+      pass.setBindGroup(
+        0,
+        computeBindGroup(
+          frame,
+          state,
+          [normal, material].map((view, binding) => ({
+            binding,
+            resource: { kind: 'textureView', value: resources.textureView(view).unwrap() },
+          })),
+        ),
+      );
+      pass.draw(3);
+    },
+  });
+  return added.ok ? target : added;
 }
 
 /** One graph address per resident material texture; both transports reuse it. */
@@ -147,44 +225,71 @@ export function addRayReconstructionPasses(
 export function addRayDiffuseCompositePass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   name: string,
-  current: () => Extract<ReturnType<typeof createRayDiffuseComposite>, { ok: true }>['value'],
+  current: () => Extract<
+    Awaited<ReturnType<typeof createRayDiffuseComposite>>,
+    { ok: true }
+  >['value'],
   target: RayDiffuseTargets,
   irradiance: GraphBuffer,
-  view: GraphBuffer,
   pixelCount: number,
-  reflectionResponse: GraphTextureView | undefined,
 ) {
+  const { diffuseGiBaseline: baseline, subsurfaceDiffuse: subsurface } = target;
   return graph.addRasterPass(name, {
     accesses: [
       { resource: target.scene.view, usage: 'color-attachment' },
+      { resource: baseline, usage: 'storage-read' },
+      ...(subsurface === undefined
+        ? []
+        : [{ resource: subsurface.view, usage: 'color-attachment' as const }]),
       { resource: irradiance, usage: 'storage-read' },
       { resource: target.depth, usage: 'sampled-read' },
       { resource: target.normal.view, usage: 'sampled-read' },
-      { resource: target.albedo.view, usage: 'sampled-read' },
-      { resource: target.f0.view, usage: 'sampled-read' },
-      { resource: view, usage: 'uniform-read' },
-      ...(reflectionResponse === undefined
-        ? []
-        : [{ resource: reflectionResponse, usage: 'sampled-read' as const }]),
     ],
-    colorAttachments: [{ view: target.scene.view, loadOp: 'load', storeOp: 'store' }],
+    colorAttachments: [
+      { view: target.scene.view, loadOp: 'load', storeOp: 'store' },
+      ...(subsurface === undefined
+        ? []
+        : [{ view: subsurface.view, loadOp: 'load' as const, storeOp: 'store' as const }]),
+    ],
     encodeDirect: (pass, _graphframe, resources) =>
       current()
         .record(
           pass,
           {
             irradiance: resources.buffer(irradiance).unwrap(),
-            ...(reflectionResponse === undefined
-              ? {}
-              : { reflectionResponse: resources.textureView(reflectionResponse).unwrap() }),
+            baseline: resources.buffer(baseline).unwrap(),
+            subsurface: subsurface !== undefined,
             depth: resources.textureView(target.depth).unwrap(),
             normal: resources.textureView(target.normal.view).unwrap(),
-            albedoMetallic: resources.textureView(target.albedo.view).unwrap(),
-            dielectricSpecular: resources.textureView(target.f0.view).unwrap(),
-            view: { buffer: resources.buffer(view).unwrap(), size: VIEW_UNIFORM_BYTES },
           },
           pixelCount,
         )
         .unwrap(),
   });
+}
+
+/** Borrow the directional fallback before the full-screen pass replaces it. */
+export function snapshotRayReflectionFallback(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  name: string,
+  source: RenderPipelineTarget,
+) {
+  const texture = graph.createTextureLike(name, source.texture);
+  if (!texture.ok) return texture;
+  const view = graph.view(texture.value);
+  if (!view.ok) return view;
+  const copy = graph.addCopyPass(`${name}.copy`, {
+    accesses: [
+      { resource: source.view, usage: 'copy-src' },
+      { resource: view.value, usage: 'copy-dst' },
+    ],
+    encodeDirect(encoder, _frame, resources) {
+      encoder.copyTextureToTexture(
+        { texture: resources.texture(source.texture).unwrap() },
+        { texture: resources.texture(texture.value).unwrap() },
+        { ...resources.textureViewExtent(source.view).unwrap(), depthOrArrayLayers: 1 },
+      );
+    },
+  });
+  return copy.ok ? view : copy;
 }

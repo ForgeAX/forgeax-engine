@@ -1,5 +1,9 @@
 # `@forgeax/hello-ssr`
 
+For the Forward comparison, start the demo with `?pipeline=forward&fixture=cube&aa=none`.
+Toggle SSR to see the red cube reflected in the floor. The same fixture supports
+`aa=taa`, `aa=taau`, and `aa=tsr`.
+
 > [!IMPORTANT]
 > This is the paired Browser/Dawn carrier for the SSR v1 acceptance path. It
 > owns the scene and evidence production only; `@forgeax/engine-render` owns

@@ -86,8 +86,8 @@ it('captures nonempty equal Standard scenes after native canvas presentation', a
       0,
     );
     expect(maximum / 255).toBeLessThanOrEqual(0.001);
-    // The lighting fixture skips optional HZB preparation. Prove that the
-    // default occlusion path produces the identical nonempty pictures too.
+    // Prove that the shared Deferred occlusion setting leaves the two
+    // Forward pictures identical.
     expect(hosts).toHaveLength(2);
     for (const { host, profile } of hosts) {
       expect(profile.gpuOcclusion).toBe(false);

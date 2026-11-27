@@ -119,10 +119,7 @@ test('SDK game onboarding receives View-owned consumer skills without contributo
     for (const id of ids)
       assert.deepEqual(await readdir(resolve(f.output, 'skills', id)), ['SKILL.md']);
     const guide = await readFile(resolve(skills, 'forgeax-view-start/SKILL.md'), 'utf8');
-    assert.match(
-      guide,
-      /node \.\/node_modules\/@forgeax\/engine\/tools\/view\/start\.mjs --project \./,
-    );
+    assert.match(guide, /node \/absolute\/forgeax-sdk\/tools\/view\/start\.mjs --project \./);
     assert.doesNotMatch(guide, /--build auto|Finish requested\s+game work/);
     await assert.rejects(stageViewConsumerSkills(f.view, skills), { code: 'ERR_FS_CP_EEXIST' });
   } finally {

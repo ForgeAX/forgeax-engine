@@ -15,6 +15,7 @@ export interface ProductionDeclaration {
 type ProductionRequest = Readonly<{
   generation: number;
   sourceKeys: readonly string[];
+  repairTransport?: boolean;
 }>;
 
 export interface ProductionSourceChange {
@@ -39,6 +40,7 @@ interface ProductionInventoryContext<TState = undefined> {
 interface ProductionProduceContext<TState = undefined> {
   readonly generation: number;
   readonly declaration: ProductionDeclaration;
+  readonly repairTransport: boolean;
   readonly intent: 'attempt' | 'materialize';
   readonly signal: AbortSignal;
   readonly state: TState;
@@ -63,6 +65,8 @@ interface ProductionSessionOptions<TState = undefined> {
   readonly produce: (context: ProductionProduceContext<TState>) => Promise<void>;
   readonly publish: (publication: ProductionPublication<TState>) => Promise<void>;
   readonly discard?: (publication: ProductionDiscardContext<TState>) => Promise<void>;
+  /** Serialize watcher and explicit import work when both publish the same source graph. */
+  readonly serial?: boolean;
   readonly initialGeneration?: number;
   readonly sourceKeys?: () => readonly string[];
 }
@@ -80,8 +84,9 @@ export interface ProductionSession<TState = undefined> {
   readonly signal: AbortSignal;
   readonly acceptedState: () => TState | undefined;
   start(): Promise<ProductionRunResult>;
-  materialize(guid: string): Promise<ProductionRunResult>;
+  materialize(guid: string, repairTransport?: boolean): Promise<ProductionRunResult>;
   rebuild(changes: readonly ProductionSourceChange[]): Promise<ProductionRunResult>;
+  track<T>(task: Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
 
@@ -92,35 +97,53 @@ function runKey(input: ProductionRequest): string {
 export function createProductionSession<TState = undefined>(
   options: ProductionSessionOptions<TState>,
 ): ProductionSession<TState> {
-  const inFlight = new Map<string, Promise<ProductionRunResult>>();
-  const pending = new Set<Promise<ProductionRunResult>>();
-  const controllers = new Map<
-    AbortController,
-    { readonly generation: number; readonly intent: 'attempt' | 'materialize' }
+  const inFlight = new Map<
+    string,
+    {
+      readonly controller: AbortController;
+      readonly generation: number;
+      readonly task: Promise<ProductionRunResult>;
+    }
   >();
+  const hostTasks = new Set<Promise<unknown>>();
   const sessionController = new AbortController();
-  let acceptedDeclarations: readonly ProductionDeclaration[] | undefined;
-  let acceptedGeneration: number | undefined;
-  let acceptedGenerationState: TState | undefined;
+  let accepted:
+    | {
+        readonly declarations: readonly ProductionDeclaration[];
+        readonly generation: number;
+        readonly state: TState;
+      }
+    | undefined;
   let currentGeneration = options.initialGeneration ?? 0;
-  let closed = false;
+  let closing: Promise<void> | undefined;
   let started: Promise<ProductionRunResult> | undefined;
+  let queue = Promise.resolve<unknown>(undefined);
+
+  const closedFailure = () =>
+    createPluginPackFailure({
+      code: 'cleanup-failed',
+      expected: 'the ProductionSession to accept work before close',
+      hint: 'create a new generation-scoped session and retry the production request',
+      detail: { stage: 'cleanup', subject: 'production-session' },
+    });
+
+  const run = (work: () => Promise<ProductionRunResult>): Promise<ProductionRunResult> => {
+    if (sessionController.signal.aborted) return Promise.reject(closedFailure());
+    if (!options.serial) return work();
+    const task = queue.then(() => {
+      if (sessionController.signal.aborted) throw closedFailure();
+      return work();
+    });
+    queue = task.catch(() => undefined);
+    return task;
+  };
 
   const schedule = (
     input: ProductionRequest,
     selectedDeclarations?: readonly ProductionDeclaration[],
     intent: 'attempt' | 'materialize' = 'attempt',
   ): Promise<ProductionRunResult> => {
-    if (closed) {
-      return Promise.reject(
-        createPluginPackFailure({
-          code: 'cleanup-failed',
-          expected: 'the ProductionSession to accept work before close',
-          hint: 'create a new generation-scoped session and retry the production request',
-          detail: { stage: 'cleanup', subject: 'production-session' },
-        }),
-      );
-    }
+    if (sessionController.signal.aborted) return Promise.reject(closedFailure());
     if (!Number.isSafeInteger(input.generation) || input.generation < 1) {
       return Promise.reject(new TypeError('Production generation must be a positive safe integer'));
     }
@@ -130,31 +153,20 @@ export function createProductionSession<TState = undefined>(
       // attempt and any materialization tied to the accepted generation so
       // that an in-flight DDC commit cannot turn an obsolete lease into a
       // user-visible commit failure.
-      for (const [controller, request] of controllers) {
-        if (
-          request.intent === 'materialize' ||
-          (request.intent === 'attempt' && request.generation < input.generation)
-        ) {
-          controller.abort();
-        }
+      for (const attempt of inFlight.values()) {
+        if (attempt.generation < input.generation) attempt.controller.abort();
       }
     }
     currentGeneration = Math.max(currentGeneration, input.generation);
-    const key = `${intent}\0${runKey(input)}`;
+    const key = `${input.repairTransport ? 'repair-transport' : intent}\0${runKey(input)}`;
     const existing = inFlight.get(key);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) return existing.task;
     const controller = new AbortController();
-    const abortAttempt = (): void => controller.abort();
-    sessionController.signal.addEventListener('abort', abortAttempt, { once: true });
-    controllers.set(controller, { generation: input.generation, intent });
-    const task = execute(input, controller.signal, selectedDeclarations, intent);
-    inFlight.set(key, task);
-    pending.add(task);
+    const signal = AbortSignal.any([sessionController.signal, controller.signal]);
+    const task = Promise.resolve().then(() => execute(input, signal, selectedDeclarations, intent));
+    inFlight.set(key, { controller, generation: input.generation, task });
     const release = (): void => {
       inFlight.delete(key);
-      pending.delete(task);
-      controllers.delete(controller);
-      sessionController.signal.removeEventListener('abort', abortAttempt);
     };
     void task.then(release, release);
     return task;
@@ -172,7 +184,7 @@ export function createProductionSession<TState = undefined>(
         sourceKeys: input.sourceKeys,
         intent,
         signal,
-        acceptedState: acceptedGenerationState,
+        acceptedState: accepted?.state,
       }) ?? (undefined as TState);
     const publication: ProductionPublication<TState> = {
       generation: input.generation,
@@ -182,7 +194,7 @@ export function createProductionSession<TState = undefined>(
     };
     const isCurrent = (generation: number): boolean =>
       intent === 'materialize'
-        ? generation === acceptedGeneration
+        ? generation === accepted?.generation
         : generation === currentGeneration;
     let stage: 'scan' | 'produce' | 'commit' = 'scan';
     try {
@@ -199,29 +211,31 @@ export function createProductionSession<TState = undefined>(
         await options.produce({
           generation: input.generation,
           declaration,
+          repairTransport: input.repairTransport === true,
           intent,
           signal,
           state,
         });
       }
-      if (closed || !isCurrent(input.generation)) {
+      if (sessionController.signal.aborted || !isCurrent(input.generation)) {
         await discard(publication);
         return { status: 'stale', generation: input.generation };
       }
       stage = 'commit';
       await options.publish(publication);
-      if (closed || signal.aborted || !isCurrent(input.generation)) {
+      if (sessionController.signal.aborted || signal.aborted || !isCurrent(input.generation)) {
         await discard(publication);
         return { status: 'stale', generation: input.generation };
       }
-      if (selectedDeclarations === undefined) {
-        acceptedDeclarations = declarations;
-        acceptedGeneration = input.generation;
-      }
-      acceptedGenerationState = state;
+      accepted = {
+        declarations:
+          selectedDeclarations === undefined ? declarations : (accepted?.declarations ?? []),
+        generation: input.generation,
+        state,
+      };
       return { status: 'accepted', generation: input.generation };
     } catch (error) {
-      if (closed || signal.aborted || !isCurrent(input.generation)) {
+      if (sessionController.signal.aborted || signal.aborted || !isCurrent(input.generation)) {
         try {
           await discard(publication);
         } catch {
@@ -274,16 +288,16 @@ export function createProductionSession<TState = undefined>(
     return started;
   };
 
-  const materialize = (guid: string): Promise<ProductionRunResult> =>
+  const materialize = (guid: string, repairTransport = false): Promise<ProductionRunResult> =>
     (async (): Promise<ProductionRunResult> => {
       // Startup is a one-shot attempt; a later accepted rebuild owns readiness.
-      if (acceptedGeneration === undefined) {
+      if (accepted === undefined) {
         const startedResult = await start();
-        if (acceptedGeneration === undefined) return startedResult;
+        if (accepted === undefined) return startedResult;
       }
-      const generation = acceptedGeneration;
+      const { declarations, generation } = accepted;
       const guidLower = guid.toLowerCase();
-      const declaration = acceptedDeclarations?.find((candidate) =>
+      const declaration = declarations.find((candidate) =>
         candidate.guids.some((candidateGuid) => candidateGuid.toLowerCase() === guidLower),
       );
       if (declaration === undefined) {
@@ -302,6 +316,7 @@ export function createProductionSession<TState = undefined>(
         {
           generation,
           sourceKeys: [declaration.sourceKey],
+          repairTransport,
         },
         [declaration],
         'materialize',
@@ -319,18 +334,33 @@ export function createProductionSession<TState = undefined>(
       return currentGeneration;
     },
     signal: sessionController.signal,
-    acceptedState: () => acceptedGenerationState,
-    start,
-    materialize,
-    rebuild,
-    async close(): Promise<void> {
-      if (closed) return;
-      closed = true;
+    acceptedState: () => accepted?.state,
+    start: () => run(start),
+    materialize: (guid, repairTransport) => run(() => materialize(guid, repairTransport)),
+    rebuild: (changes) => run(() => rebuild(changes)),
+    track<T>(task: Promise<T>): Promise<T> {
+      if (sessionController.signal.aborted) {
+        void task.catch(() => undefined);
+        const rejected = Promise.reject(closedFailure());
+        void rejected.catch(() => undefined);
+        return rejected;
+      }
+      hostTasks.add(task);
+      const release = () => {
+        hostTasks.delete(task);
+      };
+      void task.then(release, release);
+      return task;
+    },
+    close(): Promise<void> {
+      if (closing !== undefined) return closing;
+      closing = Promise.allSettled([
+        queue,
+        ...hostTasks,
+        ...[...inFlight.values()].map(({ task }) => task),
+      ]).then(() => {});
       sessionController.abort();
-      for (const controller of controllers.keys()) controller.abort();
-      await Promise.allSettled([...pending]);
-      inFlight.clear();
-      controllers.clear();
+      return closing;
     },
   };
 }

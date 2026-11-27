@@ -9,7 +9,7 @@ import { createMaterialLoader } from '@forgeax/engine-assets-runtime';
 import { create, globals } from '@forgeax/engine-dawn-node';
 
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const FIXTURE_PATH = resolve(APP_ROOT, 'assets', 'pulse-material.pack.json');
+const FIXTURE_PATH = resolve(APP_ROOT, 'fixtures', 'pulse-material.runtime-pack.json');
 const FRAME_COUNT = Math.max(60, Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10));
 
 function assert(condition, message) {
@@ -50,8 +50,8 @@ async function assertRuntimeReadiness(fixture) {
     );
     return loader.load({ guid, specializationKey: record.specializationKey });
   };
-  const root = await loadPublication('01935b00-7d8c-7c4e-9f12-345678abcd02');
-  const derived = await loadPublication('01935b00-7d8c-7c4e-9f12-345678abcd03');
+  const root = await loadPublication('330a8d22-5e43-5aab-8cd4-5d920045f7a8');
+  const derived = await loadPublication('3cb62ea4-3628-5912-83b0-d4f2ee2ae351');
   assert(root.status === 'Ready' && derived.status === 'Ready', 'runtime cooked records are not ready');
   assert(root.record.artifactDigest === derived.record.artifactDigest, 'root and derived cooked program sets differ');
   assert(root.record.receipt.identity.cookIdentity === derived.record.receipt.identity.cookIdentity, 'specialization inputs differ');

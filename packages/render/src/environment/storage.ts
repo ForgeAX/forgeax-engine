@@ -4,10 +4,17 @@ import {
   type RhiDevice,
   RhiError,
   type Texture,
+  type TextureView,
 } from '@forgeax/engine-rhi';
 import type { DeviceScope } from '../device/device-scope';
+import {
+  GPU_BUFFER_USAGE_COPY_DST,
+  GPU_BUFFER_USAGE_STORAGE,
+  GPU_BUFFER_USAGE_UNIFORM,
+} from '../gpu-usage';
 import { IBL_UNIFORM_SLOT_STRIDE } from '../ibl/IblPipelineCache';
 import { pmremExtent, pmremLevelCount } from '../ibl/pmrem';
+import { SKY_SH_BYTES } from '../ibl/sky-sh';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
@@ -31,8 +38,9 @@ export interface AtmosphereStorage {
   retain(): AtmosphereLease;
   environment: SelectedEnvironmentFrame;
   readonly sky: Texture;
-  readonly irradiance: Texture;
+  readonly skySh: Buffer;
   readonly prefilter: Texture;
+  readonly prefilterView: TextureView;
   readonly prefilterScratch: Texture;
   readonly captureSky: Texture;
   readonly distantSkyLight: Texture;
@@ -58,6 +66,15 @@ interface Owner {
   readonly iblParams: Buffer;
 }
 const owners = new WeakMap<DeviceScope, Owner>();
+/** Observe existing display storage without selecting, allocating or retaining it. */
+export function currentAtmosphereStorage(runtime: Runtime): AtmosphereStorage | undefined {
+  return owners.get(recordContext(runtime).deviceScope)?.current;
+}
+/** A captured old generation remains usable only while its actual lease keeps it alive. */
+export function atmosphereStoragePinned(storage: AtmosphereStorage): boolean {
+  const generation = storage as Generation;
+  return generation.pins > 0 && generation.scope.isAlive();
+}
 function buffer(
   runtime: Runtime,
   scope: DeviceScope,
@@ -195,6 +212,18 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
   const scope = owner.scope.createChild('sky');
   let created: Generation;
   try {
+    const size = pmremExtent(64);
+    const prefilter = texture(
+      runtime,
+      scope,
+      'atmosphere-prefilter',
+      size.width,
+      size.height,
+      1,
+      1,
+      0x17,
+    );
+    const prefilterView = runtime.device.createTextureView(prefilter, { dimension: '2d' }).unwrap();
     created = {
       environment,
       retain: () => lease(runtime, created),
@@ -202,17 +231,17 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
       scope,
       medium,
       sky: texture(runtime, scope, 'atmosphere-sky', 128, 128, 6),
-      irradiance: texture(runtime, scope, 'atmosphere-irradiance', 16, 16, 6),
-      prefilter: texture(
+      skySh: buffer(
         runtime,
         scope,
-        'atmosphere-prefilter',
-        pmremExtent(64).width,
-        pmremExtent(64).height,
-        1,
-        1,
-        0x17,
+        'atmosphere-sky-sh',
+        SKY_SH_BYTES,
+        GPU_BUFFER_USAGE_COPY_DST |
+          GPU_BUFFER_USAGE_UNIFORM |
+          (runtime.device.caps.storageBuffer ? GPU_BUFFER_USAGE_STORAGE : 0),
       ),
+      prefilter,
+      prefilterView,
       prefilterScratch: texture(
         runtime,
         scope,
@@ -258,6 +287,13 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
   if (previous !== undefined && previous.pins === 0) retire(runtime, previous);
   return created;
 }
+export function prepareAtmosphereStorage(
+  runtime: Runtime,
+  environment: SelectedEnvironmentFrame,
+): AtmosphereStorage {
+  return select(runtime, environment);
+}
+
 export function atmosphereStorage(frame: RenderPipelineFrame): AtmosphereStorage {
   const context = frame as _InternalRenderPipelineContext;
   if (context.capturedAtmosphere !== undefined) return context.capturedAtmosphere;

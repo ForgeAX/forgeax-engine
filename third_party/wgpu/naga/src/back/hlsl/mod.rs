@@ -836,3 +836,9 @@ pub fn supported_capabilities() -> crate::valid::Capabilities {
 
 #[cfg(all(test, feature = "wgsl-in"))]
 mod vertex_return_tests;
+
+#[cfg(all(test, feature = "wgsl-in"))]
+mod signature_order_tests;
+
+#[cfg(all(test, feature = "wgsl-in"))]
+mod ray_query_reinitialize_tests;

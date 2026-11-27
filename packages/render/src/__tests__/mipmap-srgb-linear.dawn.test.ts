@@ -16,8 +16,17 @@ import { nativeAdapterFixture, nativeDeviceFixture } from './native-device-fixtu
 import {
   prepareDerivedTextureGeneratorPrograms,
   prepareTextureGeneratorPrograms,
+  prepareWaterImpulseNoise,
+  prepareWaterSurfaceTextures,
+  prepareWaterVolumeRecipe,
 } from './texture-generators.commands';
-import { sampledSrgbPixel, verifyGpuTextureGeneration } from './texture-generators.gpu-fixture';
+import {
+  sampledSrgbPixel,
+  verifyBuiltinColorMipFilters,
+  verifyGpuTextureGeneration,
+  verifyWaterImpulseMipChain,
+  verifyWaterSurfaceTextures,
+} from './texture-generators.gpu-fixture';
 
 it.each([
   { name: 'sRGB mid-gray', format: 'rgba8unorm-srgb', width: 2, values: [188], expected: 188 },
@@ -121,6 +130,7 @@ it('generates, samples 60 completed frames and replays generated and resident GP
       await prepareTextureGeneratorPrograms(),
       await prepareDerivedTextureGeneratorPrograms(),
       {
+        volumeRecipe: await prepareWaterVolumeRecipe(),
         observe: async (phase, submit) => {
           const capture = recorder.captureFrame({ snapshotTimeoutMs: 10_000 });
           (await recorder.frameBoundary()).unwrap();
@@ -222,5 +232,34 @@ it('generates, samples 60 completed frames and replays generated and resident GP
   } finally {
     (await recorder.dispose()).unwrap();
     raw.destroy();
+  }
+}, 60_000);
+
+it('generates all six Water surface assets and their mips without a pixel upload', async () => {
+  const { device, native } = await nativeDeviceFixture();
+  native.pushErrorScope('validation');
+  try {
+    await verifyWaterSurfaceTextures(
+      device,
+      (_device, descriptor) => gpu.createShaderModule(device, descriptor),
+      await prepareWaterSurfaceTextures(),
+    );
+    expect(await native.popErrorScope()).toBeNull();
+  } finally {
+    native.destroy();
+  }
+}, 60_000);
+
+it('publishes authored impulse mips and built-in color reductions on Dawn', async () => {
+  const { device, native } = await nativeDeviceFixture();
+  native.pushErrorScope('validation');
+  try {
+    const factory = (_device: typeof device, descriptor: { code: string; label?: string }) =>
+      gpu.createShaderModule(device, descriptor);
+    await verifyBuiltinColorMipFilters(device, factory);
+    await verifyWaterImpulseMipChain(device, factory, await prepareWaterImpulseNoise());
+    expect(await native.popErrorScope()).toBeNull();
+  } finally {
+    native.destroy();
   }
 }, 60_000);

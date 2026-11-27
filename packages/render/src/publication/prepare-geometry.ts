@@ -1,6 +1,9 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import { describeMeshDraw } from '@forgeax/engine-geometry';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
+import { materialRasterSourceFacts } from '../assembly/material/assembly';
 import { buildGpuDrivenDraws } from '../extract/gpu-driven';
+import { sealSourceDraws } from '../gpu-driven/source-draw-indices';
 import type { InstanceProjectionStore } from '../instances';
 import type {
   GpuDrivenDrawSnapshot,
@@ -12,12 +15,14 @@ import { RenderPublicationError } from './contract';
 import type { PreparedRenderPublication } from './receiver';
 import { renderAsset } from './resource-scope';
 
-type DrawArtifacts = NonNullable<Parameters<typeof extractSource>[3]>['getMaterialShaderArtifact'];
+type ReadyDrawArtifacts = NonNullable<
+  Parameters<typeof extractSource>[3]
+>['getMaterialShaderArtifact'];
 
 const NO_LODS: readonly (MeshAsset | undefined)[] = Object.freeze([]);
 interface DrawMemo {
   readonly draws: readonly GpuDrivenDrawSnapshot[];
-  readonly artifacts: DrawArtifacts | undefined;
+  readonly artifacts: ReadyDrawArtifacts;
   /** Set for a table still missing a prepared program: valid only within that preparation. */
   readonly preparation?: object;
 }
@@ -63,7 +68,8 @@ function sharedGpuDrivenDraws(
   fallback: MaterialSnapshot,
   deformation: 'rigid' | 'skin',
   lodMeshes: readonly (MeshAsset | undefined)[] | undefined,
-  artifacts: DrawArtifacts | undefined,
+  artifacts: ReadyDrawArtifacts,
+  assets: AssetRegistry,
 ): readonly GpuDrivenDrawSnapshot[] {
   const lods = lodMeshes ?? NO_LODS;
   const keys: object[] = [fallback, ...materials, ...lods.map((lod) => lod ?? NO_LODS)];
@@ -77,17 +83,30 @@ function sharedGpuDrivenDraws(
   )
     return cached.draws;
   const built = buildGpuDrivenDraws({
-    mesh,
+    mesh: describeMeshDraw(mesh),
     materials,
     fallbackMaterial: fallback,
     deformation,
-    ...(artifacts === undefined ? {} : { getMaterialShaderArtifact: artifacts }),
-    ...(lodMeshes === undefined ? {} : { lodMeshes }),
+    ...(artifacts === undefined
+      ? {}
+      : {
+          getMaterialShaderArtifact: (id, request) =>
+            assets.shaderRegistry.isSourceBackedMaterialArtifact(id)
+              ? materialRasterSourceFacts(assets.shaderRegistry, id, request)
+              : artifacts(id, request),
+        }),
+    ...(lodMeshes === undefined
+      ? {}
+      : {
+          lodMeshes: lodMeshes.map((mesh) =>
+            mesh === undefined ? undefined : describeMeshDraw(mesh),
+          ),
+        }),
   });
   const complete =
     artifacts === undefined ||
     built.every((draw) => draw.prepared !== undefined || draw.preparationError !== undefined);
-  const draws = Object.freeze(built.map((draw) => Object.freeze(draw)));
+  const draws = sealSourceDraws(built);
   // An incomplete table is shared only by the rows of this preparation (a cold
   // first frame admits every row before any program is ready); a later
   // preparation rebuilds it against the then-current artifacts.
@@ -101,7 +120,7 @@ function sharedGpuDrivenDraws(
 /** Resolve GPU ownership after source data has crossed the publication boundary. */
 export function preparePublicationGeometry(
   input: PreparedRenderPublication,
-  _assets: AssetRegistry,
+  assets: AssetRegistry,
   instances: InstanceProjectionStore,
   getMaterialShaderArtifact?: NonNullable<
     Parameters<typeof extractSource>[3]
@@ -146,6 +165,7 @@ export function preparePublicationGeometry(
       row.skinBinding === undefined ? 'rigid' : 'skin',
       row.lods?.map((lod) => renderAsset<MeshAsset>(input.resources, lod.mesh)),
       getMaterialShaderArtifact,
+      assets,
     );
     // One copy per row: the projected instances and draw table join in a single spread.
     const prepared: RenderableSnapshot =

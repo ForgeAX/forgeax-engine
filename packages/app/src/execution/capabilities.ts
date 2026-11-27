@@ -95,9 +95,10 @@ export async function probeExecutionCapabilities(
   timeoutMs: number | null = 2_000,
   /** App installs the WebGPU stub in every execution Worker realm it creates. */
   webGpuStub = false,
+  embeddedWorkerScripts = false,
 ): Promise<ExecutionCapabilities> {
   const workerConstructor = typeof Worker === 'function';
-  const scriptsReachable = executionWorkerScriptsReachable();
+  const scriptsReachable = embeddedWorkerScripts || executionWorkerScriptsReachable();
   const workerAvailable = workerConstructor && scriptsReachable;
   const offscreenAvailable = typeof canvas.transferControlToOffscreen === 'function';
   const isolated = globalThis.crossOriginIsolated === true;

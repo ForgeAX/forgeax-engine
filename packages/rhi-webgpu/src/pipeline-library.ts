@@ -1,3 +1,4 @@
+import { nowMs } from '@forgeax/engine-platform';
 import {
   type ComputePipeline,
   checkPipelineLibraryAllocation,
@@ -184,6 +185,8 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     handle: GPUPipelineLayout;
   }>();
   private readonly programs = new PipelineResourceIndex<Program>();
+  /** Identified native tasks between enqueue and settlement, including warmup adopted at runtime. */
+  private readonly compiling = new Set<Program>();
   private nextProgram = 0;
   // Renderer generation/roster owners explicitly retain their preparation graph.
   private retained = new WeakMap<object, readonly object[]>();
@@ -726,7 +729,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     if (counted) addLoadWork('pipelines', { total: 1 });
     if (program === undefined) this.unidentifiedPending++;
     else {
-      program.pendingSince = performance.now();
+      program.pendingSince = nowMs();
       program.origin = origin;
     }
     const record =
@@ -739,9 +742,9 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       let endPipeline: ReturnType<typeof beginLoadTimeline> | undefined;
       try {
         this.active();
-        if (program !== undefined) program.startedAt = performance.now();
+        if (program !== undefined) program.startedAt = nowMs();
         const requested = program?.runtimeRequest ?? record;
-        if (requested !== undefined) requested.startedAtMs = performance.now();
+        if (requested !== undefined) requested.startedAtMs = nowMs();
         this.counts.asynchronousCreations++;
         realmPipelineCreations++;
         this.counts.compilationPending++;
@@ -781,6 +784,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         if (started) this.counts.compilationPending--;
         if (program === undefined) this.unidentifiedPending--;
         else {
+          this.compiling.delete(program);
           delete program.pending;
           delete program.pendingSince;
           delete program.startedAt;
@@ -791,15 +795,21 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       }
     };
     const pending = Promise.resolve().then(create);
-    if (program !== undefined) program.pending = pending;
+    if (program !== undefined) {
+      program.pending = pending;
+      this.compiling.add(program);
+    }
     return pending;
   }
   // forgeax-async-whitelist: dom-native - await the existing native compilation records.
   pendingRuntimeCompilation(): Promise<Result<void, RhiError>> | undefined {
-    const pending = [...this.programs.values()]
-      .filter((program) => program.runtimeRequest !== undefined)
-      .flatMap((program) => (program.pending === undefined ? [] : [program.pending]));
-    if (pending.length === 0) return undefined;
+    let pending: Promise<NativePipeline>[] | undefined;
+    for (const program of this.compiling) {
+      if (program.runtimeRequest === undefined || program.pending === undefined) continue;
+      pending ??= [];
+      pending.push(program.pending);
+    }
+    if (pending === undefined) return undefined;
     return Promise.all(pending).then(
       () => {
         try {
@@ -841,6 +851,17 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       backgroundWarmup: { ...this.backgroundWarmup },
     };
   }
+  inspectRenderPipelineIdentity(pipeline: RenderPipeline) {
+    for (const program of this.programs.values()) {
+      if (
+        program.kind === 'render' &&
+        program.handle === (pipeline as unknown as GPURenderPipeline)
+      )
+        return { localIdentity: program.localIdentity, identity: program.semanticIdentity ?? null };
+    }
+    return undefined;
+  }
+
   private inspectRuntimeRecipe(
     program: Program,
   ): NonNullable<PipelineLibraryInspection['runtimeRequests']>['requests'][number]['pipeline'] {
@@ -888,7 +909,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     descriptor: { readonly label?: string },
     mode: 'sync' | 'async',
   ): CompilationRecord<Program> {
-    const now = performance.now();
+    const now = nowMs();
     return this.compilationRecords.begin({
       program,
       kind,
@@ -968,7 +989,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
                 ? 'indexing'
                 : 'absent',
       stage: program.startedAt === undefined ? 'queued' : 'compiling',
-      elapsedMs: Math.max(0, performance.now() - (program.pendingSince ?? performance.now())),
+      elapsedMs: Math.max(0, nowMs() - (program.pendingSince ?? nowMs())),
       recipe: pod(recipe) as Recipe,
       shaders,
       bindGroupLayouts: pod(bindGroupLayouts) as typeof bindGroupLayouts,
@@ -984,10 +1005,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         throw new Error(
           'Incomplete pipeline library: inspect overflow and unrecordable counts before exporting',
         );
-      if (
-        this.preparingLibraries > 0 ||
-        [...this.programs.values()].some((p) => p.pending !== undefined)
-      )
+      if (this.preparingLibraries > 0 || this.compiling.size > 0)
         throw new Error('Pipeline compilation is pending; export after preparation settles');
       const requestedOnly = options?.requestedOnly === true;
       const used = [...this.programs.values()].filter(
@@ -1067,7 +1085,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     input: PipelineLibraryManifest,
     options: PipelineLibraryPrepareOptions = {},
   ): Promise<Result<PipelineLibraryInspection, RhiError>> {
-    const started = performance.now();
+    const started = nowMs();
     const background = options.background === true;
     this.indexingLibraries++;
     this.preparingLibraries++;
@@ -1079,7 +1097,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     }
     const settle = (failed: boolean) => {
       this.preparingLibraries--;
-      lane.elapsedMs += performance.now() - started;
+      lane.elapsedMs += nowMs() - started;
       if (!background) return;
       this.backgroundFailed ||= failed;
       if (--this.backgroundRunning === 0)
@@ -1331,6 +1349,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
   dispose(): void {
     this.closed = true;
     this.compilationRecords.clear();
+    this.compiling.clear();
     this.programs.clear();
     this.retained = new WeakMap();
     for (const records of this.collectors) records.clear();

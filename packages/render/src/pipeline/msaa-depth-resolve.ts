@@ -20,42 +20,87 @@ export const MSAA_NEAREST_DEPTH_WGSL = /* wgsl */ `
   let p = vec2f(f32((index << 1u) & 2u), f32(index & 2u));
   return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
 }
-@fragment fn fs_resolve_depth(@builtin(position) position: vec4f) -> @builtin(frag_depth) f32 {
+fn nearestSample(pixel: vec2i) -> vec2u {
   var nearest = 0.0;
+  var selected = 0u;
   for (var sample = 0u; sample < textureNumSamples(sourceDepth); sample++) {
-    nearest = max(nearest, textureLoad(sourceDepth, vec2i(position.xy), i32(sample)));
+    let depth = textureLoad(sourceDepth, pixel, i32(sample));
+    if (depth > nearest) {
+      nearest = depth;
+      selected = sample;
+    }
   }
-  return nearest;
+  return vec2u(bitcast<u32>(nearest), selected);
+}
+@fragment fn fs_resolve_depth(@builtin(position) position: vec4f) -> @builtin(frag_depth) f32 {
+  return bitcast<f32>(nearestSample(vec2i(position.xy)).x);
+}
+@group(0) @binding(1) var sourceTemporal: texture_multisampled_2d<f32>;
+struct Surface {
+  @builtin(frag_depth) depth: f32,
+  @location(0) temporal: vec4f,
+};
+@fragment fn fs_resolve_surface(@builtin(position) position: vec4f) -> Surface {
+  let pixel = vec2i(position.xy);
+  let hit = nearestSample(pixel);
+  return Surface(bitcast<f32>(hit.x), textureLoad(sourceTemporal, pixel, i32(hit.y)));
 }
 `;
 
-/** Per-pixel depth for AO/volume consumers; never a center-coverage SceneData producer. */
+/** Resolve one sample identity for the screen depth and, when requested, its motion. */
 export function addMsaaNearestDepthResolve(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   depth: RenderPipelineTarget,
   size: GraphTextureDescriptor['size'],
   name: string,
-): Result<RenderPipelineTarget, RenderGraphError> {
+  options: {
+    readonly temporal?: RenderPipelineTarget | undefined;
+    readonly format?: 'depth32float' | 'depth32float-stencil8';
+  } = {},
+): Result<
+  { readonly depth: RenderPipelineTarget; readonly temporal?: RenderPipelineTarget },
+  RenderGraphError
+> {
   const source = graph.view(depth.texture, { dimension: '2d', aspect: 'depth-only' });
   if (!source.ok) return source;
+  const { temporal: sourceTemporal, format = 'depth32float' } = options;
   const target = createRenderPipelineTarget(graph, `${name}-depth`, {
-    format: 'depth32float',
+    format,
     size,
   });
   if (!target.ok) return target;
+  const motion =
+    sourceTemporal === undefined
+      ? ok(undefined)
+      : createRenderPipelineTarget(graph, 'standard-scene-temporal', {
+          format: 'rgba16float',
+          size,
+        });
+  if (!motion.ok) return motion;
+  const temporal = motion.value;
   let state: { pipeline: RenderPipeline; layout: BindGroupLayout } | undefined;
-  let binding: { source: TextureView; group: BindGroup } | undefined;
+  let binding:
+    | { source: TextureView; temporal: TextureView | undefined; group: BindGroup }
+    | undefined;
   const pass = graph.addRasterPass(name, {
     accesses: [
       { resource: source.value, usage: 'sampled-read' },
       { resource: target.value.view, usage: 'depth-stencil-write' },
+      ...(sourceTemporal === undefined || temporal === undefined
+        ? []
+        : [
+            { resource: sourceTemporal.view, usage: 'sampled-read' as const },
+            { resource: temporal.view, usage: 'color-attachment' as const },
+          ]),
     ],
-    colorAttachments: [],
+    colorAttachments:
+      temporal === undefined ? [] : [{ view: temporal.view, loadOp: 'clear', storeOp: 'store' }],
     depthStencilAttachment: {
       view: target.value.view,
       depthClearValue: 0,
       depthLoadOp: 'clear',
       depthStoreOp: 'store',
+      ...(format.includes('stencil') ? { stencilReadOnly: true } : {}),
     },
     encodeDirect(pass, frame, resources) {
       const device = frame.runtime.device;
@@ -79,6 +124,19 @@ export function addMsaaNearestDepthResolve(
                 visibility: GPU_SHADER_STAGE_FRAGMENT,
                 texture: { sampleType: 'depth', viewDimension: '2d', multisampled: true },
               },
+              ...(sourceTemporal === undefined
+                ? []
+                : [
+                    {
+                      binding: 1,
+                      visibility: GPU_SHADER_STAGE_FRAGMENT,
+                      texture: {
+                        sampleType: 'unfilterable-float' as const,
+                        viewDimension: '2d' as const,
+                        multisampled: true,
+                      },
+                    },
+                  ]),
             ],
           })
           .unwrap();
@@ -89,10 +147,14 @@ export function addMsaaNearestDepthResolve(
               label: name,
               layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }).unwrap(),
               vertex: { module, entryPoint: 'vs_main', buffers: [] },
-              fragment: { module, entryPoint: 'fs_resolve_depth', targets: [] },
+              fragment: {
+                module,
+                entryPoint: temporal === undefined ? 'fs_resolve_depth' : 'fs_resolve_surface',
+                targets: temporal === undefined ? [] : [{ format: temporal.format }],
+              },
               primitive: { topology: 'triangle-list' },
               depthStencil: {
-                format: 'depth32float',
+                format,
                 depthWriteEnabled: true,
                 depthCompare: 'always',
               },
@@ -101,13 +163,28 @@ export function addMsaaNearestDepthResolve(
         };
       }
       const view = resources.textureView(source.value).unwrap();
-      if (binding?.source !== view)
+      const temporalView =
+        sourceTemporal === undefined
+          ? undefined
+          : resources.textureView(sourceTemporal.view).unwrap();
+      if (binding?.source !== view || binding.temporal !== temporalView)
         binding = {
           source: view,
+          temporal: temporalView,
           group: device
             .createBindGroup({
               layout: state.layout,
-              entries: [{ binding: 0, resource: { kind: 'textureView', value: view } }],
+              entries: [
+                { binding: 0, resource: { kind: 'textureView', value: view } },
+                ...(temporalView === undefined
+                  ? []
+                  : [
+                      {
+                        binding: 1,
+                        resource: { kind: 'textureView' as const, value: temporalView },
+                      },
+                    ]),
+              ],
             })
             .unwrap(),
         };
@@ -116,5 +193,7 @@ export function addMsaaNearestDepthResolve(
       pass.draw(3);
     },
   });
-  return pass.ok ? ok(target.value) : pass;
+  return pass.ok
+    ? ok({ depth: target.value, ...(temporal === undefined ? {} : { temporal }) })
+    : pass;
 }

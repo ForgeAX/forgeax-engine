@@ -7,6 +7,8 @@ description: >-
 
 # forgeax-engine-ecs
 
+[Simplified Chinese](SKILL.zh-CN.md)
+
 > **A World's simulation schedules are `Update` for variable-rate work and `FixedUpdate` for fixed-rate work.** Register with a schedule token first, then advance both through `world.update(deltaSeconds)`. A non-simulation domain (the renderer) declares its phases with `defineSchedule(name)` and runs them explicitly with `world.run(token)`, which never advances time.
 
 ## One-screen takeoff
@@ -52,6 +54,13 @@ For owner-package numeric reads into existing scratch, use
 live row and returns the current count, or `undefined` without writing for a
 missing field or insufficient target. Inline fields avoid transient row views;
 variable fields retain live pool lookup. Keep ordinary gameplay on World/Query.
+
+`Disabled` excludes an entity from ordinary queries; it does not remove its
+relationships. Scene propagation skips a valid disabled child, preserves its
+derived matrix and resumes it after re-enabling. Keep participating descendants
+under participating Transform ancestors; Scene preparation rejects an enabled
+descendant of an author-disabled ancestor. Follow the [Scene contract](../../packages/scene/README.md)
+for owner-only inactive preparation and bounded retirement.
 
 ## Cordis owns lifecycle; ECS runs the hot path
 

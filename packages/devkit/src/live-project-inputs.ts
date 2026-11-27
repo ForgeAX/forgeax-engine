@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { BigIntStats } from 'node:fs';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { isFilesystemPathWithin } from './filesystem-path.js';
@@ -72,39 +73,25 @@ function isTestSource(path: string): boolean {
  * edit that starts importing a test file changes the hash itself, and the next
  * scope then lists it. Without a scope every file stays an input.
  */
-function testSourceOutsideScope(
-  projectRoot: string,
-  inputPaths: readonly string[] | undefined,
-): (key: string, path: string, canonicalPath: string) => boolean {
-  if (inputPaths === undefined || inputPaths.includes(projectRoot)) return () => false;
+function testSourceOutsideScope(inputPaths: readonly string[] | undefined) {
+  if (inputPaths === undefined) return () => false;
   const scope = new Set(inputPaths.map((path) => resolve(path)));
-  return (key, path, canonicalPath) =>
+  return (key: string, path: string, canonicalPath: string) =>
     isTestSource(key) && !scope.has(resolve(path)) && !scope.has(canonicalPath);
 }
 
-type InputFile = {
-  readonly path: string;
-  readonly key: string;
-  readonly metadata: {
-    readonly dev: bigint;
-    readonly ino: bigint;
-    readonly size: bigint;
-    readonly mtimeNs: bigint;
-    readonly ctimeNs: bigint;
-    readonly mode: bigint;
-  };
-};
+type InputIdentity = Pick<BigIntStats, 'dev' | 'ino' | 'size' | 'mtimeNs' | 'ctimeNs' | 'mode'>;
 
-function hashFile(hash: ReturnType<typeof createHash>, file: InputFile): void {
+function hashFile(hash: ReturnType<typeof createHash>, key: string, metadata: InputIdentity): void {
   hash.update(
     JSON.stringify([
-      file.key,
-      file.metadata.dev.toString(),
-      file.metadata.ino.toString(),
-      file.metadata.size.toString(),
-      file.metadata.mtimeNs.toString(),
-      file.metadata.ctimeNs.toString(),
-      file.metadata.mode.toString(),
+      key,
+      metadata.dev.toString(),
+      metadata.ino.toString(),
+      metadata.size.toString(),
+      metadata.mtimeNs.toString(),
+      metadata.ctimeNs.toString(),
+      metadata.mode.toString(),
     ]),
   );
 }
@@ -145,29 +132,21 @@ function documentationReferences(source: string): readonly DocumentationReferenc
       base: 'source',
     },
   ];
+  const admit = (reference: string | undefined, base: DocumentationReference['base']) => {
+    if (reference === undefined) return;
+    const query = reference.search(/[?#]/);
+    const path = query < 0 ? reference : reference.slice(0, query);
+    const extension = path.slice(path.lastIndexOf('.')).toLowerCase();
+    if (documentationExtensions.has(extension)) references.set(`${base}:${path}`, { path, base });
+  };
   for (const { pattern, base } of patterns) {
-    for (const match of source.matchAll(pattern)) {
-      const reference = match[1];
-      if (reference === undefined) continue;
-      const query = reference.search(/[?#]/);
-      const path = query < 0 ? reference : reference.slice(0, query);
-      const extension = path.slice(path.lastIndexOf('.')).toLowerCase();
-      if (documentationExtensions.has(extension)) references.set(`${base}:${path}`, { path, base });
-    }
+    for (const match of source.matchAll(pattern)) admit(match[1], base);
   }
   // new URL() is source-relative only with the explicit module base. Any
   // other base (or no base) remains conservative without parsing the module.
   const urlPattern = /\bnew\s+URL\s*\(\s*['"`]([^'"`\r\n]+)['"`]\s*(?:,\s*([^)]*))?\)/g;
-  for (const match of source.matchAll(urlPattern)) {
-    const reference = match[1];
-    if (reference === undefined) continue;
-    const query = reference.search(/[?#]/);
-    const path = query < 0 ? reference : reference.slice(0, query);
-    const extension = path.slice(path.lastIndexOf('.')).toLowerCase();
-    if (!documentationExtensions.has(extension)) continue;
-    const base = match[2]?.trim() === 'import.meta.url' ? 'source' : 'unknown';
-    references.set(`${base}:${path}`, { path, base });
-  }
+  for (const match of source.matchAll(urlPattern))
+    admit(match[1], match[2]?.trim() === 'import.meta.url' ? 'source' : 'unknown');
   return [...references.values()];
 }
 
@@ -232,9 +211,10 @@ export async function readLiveProjectInputs(
 ): Promise<string> {
   const projectRoot = resolve(root);
   const hash = createHash('sha256');
-  const authorFiles: InputFile[] = [];
-  const documentationFiles: InputFile[] = [];
-  const outsideScope = testSourceOutsideScope(projectRoot, inputPaths);
+  const scopedInputs = inputPaths?.includes(projectRoot) ? undefined : inputPaths;
+  const authorFiles: string[] = [];
+  const documentationFiles: { path: string; key: string; metadata: InputIdentity }[] = [];
+  const outsideScope = testSourceOutsideScope(scopedInputs);
   async function directory(
     path: string,
     relative: string,
@@ -254,35 +234,29 @@ export async function readLiveProjectInputs(
       );
       for (const { name, metadata } of rows) {
         const key = `${relative}/${name}`;
+        const filePath = join(path, name);
         if (metadata.isDirectory()) {
-          await directory(join(path, name), key, next);
+          await directory(filePath, key, next);
         } else if (metadata.isFile()) {
-          const file = {
-            path: join(path, name),
-            key,
-            metadata: {
-              dev: metadata.dev,
-              ino: metadata.ino,
-              size: metadata.size,
-              mtimeNs: metadata.mtimeNs,
-              ctimeNs: metadata.ctimeNs,
-              mode: metadata.mode,
-            },
-          } satisfies InputFile;
-          if (outsideScope(key, file.path, join(canonical, name))) continue;
+          if (outsideScope(key, filePath, join(canonical, name))) continue;
           if (isAuthorFile(name)) {
-            authorFiles.push(file);
-            hashFile(hash, file);
-          } else {
-            documentationFiles.push(file);
+            authorFiles.push(filePath);
+            hashFile(hash, key, metadata);
+          } else if (scopedInputs === undefined) {
+            const { dev, ino, size, mtimeNs, ctimeNs, mode } = metadata;
+            documentationFiles.push({
+              path: filePath,
+              key,
+              metadata: { dev, ino, size, mtimeNs, ctimeNs, mode },
+            });
           }
         } else {
-          throw new Error(`Unsupported project input: ${join(path, name)}`);
+          throw new Error(`Unsupported project input: ${filePath}`);
         }
       }
     }
   }
-  if (inputPaths === undefined || inputPaths.includes(projectRoot)) {
+  if (scopedInputs === undefined) {
     // Before the project compiler publishes its scope, retain conservative
     // startup observation. Accepted sessions use its actual observed paths.
     await directory(projectRoot, '', new Set());
@@ -296,10 +270,10 @@ export async function readLiveProjectInputs(
       assetsExist = false;
     }
     if (assetsExist) await directory(assets, '/assets', new Set());
-    const admitted = new Set(authorFiles.map((file) => resolve(file.path)));
-    for (let start = 0; start < inputPaths.length; start += 32) {
+    const admitted = new Set(authorFiles.map((path) => resolve(path)));
+    for (let start = 0; start < scopedInputs.length; start += 32) {
       const rows = await Promise.all(
-        inputPaths.slice(start, start + 32).map(async (path) => {
+        scopedInputs.slice(start, start + 32).map(async (path) => {
           path = resolve(path);
           if (admitted.has(path)) return;
           try {
@@ -318,7 +292,7 @@ export async function readLiveProjectInputs(
         if (!row) continue;
         const key = relative(projectRoot, row.path);
         if (row.metadata === undefined) hash.update(JSON.stringify([key, 'absent']));
-        else hashFile(hash, { path: row.path, key, metadata: row.metadata });
+        else hashFile(hash, key, row.metadata);
       }
     }
     return hash.digest('hex');
@@ -336,25 +310,25 @@ export async function readLiveProjectInputs(
   // scanning those calls would conservatively pull every README/evidence file
   // into the runtime closure and make an unrelated document edit reload App.
   const referenceFiles = authorFiles.filter(
-    (file) => isReferenceSource(file.path) && !isTestSource(file.path),
+    (path) => isReferenceSource(path) && !isTestSource(path),
   );
   // A dynamic loader already admits every document. Further reference scans
   // cannot widen that set; retain all file identity checks above without
   // decoding the rest of a potentially large asset/evidence tree.
   scanReferences: for (let offset = 0; offset < referenceFiles.length; offset += 32) {
     const rows = await Promise.all(
-      referenceFiles.slice(offset, offset + 32).map(async (file) => {
+      referenceFiles.slice(offset, offset + 32).map(async (path) => {
         try {
-          return { file, source: await readFile(file.path, 'utf8') };
+          return { path, source: await readFile(path, 'utf8') };
         } catch (cause) {
           throw new Error(
-            `Cannot read live project input ${file.path}: ${cause instanceof Error ? cause.message : String(cause)}`,
+            `Cannot read live project input ${path}: ${cause instanceof Error ? cause.message : String(cause)}`,
             { cause },
           );
         }
       }),
     );
-    for (const { file, source } of rows) {
+    for (const { path: sourcePath, source } of rows) {
       if (hasDynamicDocumentationDependency(source)) {
         includeAllDocumentation = true;
         break scanReferences;
@@ -368,13 +342,14 @@ export async function readLiveProjectInputs(
           includeAllDocumentation = true;
           break scanReferences;
         }
-        const resolved = resolveDocumentationReference(projectRoot, file.path, path, base);
+        const resolved = resolveDocumentationReference(projectRoot, sourcePath, path, base);
         if (resolved !== undefined) referenced.add(resolved);
       }
     }
   }
   for (const file of documentationFiles.sort((left, right) => left.key.localeCompare(right.key))) {
-    if (includeAllDocumentation || referenced.has(resolve(file.path))) hashFile(hash, file);
+    if (includeAllDocumentation || referenced.has(resolve(file.path)))
+      hashFile(hash, file.key, file.metadata);
   }
   return hash.digest('hex');
 }

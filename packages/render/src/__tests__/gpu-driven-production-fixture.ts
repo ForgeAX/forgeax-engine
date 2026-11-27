@@ -106,16 +106,12 @@ export function standardPbrInputs(
   device: RhiDevice,
   shader: ShaderModule,
   viewLayout: BindGroupLayout,
+  materialLayout = device.createBindGroupLayout({ entries: [] }).unwrap(),
 ): Pick<
   Parameters<GpuDrivenProduction['prepare']>[0],
   'materialArtifact' | 'materialPipelineState'
 > {
-  const materialLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
-  const meshLayout = device
-    .createBindGroupLayout({
-      entries: [{ binding: 0, visibility: 1, buffer: { type: 'read-only-storage' } }],
-    })
-    .unwrap();
+  const meshLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
   const instancesLayout = device
     .createBindGroupLayout({
       entries: [
@@ -149,6 +145,7 @@ export function standardPbrInputs(
       meshBindGroupLayout: meshLayout,
       instancesBindGroupLayout: instancesLayout,
       gpuDrivenInstancesBindGroupLayout: instancesLayout,
+      gpuDrivenPrimitiveBindGroupLayout: meshLayout,
       gpuDrivenPbrPipelineLayout: pbrPipelineLayout,
       gpuDrivenPbrPrograms: new Map([[programKey, { module: shader, artifact }]]),
       standardPbrShaderUvSetCount: 1,
@@ -314,7 +311,7 @@ export function admitGpuFixture(
           clustered: input.clustered ?? false,
           reflectionFallback: false,
           probeBlend: input.probeBlendRecordBuffer !== undefined,
-          shadowViews: input.shadowViews ?? false,
+          demand: input.shadowViews ? 'forward-and-shadow' : 'forward',
         })
       : {
           batchExecutions: input.batchExecutions,

@@ -21,9 +21,10 @@ function actualDrawRequest(source: object, camera: number): RenderFrameInput {
   };
   visit(tree);
   if (expression === undefined) throw new Error('Missing actual fixture draw request');
-  return new Function('lease', 'camera', `return (${expression.getText(tree)});`)(
+  return new Function('lease', 'camera', 'scenario', `return (${expression.getText(tree)});`)(
     source,
     camera,
+    {},
   ) as RenderFrameInput;
 }
 

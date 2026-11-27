@@ -29,6 +29,7 @@ export {
 export { ADDITIVE_BLEND, SPRITE_PREMULTIPLIED_ALPHA_BLEND } from './materials';
 export {
   addForwardOutputBloom,
+  createPremultipliedForwardPipeline,
   createStandardForwardPipeline,
   type StandardForwardOutput,
 } from './pipeline/standard-forward-output';

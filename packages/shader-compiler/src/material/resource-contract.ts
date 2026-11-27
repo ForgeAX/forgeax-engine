@@ -125,7 +125,8 @@ export function validateMaterialProgramBindings(
         ? 0
         : contract === 'view-and-scene-depth' ||
             contract === 'render-material-and-scene-depth' ||
-            contract === 'render-standard-material-and-scene-depth'
+            contract === 'render-standard-material-and-scene-depth' ||
+            contract === 'render-lit-material-and-scene-depth'
           ? 1
           : undefined;
     const depths =

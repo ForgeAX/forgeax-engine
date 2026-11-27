@@ -9,7 +9,12 @@ import type {
   RenderSceneBounds,
   RenderSceneSlot,
 } from '../scene/render-scene-types';
-import { CONTENT_BOX, CONTENT_CHANGED, RowChangeLog } from '../scene/row-change-log';
+import {
+  CONTENT_BOX,
+  CONTENT_CHANGED,
+  CONTENT_UNBOUNDED,
+  RowChangeLog,
+} from '../scene/row-change-log';
 
 const slot = {
   entityKey: 1,
@@ -139,6 +144,63 @@ describe('GpuSceneContentBoxes slot boxes', () => {
     log.recordContent(3, new Set([99]));
     expect(log.changedSince(2, 3)).toBe('unbounded');
     expect(log.changedSince(2, 3, new Set([99]))).toEqual(new Float32Array());
+  });
+
+  it('observes each caller membership and keeps returned changes detached', () => {
+    const log = new Journal();
+    log.record(1, delta({ createdSlots: [slot] }), () => union);
+    const ignored = new Set([slot.slot]);
+    expect(log.changedSince(0, 1, ignored)).toEqual(new Float32Array());
+    ignored.clear();
+    const change = log.changedSince(0, 1, ignored);
+    expect(change).toEqual(Float32Array.of(0, 0, 0, 512, 2, 512));
+    if (change === 'unbounded') throw Error('expected a box');
+    change.fill(99);
+    expect(log.changedSince(0, 1, ignored)).toEqual(Float32Array.of(0, 0, 0, 512, 2, 512));
+  });
+
+  it('owns bound coordinates only for pages containing a bounded slot', () => {
+    const log = new Journal();
+    const far = { ...slot, slot: 1_000_000 };
+    const neighbor = { ...slot, slot: far.slot + 1 };
+    const pages = (
+      log.boxes as unknown as {
+        pages: ReadonlyMap<number, { state: Uint8Array; values?: Float32Array }>;
+      }
+    ).pages;
+    log.record(1, delta({ createdSlots: [far, neighbor] }));
+    expect(pages.size).toBe(1);
+    const page = pages.get(Math.floor(far.slot / 64));
+    expect(page?.state.byteLength).toBe(64);
+    expect(page?.values).toBeUndefined();
+    log.record(2, delta({ updatedSlots: [far, neighbor] }), () => union);
+    expect(page?.values?.byteLength).toBe(64 * 6 * 4);
+    log.record(3, delta({ removedSlots: [far] }));
+    expect(page?.values).toBeDefined();
+    log.record(4, delta({ updatedSlots: [neighbor] }));
+    expect(page?.values).toBeUndefined();
+    log.record(5, delta({ removedSlots: [neighbor] }));
+    expect(pages.size).toBe(0);
+  });
+
+  it('records each occupied or empty slot once across overlapping update lanes', () => {
+    const log = new Journal();
+    const live = [31, 63, 64].map((address) => ({ ...slot, slot: address }));
+    const empty = {
+      ...slot,
+      slot: 95,
+      snapshot: { instances: { instanceCount: 0 } },
+    } as RenderSceneSlot;
+    const rows = [...live, empty, ...live, empty];
+    for (let step = 1; step <= 2; step++) {
+      const visited: number[] = [];
+      log.record(step, delta({ updatedSlots: rows, contentUpdatedSlots: rows }), (row) => {
+        visited.push(row.slot);
+        return row === empty ? undefined : union;
+      });
+      expect(visited).toEqual([31, 63, 64, 95]);
+      expect(log.changedSlotsSince(step - 1, step)).toEqual(visited);
+    }
   });
 
   it('records the old and new union of an instance-only update', () => {
@@ -288,6 +350,75 @@ describe('RowChangeLog content entries', () => {
       }),
     ).toBe('done');
     expect(content).toEqual([[5, CONTENT_BOX | CONTENT_CHANGED, [1, 2, 3, 4, 5, 6]]]);
+  });
+
+  it('bounds partial-shadow reads after applying slot membership and history', () => {
+    const journal = new RowChangeLog();
+    const boxes = new GpuSceneContentBoxes();
+    const before = { journal, position: journal.position };
+    for (let i = 0; i < 512; i++) journal.appendContent(i, CONTENT_BOX, [i, 0, 0, i + 1, 1, 1]);
+    const now = { journal, position: journal.position };
+    let observed = 0;
+    const even = {
+      has(slot: number) {
+        observed++;
+        return slot % 2 === 0;
+      },
+    };
+    const ignored = new Set([0, 2]);
+    expect(boxes.changedSince(before, now, ignored, even, 64)).toBe('unbounded');
+    // The first two qualifying slots were ignored. Entry 132 is the 65th retained box.
+    expect(observed).toBe(131);
+    const end = { journal, position: 132 };
+    const full = boxes.changedSince(before, end, ignored, even);
+    expect(full).toHaveLength(64 * 6);
+    expect(boxes.changedSince(before, end, ignored, even, 64)).toEqual(full);
+    const first = new Set([0, 1]);
+    expect(boxes.slotBoundsSince(before, now, first, 1)).toBe('unbounded');
+    expect(boxes.slotBoundsSince(before, now, first, 2)).toEqual(
+      boxes.slotBoundsSince(before, now, first),
+    );
+  });
+
+  it('keeps old and new bounded evidence readable when box addresses cross 32 bits', () => {
+    const log = new RowChangeLog();
+    const start = 2 ** 32 - 2;
+    Reflect.set(log, 'boxHead', start);
+    Reflect.set(log, 'boxTail', start);
+    const before = log.position;
+    for (let slot = 0; slot < 128; slot++) {
+      log.append(slot, 'update', 17, 1024);
+      log.appendContent(slot, CONTENT_BOX | CONTENT_CHANGED, [slot, 2, 3, slot + 1, 4, 5]);
+    }
+    const boxes = new GpuSceneContentBoxes();
+    const since = { journal: log, position: before };
+    const now = { journal: log, position: log.position };
+    const touched: number[] = [];
+    expect(
+      boxes.changedBoundsMiss(since, now, (values, at) => {
+        touched.push(values[at] as number);
+        return true;
+      }),
+    ).toBe(true);
+    expect(touched).toEqual(Array.from({ length: 128 }, (_, i) => i));
+    for (let i = 0; i < 1200; i++) log.appendContent(i, CONTENT_BOX, [i, 0, 0, i + 1, 1, 1]);
+    expect(log.visitContent(before, now.position, () => true)).toBe('lapsed');
+    expect(log.visitContent(log.position - 64, log.position, () => true)).toBe('done');
+  });
+
+  it('keeps a missing box conservative when another slot already owns coordinates', () => {
+    const log = new RowChangeLog();
+    log.appendContent(0, CONTENT_BOX, [0, 1, 2, 3, 4, 5]);
+    const start = log.position;
+    log.appendContent(1, CONTENT_BOX | CONTENT_CHANGED);
+    const flags: number[] = [];
+    expect(
+      log.visitContent(start, log.position, (_slot, value) => {
+        flags.push(value);
+        return true;
+      }),
+    ).toBe('done');
+    expect(flags).toEqual([CONTENT_CHANGED | CONTENT_UNBOUNDED]);
   });
 
   it('lapses a content cursor whose box the ring overwrote', () => {

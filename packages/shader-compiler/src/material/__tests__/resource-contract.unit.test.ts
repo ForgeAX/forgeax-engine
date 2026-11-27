@@ -31,6 +31,22 @@ it.each([
 });
 
 it.each([
+  'read-only',
+  'before-pass',
+] as const)('admits explicit custom-lit depth: %s', (sceneDepth) => {
+  expect(
+    validateMaterialProgramBindings(
+      {
+        module: 'game::lit',
+        bindings: 'render-lit-material-and-scene-depth',
+        sceneDepth,
+      },
+      depth,
+    ),
+  ).toBeUndefined();
+});
+
+it.each([
   { module: 'game::depth' },
   { module: 'game::depth', bindings: 'render-material-and-scene-depth' },
   { module: 'game::depth', bindings: 'render-material', sceneDepth: 'before-pass' },

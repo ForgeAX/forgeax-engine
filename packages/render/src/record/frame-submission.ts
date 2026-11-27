@@ -1,3 +1,4 @@
+import type { DrawRows } from './frame-snapshot';
 // Display-frame submission: the optional parts of the pass context grouped by
 // their owner, the submission hooks that fence/track/commit every prepared
 // owner, capture-only submission, and the post-submission promotions.
@@ -35,7 +36,7 @@ import {
   hasDiffuseGiWork,
   trackDiffuseGi,
 } from './frame-diffuse-gi';
-import type { RenderFrameState, ValidatedRenderable } from './frame-snapshot';
+import type { RenderFrameState } from './frame-snapshot';
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
 
 type ShadowPublication = ReturnType<typeof currentDirectionalShadowPublication>;
@@ -196,7 +197,7 @@ export function shadowPassContext(
   cascadeCadence: CascadeCadence | undefined,
   capsuleShadowLight: _InternalRenderPipelineContext['capsuleShadowLight'],
   publishShadowRows: boolean,
-  shadowValidatedOrdered: readonly ValidatedRenderable[],
+  shadowValidatedOrdered: DrawRows,
   shadowMaterialRowBase: number,
 ): Pick<
   Partial<_InternalRenderPipelineContext>,

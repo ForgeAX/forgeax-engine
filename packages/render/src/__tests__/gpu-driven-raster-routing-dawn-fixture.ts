@@ -10,6 +10,7 @@ import type { GpuDrivenProduction, PreparedGpuDrivenFrame } from '../gpu-driven/
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage';
 import { RhiErrorListenerRegistry } from '../lifecycle';
 import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record/frame-snapshot';
+import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import { ensureShadowDepthLayers } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
@@ -33,6 +34,7 @@ export async function verifyRetainedRasterRouting(input: {
   readonly persistentFrame: ExtractedFrame;
   readonly viewBindGroup: BindGroup;
   readonly materialBindGroup: BindGroup;
+  readonly reflection: import('../reflection/primitive-bindings').PrimitiveReflection;
 }): Promise<void> {
   const { device } = input;
   const originalMesh = input.prepareInput.meshBySlot?.values().next().value;
@@ -101,7 +103,9 @@ export async function verifyRetainedRasterRouting(input: {
                     (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
                     (slot: number) => {
                       const group = groups[slot];
-                      return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+                      return group === undefined
+                        ? undefined
+                        : { group, byteOffset: slot * 1280, reflection: input.reflection };
                     }
                   )([input.materialBindGroup]),
                 },
@@ -139,6 +143,8 @@ export async function verifyRetainedRasterRouting(input: {
     compiledFrameGraph: null,
     compiledFrameGraphGeneration: 0,
     retiredCompiledFrameGraphs: new Set(),
+    materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+    meshBindGroupCache: new WeakMap(),
     activePipeline,
     installedPipelineConfig: undefined,
   } as unknown as RenderFrameState;

@@ -1,6 +1,8 @@
 import { fireEvent, render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { ViewerPanels } from '../App';
+import { ViewerLocaleContext } from '../i18n';
+import zh from '../locales/zh.json';
 import type { ViewerModel } from '../viewer-model';
 import { makeEmptyResourceLifecycle } from './viewer-model-fixtures';
 
@@ -69,7 +71,12 @@ function model(): ViewerModel {
 
 describe('v7 cross-panel linkage', () => {
   it('uses one workIndex selection for pipeline, draw call, and resource panels', () => {
-    const { container } = render(<ViewerPanels model={model()} />);
+    const capture = model();
+    const { container, rerender } = render(
+      <ViewerLocaleContext.Provider value="en">
+        <ViewerPanels model={capture} />
+      </ViewerLocaleContext.Provider>,
+    );
     fireEvent.click(container.querySelector('[data-forgeax-work-index="0"]') as HTMLElement);
 
     expect(container.querySelector('[data-forgeax-pipeline-state="selected"]')).not.toBeNull();
@@ -84,6 +91,28 @@ describe('v7 cross-panel linkage', () => {
     );
     expect(container.textContent).toContain('Resource facts');
     expect(container.textContent).toContain('buffer:linked');
+    const filter = container.querySelector(
+      '[data-forgeax-resource-inspector] input',
+    ) as HTMLInputElement;
+    fireEvent.change(filter, { target: { value: 'buffer:' } });
+    filter.focus();
+    const selectedRow = container.querySelector(
+      '[data-forgeax-work-index="0"][data-forgeax-selected="true"]',
+    );
+    rerender(
+      <ViewerLocaleContext.Provider value="zh">
+        <ViewerPanels model={capture} />
+      </ViewerLocaleContext.Provider>,
+    );
+    expect(container.textContent).toContain(zh.resourceFacts);
+    expect(container.querySelector('[data-forgeax-resource-inspector] input')).toBe(filter);
+    expect(filter.value).toBe('buffer:');
+    expect(document.activeElement).toBe(filter);
+    expect(container.textContent).toContain('buffer:linked');
+    expect(
+      container.querySelector('[data-forgeax-work-index="0"][data-forgeax-selected="true"]'),
+    ).toBe(selectedRow);
+    expect(container.querySelector('[data-forgeax-pipeline-state="selected"]')).not.toBeNull();
   });
 
   it('keeps workspace topology outside the selected model and replay facts', () => {

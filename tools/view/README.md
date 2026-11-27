@@ -1,5 +1,7 @@
 # ForgeaX View
 
+English | [简体中文](README.zh-CN.md)
+
 View is an optional asset viewer and project workspace and read-only observer of Engine AI runs.
 The CLI and frontend are clients of Engine APIs. The Engine service owns runs,
 project facts, assets, scenes, observation, capture, and termination; View owns
@@ -33,33 +35,40 @@ See the authoring design.
 
 Agent guidance: [forgeax-view-start](skills/forgeax-view-start/SKILL.md).
 
+The initial language uses a saved user choice first, then the primary
+browser/system language preference (`navigator.languages[0]`, or `navigator.language`
+when that list is unavailable). English is the default and the only fallback. Automatic
+detection does not save a user choice; the language menu does.
+
 `pnpm test` and `pnpm test:view` run both the top-level suites and each package's
 `src/*.test.mjs` and `src/__tests__` owner regressions. Paired Engine and View CI use these same entries.
 
-### One-file startup
+### Open a project
 
-Use the View file included in the complete Engine or SDK installation. Source
-checkouts use the same location:
+From the game root, open the URL returned by the Engine authoring installation.
 
 ```sh
-# Ordinary npm game, from its root:
-node ./node_modules/@forgeax/engine/tools/view/start.mjs --project .
-# Explicit SDK or source installation:
-node /path/to/forgeax-engine/tools/view/start.mjs
-node /path/to/forgeax-engine/tools/view/start.mjs --project /path/to/game
-node /path/to/forgeax-engine/tools/view/start.mjs --new-instance --project /path/to/another-game
+forgeax project view --json
 ```
 
-View resolves its matching Engine from its installation and reads its own
-`host.pack.json`. Published outputs are built already. A source contributor can
-prepare missing outputs with
+For a prepared contributor checkout, start the View file directly.
+
+```sh
+node /path/to/forgeax-engine/tools/view/start.mjs --project /path/to/game
+```
+
+The installed Engine supplies its matching View Host Pack and built presentation.
+A source contributor can prepare missing outputs with
 `node tools/view/skills/forgeax-view-start/scripts/start-view.mjs [--project G]`;
 ordinary startup uses the root file with prepared outputs. See the
 [contributor guide](skills/forgeax-view-start/CONTRIBUTOR.md) for source preparation
-and native host integration. The published startup skill contains only consumer
-guidance; no global SDK or game-level launcher is required.
+and native host integration. No game-level launcher is required.
 
-The initial JSON includes `enginePackage`, `viewRoot`, `hostPack`, requested
+The bottom-right footer displays the hosting Engine package version (for example,
+`Engine 0.5.2`), including while the backend is preparing or disconnected. View's
+independent package version and the selected game do not determine this label.
+
+The source file's initial JSON includes `enginePackage`, `viewRoot`, `hostPack`, requested
 `project`, `url`, Backend `root` and `phase: preparing`. This is an announcement,
 not live status. `--help` starts no services; the file emits JSON without `--json`.
 An incomplete installation reports the missing output before allocating an instance.
@@ -84,8 +93,13 @@ precedence. Use the returned H explicitly for subsequent instance controls.
 Omitting G leaves a fresh owner unbound or preserves its existing project. The
 offline Shell can start the backend with optional G. A connected unbound Shell
 offers known/recent projects and a shallow folder picker; Next validates and
-opens the selection. A bound Shell retains the chooser in the header while
+opens the selection. Double-clicking a known project opens it directly through
+the same admission flow; single-clicking only selects it. A bound Shell retains the chooser in the header while
 showing Engine session preparation and readiness.
+Preparation feedback opens expanded for each project session, showing current
+work and original failure diagnostics. It can collapse to a single status row.
+Project selection stays above
+this feedback so preparation failures cannot block recovery controls.
 
 DevKit owns the durable catalogue outside H and G. `forgeax project list`,
 `project import --path G` and `project browse [--path D]` use that same owner.
@@ -266,35 +280,31 @@ its backend leaves that presentation available for an explicit restart.
 
 ## Source integration and distribution
 
-View retains its own repository and review boundary. Engine selects its exact source
-at `tools/view` and owns the workspace lock, integrated build, SDK inventory and publisher.
-The public npm products are `@forgeax/engine` and `@forgeax/engine-sdk`. The SDK
-embeds View as a private local `@forgeax/view` package, using the same version as
-its Engine dependency. Historical standalone `@forgeax/view` prerelease tags are
-retired; do not use them to pair View with an Engine channel. Install the SDK
-channel to receive its matching View tool. Games install `@forgeax/engine`; they
-do not acquire a View dependency.
+View retains its own repository and review boundary. Engine selects the exact
+source at `tools/view` and owns the workspace lock and integrated build. The
+`@forgeax/engine` authoring archive includes the matching private View tool under
+`authoring/tools/view`. Game manifests declare `@forgeax/engine`.
 
 ```mermaid
 flowchart LR
   Source["View repository"] --> Pin["Engine tools/view gitlink"]
   Pin --> Build["One Engine workspace and lockfile"]
   Plugins["Engine tools/view-plugins source"] --> Build
-  Build --> Tool["SDK cli-runtime: Engine plus private View"]
+  Build --> Tool["Engine authoring archive with private View"]
   Engine["Engine runtime packages"] --> Game["Ordinary game project"]
 ```
 
-The SDK launcher resolves the selected tool's exported `host.pack.json` from its own
-`.forgeax/cli-runtime`. Its install inputs live in `toolchain/cli-runtime`; game template
-inputs remain independent. Resident and embedded entries use the same selected panels
-and frontend plugins. A content-derived revision identifies that build.
+The Engine CLI opens the tool through its exported `host.pack.json`. Earlier SDK
+releases resolve the same contract from their own `.forgeax/cli-runtime`.
+Resident and embedded entries use the same selected panels and frontend plugins.
+A content-derived revision identifies that build.
 
 | Concern | Owner |
 |:--|:--|
 | Generic shell, page/slot/panel services | View |
 | RHI Debug and Profiler presentation | Engine ordinary `tools/view-plugins` source |
 | World, Renderer, capture and model semantics | Existing Engine packages |
-| Paired package versions, source expansion, offline store | Engine SDK pipeline |
+| Paired package versions and authoring archive | Engine packaging pipeline |
 
 Every page declares `context: 'project'` or `context: 'artifact'`. Artifact pages can
 inspect saved captures before opening a project. Scene and asset pages retain project
@@ -1161,6 +1171,12 @@ the exact Engine target/generation. Settings change that preview's display and
 never rewrite the asset. Pixel generation stays on the Engine-owned surface.
 
 ## Paired Engine CI
+
+The four daily shards follow Engine's core roster. Engine #5354 retains
+`diagnostic-texture`, `diagnostic-pack-authoring`, `diagnostic-gpu-2d` and `runtime-ts` as
+independently runnable specialists through `--group`, outside the daily matrix.
+The workflow contract checks complete coverage of every other planned owner and
+verifies that all four specialists remain explicitly runnable.
 
 PR CI defaults to Engine's `main` branch. A PR that introduces a matching Engine
 capability may declare `Engine-Revision: <full commit SHA>` in its description.

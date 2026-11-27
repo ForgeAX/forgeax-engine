@@ -34,6 +34,26 @@ fn sceneTemporalUv(clip : vec4<f32>) -> vec2<f32> {
   return vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
 }
 
+// Jitter adds a constant NDC offset by translating X/Y by clip W.
+// Use the basis rows for perspective so camera translation cannot hide the offset.
+fn sceneTemporalRasterUv(uv: vec2f, raster: mat4x4<f32>, unjittered: mat4x4<f32>) -> vec2f {
+  let basisW = vec3f(raster[0].w, raster[1].w, raster[2].w);
+  let wSquared = dot(basisW, basisW);
+  let uvScale = vec2f(0.5, -0.5);
+  if (wSquared == 0.0) {
+    return uv + (raster[3].xy - unjittered[3].xy) * uvScale;
+  }
+  let d0 = raster[0].xy - unjittered[0].xy;
+  let d1 = raster[1].xy - unjittered[1].xy;
+  let d2 = raster[2].xy - unjittered[2].xy;
+  let offset = (d0 * basisW.x + d1 * basisW.y + d2 * basisW.z) / wSquared;
+  return uv + offset * uvScale;
+}
+
+fn sceneTemporalDepthTexel(rasterUv: vec2f, size: vec2u) -> vec2i {
+  return clamp(vec2i(rasterUv * vec2f(size)), vec2i(0), vec2i(size) - vec2i(1));
+}
+
 // Signed view-space Z shared by temporal reconstruction and Standard Cluster
 // lookup. Both CPU and WGSL binners consume the negative camera-space depth:
 // perspective uses -clip.w, while orthographic depth is reconstructed from
@@ -95,4 +115,52 @@ fn packSceneTemporalV1WithValidity(
     sceneTemporalViewDepth(currentClip, temporalProjection),
     clamp(reactive, 0.0, 1.0) + select(0.0, 2.0, !motionValid),
   );
+}
+
+// Match UE's signed square-root transfer for two UNORM16 components.
+const SCENE_VELOCITY_BIAS = 32767.0 / 65535.0;
+const SCENE_VELOCITY_SCALE = 0.2495;
+const SCENE_VELOCITY_INVALID_MOTION = 0xffffffffu;
+@id(64009) override sceneVelocityWithDepthOutput : bool = false;
+
+fn encodeSceneVelocity(motionUv: vec2<f32>) -> u32 {
+  let ndc = motionUv * vec2<f32>(2.0, -2.0);
+  let curved = sign(ndc) * sqrt(abs(ndc) * 2.0);
+  let encoded = clamp(curved * SCENE_VELOCITY_SCALE + SCENE_VELOCITY_BIAS, vec2<f32>(0.0), vec2<f32>(1.0));
+  // Reserve zero for unwritten pixels and the saturated endpoint for invalid history.
+  return clamp(pack2x16unorm(encoded), 1u, SCENE_VELOCITY_INVALID_MOTION - 1u);
+}
+
+fn decodeSceneVelocity(word: u32) -> vec2<f32> {
+  let curved = (unpack2x16unorm(word) - SCENE_VELOCITY_BIAS) / SCENE_VELOCITY_SCALE;
+  return curved * abs(curved) * vec2<f32>(0.25, -0.25);
+}
+
+// Screen Probe's extended attachment retains the previous device Z and
+// responsiveness in the second word. Basic velocity only stores the first.
+const SCENE_VELOCITY_INVALID_DEPTH = 0xffffffffu;
+const SCENE_VELOCITY_RESPONSIVE_BIT = 0x80000000u;
+
+fn sceneVelocityPreviousDepth(word: u32) -> f32 {
+  return bitcast<f32>((word & ~SCENE_VELOCITY_RESPONSIVE_BIT) - 1u);
+}
+
+fn sceneVelocityReactive(word: u32) -> f32 {
+  return select(0.0, 1.0, word != SCENE_VELOCITY_INVALID_DEPTH && (word & SCENE_VELOCITY_RESPONSIVE_BIT) != 0u);
+}
+
+fn encodeSceneVelocityWithDepth(temporal: vec4<f32>, previousClip: vec4<f32>) -> vec2<u32> {
+  let xy = encodeSceneVelocity(temporal.xy);
+  let depth = previousClip.z / previousClip.w;
+  let valid = temporal.w < 2.0 && previousClip.w > 0.0 && previousClip.w < 1e30 && depth >= 0.0 && depth <= 1.0;
+  let responsive = select(0u, SCENE_VELOCITY_RESPONSIVE_BIT, temporal.w > 0.0);
+  let word = select(SCENE_VELOCITY_INVALID_DEPTH, (bitcast<u32>(max(depth, 0.0)) + 1u) | responsive, valid);
+  return vec2<u32>(xy, word);
+}
+
+fn encodeSceneVelocityRaster(temporal: vec4<f32>, previousClip: vec4<f32>) -> vec2<u32> {
+  let packed = encodeSceneVelocityWithDepth(temporal, previousClip);
+  // When R32Uint drops the depth word, mark rejection in the remaining word.
+  let invalidBasicMotion = !sceneVelocityWithDepthOutput && temporal.w >= 2.0;
+  return vec2<u32>(select(packed.x, SCENE_VELOCITY_INVALID_MOTION, invalidBasicMotion), packed.y);
 }

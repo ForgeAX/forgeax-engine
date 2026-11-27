@@ -1,5 +1,6 @@
 import { MATERIAL_STATIC_SWITCH_NAMES } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { engineShaderDefines } from '../../engine-program.js';
 import { standardStaticSwitchDefines } from '../lower-standard-contract.js';
 
 const standard = [{ name: 'forward', program: { module: 'forgeax_material::standard' } }];
@@ -10,16 +11,24 @@ describe('Standard environment BRDF static switch', () => {
     expect(MATERIAL_STATIC_SWITCH_NAMES).toContain('environmentBrdfApprox');
   });
 
-  it('keeps the preintegrated LUT unless the fit is explicitly requested', () => {
+  it('keeps the shared fit for built-ins, including generated Standard and VFX programs', () => {
+    for (const id of [
+      'forgeax::default-standard-pbr',
+      'forgeax::pbr-skin',
+      'forgeax::engine-standard-deferred-lighting',
+      'forgeax::vfx-render.particles.mesh',
+    ]) {
+      expect(engineShaderDefines(id)).not.toHaveProperty('ENV_BRDF_LUT');
+    }
     expect(standardStaticSwitchDefines(undefined, standard)).toEqual({});
     expect(standardStaticSwitchDefines({}, standard)).toEqual({});
-    expect(standardStaticSwitchDefines({ environmentBrdfApprox: false }, standard)).toEqual({});
+    expect(standardStaticSwitchDefines({ environmentBrdfApprox: true }, standard)).toEqual({});
   });
 
-  it('selects the analytic fit for Standard roots only', () => {
-    expect(standardStaticSwitchDefines({ environmentBrdfApprox: true }, standard)).toEqual({
-      ENV_BRDF_FIT: true,
+  it('selects the preintegrated LUT only for an explicit Standard request', () => {
+    expect(standardStaticSwitchDefines({ environmentBrdfApprox: false }, standard)).toEqual({
+      ENV_BRDF_LUT: true,
     });
-    expect(standardStaticSwitchDefines({ environmentBrdfApprox: true }, custom)).toEqual({});
+    expect(standardStaticSwitchDefines({ environmentBrdfApprox: false }, custom)).toEqual({});
   });
 });

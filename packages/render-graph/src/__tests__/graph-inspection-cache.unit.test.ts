@@ -2,7 +2,11 @@ import type { Buffer, Texture } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
 import { RenderGraphBuilder } from '../builder';
-import { compiledRenderGraphGeneration } from '../compiled-graph';
+import {
+  compiledRenderGraphAllocation,
+  compiledRenderGraphGeneration,
+  compiledRenderGraphHasPass,
+} from '../compiled-graph';
 import type { CompiledRenderGraph, CompiledRenderGraphInfo, RenderGraphFrame } from '../types';
 
 it('reads compiled generations without inspection and falls back for external graphs', async () => {
@@ -19,6 +23,14 @@ it('reads compiled generations without inspection and falls back for external gr
   const inspect = vi.spyOn(graph, 'inspect');
 
   const generation = compiledRenderGraphGeneration(graph);
+  const visit = vi.fn();
+  expect(compiledRenderGraphAllocation(graph, visit)).toMatchObject({
+    liveBytes: 16,
+    pendingRetirementCount: 0,
+  });
+  expect(visit).toHaveBeenCalledExactlyOnceWith(expect.any(String), 16, 'live');
+  expect(compiledRenderGraphHasPass(graph, 'write-generation-buffer')).toBe(true);
+  expect(compiledRenderGraphHasPass(graph, 'other')).toBe(false);
   expect(generation).toBeGreaterThan(0);
   expect(inspect).not.toHaveBeenCalled();
 
@@ -31,13 +43,30 @@ it('reads compiled generations without inspection and falls back for external gr
   expect(inspect).toHaveBeenCalledOnce();
   (await graph.retire()).unwrap();
 
-  const externalInfo = { generation: 73 } as unknown as CompiledRenderGraphInfo;
+  expect(compiledRenderGraphAllocation(graph)).toMatchObject({
+    liveBytes: 0,
+    retiredBytes: 16,
+    pendingRetirementCount: 0,
+  });
+  const externalInfo = {
+    generation: 73,
+    passes: [{ name: 'external-pass' }],
+    resources: [],
+    resourceAllocation: { liveBytes: 32, pendingRetirementBytes: 8 },
+  } as unknown as CompiledRenderGraphInfo;
   const externalInspect = vi.fn(() => externalInfo);
   const externalGraph = {
     inspect: externalInspect,
   } as Pick<CompiledRenderGraph<RenderGraphFrame>, 'inspect'>;
   expect(compiledRenderGraphGeneration(externalGraph)).toBe(73);
   expect(externalInspect).toHaveBeenCalledOnce();
+  expect(compiledRenderGraphHasPass(externalGraph, 'external-pass')).toBe(true);
+  visit.mockClear();
+  expect(compiledRenderGraphAllocation(externalGraph, visit)).toBe(externalInfo.resourceAllocation);
+  expect(visit.mock.calls).toEqual([
+    [undefined, 32, 'live'],
+    [undefined, 8, 'pending-retirement'],
+  ]);
 });
 
 it('projects resolved import allocations without owning them and invalidates only changed or failed inputs', async () => {

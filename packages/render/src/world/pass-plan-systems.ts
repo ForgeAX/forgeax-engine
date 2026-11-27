@@ -20,7 +20,7 @@ import {
   RenderTransmissionPlanOrder,
   RenderTransparentPlanOrder,
 } from '../system-order';
-import type { TransmissionDemand } from '../transmission/projection';
+import { limitRoughRefraction, type TransmissionDemand } from '../transmission/projection';
 import { registerQueueSystems, type ViewPhaseQueue, ViewPhases } from './queue-systems';
 import { RenderCleanup, RenderQueue, renderWorldFor } from './render-world';
 import type { SsrAdmissionInput } from './ssr-admission-systems';
@@ -54,12 +54,16 @@ export interface PassPlanInput {
    * it for the sort plans over the phase order, the dispatch it records.
    */
   readonly dispatch: DispatchList;
+  readonly materialSceneDepth?: true;
+  readonly forwardColorWritesDepth?: true;
+  readonly forwardShadowCoverage?: true;
   /** Whether this view staged `dispatch` for `render-phase-sort` this attempt. */
   readonly phaseSorted: boolean;
   /** The view's accepted material frame. */
   readonly materials: MaterialFrame;
   /** Transmission demand of the view's scene composition. */
   readonly sceneTransmission: TransmissionDemand;
+  readonly roughRefraction?: boolean;
   /** Materials of pending candidate pipeline preparations, which build real lanes. */
   readonly preparation: MaterialFrame | undefined;
   /** The view's admitted Standard render path. */
@@ -98,8 +102,14 @@ export interface OpaquePassPlan {
 
 /** The pass families graph compile reads for one view. */
 export interface ViewPassPlan {
+  /** Camera policy before the current GPU roster refines actual late execution. */
+  readonly requestedLateOcclusion?: boolean;
   /** The accepted material frame has opaque draws that opt out of analytic fog. */
   readonly unfoggedOpaque: boolean;
+  /** A visible material samples the renderer-owned scene depth. */
+  readonly materialSceneDepth?: true;
+  readonly forwardColorWritesDepth?: true;
+  readonly forwardShadowCoverage?: true;
   readonly transparent: TransparencyViewResolution;
   readonly transmission: TransmissionPassPlan;
   /** Undefined only for an unplanned recording, which plans with {@link planOpaque}. */
@@ -108,15 +118,16 @@ export interface ViewPassPlan {
 
 /**
  * The opaque lane of a view. A clear-only frame stays on the Forward lane so
- * Deferred resources cannot introduce work. Forward HZB is opt-in; Deferred
- * keeps its existing default, and explicit pipeline choices remain authoritative.
+ * Deferred resources cannot introduce work. Two-phase occlusion is a Deferred
+ * geometry policy; Forward seeds depth only for earlier consumers.
  */
 export function planOpaque(
   input: Pick<PassPlanInput, 'renderPath' | 'gpuOcclusion' | 'clearOnly'>,
 ): OpaquePassPlan {
   return {
     lane: input.clearOnly ? 'forward' : input.renderPath,
-    lateOcclusion: !input.clearOnly && (input.gpuOcclusion ?? input.renderPath === 'deferred'),
+    lateOcclusion:
+      !input.clearOnly && input.renderPath === 'deferred' && input.gpuOcclusion !== false,
   };
 }
 
@@ -174,6 +185,7 @@ export function passPlanMissingMessage(missing: PassPlanMissing): string {
 
 /** One view's staged pass-plan input and the families planned from it. */
 export class ViewPassPlanQueue {
+  requestedLateOcclusion: boolean | undefined;
   staged: PassPlanInput | undefined;
   transparent: TransparencyViewResolution | undefined;
   transmission: TransmissionPassPlan | undefined;
@@ -185,6 +197,7 @@ export class ViewPassPlanQueue {
     this.transparent = undefined;
     this.transmission = undefined;
     this.opaque = undefined;
+    this.requestedLateOcclusion = undefined;
   }
 
   /**
@@ -201,7 +214,13 @@ export class ViewPassPlanQueue {
       transparent,
       transmission,
       opaque,
+      ...(this.requestedLateOcclusion === undefined
+        ? {}
+        : { requestedLateOcclusion: this.requestedLateOcclusion }),
       unfoggedOpaque: staged.materials.hasUnfoggedOpaque,
+      ...(staged.materialSceneDepth === true ? { materialSceneDepth: true } : {}),
+      ...(staged.forwardColorWritesDepth === true ? { forwardColorWritesDepth: true } : {}),
+      ...(staged.forwardShadowCoverage === true ? { forwardShadowCoverage: true } : {}),
     });
   }
 
@@ -211,6 +230,7 @@ export class ViewPassPlanQueue {
     this.transparent = undefined;
     this.transmission = undefined;
     this.opaque = undefined;
+    this.requestedLateOcclusion = undefined;
   }
 
   /** Direct plan harness: read the plan and end the attempt. */
@@ -221,6 +241,7 @@ export class ViewPassPlanQueue {
     this.transparent = undefined;
     this.transmission = undefined;
     this.opaque = undefined;
+    this.requestedLateOcclusion = undefined;
     return read.value;
   }
 }
@@ -265,21 +286,54 @@ export function consumeViewPassPlan(
 }
 
 /** Candidate pipeline preparations add their transmission demand to the scene's. */
-function planTransmission(input: PassPlanInput): TransmissionPassPlan {
+function planTransmission(
+  input: Pick<PassPlanInput, 'sceneTransmission' | 'preparation' | 'materials' | 'roughRefraction'>,
+): TransmissionPassPlan {
   const scene = input.sceneTransmission;
   const preparation = input.preparation;
   const prepared = preparation?.transmissionDemand;
+  const demand =
+    prepared === undefined || prepared.activeCount <= 0
+      ? scene
+      : {
+          activeCount: scene.activeCount + prepared.activeCount,
+          needsRoughMips: scene.needsRoughMips || prepared.needsRoughMips,
+          needsBackPass: scene.needsBackPass === true || prepared.needsBackPass === true,
+        };
   return {
-    demand:
-      prepared === undefined || prepared.activeCount <= 0
-        ? scene
-        : {
-            activeCount: scene.activeCount + prepared.activeCount,
-            needsRoughMips: scene.needsRoughMips || prepared.needsRoughMips,
-            needsBackPass: scene.needsBackPass === true || prepared.needsBackPass === true,
-          },
+    demand: limitRoughRefraction(demand, input.roughRefraction),
     singleLayerMedium: input.materials.hasMedium || preparation?.hasMedium === true,
     ...(input.materials.hasWater || preparation?.hasWater === true ? { water: true as const } : {}),
+  };
+}
+
+/** Prospective opaque Source demand uses the same Pass family policies outside a recording. */
+export function planSourcePasses(
+  input: Pick<
+    PassPlanInput,
+    | 'requested'
+    | 'rgba16floatRenderable'
+    | 'renderables'
+    | 'dispatch'
+    | 'materials'
+    | 'renderPath'
+    | 'gpuOcclusion'
+    | 'forwardShadowCoverage'
+  >,
+): ViewPassPlan {
+  return {
+    unfoggedOpaque: input.materials.hasUnfoggedOpaque,
+    ...(input.forwardShadowCoverage === true ? { forwardShadowCoverage: true } : {}),
+    opaque: planOpaque({ ...input, clearOnly: false }),
+    transparent: resolveTransparencyView({
+      ...input,
+      materialFrame: input.materials,
+    }),
+    transmission: planTransmission({
+      sceneTransmission: input.materials.transmissionDemand,
+      materials: input.materials,
+      preparation: undefined,
+    }),
   };
 }
 

@@ -1,4 +1,8 @@
-import { createCatalogSource } from '@forgeax/engine-assets-runtime';
+import {
+  type CatalogHotChannel,
+  createCatalogHotSubscription,
+  createCatalogSource,
+} from '@forgeax/engine-assets-runtime';
 import { runtimeAssetReference, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
 import { AssetGuid, decodeCatalogWire } from '@forgeax/engine-pack';
@@ -16,10 +20,6 @@ import type {
   PackIndexEntry,
   RuntimeAssetBinding,
 } from '@forgeax/engine-types';
-import {
-  type CatalogHotChannel,
-  createCatalogClient,
-} from '@forgeax/engine-vite-plugin-pack/catalog-client';
 import { expect } from 'vitest';
 import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { loadBackendPack } from '../backend-selection';
@@ -201,15 +201,13 @@ export async function verifySurfaceMaterialPublication(options: {
       ? undefined
       : createNestedViteHotChannel(options.baseUrl, options.hmrToken);
   if (hot !== undefined) await hot.ready;
-  const catalogClient = createCatalogClient(
-    async () => (await readCatalog()).entries,
-    hot?.channel,
-  );
   assets.setCatalogSource(
     createCatalogSource({
       url: options.binding.catalogUrl,
       expectedScope: options.binding,
-      subscribe: catalogClient.subscribe,
+      subscribe: createCatalogHotSubscription(hot?.channel, () => {
+        void assets.reconcileCatalog();
+      }),
     }),
   );
   const deltas: CatalogDelta[] = [];
@@ -382,11 +380,10 @@ export async function verifySurfaceMaterialPublication(options: {
       if (selectedArtifact === undefined) {
         throw new Error('Surface HMR selected artifact receipt unavailable');
       }
-      expect(
-        projection.passes
-          .flatMap((pass) => pass.programs)
-          .some((program) => program.specializationKey === selectedArtifact.specializationKey),
-      ).toBe(true);
+      expect(projection.sourceTemplate?.publication.guid).toBe(projection.materialGuid);
+      const program = assets.getMaterialArtifact(selectedArtifact.specializationKey);
+      expect(program?.metadata?.templateIdentity).toBe(projection.specializationKey);
+      expect(program?.bytes.byteLength).toBeGreaterThan(0);
       if (lane === 'gpu-driven') {
         expect(submission?.resourceGeneration).toBeGreaterThan(0);
         expect(
@@ -438,18 +435,22 @@ export async function verifySurfaceMaterialPublication(options: {
           `${lane} ${pass} command member IDs did not cover the Surface selection`,
         ).toEqual(expectedMemberIds);
       }
-      expect(
-        commands.every(
-          (command) =>
-            command.receiptIdentity === selectedArtifact.receiptIdentity &&
-            command.receiptGeneration === selectedArtifact.receiptGeneration,
-        ),
-        inspect({
-          commands,
-          selectedArtifact,
-          publicationGeneration: projection.publicationGeneration,
-        }),
-      ).toBe(true);
+      for (const command of commands) {
+        if (command.kind === 'draw' || command.kind === 'draw-indexed') {
+          const direct = assets.getMaterialArtifact(command.materialProgramKey ?? '');
+          expect(direct?.metadata?.templateIdentity).toBe(projection.specializationKey);
+          expect(direct?.bytes.byteLength).toBeGreaterThan(0);
+          expect(direct?.metadata?.receipt).toMatchObject({
+            receiptIdentity: command.receiptIdentity,
+            generation: command.receiptGeneration,
+          });
+        } else {
+          expect(command.receiptIdentity, inspect(selectedArtifact)).toBe(
+            selectedArtifact.receiptIdentity,
+          );
+          expect(command.receiptGeneration).toBe(selectedArtifact.receiptGeneration);
+        }
+      }
       return {
         receipt,
         observation,

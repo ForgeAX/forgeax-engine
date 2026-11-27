@@ -122,6 +122,30 @@ describe('DynamicTextureStore', () => {
 });
 
 describe('versioned Canvas uploads', () => {
+  it('refreshes only the bound surface and leaves a resized or replaced surface to assembly', () => {
+    const counters = { created: 0, destroyed: 0, copies: 0 };
+    const store = new DynamicTextureStore();
+    store.configureGpuDevice(makeDevice(counters));
+    const key = {},
+      lifetime = new AbortController();
+    const upload = (width: number, version: number, view?: TextureView) =>
+      store.uploadCanvasFrame(key, SOURCE, width, 8, version, true, lifetime.signal, view);
+    const original = upload(8, 1)?.unwrap();
+    expect(original).toBeDefined();
+    expect(upload(8, 2, original)?.unwrap()).toBe(original);
+    expect(upload(8, 2, original)?.unwrap()).toBe(original);
+    expect(upload(16, 3, original)).toBeUndefined();
+    expect(counters).toEqual({ created: 1, destroyed: 0, copies: 2 });
+    const replacement = upload(16, 3)?.unwrap();
+    expect(replacement).toBeDefined();
+    expect(replacement).not.toBe(original);
+    expect(upload(16, 4, original)).toBeUndefined();
+    expect(upload(16, 4, replacement)?.unwrap()).toBe(replacement);
+    lifetime.abort();
+    expect(upload(16, 4, replacement)).toBeUndefined();
+    expect(counters).toEqual({ created: 2, destroyed: 2, copies: 4 });
+  });
+
   it('uploads initially and when dirty, restores on replacement, and releases on disposal', () => {
     const counters = { created: 0, destroyed: 0, copies: 0 };
     const store = new DynamicTextureStore();
@@ -176,6 +200,47 @@ describe('versioned Canvas uploads', () => {
     reject = false;
     expect(store.uploadFrame(key, SOURCE, 16, 16, { version: 2 })?.ok).toBe(true);
     expect(store.getView(key)).not.toBe(first.value);
+    store.destroyAll();
+    expect(counters.created).toBe(counters.destroyed);
+  });
+
+  it('retires a candidate whose canvas is disposed during the device copy', () => {
+    const counters = { created: 0, destroyed: 0, copies: 0 };
+    const device = makeDevice(counters);
+    const store = new DynamicTextureStore();
+    const key = {};
+    const lifetime = new AbortController();
+    const copy = device.queue.copyExternalImageToTexture;
+    device.queue.copyExternalImageToTexture = (...args) => {
+      lifetime.abort();
+      return copy(...args);
+    };
+    store.configureGpuDevice(device);
+    expect(store.uploadCanvasFrame(key, SOURCE, 8, 8, 1, true, lifetime.signal)).toBeUndefined();
+    expect(store.getView(key)).toBeUndefined();
+    expect(counters).toEqual({ created: 1, destroyed: 1, copies: 1 });
+  });
+
+  it('keeps a reentrant successor when destroying the resized canvas surface', () => {
+    const counters = { created: 0, destroyed: 0, copies: 0 };
+    const device = makeDevice(counters);
+    const store = new DynamicTextureStore();
+    store.configureGpuDevice(device);
+    const key = {};
+    const signal = new AbortController().signal;
+    const upload = (width: number) =>
+      store.uploadCanvasFrame(key, SOURCE, width, 8, width, true, signal);
+    expect(upload(8)?.ok).toBe(true);
+    const destroy = device.destroyTexture;
+    let installed: TextureView | undefined;
+    device.destroyTexture = (texture) => {
+      device.destroyTexture = destroy;
+      installed = upload(32)?.unwrap();
+      return destroy(texture);
+    };
+    expect(upload(16)).toBeUndefined();
+    expect(installed).toBeDefined();
+    expect(store.getView(key)).toBe(installed);
     store.destroyAll();
     expect(counters.created).toBe(counters.destroyed);
   });

@@ -11,7 +11,7 @@ import { RhiNullAdapter } from '@forgeax/engine-rhi-null';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import type { MaterialAsset } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import {
   MATERIAL_CONTEXT,
   materialRecordFixture,
@@ -19,14 +19,12 @@ import {
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { MeshFilter, MeshRenderer } from '../components';
 import { renderMaterialContext } from '../extract/material-context';
+import { materialSurfaceProgramsForMaterial } from '../material-program-selection';
 import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
 import { encodeRenderPublication } from '../publication/record';
 import { worldRenderResources } from '../publication/resource-scope';
-import {
-  materialSurfaceProgramsForMaterial,
-  resolveMaterialSnapshot,
-} from '../render-system-extract';
+import { resolveMaterialSnapshot } from '../render-system-extract';
 import { extractSource } from '../render-system-extract-tail';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
@@ -82,7 +80,10 @@ it('keeps cooked Forward and ShadowCaster programs when owned values change or a
       undefined,
       MATERIAL_CONTEXT,
     );
+  const projectionReads = vi.spyOn(assets, 'getMaterialProjectionForPayload');
   const before = read();
+  expect(projectionReads).toHaveBeenCalledTimes(1);
+  projectionReads.mockRestore();
   expect(frameRead()?.materialPublication).toEqual(before.materialPublication);
   expect(before.materialPublication?.identity).toMatchObject({
     materialGuid: record.guid,
@@ -163,7 +164,11 @@ it('carries both accepted Surface programs through value edits and detached publ
       selections: [
         {
           pass: 'Forward',
-          context: { ...context, pass: 'card-capture' as const },
+          context: {
+            ...context,
+            pass: 'card-capture' as const,
+            profile: 'forgeax-material-card-v4' as const,
+          },
           entry: 'vs_card',
         },
       ],
@@ -324,7 +329,9 @@ it.each([
   [21, 'storage-buffer-projector'],
   [23, 'storage-buffer-projector'],
   [24, 'storage-buffer-projector'],
-  [25, 'storage-buffer'],
+  [25, 'storage-buffer-projector'],
+  [26, 'storage-buffer-projector'],
+  [27, 'storage-buffer'],
   [30, 'storage-buffer'],
   [31, 'storage-buffer'],
   [32, 'storage-buffer-atmosphere'],

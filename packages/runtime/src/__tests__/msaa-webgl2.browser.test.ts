@@ -11,6 +11,7 @@ import {
 } from '@forgeax/engine-render';
 import * as wgpu from '@forgeax/engine-rhi-wgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
@@ -33,7 +34,7 @@ it('resolves real four-sample Standard Camera coverage on WebGL2 for 60 complete
     await constructRendererHost(
       canvas,
       undefined,
-      { shaderManifestUrl: '/shaders/manifest.json' },
+      { shaderManifestUrl: '/shaders/manifest.json', prepareShaderProgramCompiler },
       loadRhiPack(wgpu as unknown as Record<string, unknown>),
     ),
   );

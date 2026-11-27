@@ -11,9 +11,12 @@ import {
   buildCanonicalKit,
   publishCanonicalKit,
 } from '../packages/preview/scripts/build-canonical-kit.mjs';
-import { restoreCoreBaseShader } from './ci/restore-core-shader-inputs.mjs';
 import { readPnpmVersion } from './forgeax/pnpm-version.mjs';
-import { admitSdkShaderInputs } from './forgeax/sdk-shader-inputs.mjs';
+import {
+  sdkCoreBuildRoot,
+  seedSdkDeclarations,
+  seedSdkPackageBuilds,
+} from './forgeax/sdk-shader-inputs.mjs';
 import { runnerResources, shaderProducerHeapSize } from './lib/runner-resources.mjs';
 
 const root = resolve('.');
@@ -34,26 +37,10 @@ const assetsSourceOption = process.argv.indexOf('--assets-source-root');
 const assetsSourceRoot = assetsSourceOption === -1 ? null : process.argv[assetsSourceOption + 1];
 if (assetsSourceOption !== -1 && (!assetsSourceRoot || assetsSourceRoot.startsWith('--')))
   throw new Error('--assets-source-root requires an assets export directory');
-const baseShaderOption = process.argv.indexOf('--base-shader-input-root');
-const sourceRevisionOption = process.argv.indexOf('--source-revision');
-const baseShaderInputRoot = baseShaderOption < 0 ? null : process.argv[baseShaderOption + 1];
-const sourceRevision = sourceRevisionOption < 0 ? null : process.argv[sourceRevisionOption + 1];
-if (baseShaderOption >= 0 || sourceRevisionOption >= 0) {
-  if (
-    !baseShaderInputRoot ||
-    baseShaderInputRoot.startsWith('--') ||
-    !/^[a-f0-9]{40}$/.test(sourceRevision ?? '')
-  )
-    throw new Error('--base-shader-input-root requires --source-revision with an exact revision');
-  if (
-    mode !== 'engine' ||
-    process.env.FORGEAX_SDK_SHADER_INPUTS ||
-    process.env.FORGEAX_BUILD_NO_TASK_CACHE === '1'
-  )
-    throw new Error(
-      'BASE shader inputs require the cached Engine source build without SDK handoff',
-    );
-}
+if (process.argv.includes('--compiled-shaders'))
+  throw new Error(
+    'Use node scripts/forgeax/prepare-shader-release-inputs.mjs --build for an explicit compiled publication',
+  );
 // A missing required source submodule otherwise surfaces as module-resolution noise
 // deep inside the package stage.
 if (!existsSync(join(root, 'packages/modeling/package.json'))) {
@@ -193,6 +180,12 @@ async function writeEngineBuildProvenance() {
 persist();
 if (clean) await runStage('clean', process.execPath, ['scripts/clean-build-outputs.mjs']);
 
+const coreBuildInput = process.env.FORGEAX_SDK_CORE_INPUT;
+const reuseSdkBuild = process.argv.includes('--reuse-core-build');
+if (reuseSdkBuild && (mode !== 'engine' || !coreBuildInput))
+  throw new Error('--reuse-core-build requires the admitted PR Core archive and the Engine build');
+const sdkCore = reuseSdkBuild ? sdkCoreBuildRoot(root, coreBuildInput) : null;
+if (sdkCore !== null) seedSdkPackageBuilds(root, sdkCore);
 await runStage(
   'packages',
   process.execPath,
@@ -206,6 +199,9 @@ await runStage(
     FORGEAX_REPO_ROOT: root,
     FORGEAX_PACKAGE_FACTS_PATH: packageFactsPath,
     FORGEAX_CANONICAL_KIT_OUTPUT: canonicalKitOutput,
+    ...(sdkCore === null
+      ? {}
+      : { FORGEAX_THREE_PROGRAM_INPUT: join(sdkCore, 'packages/three/dist') }),
   },
 );
 await ensureCanonicalKitStage();
@@ -225,23 +221,13 @@ async function buildTypes() {
   ]);
 }
 
-// Declarations are independent of shader production: tsc emits only .d.ts
-// while the producer compiles WGSL on worker threads, so the engine build
-// overlaps them. The full build keeps types after apps, whose child summary
-// shares the summary file.
+// The Engine build can start declarations immediately. The full build shares
+// its summary with the app child and records declarations after app output.
+if (sdkCore !== null) seedSdkDeclarations(root, sdkCore);
 const engineTypes = mode === 'engine' ? buildTypes() : null;
 
-let sharedManifest = null;
-if (process.env.FORGEAX_SDK_SHADER_INPUTS) {
-  if (mode !== 'engine') throw new Error('SDK shader handoff requires the Engine build');
-  sharedManifest = admitSdkShaderInputs(root);
-} else if (mode !== 'packages-only') {
-  if (baseShaderInputRoot !== null) {
-    // Copy no compiler/package outputs. Admission runs after their rebuild and
-    // leaves the POINT source producer below intact.
-    restoreCoreBaseShader(root, resolve(baseShaderInputRoot), { sourceRevision });
-    console.log(`[build] admitted original BASE shader input source=${sourceRevision}`);
-  }
+let sharedManifest;
+if (mode === 'full') {
   await runStage('producer', process.execPath, [
     `--max-old-space-size=${shaderProducerHeapSize(runnerResources())}`,
     'scripts/build-shared-inputs.mjs',
@@ -255,19 +241,6 @@ if (process.env.FORGEAX_SDK_SHADER_INPUTS) {
     throw new Error('shared producer completed without its manifest and facts');
   const producerFacts = JSON.parse(readFileSync(producerFactsPath, 'utf8'));
   summary.engineShaderCompileCount = producerFacts.engineShaderCompileCount ?? 0;
-}
-
-if (mode === 'engine') {
-  // Registry releases ship precompiled engine shader profiles; without them a
-  // game bound to this source Engine recompiles every engine entry on each
-  // build. The producer verifies its inputs by fingerprint, reusing the shared
-  // manifest above or its previous output, and compiles only what changed.
-  await runStage('shader-profiles', process.execPath, [
-    'scripts/forgeax/prepare-shader-release-inputs.mjs',
-    '--build',
-    '--shared-input-manifest',
-    sharedManifest,
-  ]);
 }
 
 if (mode === 'full') {

@@ -19,7 +19,7 @@ import { planarFaceFeatureWork } from './capture-face-feature-systems';
 import { featureFrameOutcome, viewFeatureInputOf } from './feature-systems';
 import { ViewRecorder } from './render-views';
 import { RenderCommit, RenderPrepare, renderSubmission } from './render-world';
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import {
   stagedViewInputs,
   ViewFrame,
@@ -97,12 +97,8 @@ export function viewCaptureWorkOf(
   world: World,
   entity: EntityHandle | undefined,
 ): ViewCaptureOutcome | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewCaptureWork)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewCaptureWorkState>(
-      requireViewField(world, entity, ViewCaptureWork, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<ViewCaptureWorkState>(world, entity, ViewCaptureWork);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.outcome : undefined;
 }
 

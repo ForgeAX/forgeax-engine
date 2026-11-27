@@ -29,6 +29,9 @@ import { ErrorFanoutRegistry } from './internal/error-fanout';
 import { createFrameLoop } from './internal/frame-loop';
 import { remoteServerPlugin } from './internal/remote-server-plugin';
 import { bindRhiCaptureFrameDriver, type RhiCapture } from './internal/rhi-capture';
+import { bindAppLevelOwner } from './levels/app-level-owner';
+import { levelServicePlugin } from './levels/level-service';
+import { stageLocalAppLevels } from './levels/local-app-levels';
 import { createAppObservation } from './observation';
 import type { RuntimePackOptions } from './runtime-packs';
 import type { App, AppAssembleArgs, AppDispatchError, AssembleAppError } from './types';
@@ -119,6 +122,7 @@ export async function createAppFromAssemble(
     assetAssembly = assetAssemblyResult.value;
   }
   const assets = assetAssembly?.registry ?? args.assets;
+  const localLevels = stageLocalAppLevels(args.world, assets, args.renderer);
   let pluginContext: Context;
   try {
     pluginContext = await createWorldContext(
@@ -129,10 +133,11 @@ export async function createAppFromAssemble(
         ...(assetAssembly === undefined ? {} : { assetAssembly }),
         ...(args.pluginPrograms === undefined ? {} : { pluginPrograms: args.pluginPrograms }),
         ...(args.runtimePacks === undefined ? {} : { runtimePacks: args.runtimePacks }),
-        extensions: args.plugins ?? [],
+        extensions: [levelServicePlugin(localLevels.owner.service), ...(args.plugins ?? [])],
       }),
     );
   } catch (cause) {
+    localLevels.owner.stopRequests();
     assetAssembly?.dispose();
     return err(
       makeAppError(
@@ -179,6 +184,7 @@ export async function createAppFromAssemble(
   if (remoteHandle !== undefined) await pluginContext.plugin(remoteServerPlugin(remoteHandle));
 
   const buildArgs: BuildAppArgs = {
+    localLevels,
     platform: args.platform,
     installAppPlugin: async (plugin) => pluginContext.plugin(plugin),
     renderer: args.renderer,
@@ -220,6 +226,7 @@ export async function createAppFromAssemble(
 }
 
 export interface BuildAppArgs {
+  readonly localLevels: ReturnType<typeof stageLocalAppLevels>;
   readonly geometryLane?: RenderFrameInput['geometryLane'] | undefined;
   readonly installAppPlugin: (plugin: Plugin) => Promise<Fiber>;
   readonly platform: Platform;
@@ -363,20 +370,26 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     },
     assets,
   );
+  const { owner: levels } = args.localLevels;
   const captureSubmittedListeners = new Set<(receipt: FrameReceipt) => void>();
   const loopOpts: Parameters<typeof createFrameLoop>[0] = {
     world,
     renderer,
     platform: args.platform,
     onError: dispatch,
-    onStateChange: (state) =>
-      execution.setEngineHealth(state === 'running' || state === 'stopped' ? state : 'idle'),
+    onStateChange: (state) => {
+      if (state === 'stopped') levels.stopRequests();
+      execution.setEngineHealth(state === 'running' || state === 'stopped' ? state : 'idle');
+    },
+    beforeUpdate: (render) => levels.beginFrame(render),
     beforeDraw: () => {
+      levels.step();
       stepRetainedBytes();
       observation.prepareFrame();
       localHdr.beforeDraw(renderer);
     },
     onFrameSkipped: () => args.debugDraw?.discard(),
+    retainSourceOnStop: () => levels.inspect().live > 0,
     pacer: execution.framePacer,
     ...(args.geometryLane === undefined ? {} : { geometryLane: args.geometryLane }),
   };
@@ -503,6 +516,7 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
   }
 
   const stub: App = {
+    levels: levels.service,
     renderer,
     ...(assets === undefined ? {} : { assets }),
     world,
@@ -614,7 +628,18 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
       if (state === 'idle') loop.setStopped();
       try {
         await loop.drainFrameReceipts();
+        await levels.closeStopped();
+        loop.releaseSource();
         await (args.disposePluginContext?.() ?? pluginContext.fiber.dispose());
+      } catch (cause) {
+        return err(
+          makeAppError(
+            'app-system-update-failed',
+            'confirmed App Level and plugin retirement',
+            'retain the stopped App and resolve the owning cleanup failure',
+            { cause },
+          ),
+        );
       } finally {
         args.onTerminal?.();
       }
@@ -708,5 +733,10 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
       },
     });
   }
+  args.localLevels.bind(
+    () => args.platform.now().unwrap(),
+    () => loop.getState() === 'stopped' && loop.inspect().inFlight === 0,
+  );
+  bindAppLevelOwner(stub, () => levels);
   return ok(stub);
 }

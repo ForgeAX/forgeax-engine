@@ -1,10 +1,12 @@
 //! W3C error-scope semantics over wgpu's uncaptured-error callback.
 //!
-//! The device installs one handler and never pushes wgpu error scopes. wgpu reports every
-//! device-level error synchronously during the call that caused it, so the handler can route
+//! Synchronous methods install one handler instead of pushing wgpu error scopes. wgpu reports
+//! their device-level errors during the call that caused them, so the handler can route
 //! it to the innermost scope whose filter matches (the first error per scope wins) or, when no
 //! scope matches, to the uncaptured queue the TypeScript device drains into
 //! `uncapturederror` events.
+//! Async pipeline workers use their own thread-local wgpu scopes; they never borrow this
+//! JS-owned scope stack while a promise is pending.
 
 use serde::Serialize;
 use std::sync::{Arc, Mutex};

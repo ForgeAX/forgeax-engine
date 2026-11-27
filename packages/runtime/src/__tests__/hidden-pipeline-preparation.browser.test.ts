@@ -41,7 +41,11 @@ it.each([
       })
     ).unwrap();
     renderer
-      .setProfile({ ...renderer.inspect().profile, renderPath: 'deferred', ssao: false })
+      .setProfile({
+        ...renderer.inspect().profile,
+        renderPath: 'deferred',
+        ambientOcclusion: { enabled: false },
+      })
       .unwrap();
     const assets = new AssetRegistry();
     const world = new World({ assets });

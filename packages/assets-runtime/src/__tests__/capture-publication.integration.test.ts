@@ -21,6 +21,7 @@ import {
   ok,
 } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { normaliseForPack } from '../../../import/src/import-runner.js';
 import {
   createFixedRuntimePackSnapshot,
@@ -40,6 +41,26 @@ import { loadFixtureAsset, runtimePackDecoders } from './fixtures/runtime-pack-d
 const guid = '01900000-0000-7000-8000-000000000091';
 const sibling = '01900000-0000-7000-8000-000000000092';
 const packageUrl = 'https://delivered.invalid/content/pack.json';
+
+const meshPublication = {
+  scopeId: 'delivered',
+  sourcePath: 'original.pack',
+  sourceRevision: 'original-revision',
+  packageUrl,
+} as const;
+
+function meshRows(
+  publication: ReturnType<typeof createRuntimePackPublication>['publication'],
+): CatalogEntry[] {
+  return publication.outputs.map(({ guid, kind, sourceKey }) => ({
+    guid,
+    kind,
+    sourceKey,
+    sourcePath: meshPublication.sourcePath,
+    packageUrl,
+    publication,
+  }));
+}
 
 async function fixture(plugin = false, encoding: 'identity' | 'zstd' = 'zstd') {
   const { compressZstd } = await import('@forgeax/engine-codec/encode');
@@ -83,23 +104,13 @@ async function fixture(plugin = false, encoding: 'identity' | 'zstd' = 'zstd') {
           : { ...asset, guid: sibling },
       ],
     },
-    scopeId: 'delivered',
-    sourcePath: 'original.pack',
-    sourceRevision: 'original-revision',
-    packageUrl,
+    ...meshPublication,
     sourceKeys: new Map([
       [guid, 'mesh/main'],
       [sibling, plugin ? 'plugin/main' : 'mesh/sibling'],
     ]),
   });
-  const rows: CatalogEntry[] = publication.publication.outputs.map((output) => ({
-    guid: output.guid,
-    kind: output.kind,
-    sourceKey: output.sourceKey,
-    sourcePath: 'original.pack',
-    packageUrl,
-    publication: publication.publication,
-  }));
+  const rows = meshRows(publication.publication);
   const bodies = new Map<string, Uint8Array>([
     [packageUrl, new TextEncoder().encode(JSON.stringify(publication.pack))],
     [new URL('mesh.bin.zst', packageUrl).href, encoding === 'zstd' ? compressed : body.bytes],
@@ -125,12 +136,7 @@ it.each([
       input.bodies.set(packageUrl, compressed.value);
     }
     if (operation === 'capture') {
-      const result = await captureAssetPublication(
-        defined(input.rows[0]),
-        input.rows,
-        createCatalogSource({ entries: input.rows }),
-        input.fetcher,
-      );
+      const result = await captureFrom(input);
       expect(result.ok, `${encoding}: ${JSON.stringify(result)}`).toBe(true);
       expect(result.unwrap().pack).toEqual(input.publication.pack);
     } else {
@@ -171,23 +177,13 @@ it.each([
         ),
       })),
     },
-    scopeId: 'delivered',
-    sourcePath: 'original.pack',
-    sourceRevision: 'original-revision',
-    packageUrl,
+    ...meshPublication,
     sourceKeys: new Map([
       [guid, 'mesh/main'],
       [sibling, 'mesh/sibling'],
     ]),
   });
-  const rows: CatalogEntry[] = publication.publication.outputs.map((output) => ({
-    guid: output.guid,
-    kind: output.kind,
-    sourceKey: output.sourceKey,
-    sourcePath: 'original.pack',
-    packageUrl,
-    publication: publication.publication,
-  }));
+  const rows = meshRows(publication.publication);
   let corrupt = false;
   const fetcher = vi.fn<typeof fetch>(async (url) => {
     if (String(url) === packageUrl) return new Response(JSON.stringify(publication.pack));
@@ -263,7 +259,7 @@ it('captures frozen transport without awaiting an unrelated unfinished domain re
       new AbortController().signal,
     );
     let result: Awaited<ReturnType<typeof captureAssetPublication>> | undefined;
-    void captureAssetPublication(defined(input.rows[0]), input.rows, source, input.fetcher, {
+    void captureFrom(input, source, {
       registry,
     }).then((value) => {
       result = value;
@@ -330,92 +326,6 @@ it.each([
 });
 
 it.each([
-  false,
-  true,
-])('captures complete publications with bounded overlapping artifact reads (corrupt=%s)', async (corrupt) => {
-  const input = await fixture();
-  const asset = defined(input.publication.pack.assets[0]);
-  const attachmentDigest = Array.from(
-    new Uint8Array(await crypto.subtle.digest('SHA-256', Uint8Array.of(1, 2))),
-    (byte) => byte.toString(16).padStart(2, '0'),
-  ).join('');
-  const attachments = Object.fromEntries(
-    Array.from({ length: 18 }, (_, index) => [
-      `attachment-${index}`,
-      {
-        path: `attachment-${index}.bin`,
-        mediaType: 'application/octet-stream',
-        contentEncoding: 'identity',
-        byteLength: 2,
-        integrity: { algorithm: 'sha256', digest: `sha256:${attachmentDigest}` },
-      },
-    ]),
-  );
-  const publication = createRuntimePackPublication({
-    pack: { assets: [{ ...asset, artifacts: { ...asset.artifacts, ...attachments } }] },
-    scopeId: 'delivered',
-    sourcePath: 'original.pack',
-    sourceRevision: 'concurrent-capture',
-    packageUrl,
-    sourceKeys: new Map([[guid, 'mesh/main']]),
-  });
-  const row = { ...defined(input.rows[0]), publication: publication.publication };
-  let active = 0;
-  let peak = 0;
-  const waiting: Array<() => void> = [];
-  const reads: string[] = [];
-  const pending = captureAssetPublication(
-    row,
-    [row],
-    createCatalogSource({ entries: [row] }),
-    async (url) => {
-      if (url === packageUrl) return new Response(JSON.stringify(publication.pack));
-      if (String(url).endsWith('mesh.bin.zst'))
-        return new Response(new Uint8Array(input.compressed));
-      reads.push(String(url));
-      peak = Math.max(peak, ++active);
-      await new Promise<void>((resolve) => waiting.push(resolve));
-      active--;
-      return new Response(
-        corrupt && String(url).endsWith('attachment-17.bin')
-          ? Uint8Array.of(1)
-          : Uint8Array.of(1, 2),
-      );
-    },
-  );
-  try {
-    await vi.waitFor(() => expect(reads.length).toBeGreaterThan(1), { timeout: 300, interval: 5 });
-    expect(reads.length).toBeLessThanOrEqual(8);
-  } finally {
-    // Also drain a serial RED implementation without leaving pending requests.
-    for (let index = 0; index < 25; index++) {
-      for (const release of waiting.splice(0)) release();
-      await new Promise<void>((resolve) => setTimeout(resolve, 1));
-    }
-  }
-  const result = await pending;
-  expect(reads).toHaveLength(18);
-  expect(peak).toBeGreaterThan(1);
-  expect(peak).toBeLessThanOrEqual(8);
-  if (corrupt) {
-    expect(result).toMatchObject({
-      ok: false,
-      error: {
-        code: 'asset-artifact-integrity-mismatch',
-        detail: { artifactKey: 'attachment-17' },
-      },
-    });
-  } else {
-    const captured = result.unwrap();
-    expect(Object.keys(captured.blobs)).toHaveLength(19);
-    expect(decodePackBlob(defined(captured.blobs['mesh.bin.zst']))).toEqual(input.compressed);
-    expect(decodePackBlob(defined(captured.blobs['attachment-17.bin']))).toEqual(
-      Uint8Array.of(1, 2),
-    );
-  }
-});
-
-it.each([
   'network',
   'http',
 ])('retries a transient artifact %s failure without retaining the rejected byte request', async (failure) => {
@@ -442,14 +352,8 @@ it.each([
   true,
 ])('captures the fixed publication through source changes (cached owner=%s)', async (cachedOwner) => {
   const input = await fixture();
-  let enter!: () => void;
-  const entered = new Promise<void>((resolve) => {
-    enter = resolve;
-  });
-  let resume!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    resume = resolve;
-  });
+  const { promise: entered, resolve: enter } = testGate();
+  const { promise: gate, resolve: resume } = testGate();
   const fallback = vi.fn<typeof fetch>(async () => {
     throw new Error('escaped fixed transport');
   });
@@ -515,21 +419,20 @@ it.each([
   if (fault === 'missing artifact') input.bodies.delete(new URL('mesh.bin.zst', packageUrl).href);
   if (fault === 'corrupt artifact')
     input.bodies.set(new URL('mesh.bin.zst', packageUrl).href, new Uint8Array([0, 1, 2]));
-  expect(
-    (
-      await captureAssetPublication(
-        defined(input.rows[0]),
-        input.rows,
-        { enumerate: async () => ok(input.rows), subscribe: () => () => {} },
-        input.fetcher,
-      )
-    ).ok,
-  ).toBe(false);
+  expect((await captureFrom(input)).ok).toBe(false);
 });
+
+function captureFrom(
+  { rows, fetcher }: Pick<Awaited<ReturnType<typeof fixture>>, 'rows' | 'fetcher'>,
+  source: Parameters<typeof captureAssetPublication>[2] = createCatalogSource({ entries: rows }),
+  options?: Parameters<typeof captureAssetPublication>[4],
+) {
+  return captureAssetPublication(defined(rows[0]), rows, source, fetcher, options);
+}
 
 async function pluginFixture() {
   const input = await fixture(true);
-  const source = { enumerate: async () => ok(input.rows), subscribe: () => () => {} };
+  const source = createCatalogSource({ entries: input.rows });
   const artifact = preparePackProgram({
     entry: 'plugin.js',
     export: 'default',
@@ -585,20 +488,7 @@ async function pluginFixture() {
   };
 }
 
-it('captures unmounted plugin siblings and their tool executors without evaluating them', async () => {
-  const input = await pluginFixture();
-  const captured = (
-    await captureAssetPublication(defined(input.rows[0]), input.rows, input.source, input.fetcher, {
-      executions: [input.options],
-    })
-  ).unwrap();
-  expect(captured.executions?.host?.programs?.['delivered/plugin']).toEqual(input.artifact);
-  expect(captured.executions?.host?.programs?.['delivered/executor']).toEqual(input.executor);
-  expect(captured.executions?.host?.tools?.[sibling]).toEqual(input.options.tools.get(sibling));
-  expect(validateFixedPackPublication(structuredClone(captured)).ok).toBe(true);
-});
-
-it('exports only requested publication programs and clones each result before later producer I/O', async () => {
+it('captures unmounted plugin programs and tool executors without evaluating them, detaching each result', async () => {
   const input = await pluginFixture();
   const mutable = structuredClone(input.artifact);
   const unrelated = vi.fn(async () => {
@@ -615,12 +505,14 @@ it('exports only requested publication programs and clones each result before la
     },
   });
   const fixed = (
-    await captureAssetPublication(defined(input.rows[0]), input.rows, input.source, input.fetcher, {
+    await captureFrom(input, input.source, {
       executions: [input.options],
     })
   ).unwrap();
   expect(fixed.executions?.host?.programs['delivered/plugin']).toEqual(input.artifact);
   expect(fixed.executions?.host?.programs['delivered/executor']).toEqual(input.executor);
+  expect(fixed.executions?.host?.tools?.[sibling]).toEqual(input.options.tools.get(sibling));
+  expect(validateFixedPackPublication(structuredClone(fixed)).ok).toBe(true);
   expect(first).toHaveBeenCalledTimes(1);
   expect(unrelated).not.toHaveBeenCalled();
 });
@@ -642,22 +534,13 @@ it.each([
   if (fault === 'executor') programs.delete('delivered/executor');
   if (fault === 'newer provider') evidence.publication.generation++;
   if (fault === 'other scope') evidence.publication.scopeId = 'another-realm';
-  const captured = await captureAssetPublication(
-    defined(input.rows[0]),
-    input.rows,
-    input.source,
-    input.fetcher,
-    { executions: [input.options] },
-  );
+  const captured = await captureFrom(input, input.source, { executions: [input.options] });
   expect(captured.ok).toBe(false);
 });
 
 it('freezes program, declaration and definition tables before awaiting transport', async () => {
   const input = await pluginFixture();
-  let resume!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    resume = resolve;
-  });
+  const { promise: gate, resolve: resume } = testGate();
   const source = {
     ...input.source,
     openPackage:
@@ -671,13 +554,7 @@ it('freezes program, declaration and definition tables before awaiting transport
     programs: { 'delivered/plugin': input.artifact, 'delivered/executor': input.executor },
     tools: structuredClone(input.options.tools),
   };
-  const pending = captureAssetPublication(
-    defined(input.rows[0]),
-    input.rows,
-    source,
-    input.fetcher,
-    { executions: [input.options] },
-  );
+  const pending = captureFrom(input, source, { executions: [input.options] });
   input.options.programs.clear();
   defined(defined(input.options.tools.get(sibling)).commands[0]).executor = 'newer/executor';
   defined(input.options.definitions.get(sibling)).publication.generation++;
@@ -696,7 +573,7 @@ it.each([
 ])('rejects %s in a restored fixed plugin archive', async (fault) => {
   const input = await pluginFixture();
   const captured = (
-    await captureAssetPublication(defined(input.rows[0]), input.rows, input.source, input.fetcher, {
+    await captureFrom(input, input.source, {
       executions: [input.options],
     })
   ).unwrap();
@@ -726,7 +603,7 @@ it('requires an explicit empty tool contract for a plugin with no tools', async 
   defined(input.options.tools.get(sibling)).commands.length = 0;
   input.options.programs.delete('delivered/executor');
   const captured = (
-    await captureAssetPublication(defined(input.rows[0]), input.rows, input.source, input.fetcher, {
+    await captureFrom(input, input.source, {
       executions: [input.options],
     })
   ).unwrap();
@@ -745,32 +622,26 @@ it.each([
     await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(plugin.payload))),
   );
   const digest = `sha256:${Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
-  const captured = await captureAssetPublication(
-    defined(input.rows[0]),
-    input.rows,
-    input.source,
-    input.fetcher,
-    {
-      executions: [
-        {
-          ...input.options,
-          definitions: new Map([
-            [
-              sibling,
-              {
-                kind: 'source' as const,
-                revision:
-                  fault === 'revision'
-                    ? 'newer-source'
-                    : input.publication.publication.sourceRevision,
-                digest: fault === 'payload' ? `sha256:${'0'.repeat(64)}` : digest,
-              },
-            ],
-          ]),
-        },
-      ],
-    },
-  );
+  const captured = await captureFrom(input, input.source, {
+    executions: [
+      {
+        ...input.options,
+        definitions: new Map([
+          [
+            sibling,
+            {
+              kind: 'source' as const,
+              revision:
+                fault === 'revision'
+                  ? 'newer-source'
+                  : input.publication.publication.sourceRevision,
+              digest: fault === 'payload' ? `sha256:${'0'.repeat(64)}` : digest,
+            },
+          ],
+        ]),
+      },
+    ],
+  });
   expect(captured.ok).toBe(fault === 'matching');
 });
 
@@ -832,7 +703,7 @@ it('captures cooked material shader artifacts and validates their offline loader
     await captureAssetPublication(
       row,
       [row],
-      { enumerate: async () => ok([row]), subscribe: () => () => {} },
+      createCatalogSource({ entries: [row] }),
       async (url) => {
         if (!connected) throw new Error('original transport disconnected');
         if (String(url) === packageUrl) return new Response(JSON.stringify(publication.pack));
@@ -914,35 +785,67 @@ it.each([
   }
 });
 
-// Quark on a phone spent >25 s in fixed dependency capture: each material pack issued
-// its ~50 shader artifact round trips one at a time.
-it('reads independent artifacts concurrently within a bounded window and keeps blob order', async () => {
+// Fixed dependency capture must overlap the independent shader artifact round trips.
+it.each([
+  false,
+  true,
+])('bounds concurrent material reads and seals only a verified closure (corrupt=%s)', async (corrupt) => {
   const passes = Array.from({ length: 20 }, (_, index) => ({
     name: `Forward${index}`,
     program: { module: `game::program${index}` },
   }));
   const { record, publication, row, blobs } = materialCapture(passes);
+  const last = defined(record.programs.at(-1)).artifact.path;
   let active = 0;
   let peak = 0;
-  const captured = (
-    await captureAssetPublication(
-      row,
-      [row],
-      { enumerate: async () => ok([row]), subscribe: () => () => {} },
-      async (url) => {
-        if (String(url) === packageUrl) return new Response(JSON.stringify(publication.pack));
-        active += 1;
-        peak = Math.max(peak, active);
-        await new Promise((resolve) => setTimeout(resolve, 1));
-        active -= 1;
-        const bytes = blobs.get(String(url));
-        return bytes ? new Response(new Uint8Array(bytes)) : new Response('', { status: 404 });
-      },
-    )
-  ).unwrap();
-  expect(record.programs).toHaveLength(20);
+  const waiting: Array<() => void> = [];
+  const reads: string[] = [];
+  const pending = captureAssetPublication(
+    row,
+    [row],
+    createCatalogSource({ entries: [row] }),
+    async (url) => {
+      if (String(url) === packageUrl) return new Response(JSON.stringify(publication.pack));
+      const path = String(url);
+      reads.push(path);
+      peak = Math.max(peak, ++active);
+      await new Promise<void>((resolve) => waiting.push(resolve));
+      active--;
+      const bytes = defined(blobs.get(path));
+      return new Response(
+        new Uint8Array(corrupt && path.endsWith(last) ? bytes.subarray(1) : bytes),
+      );
+    },
+  );
+  try {
+    await vi.waitFor(() => expect(reads.length).toBeGreaterThan(1), { timeout: 300, interval: 5 });
+    expect(reads.length).toBeLessThanOrEqual(8);
+  } finally {
+    // Also drain a serial failure without leaving pending requests.
+    for (let index = 0; index < 25; index++) {
+      for (const release of waiting.splice(0)) release();
+      await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    }
+  }
+  const result = await pending;
+  expect(reads).toHaveLength(20);
   expect(peak).toBe(8);
-  expect(Object.keys(captured.blobs)).toEqual(record.programs.map(({ artifact }) => artifact.path));
+  if (corrupt) {
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: 'asset-artifact-integrity-mismatch',
+        detail: { artifactKey: last },
+      },
+    });
+  } else {
+    const captured = result.unwrap();
+    expect(Object.keys(captured.blobs)).toEqual(
+      record.programs.map(({ artifact }) => artifact.path),
+    );
+    for (const { artifact } of record.programs)
+      expect(decodePackBlob(defined(captured.blobs[artifact.path]))).toEqual(artifact.bytes);
+  }
 });
 
 it.each([
@@ -954,42 +857,19 @@ it.each([
 ])('rejects inconsistent %s evidence', async (fault) => {
   const input = await fixture();
   const publication = input.publication.publication;
+  const mutatePublication = (evidence: Partial<typeof publication>) => {
+    for (const [index, row] of input.rows.entries()) {
+      input.rows[index] = { ...row, publication: { ...publication, ...evidence } };
+    }
+  };
   if (fault === 'receipt')
-    input.rows.splice(
-      0,
-      input.rows.length,
-      ...input.rows.map((row) => ({
-        ...row,
-        publication: {
-          ...publication,
-          receipt: { ...publication.receipt, sourceRevision: 'different' },
-        },
-      })),
-    );
+    mutatePublication({ receipt: { ...publication.receipt, sourceRevision: 'different' } });
   if (fault === 'current locator')
-    input.rows.splice(
-      0,
-      input.rows.length,
-      ...input.rows.map((row) => ({
-        ...row,
-        publication: {
-          ...publication,
-          current: { ...defined(publication.current), generation: publication.generation + 1 },
-        },
-      })),
-    );
+    mutatePublication({
+      current: { ...defined(publication.current), generation: publication.generation + 1 },
+    });
   if (fault === 'duplicate output')
-    input.rows.splice(
-      0,
-      input.rows.length,
-      ...input.rows.map((row) => ({
-        ...row,
-        publication: {
-          ...publication,
-          outputs: [...publication.outputs, defined(publication.outputs[0])],
-        },
-      })),
-    );
+    mutatePublication({ outputs: [...publication.outputs, defined(publication.outputs[0])] });
   if (fault === 'failed sibling')
     input.rows[1] = { ...defined(input.rows[1]), lifecycle: 'failed' };
   const selected =
@@ -999,7 +879,7 @@ it.each([
   const result = await captureAssetPublication(
     selected,
     input.rows,
-    { enumerate: async () => ok(input.rows), subscribe: () => () => {} },
+    createCatalogSource({ entries: input.rows }),
     input.fetcher,
   );
   expect(result).toMatchObject({ ok: false, error: { code: 'pack-v2-envelope-invalid' } });
@@ -1014,16 +894,7 @@ it('accepts semantically equal publication objects with a different JSON field o
       Object.entries(defined(row.publication)).reverse(),
     ) as NonNullable<CatalogEntry['publication']>,
   };
-  expect(
-    (
-      await captureAssetPublication(
-        defined(input.rows[0]),
-        input.rows,
-        { enumerate: async () => ok(input.rows), subscribe: () => () => {} },
-        input.fetcher,
-      )
-    ).ok,
-  ).toBe(true);
+  expect((await captureFrom(input)).ok).toBe(true);
 });
 
 it('preserves cancellation and does not start an already cancelled capture', async () => {
@@ -1035,7 +906,7 @@ it('preserves cancellation and does not start an already cancelled capture', asy
     await captureAssetPublication(
       defined(input.rows[0]),
       input.rows,
-      { enumerate: async () => ok(input.rows), subscribe: () => () => {} },
+      createCatalogSource({ entries: input.rows }),
       fetcher,
       { signal: controller.signal },
     ),

@@ -39,6 +39,7 @@ function makeMockDevice(probe: CowProbe): any {
   const destroyedBufs = new WeakSet<object>();
   const destroyedTexs = new WeakSet<object>();
   return {
+    caps: mockCaps,
     limits: { maxTextureDimension2D: 16384 },
     createShaderModule: () => okShim({ __mock: 'shader' }),
     createSampler: () => okShim({ __mock: 'sampler' }),

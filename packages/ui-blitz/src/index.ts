@@ -1,10 +1,16 @@
 import type { UiGpuFrame } from '@forgeax/engine-types';
 import { parseHtmlAuthoring } from '@forgeax/engine-ui/authoring';
 import { assertUiSupport, BlitzDocument } from './dom.js';
-import { BlitzInput, type BlitzUiInput } from './input.js';
+import { type BlitzDesktopInput, BlitzInput } from './input.js';
 import { BlitzResources, type UiResources } from './resources.js';
 
-export type { BlitzUiInput, UiKeyInput, UiPointerInput, UiTextEditor } from './input.js';
+export type {
+  BlitzDesktopInput,
+  BlitzUiInput,
+  UiKeyInput,
+  UiPointerInput,
+  UiTextEditor,
+} from './input.js';
 
 import type { UiWasmHost } from './wasm-host.js';
 
@@ -30,7 +36,7 @@ export interface BlitzUiOptions {
 
 export interface BlitzUi {
   readonly document: Document;
-  readonly input: BlitzUiInput;
+  readonly input: BlitzDesktopInput;
   loadResources(): Promise<void>;
   paint(timeMs: number): Uint8Array | null;
   paintGpu(timeMs: number): UiGpuFrame | null;

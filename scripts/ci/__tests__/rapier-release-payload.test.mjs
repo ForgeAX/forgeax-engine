@@ -157,7 +157,7 @@ test('Rapier release publication stays on main and preserves all runtime gates',
   const job = workflow.jobs['publish-rapier-wasm-release'];
   assert.ok(job);
   assert.equal(job.if, "github.event_name == 'push' && github.ref == 'refs/heads/main'");
-  assert.equal(job.needs, 'core-build');
+  assert.deepEqual(job.needs, ['core-build', 'app-shard-2']);
   assert.equal(job['continue-on-error'], undefined);
   assert.equal(job.permissions.contents, 'write');
   const core = workflow.jobs['core-build'].steps;
@@ -227,7 +227,8 @@ test('native publication satisfies the unchanged engineering stance gate', (t) =
     ['--import', pathToFileURL(observer).href, 'apps/hello/triangle/scripts/ac-08-grep-gate.mjs'],
     {
       encoding: 'utf8',
-      timeout: 30_000,
+      // The full source gate can overlap runner-owned cold disk activity.
+      timeout: 60_000,
       env: sourceGateEnvironment(),
     },
   );

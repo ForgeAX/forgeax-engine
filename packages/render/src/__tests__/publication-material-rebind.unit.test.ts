@@ -18,9 +18,11 @@ const entryPoints = Object.freeze([
 ]);
 const artifact = { paramSchema: undefined, program: { entryPoints } };
 const registry = {
+  materialParamSchemaProjection: () => undefined,
+  isSourceBackedMaterialArtifact: () => false,
   findMaterialArtifact: () => ({ ok: true, value: artifact }),
   materialArtifact: () => artifact,
-} as never;
+};
 
 const material = {
   ...defaultMaterialSnapshot(7),
@@ -30,14 +32,14 @@ const material = {
 };
 
 it('keeps a re-published material identity when its program reads are unchanged', () => {
-  const first = publicationMaterialSchemaRebinder(registry)(material);
+  const first = publicationMaterialSchemaRebinder(registry as never)(material);
   expect(first).not.toBe(material);
   expect(first.materialProgramInputs).toEqual({ forward: { entryPoints } });
   // Every publication creates a new rebinder; an already bound snapshot is stable.
-  expect(publicationMaterialSchemaRebinder(registry)(first)).toBe(first);
+  expect(publicationMaterialSchemaRebinder(registry as never)(first)).toBe(first);
 
   const resource = new MaterialResource(first);
-  rebindPublicationMaterialSchemas(registry, { materialUpdates: [resource] } as never);
+  rebindPublicationMaterialSchemas(registry as never, { materialUpdates: [resource] } as never);
   expect(resource.snapshot).toBe(first);
 });
 
@@ -51,7 +53,7 @@ it('pairs compiled input reads with the matching certificate across clone and re
     program: { entryPoints: reads },
     receipt: { systemInputs, entryPoints: [] },
   };
-  const certifiedRegistry = { materialArtifact: () => certifiedArtifact } as never;
+  const certifiedRegistry = { ...registry, materialArtifact: () => certifiedArtifact } as never;
   const first = publicationMaterialSchemaRebinder(certifiedRegistry)(material);
   expect(first.materialProgramInputs?.forward).toEqual({ entryPoints: reads, systemInputs });
   expect(waterMaterialReadsBakedSource(first.materialProgramInputs?.forward)).toBe(true);
@@ -61,6 +63,7 @@ it('pairs compiled input reads with the matching certificate across clone and re
   expect(rebound.materialProgramInputs?.forward?.systemInputs).toBe(systemInputs);
   expect(publicationMaterialSchemaRebinder(certifiedRegistry)(rebound)).toBe(rebound);
   const ordinary = publicationMaterialSchemaRebinder({
+    ...registry,
     materialArtifact: () => ({ ...artifact, program: { entryPoints: reads } }),
   } as never)(rebound);
   expect(ordinary.materialProgramInputs?.forward).toEqual({ entryPoints: reads });

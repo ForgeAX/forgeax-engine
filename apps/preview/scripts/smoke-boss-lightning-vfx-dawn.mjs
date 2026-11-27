@@ -31,18 +31,18 @@ const world = new World({ assets });
 const attachment = renderer.attach(world);
 if (!attachment.ok) throw attachment.error;
 useBuiltAssetSource(assets, DIST);
-const attached = await host.attach({ world, assets });
+const attached = await host.attachWorld({ world, assets });
 if (!attached.ok) fail(`Dawn VFX host attach failed: ${attached.error.hint}`);
 cameraEntity = world.spawn({ component: Transform, data: { pos: [0, 1.2, 7.5] } }, { component: Camera, data: { fov: Math.PI / 3, aspect: 256 / 192, near: 0.1, far: 100 } }).unwrap();
-const phaseGuids = ['019e9c00-0000-7000-8000-000000000100', '019e9c00-0000-7000-8000-000000000101', '019e9c00-0000-7000-8000-000000000102'];
+const phaseGuids = ['e1848eb8-3cd0-51c6-9023-40f843ae50a4', '644b6b41-0016-594a-84aa-fac8a04ec8ff', '4db83fe9-447e-588a-8f0f-503b5933618f'];
 const effects = [];
-for (const guid of phaseGuids) { const loaded = await loadVfxGpuEffect(assets, guid); if (!loaded.ok) fail(`Dawn phase load failed: ${guid}`, { error: loaded.error }); effects.push(loaded.value); }
+for (const guid of phaseGuids) { const loaded = await loadVfxGpuEffect(assets, guid); if (!loaded.ok) fail(`Dawn phase load failed: ${guid}`, { error: loaded.error }); effects.push(assets.read(loaded.value).unwrap()); }
 const emitterCount = effects.reduce((sum, effect) => sum + effect.program.emitters.length, 0);
 const rendererKinds = [...new Set(effects.flatMap((effect) => effect.program.emitters.flatMap((emitter) => emitter.renderers.map((rendererEntry) => rendererEntry.kind))))].sort();
 const player = world.spawn({ component: Transform, data: { pos: [0, 0, 0] } }, { component: ParticleEffectPlayer, data: { effect: (await assets.load(phaseGuids[0], 'particle-effect')).unwrap(), playing: true, seed: 42, timeScale: 1 } }).unwrap();
 await createWorldContext(world, [scenePlugin()]);
 const errors = []; let drawnFrames = 0;
-const unsubscribe = renderer.subscribe((event) => { if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint }); });
+const unsubscribe = renderer.subscribe((event) => { if (event.kind === 'error') errors.push({ code: event.error.code, hint: event.error.hint, detail: event.error.detail, cause: event.error.cause instanceof Error ? event.error.cause.message : event.error.cause }); });
 for (let frame = 0; frame < 60; frame += 1) {
   world.update(1 / 60).unwrap();
   await drawReadyFrame(renderer, { source: attachment.value });
@@ -51,7 +51,7 @@ for (let frame = 0; frame < 60; frame += 1) {
 }
 await shim.sharedDevice?.queue.onSubmittedWorkDone();
 const runtime = world.getResource(VFX_GPU_RUNTIME_RESOURCE_KEY);
-const diagnostics = renderer.renderFeatureDiagnostics();
+const diagnostics = renderer.inspect().featureDiagnostics;
 const report = { status: emitterCount === 13 && rendererKinds.join(',') === 'beam,billboard,mesh,ribbon,trail' && drawnFrames === 60 && diagnostics.some((entry) => entry.identity === 'forgeax.vfx-render.gpu-particles' && entry.status === 'active') && runtime.hasPlayer(player) && errors.length === 0, backend: 'dawn-node', drawnFrames, emitterCount, rendererKinds, phaseGuids, diagnostics, errors };
 writeFileSync(resolve(reportDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
 unsubscribe();

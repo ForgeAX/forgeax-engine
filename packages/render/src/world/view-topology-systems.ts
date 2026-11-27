@@ -16,7 +16,7 @@ import { viewLightsOf } from './render-lights';
 import { ViewRecorder } from './render-views';
 import { RenderPrepare, renderSubmission, renderWorldFor } from './render-world';
 import { viewStandardLightingOf } from './standard-lighting-systems';
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import { stagedViewInputs, ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import { ownerOf, type ViewSettlementOwner } from './view-settlement';
@@ -90,12 +90,8 @@ export function viewTopologyOf(
   world: World,
   entity: EntityHandle | undefined,
 ): ViewTopologyOutcome | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewTopologyInputs)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewTopologyState>(
-      requireViewField(world, entity, ViewTopologyInputs, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<ViewTopologyState>(world, entity, ViewTopologyInputs);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.outcome : undefined;
 }
 

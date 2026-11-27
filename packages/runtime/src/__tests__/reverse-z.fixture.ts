@@ -97,9 +97,15 @@ export async function verifyReverseZ(
       }
     return rgba;
   };
-  const expectSurfaces = (rgba: Uint8Array) => {
-    expect(Array.from(rgba.slice((32 * 64 + 32) * 4, (32 * 64 + 32) * 4 + 3))).toEqual([255, 0, 0]);
-    expect(Array.from(rgba.slice((32 * 64 + 8) * 4, (32 * 64 + 8) * 4 + 3))).toEqual([0, 255, 0]);
+  const expectSurfaces = (rgba: Uint8Array, context: string) => {
+    expect(
+      Array.from(rgba.slice((32 * 64 + 32) * 4, (32 * 64 + 32) * 4 + 3)),
+      `${context}: near surface`,
+    ).toEqual([255, 0, 0]);
+    expect(
+      Array.from(rgba.slice((32 * 64 + 8) * 4, (32 * 64 + 8) * 4 + 3)),
+      `${context}: distant surface`,
+    ).toEqual([0, 255, 0]);
   };
   try {
     for (let i = 0; i < warmupFrames; i++) await draw();
@@ -115,7 +121,7 @@ export async function verifyReverseZ(
     );
     const rgba = await readColor(receipt);
     await save('live.rgba', rgba);
-    expectSurfaces(rgba);
+    expectSurfaces(rgba, 'perspective, antialias=0');
     const tape = decodeTape(capture.bytes).unwrap();
     const model = buildFrameModel(tape);
     const geometry = model.works.filter(
@@ -258,9 +264,44 @@ export async function verifyReverseZ(
       for (const antialias of [2, 3, 1, 0]) {
         world.set(camera, Camera, { projection, antialias }).unwrap();
         for (let i = 0; i < 3; i++) await draw();
-        const pixels = await readColor(await draw(['final-display', 'linear-ldr']));
-        expectSurfaces(pixels);
+        const pending = recorder.captureFrame();
+        (await recorder.frameBoundary()).unwrap();
+        const receipt = await draw(['final-display', 'linear-ldr']);
+        (await recorder.frameBoundary()).unwrap();
+        const iterationCapture = (await pending).unwrap();
+        const pixels = await readColor(receipt);
+        const label = `projection-${projection}-aa-${antialias}`;
         await save(`projection-${projection}-aa-${antialias}.rgba`, pixels);
+        try {
+          expectSurfaces(pixels, label);
+        } catch (error) {
+          const tape = decodeTape(iterationCapture.bytes).unwrap();
+          const frame = buildFrameModel(tape);
+          const work = frame.works
+            .filter((entry) => entry.attachments?.depthStencilViewHandleId != null)
+            .at(-1);
+          await save(`${label}-failure.rhitape`, compactTape(iterationCapture).bytes);
+          await save(
+            `${label}-failure.json`,
+            new TextEncoder().encode(
+              JSON.stringify(
+                {
+                  projection,
+                  antialias,
+                  digest: iterationCapture.digest,
+                  workIndex: work?.workIndex,
+                  eventIndex: work?.eventIndex,
+                  nearPixel: Array.from(pixels.slice((32 * 64 + 32) * 4, (32 * 64 + 32) * 4 + 4)),
+                  farPixel: Array.from(pixels.slice((32 * 64 + 8) * 4, (32 * 64 + 8) * 4 + 4)),
+                  errors,
+                },
+                null,
+                2,
+              ),
+            ),
+          );
+          throw error;
+        }
       }
     }
     expect(errors).toEqual([]);

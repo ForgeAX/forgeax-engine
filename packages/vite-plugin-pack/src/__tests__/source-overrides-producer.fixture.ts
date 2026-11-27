@@ -12,6 +12,7 @@ import {
 import {
   ImporterRegistry,
   type ImportRunnerFs,
+  projectImportPack,
   type RunImportMeta,
   type RunImportResult,
   runImport,
@@ -127,7 +128,7 @@ export function createSourceOverrideProducerFixture(): SourceOverrideFixture {
         throw new Error('source override fixture expected a successful import');
       }
       const key = semanticBuildKey(fixture.semantic(sourceOverrides));
-      await writePack(root, key, result.value.pack);
+      await writePack(root, key, projectImportPack(result.value.product));
       const lifecycle = new DdcLifecycle(root);
       const lease = await lifecycle.begin(SOURCE_OVERRIDE_FIXTURE_GUID, key);
       await lifecycle.commit(lease, key);

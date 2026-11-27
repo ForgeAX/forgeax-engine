@@ -1,4 +1,10 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
+import {
+  createStandardClusterLayout,
+  DEFAULT_CLUSTER_GRID,
+  type StandardClusterLayout,
+} from './layout';
+import { standardLightBoundsBytes } from './membership';
 import type { PreparedStandardLighting } from './prepare';
 import type { StandardClusterTransport } from './transport';
 
@@ -34,9 +40,14 @@ export type StandardTopologyInputValue = StandardTopologyInput;
  */
 export function standardLightingTopologySignature(
   input: StandardTopologyInputValue | undefined,
+  viewLayout?: StandardLightGraphLayout,
 ): string {
   if (input === undefined) return 'missing';
   if (input.kind === 'no-local-lights') return 'no-local-lights';
+  return viewLayout?.signature(input) ?? describeClusterGraph(input);
+}
+
+function describeClusterGraph(input: StandardClusteredTopologyInput): string {
   return JSON.stringify({
     kind: input.kind,
     transport: input.transport.kind,
@@ -49,6 +60,49 @@ export function standardLightingTopologySignature(
     clusterUniformBytes: input.transport.clusterUniformBytes,
     lightBoundsInt32Length: input.prepared.layout.lightBoundsInt32Length,
   });
+}
+
+/** Physical declaration of the current stock light grid. It owns only layout facts;
+ * the current light corpus, membership counts and frame upload never enter the declaration. */
+export class StandardLightGraphLayout {
+  private current: StandardClusterLayout | undefined;
+  private kind: StandardClusterTransport['kind'] | undefined;
+  private producer: StandardClusterTransport['producer'] | undefined;
+  private slotBytes = 0;
+  private uniformBytes = 0;
+  private description: string | undefined;
+
+  layout(slots: number, grid: StandardClusterLayout['grid']): StandardClusterLayout {
+    if (grid !== DEFAULT_CLUSTER_GRID) return createStandardClusterLayout(slots, grid);
+    if (this.current?.lightDataSlotCount !== slots) {
+      this.current = createStandardClusterLayout(slots, grid);
+      this.description = undefined;
+    }
+    return this.current;
+  }
+
+  signature(input: StandardClusteredTopologyInput): string | undefined {
+    if (input.prepared.layout !== this.current) return undefined;
+    const transport = input.transport;
+    if (
+      this.description === undefined ||
+      this.kind !== transport.kind ||
+      this.producer !== transport.producer ||
+      this.slotBytes !== transport.lightDataSlotBytes ||
+      this.uniformBytes !== transport.clusterUniformBytes
+    ) {
+      this.description = describeClusterGraph(input);
+      this.kind = transport.kind;
+      this.producer = transport.producer;
+      this.slotBytes = transport.lightDataSlotBytes;
+      this.uniformBytes = transport.clusterUniformBytes;
+    }
+    return this.description;
+  }
+
+  clear(): void {
+    this.current = this.description = undefined;
+  }
 }
 
 interface StandardTopologyInputError {
@@ -113,7 +167,7 @@ export function deriveStandardTopologyInput(
     transport.requestedLightCount === admitted + prepared.droppedLocalLights &&
     transport.admittedLightCount === admitted &&
     transport.membershipEntryCount === prepared.membershipEntryCount &&
-    transport.lightBoundsBytes === prepared.lightBounds.byteLength;
+    transport.lightBoundsBytes === standardLightBoundsBytes(prepared);
   const producerMatchesKind =
     (transport.producer === 'gpu' && transport.kind === 'compute-storage') ||
     (transport.producer === 'cpu' &&

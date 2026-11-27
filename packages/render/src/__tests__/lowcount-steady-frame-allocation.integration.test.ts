@@ -5,9 +5,10 @@ import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { DEFAULT_WEBGPU_STUB_PROFILE, installWebGpuStub, rhi } from '@forgeax/engine-rhi-webgpu';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import { describe, expect, it } from 'vitest';
 import { shaderManifestUrl } from '../../../runtime/src/__tests__/shader-manifest-url.fixture';
-import { buildEngineShaderManifest } from '../../../vite-plugin-shader/src/index';
+import { buildEngineShaderTemplateManifest } from '../../../vite-plugin-shader/src/index';
 import { createRenderer } from '../assembly/factory';
 import { Camera } from '../components/camera';
 import { DirectionalLight } from '../components/directional-light';
@@ -62,7 +63,7 @@ class TestCanvas {
 }
 (globalThis as { HTMLCanvasElement?: unknown }).HTMLCanvasElement ??= TestCanvas;
 installWebGpuStub(DEFAULT_WEBGPU_STUB_PROFILE);
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 
 interface NativeCounts {
   createBindGroup: number;
@@ -132,7 +133,7 @@ async function steadyFrames(moved: number) {
   const renderer = await createRenderer(
     countingCanvas(counts, () => counting) as never,
     { rhi },
-    { shaderManifestUrl: manifestUrl },
+    { shaderManifestUrl: manifestUrl, prepareShaderProgramCompiler },
   );
   const initialized = await renderer.initialization;
   if (!initialized.ok) throw initialized.error;

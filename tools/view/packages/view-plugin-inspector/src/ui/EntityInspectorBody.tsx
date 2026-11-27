@@ -135,7 +135,7 @@ export function EntityInspectorBody({ source, selectionCount = 1, focus, openAss
     </nav>
     </div>
     <Toolbar className="insp-toolbar">
-      <SearchField value={query} onChange={event => setQuery(event.target.value)} onClear={() => setQuery('')} label={t('inspector.searchLabel')} placeholder={t('inspector.searchPlaceholder')} data-testid="insp-search" data-action={INSPECTOR_ACTIONS.search} />
+      <SearchField clearLabel={t('inspector.clearSearch')} value={query} onChange={event => setQuery(event.target.value)} onClear={() => setQuery('')} label={t('inspector.searchLabel')} placeholder={t('inspector.searchPlaceholder')} data-testid="insp-search" data-action={INSPECTOR_ACTIONS.search} />
       <IconButton variant="secondary" size="compact" icon={<SlidersHorizontal size={15} />} label={t('inspector.displaySettings')} data-testid="insp-settings" onClick={event => setMenu({ anchor: event.currentTarget.getBoundingClientRect(), settings: true })} />
     </Toolbar>
     <div className="insp-group-switch" role="radiogroup" aria-label={t('inspector.groups')}>

@@ -7,7 +7,7 @@
 // owning package share the exact query implementation without a private path
 // import or an untyped cast at each consumer.
 
-// Keep this entry limited to package-owner metadata and Query capabilities.
+// Keep this entry limited to owner metadata, Query and producer-lifetime capabilities.
 // Raw World storage stays source-private; semantic World reads live behind the
 // separate `./world-read` entry.
 export {
@@ -25,6 +25,12 @@ import type { DerivedRangeWriter } from './query/derived-range-writer';
 import type { Query } from './query/query';
 import type { World } from './world';
 import { worldInternal } from './world-internal';
+
+/** Capture one fixed Scene roster for ordinary table-tag transitions. */
+export function prepareDisabledBatch(world: World, members: readonly EntityHandle[]) {
+  const entities = new Set(members);
+  return (disabled: boolean) => world[worldInternal].setDisabledBatch(entities, disabled);
+}
 
 /** Internal identity for the ECS-owned derived range writer accessor. */
 export const DERIVED_WRITER: unique symbol = Symbol.for(
@@ -85,6 +91,7 @@ export function markComponentChanged(
   return world[worldInternal].markComponentChanged(entity, componentIdOf(component));
 }
 
+export { releaseUnadoptedUniqueRef } from './producer-refs';
 export type {
   DerivedColumnBinding,
   DerivedRangeCursor,

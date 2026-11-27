@@ -10,7 +10,7 @@ describe('physical material independent reference', () => {
   it('binds a package shader with its own ABI and preserves the Engine shadow owner', () => {
     const material = Materials.standard({ staticSwitches: { clearcoat: true }, baseColor: [0.62, 0.14, 0.04, 1], clearcoat: 1 });
     const result = withPhysicalMaterialModule(material, 'physical-material::standard-clearcoat-factor-r');
-    expect(result.parameters).toEqual(factor.assets[0]!.payload.parameters);
+    expect(result.parameters).toEqual(factor.assets['default-standard-pbr.wgsl'].payload.parameters);
     expect(result.passes?.find((pass) => pass.name === 'shadow-caster')).toBe(
       material.passes?.find((pass) => pass.name === 'shadow-caster'),
     );

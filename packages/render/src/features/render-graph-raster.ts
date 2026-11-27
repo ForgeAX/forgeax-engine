@@ -13,7 +13,6 @@ import { RenderGraphError } from '@forgeax/engine-render-graph';
 import type {
   BindGroup,
   RenderPassDepthStencilAttachment,
-  RenderPipeline,
   RhiRenderPassEncoder,
   TextureFormat,
 } from '@forgeax/engine-rhi';
@@ -23,6 +22,7 @@ import type {
   PreparedGraphicsResolvedResource,
   PreparedGraphicsResolvedSnapshot,
 } from '../prepare/prepared-graphics-resolver';
+import { addBeforePassDepthSnapshot } from '../record/scene-depth-snapshot';
 import type { SceneDataTarget } from '../temporal/scene-data';
 import { currentRenderFeaturePass } from './frame-execution';
 import type { RenderFeatureResolvedGpuBuffer } from './prepared-gpu-work';
@@ -65,11 +65,6 @@ export type RenderFeatureGraphBindingsResolver<FrameCtx extends RenderGraphFrame
   readonly resolveTarget: RenderFeatureGraphTargetResolver;
   readonly resolveGpuResource?: (name: string) => RenderFeatureResolvedGpuBuffer | undefined;
 }) => RenderFeatureGraphBindingsResolution | undefined;
-
-export type RenderFeatureLightingResolver<FrameCtx extends RenderGraphFrame> = (
-  frame: FrameCtx,
-  pipeline: RenderPipeline,
-) => BindGroup | undefined;
 
 /** Prepared draws embedded by the owning pipeline into its light-view passes. */
 export interface RenderFeatureShadowDraws<FrameCtx extends RenderGraphFrame> {
@@ -131,7 +126,7 @@ function hasStencilAspect(format: TextureFormat): boolean {
 function depthStencilOperations(
   depth: NonNullable<RenderFeatureGraphicsPassDescriptor['attachments']['depthStencil']>,
   readOnly: boolean,
-): Omit<RasterDepthStencilAttachment, 'view'> {
+): Omit<RenderPassDepthStencilAttachment, 'view'> {
   const stencil = hasStencilAspect(depth.format);
   return readOnly
     ? { depthReadOnly: true, ...(stencil ? { stencilReadOnly: true } : {}) }
@@ -218,7 +213,6 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
     private readonly resolveBindings?: RenderFeatureGraphBindingsResolver<FrameCtx>,
     buffers?: RenderFeatureGraphBufferState,
     private readonly reportError?: (error: RenderError) => void,
-    private readonly resolveStandardLighting?: RenderFeatureLightingResolver<FrameCtx>,
     private readonly standardSurfaceAccesses: readonly GraphAccess[] = [],
     private readonly viewAccesses: readonly GraphAccess[] = [],
   ) {
@@ -359,31 +353,16 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
           );
         // A material may sample existing scene depth and still write its own
         // depth. Keep both author facts without a same-pass texture feedback loop.
-        const texture = this.builder.createTextureLike(`${name}.sampled-depth`, target.texture);
-        if (!texture.ok) return texture;
-        const view = this.builder.view(texture.value);
-        if (!view.ok) return view;
-        sampledDepth = { texture: texture.value, view: view.value };
-        originalDepth = target;
-        const copied = this.builder.addCopyPass(`${name}.sampled-depth-copy`, {
-          accesses: [
-            { resource: target.view, usage: 'copy-src' },
-            { resource: view.value, usage: 'copy-dst' },
-          ],
-          executeIf: (frame) =>
-            currentRenderFeaturePass(frame, featureIdentity, name)?.enabled ?? enabled,
-          encodeDirect: (encoder, _graphframe, resources) => {
-            const source = resources.texture(target.texture).unwrap();
-            const destination = resources.texture(texture.value).unwrap();
-            const extent = resources.textureViewExtent(target.view).unwrap();
-            encoder.copyTextureToTexture(
-              { texture: source, aspect: 'all' },
-              { texture: destination, aspect: 'all' },
-              { ...extent, depthOrArrayLayers: 1 },
-            );
-          },
-        });
+        const copied = addBeforePassDepthSnapshot(
+          this.builder,
+          target,
+          `${name}.sampled-depth`,
+          `${name}.sampled-depth-copy`,
+          (frame) => currentRenderFeaturePass(frame, featureIdentity, name)?.enabled ?? enabled,
+        );
         if (!copied.ok) return copied;
+        sampledDepth = copied.value;
+        originalDepth = target;
       }
       const readOnly = sampled && !writesDepth;
       accesses.push({
@@ -594,6 +573,8 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
             resources,
             undefined,
             scope,
+            this.resolveTarget,
+            work,
           );
         } catch (failure) {
           throwFeatureRecordingFailure(
@@ -659,8 +640,8 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
     shadowView?: BindGroup,
     scope?: string,
     resolveTarget: RenderFeatureGraphTargetResolver = this.resolveTarget,
+    current = currentRenderFeaturePass(frame, featureIdentity, name, scope),
   ): void {
-    const current = currentRenderFeaturePass(frame, featureIdentity, name, scope);
     if (current?.enabled === false) return;
     const activeSnapshot = current?.resolvedGraphics ?? snapshot;
     let nextDrawIndex = 0;
@@ -676,18 +657,6 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
           new Error(`Raster pass "${name}" has no prepared pipeline for draw ${drawIndex}.`),
         );
       pass.setPipeline(pipeline.handle);
-      if (pipeline.standardLighting === true) {
-        const lighting = this.resolveStandardLighting?.(frame, pipeline.handle);
-        if (lighting === undefined)
-          throw missing(
-            featureIdentity,
-            order,
-            new Error(
-              `Raster pass "${name}" could not resolve Standard lighting for draw ${drawIndex}.`,
-            ),
-          );
-        pass.setBindGroup(2, lighting);
-      }
       let nextGroup = 0;
       for (const reference of activeDraw.bindings) {
         const group = nextGroup++;
@@ -702,7 +671,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
           );
         const targetGroup = binding.descriptor?.values.group ?? group;
         if (shadowView !== undefined && targetGroup === 0) {
-          pass.setBindGroup(0, shadowView, [0, 0]);
+          pass.setBindGroup(0, shadowView, [0]);
           continue;
         }
         // Fullscreen feature bindings contain graph-owned texture views and a

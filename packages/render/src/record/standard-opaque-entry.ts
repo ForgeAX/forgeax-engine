@@ -1,4 +1,9 @@
 import type { MaterialShaderProgram } from '@forgeax/engine-shader';
+import { findMaterialShaderEntry } from '@forgeax/engine-shader';
+import {
+  FORWARD_SHADOW_COLOR_ENTRY,
+  isForwardShadowColorEntry,
+} from '../pipeline/forward-shadow-admission';
 
 /**
  * Forward fragment entry for Standard draws bound to the unfogged View slot.
@@ -18,24 +23,29 @@ import type { MaterialShaderProgram } from '@forgeax/engine-shader';
 export const STANDARD_OPAQUE_FRAGMENT_ENTRY = 'fs_opaque';
 
 export const STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY = 'fs_forward_screen';
+const standardForwardEntryBits: Readonly<Record<string, number>> = {
+  [STANDARD_OPAQUE_FRAGMENT_ENTRY]: 1,
+  [STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY]: 2,
+  [FORWARD_SHADOW_COLOR_ENTRY]: 4,
+};
 const declaredByProgram = new WeakMap<MaterialShaderProgram, number>();
 function declaresStandardForwardEntry(
   source: string | MaterialShaderProgram | undefined,
-  entry: typeof STANDARD_OPAQUE_FRAGMENT_ENTRY | typeof STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY,
+  entry: string,
 ): boolean {
   if (source === undefined) return false;
   if (typeof source === 'string') return source.includes(`fn ${entry}(`);
   if (source.entryPoints !== undefined)
-    return source.entryPoints.some((candidate) => candidate.name === entry);
+    return findMaterialShaderEntry(source.entryPoints, entry) !== undefined;
   let mask = declaredByProgram.get(source);
   if (mask === undefined) {
-    const text = source.source;
-    mask =
-      Number(text.includes(`fn ${STANDARD_OPAQUE_FRAGMENT_ENTRY}(`)) |
-      (Number(text.includes(`fn ${STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY}(`)) << 1);
+    mask = 0;
+    for (const [name, bit] of Object.entries(standardForwardEntryBits)) {
+      if (source.source.includes(`fn ${name}(`)) mask |= bit;
+    }
     declaredByProgram.set(source, mask);
   }
-  return (mask & (entry === STANDARD_OPAQUE_FRAGMENT_ENTRY ? 1 : 2)) !== 0;
+  return (mask & (standardForwardEntryBits[entry] ?? 0)) !== 0;
 }
 /** Whether the program declares the unfogged Forward entry. */
 export function declaresStandardOpaqueEntry(
@@ -45,16 +55,18 @@ export function declaresStandardOpaqueEntry(
 }
 
 /**
- * The entry a program can actually serve: `fs_opaque` falls back to the
- * default forward entry (`undefined`) on programs that do not declare it --
+ * An undeclared Standard fragment entry falls back to the program's
+ * default Forward entry (`undefined`) --
  * sprite, hand-written WGSL, or Surfaces cooked before the entry existed.
  */
 export function declaredFragmentEntry(
   fragmentEntry: string | undefined,
   source: string | MaterialShaderProgram | undefined,
 ): string | undefined {
-  return (fragmentEntry === STANDARD_OPAQUE_FRAGMENT_ENTRY ||
-    fragmentEntry === STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY) &&
+  return fragmentEntry !== undefined &&
+    (fragmentEntry === STANDARD_OPAQUE_FRAGMENT_ENTRY ||
+      fragmentEntry === STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY ||
+      isForwardShadowColorEntry(fragmentEntry)) &&
     !declaresStandardForwardEntry(source, fragmentEntry)
     ? undefined
     : fragmentEntry;
@@ -62,7 +74,8 @@ export function declaredFragmentEntry(
 
 /** Forward prepass entry that writes the Standard surface-data outputs. */
 export const SURFACE_DATA_FRAGMENT_ENTRY = 'fs_ao_input';
-const surfaceDataByProgram = new WeakMap<MaterialShaderProgram, boolean>();
+const SURFACE_DATA_MSAA_FRAGMENT_ENTRY = 'fs_ao_input_msaa';
+const surfaceDataByProgram = new WeakMap<MaterialShaderProgram, number>();
 
 /**
  * Whether a draw of `materialShaderId` cannot serve the surface-data prepass
@@ -77,16 +90,24 @@ export function lacksSurfaceDataEntry(
   program: MaterialShaderProgram | undefined,
   builtIn: boolean,
 ): boolean {
-  if (fragmentEntry !== SURFACE_DATA_FRAGMENT_ENTRY) return false;
+  const bit =
+    fragmentEntry === SURFACE_DATA_FRAGMENT_ENTRY
+      ? 1
+      : fragmentEntry === SURFACE_DATA_MSAA_FRAGMENT_ENTRY
+        ? 2
+        : 0;
+  if (bit === 0) return false;
   if (program === undefined) return !builtIn && materialShaderId !== undefined;
   if (program.entryPoints !== undefined)
-    return !program.entryPoints.some((candidate) => candidate.name === fragmentEntry);
-  let declared = surfaceDataByProgram.get(program);
-  if (declared === undefined) {
-    declared = program.source.includes(`fn ${SURFACE_DATA_FRAGMENT_ENTRY}(`);
-    surfaceDataByProgram.set(program, declared);
+    return findMaterialShaderEntry(program.entryPoints, fragmentEntry, 'fragment') === undefined;
+  let mask = surfaceDataByProgram.get(program);
+  if (mask === undefined) {
+    mask =
+      Number(program.source.includes(`fn ${SURFACE_DATA_FRAGMENT_ENTRY}(`)) |
+      (Number(program.source.includes(`fn ${SURFACE_DATA_MSAA_FRAGMENT_ENTRY}(`)) << 1);
+    surfaceDataByProgram.set(program, mask);
   }
-  return !declared;
+  return (mask & bit) === 0;
 }
 
 /** A screen receiver overrides only the ordinary Standard entry, never authored shading. */

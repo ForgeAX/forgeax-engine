@@ -1989,7 +1989,7 @@ describe('AssetErrorCode — closed union', () => {
     }
   });
 
-  // Type-level: verify exhaustive switch on 22-member AssetErrorCode compiles
+  // Type-level: verify exhaustive switch on AssetErrorCode compiles
   // without default case. TS compiler validates union completeness at compile
   // time — this function exists solely for tsc type-checking.
   it('switch on AssetErrorCode with every case compiles without default', () => {
@@ -1997,6 +1997,8 @@ describe('AssetErrorCode — closed union', () => {
       switch (code) {
         case 'asset-not-ready':
           return 'asset-not-ready';
+        case 'asset-cpu-data-unavailable':
+          return 'asset CPU data unavailable';
         case 'asset-reference-invalid':
           return 'asset-reference-invalid';
         case 'asset-owner-closed':
@@ -2031,37 +2033,43 @@ describe('AssetErrorCode — closed union', () => {
           return 'stride mismatch';
         case 'material-shader-ref-broken':
           return 'shader ref broken';
-        case 'material-circular-inheritance':
-          return 'circular';
-        case 'loader-not-registered':
-          return 'loader not registered';
-        case 'asset-not-imported':
-          return 'not imported';
-        case 'texture-source-not-imported':
-          return 'texture source not imported';
-        case 'mesh-renderer-material-override-invalid':
-          return 'override invalid';
-        case 'mesh-renderer-material-override-overflow':
-          return 'override overflow';
-        case 'mesh-asset-submeshes-empty':
-          return 'submeshes empty';
-        case 'mesh-asset-material-slot-index-out-of-range':
-          return 'material slot index oob';
-        case 'mesh-submesh-index-range-out-of-bounds':
-          return 'index oob';
-        case 'tileset-region-index-out-of-range':
-          return 'tileset region index oob';
-        case 'tileset-tile-entry-malformed':
-          return 'tileset tile entry malformed';
-        case 'asset-invalidated':
-          return 'invalidated';
-        case 'mesh-bin-contract-violation':
-          return 'mesh bin contract violation';
-        case 'source-not-imported':
-          return 'source not imported';
-        case 'mipgen-unsupported-compressed-format':
-          return 'mipgen unsupported compressed format';
       }
+      const remainingCode = code;
+      function describePayloadError(): string {
+        switch (remainingCode) {
+          case 'material-circular-inheritance':
+            return 'circular';
+          case 'loader-not-registered':
+            return 'loader not registered';
+          case 'asset-not-imported':
+            return 'not imported';
+          case 'texture-source-not-imported':
+            return 'texture source not imported';
+          case 'mesh-renderer-material-override-invalid':
+            return 'override invalid';
+          case 'mesh-renderer-material-override-overflow':
+            return 'override overflow';
+          case 'mesh-asset-submeshes-empty':
+            return 'submeshes empty';
+          case 'mesh-asset-material-slot-index-out-of-range':
+            return 'material slot index oob';
+          case 'mesh-submesh-index-range-out-of-bounds':
+            return 'index oob';
+          case 'tileset-region-index-out-of-range':
+            return 'tileset region index oob';
+          case 'tileset-tile-entry-malformed':
+            return 'tileset tile entry malformed';
+          case 'asset-invalidated':
+            return 'invalidated';
+          case 'mesh-bin-contract-violation':
+            return 'mesh bin contract violation';
+          case 'source-not-imported':
+            return 'source not imported';
+          case 'mipgen-unsupported-compressed-format':
+            return 'mipgen unsupported compressed format';
+        }
+      }
+      return describePayloadError();
     }
     // Runtime: verify function returns for each code
     for (const code of Object.keys(ASSET_ERROR_HINTS) as AssetErrorCode[]) {

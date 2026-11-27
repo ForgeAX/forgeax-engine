@@ -4,7 +4,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { deserialize, Serializer } from 'node:v8';
 import { brotliCompress, brotliDecompress, constants } from 'node:zlib';
-import { DdcEntryStore, ddcOutputDigest, semanticDdcKey } from '@forgeax/engine-ddc';
+import { type DdcEntry, DdcEntryStore, ddcOutputDigest, semanticDdcKey } from '@forgeax/engine-ddc';
 import {
   type CookedMaterialRecord,
   rebindMaterialPublicationGeneration,
@@ -61,13 +61,16 @@ async function contentDependencyFailure(
 
 const CACHE_SCHEMA = 'scriptable-pack-product/11';
 const PRODUCT_ARTIFACT = 'product.v8.br';
-const LEGACY_CACHE_SCHEMAS = [] as const;
 const KINDS_SCHEMA = 'scriptable-pack-product-kinds/1';
+// The stream header identifies the wire format shared by compatible Node releases.
+const serializationHeader = new Serializer();
+serializationHeader.writeHeader();
+const PACK_CACHE_CODEC = `node-v8/${serializationHeader.releaseBuffer().toString('hex')}`;
 const compress = promisify(brotliCompress);
 const decompress = promisify(brotliDecompress);
 
 interface CachePayload {
-  readonly schemaVersion: typeof CACHE_SCHEMA | (typeof LEGACY_CACHE_SCHEMAS)[number];
+  readonly schemaVersion: typeof CACHE_SCHEMA;
   readonly sourcePath: string;
 }
 
@@ -466,9 +469,93 @@ export function createProductRelocation(roots: readonly string[]) {
   };
 }
 
+export async function packCacheRoots(root: string | undefined): Promise<readonly string[]> {
+  if (root === undefined) return [];
+  const absolute = resolve(root);
+  return [await realpath(root).catch(() => absolute), absolute];
+}
+
+export function createPackCacheCodec(roots: readonly string[], cap = Infinity) {
+  const relocation = roots.length === 0 ? undefined : createProductRelocation(roots);
+  return {
+    async decode<T>(body: Uint8Array): Promise<T> {
+      const bytes = await decompress(body);
+      const value = deserialize(bytes) as T;
+      return relocation === undefined ? value : relocation.restore(bytes, value);
+    },
+    async encode(value: unknown) {
+      const serializer = new Serializer();
+      serializer.writeHeader();
+      serializer.writeValue(shareImmutableProductData(value, relocation?.store));
+      const serialized = serializer.releaseBuffer();
+      if (serialized.byteLength > cap || relocation?.locationBound(serialized)) return undefined;
+      return {
+        compressed: await compress(serialized, { params: { [constants.BROTLI_PARAM_QUALITY]: 4 } }),
+        serializedBytes: serialized.byteLength,
+      };
+    },
+  };
+}
+
+export function writePackCacheEntry(
+  store: DdcEntryStore,
+  id: Pick<DdcEntry, 'key' | 'guid'>,
+  producer: string,
+  payload: unknown,
+  body?: { readonly name: string; readonly bytes: Uint8Array },
+  inputFingerprint = id.key,
+) {
+  const data = {
+    ...id,
+    payload,
+    refs: [],
+    artifacts:
+      body === undefined
+        ? {}
+        : {
+            [body.name]: { mediaType: 'application/vnd.node-v8-serialized+br', bytes: body.bytes },
+          },
+  };
+  return store.write({
+    ...data,
+    receipt: { ...id, producer, inputFingerprint, outputDigest: ddcOutputDigest(data) },
+  });
+}
+
+/** Keep cooked program bytes while assigning the selected publication generation. */
+export function bindScriptablePackMaterialGeneration(
+  product: ScriptablePackBuildProduct,
+  generation: number,
+  rebind: (
+    cooked: unknown,
+    generation: number,
+  ) => ReturnType<typeof withMaterialPublicationGeneration> = withMaterialPublicationGeneration,
+): ScriptablePackBuildProduct | undefined {
+  const assets = [];
+  let changed = false;
+  for (const asset of product.product.assets) {
+    if (asset.kind !== 'material') {
+      assets.push(asset);
+      continue;
+    }
+    const payload = asset.payload;
+    if (payload === null || typeof payload !== 'object' || !('cooked' in payload)) {
+      assets.push(asset);
+      continue;
+    }
+    const rebound = rebind(payload.cooked, generation);
+    if (!rebound.ok) return undefined;
+    assets.push({ ...asset, payload: { ...payload, cooked: rebound.value } });
+    changed = true;
+  }
+  return changed ? { ...product, product: { ...product.product, assets } } : product;
+}
+
 /** Immutable Pack products are optional DDC evidence, never author authority. */
 export async function createScriptablePackProductCache(options: {
   readonly root: string;
+  /** Immutable prebuilt products to read when the writable cache cannot satisfy the key. */
+  readonly seedRoot?: string;
   readonly outputVersions: Readonly<Record<string, string>>;
   readonly cookers: readonly NativeCooker[];
   /**
@@ -485,18 +572,18 @@ export async function createScriptablePackProductCache(options: {
   // Source closures hold canonical paths, other strings may use the
   // configured spelling. Keep both positions, even when equal: relocation
   // tokens are positional across the writing and reading checkouts.
-  const identityRoots =
-    options.identityRoot === undefined
-      ? []
-      : [
-          await realpath(options.identityRoot).catch(() => resolve(options.identityRoot as string)),
-          resolve(options.identityRoot),
-        ];
+  const identityRoots = await packCacheRoots(options.identityRoot);
   const sourceIdentity = (path: string): string => identityPath(identityRoots, path);
-  const relocation =
-    identityRoots.length === 0 ? undefined : createProductRelocation(identityRoots);
-  const store = new DdcEntryStore(join(options.root, 'scriptable-pack-products'));
-  const kindStore = new DdcEntryStore(join(options.root, 'scriptable-pack-product-kinds'));
+  const codec = createPackCacheCodec(identityRoots);
+  const storesAt = (root: string) => ({
+    products: new DdcEntryStore(join(root, 'scriptable-pack-products')),
+    kinds: new DdcEntryStore(join(root, 'scriptable-pack-product-kinds')),
+  });
+  const local = storesAt(options.root);
+  const layers =
+    options.seedRoot === undefined || options.seedRoot === options.root
+      ? [local]
+      : [local, storesAt(options.seedRoot)];
   const timing = (
     state: 'hit' | 'miss' | 'write' | 'skip' | 'write-failed',
     sourcePath: string,
@@ -537,40 +624,9 @@ export async function createScriptablePackProductCache(options: {
       (asset) =>
         !cookerIdentities.has(asset.kind) || cookerIdentities.get(asset.kind) !== undefined,
     );
-  // The material record retains a publication fence, but its compiled programs
-  // are immutable. Normalize only that fence in the DDC body, then bind the
-  // current generation after a verified hit; generation never enters the key.
-  // A write validates each record before it is stored; a hit's body passed the
-  // DDC integrity digests, so it rebinds the stored records without validating
-  // their program sets again.
-  const bindGeneration = (
-    product: ScriptablePackBuildProduct,
-    generation: number,
-    rebind: (
-      cooked: unknown,
-      generation: number,
-    ) => ReturnType<typeof withMaterialPublicationGeneration> = withMaterialPublicationGeneration,
-  ): ScriptablePackBuildProduct | undefined => {
-    const assets = [];
-    for (const asset of product.product.assets) {
-      if (asset.kind !== 'material') {
-        assets.push(asset);
-        continue;
-      }
-      const payload = asset.payload;
-      if (payload === null || typeof payload !== 'object' || !('cooked' in payload)) {
-        assets.push(asset);
-        continue;
-      }
-      const rebound = rebind(payload.cooked, generation);
-      if (!rebound.ok) return undefined;
-      assets.push({ ...asset, payload: { ...payload, cooked: rebound.value } });
-    }
-    return { ...product, product: { ...product.product, assets } };
-  };
   const identity = (
     subject: PackBuildCacheSubject,
-    schema: string,
+    schema: typeof CACHE_SCHEMA | typeof KINDS_SCHEMA,
     dependencies?: CookerDependencies,
   ): { key: string; guid: string } => {
     const guid = PackageId.format(subject.subjectPackageId ?? subject.definition.packageId);
@@ -579,7 +635,7 @@ export async function createScriptablePackProductCache(options: {
       key: semanticDdcKey({
         schemaVersion: schema,
         importer: 'scriptable-pack',
-        codec: `node-v8/${process.versions.v8}`,
+        codec: PACK_CACHE_CODEC,
         settings: {
           sourcePath: sourceIdentity(subject.sourcePath),
           packageId: guid,
@@ -613,33 +669,29 @@ export async function createScriptablePackProductCache(options: {
     };
   };
   const readEntry = async (
+    store: DdcEntryStore,
     subject: PackBuildCacheSubject,
-    schema: CachePayload['schemaVersion'],
-    artifact: string,
-    decode: (bytes: Uint8Array) => Promise<Uint8Array>,
     resolve: ScriptablePackDependencyResolver | undefined,
-    dependencies?: CookerDependencies,
+    dependencies: CookerDependencies,
   ): Promise<{
     product?: ScriptablePackBuildProduct;
     reason: string;
     key: string;
     dependency?: NonNullable<Awaited<ReturnType<typeof contentDependencyFailure>>>['dependency'];
   }> => {
-    const { key, guid } = identity(subject, schema, dependencies);
+    const { key, guid } = identity(subject, CACHE_SCHEMA, dependencies);
     try {
       const entry = await store.read(key);
       if (entry === null) return { reason: 'entry-not-found', key };
-      const payload = entry?.payload as CachePayload | undefined;
-      const body = entry?.artifacts[artifact]?.bytes;
+      const payload = entry.payload as CachePayload | undefined;
+      const body = entry.artifacts[PRODUCT_ARTIFACT]?.bytes;
       if (
-        entry?.guid === guid &&
-        payload?.schemaVersion === schema &&
+        entry.guid === guid &&
+        payload?.schemaVersion === CACHE_SCHEMA &&
         payload.sourcePath === sourceIdentity(subject.sourcePath) &&
         body !== undefined
       ) {
-        const decoded = await decode(body);
-        const stored = deserialize(decoded) as ScriptablePackBuildProduct;
-        const product = relocation === undefined ? stored : relocation.restore(decoded, stored);
+        const product = await codec.decode<ScriptablePackBuildProduct>(body);
         if (
           product !== null &&
           typeof product === 'object' &&
@@ -647,20 +699,16 @@ export async function createScriptablePackProductCache(options: {
           Array.isArray(product.externalEvidence) &&
           Array.isArray(product.product?.assets) &&
           cacheable(product) &&
-          (dependencies === undefined ||
-            (JSON.stringify(productKinds(product)) === JSON.stringify(dependencies.kinds) &&
-              nativeFreeProduct(product) === dependencies.nativeFree))
+          JSON.stringify(productKinds(product)) === JSON.stringify(dependencies.kinds) &&
+          nativeFreeProduct(product) === dependencies.nativeFree
         ) {
           const failure = await contentDependencyFailure(product, resolve);
           if (failure !== undefined) return { key, ...failure };
           // Only this producer's format was validated before it was stored.
-          const rebound = bindGeneration(
+          const rebound = bindScriptablePackMaterialGeneration(
             product,
             subject.publicationGeneration ?? 1,
-            schema === CACHE_SCHEMA
-              ? (cooked, at) =>
-                  rebindMaterialPublicationGeneration(cooked as CookedMaterialRecord, at)
-              : withMaterialPublicationGeneration,
+            (cooked, at) => rebindMaterialPublicationGeneration(cooked as CookedMaterialRecord, at),
           );
           return rebound === undefined
             ? { reason: 'generation-invalid', key }
@@ -670,16 +718,16 @@ export async function createScriptablePackProductCache(options: {
       }
       return { reason: 'entry-identity-invalid', key };
     } catch {
-      // A damaged optional entry is disposable; try the preceding format or cook.
+      // A damaged optional entry is disposable; cook the current source again.
       return { reason: 'entry-read-invalid', key };
     }
   };
   // A source generation determines its output kinds before native cooking.
   // This immutable discovery row selects a fully semantic product key; it is
   // never a substitute for checking current source bytes or cooker versions.
-  const readDependencies = async (subject: PackBuildCacheSubject) => {
+  const readDependencies = async (store: DdcEntryStore, subject: PackBuildCacheSubject) => {
     const { key, guid } = identity(subject, KINDS_SCHEMA);
-    const entry = await kindStore.read(key);
+    const entry = await store.read(key).catch(() => null);
     const payload = entry?.payload as
       | {
           schemaVersion?: unknown;
@@ -755,19 +803,14 @@ export async function createScriptablePackProductCache(options: {
       return;
     }
     try {
-      const immutable = bindGeneration(product, 1);
+      const immutable = bindScriptablePackMaterialGeneration(product, 1);
       if (immutable === undefined) return;
-      const serializer = new Serializer();
-      serializer.writeHeader();
-      serializer.writeValue(shareImmutableProductData(immutable, relocation?.store));
-      const bytes = serializer.releaseBuffer();
-      if (relocation?.locationBound(bytes)) {
+      const body = await codec.encode(immutable);
+      if (body === undefined) {
         timing('skip', subject.sourcePath, startedAt, { reason: 'location-bound' });
         return;
       }
-      const compressed = await compress(bytes, {
-        params: { [constants.BROTLI_PARAM_QUALITY]: 4 },
-      });
+      const { compressed, serializedBytes } = body;
       const dependencies = {
         kinds: productKinds(product),
         nativeFree: nativeFreeProduct(product),
@@ -785,52 +828,22 @@ export async function createScriptablePackProductCache(options: {
           .filter((row) => row.usage !== 'reference')
           .map((row) => row.guid.toLowerCase()),
       };
-      const { key, guid } = identity(subject, CACHE_SCHEMA, dependencies);
-      const entry = {
-        key,
-        guid,
-        payload: { schemaVersion: CACHE_SCHEMA, sourcePath: sourceIdentity(subject.sourcePath) },
-        refs: [] as string[],
-        artifacts: {
-          [PRODUCT_ARTIFACT]: {
-            mediaType: 'application/vnd.node-v8-serialized+br',
-            bytes: compressed,
-          },
-        },
-        receipt: {
-          guid,
-          key,
-          producer: CACHE_SCHEMA,
-          inputFingerprint: key,
-          outputDigest: '',
-        },
-      };
-      entry.receipt.outputDigest = ddcOutputDigest(entry);
-      await store.write(entry);
-      const discoveryKey = identity(subject, KINDS_SCHEMA).key;
-      const discovery = {
-        key: discoveryKey,
-        guid,
-        payload: {
-          schemaVersion: KINDS_SCHEMA,
-          sourcePath: sourceIdentity(subject.sourcePath),
-          ...dependencies,
-        },
-        refs: [] as string[],
-        artifacts: {},
-        receipt: {
-          guid,
-          key: discoveryKey,
-          producer: KINDS_SCHEMA,
-          inputFingerprint: discoveryKey,
-          outputDigest: '',
-        },
-      };
-      discovery.receipt.outputDigest = ddcOutputDigest(discovery);
-      await kindStore.write(discovery);
+      const id = identity(subject, CACHE_SCHEMA, dependencies);
+      await writePackCacheEntry(
+        local.products,
+        id,
+        CACHE_SCHEMA,
+        { schemaVersion: CACHE_SCHEMA, sourcePath: sourceIdentity(subject.sourcePath) },
+        { name: PRODUCT_ARTIFACT, bytes: compressed },
+      );
+      await writePackCacheEntry(local.kinds, identity(subject, KINDS_SCHEMA), KINDS_SCHEMA, {
+        schemaVersion: KINDS_SCHEMA,
+        sourcePath: sourceIdentity(subject.sourcePath),
+        ...dependencies,
+      });
       timing('write', subject.sourcePath, startedAt, {
-        key,
-        serializedBytes: bytes.byteLength,
+        key: id.key,
+        serializedBytes,
         storedBytes: compressed.byteLength,
       });
     } catch {
@@ -845,10 +858,12 @@ export async function createScriptablePackProductCache(options: {
       .update(JSON.stringify([engineProducerVersion(), options.outputVersions, cookerIdentity]))
       .digest('hex')}`,
     async dependencies(subject) {
-      const metadata = await readDependencies(subject);
-      return metadata?.outputs === undefined || metadata.reads === undefined
-        ? undefined
-        : { outputs: metadata.outputs, reads: metadata.reads };
+      for (const { kinds } of layers) {
+        const metadata = await readDependencies(kinds, subject);
+        if (metadata?.outputs !== undefined && metadata.reads !== undefined)
+          return { outputs: metadata.outputs, reads: metadata.reads };
+      }
+      return undefined;
     },
     async read(subject, resolve) {
       const startedAt = performance.now();
@@ -856,44 +871,35 @@ export async function createScriptablePackProductCache(options: {
         timing('miss', subject.sourcePath, startedAt, { reason: 'source-changed' });
         return undefined;
       }
-      const dependencies = await readDependencies(subject);
-      const lookup = await withDiscoveredSources(subject, dependencies);
-      if (lookup === undefined || (lookup !== subject && !(await sourceClosureCurrent(lookup)))) {
-        timing('miss', subject.sourcePath, startedAt, { reason: 'dependency-source-unavailable' });
-        return undefined;
-      }
-      const current: Awaited<ReturnType<typeof readEntry>> =
-        dependencies === undefined
-          ? { reason: 'entry-not-found', key: identity(subject, KINDS_SCHEMA).key }
-          : await readEntry(
-              lookup,
-              CACHE_SCHEMA,
-              PRODUCT_ARTIFACT,
-              decompress,
-              resolve,
-              dependencies,
-            );
-      let legacy: Awaited<ReturnType<typeof readEntry>> | undefined;
-      if (current.product === undefined)
-        for (const schema of LEGACY_CACHE_SCHEMAS) {
-          legacy = await readEntry(lookup, schema, PRODUCT_ARTIFACT, decompress, resolve);
-          if (legacy.product !== undefined) break;
+      let miss: Record<string, unknown> = {
+        reason: 'entry-not-found',
+        key: identity(subject, KINDS_SCHEMA).key,
+      };
+      for (const { kinds, products } of layers) {
+        const dependencies = await readDependencies(kinds, subject);
+        if (dependencies === undefined) continue;
+        const lookup = await withDiscoveredSources(subject, dependencies);
+        if (lookup === undefined || (lookup !== subject && !(await sourceClosureCurrent(lookup)))) {
+          miss = { reason: 'dependency-source-unavailable' };
+          continue;
         }
-      const product = current.product ?? legacy?.product;
-      if (product !== undefined && (await sourceClosureCurrent(lookup))) {
-        // Format migration only republishes a verified immutable product; it
-        // never changes source identity or makes an old publication authoritative.
-        if (legacy?.product !== undefined) await write(lookup, legacy.product);
-        timing('hit', subject.sourcePath, startedAt, {
-          key: current.product === undefined ? legacy?.key : current.key,
-        });
-        return product;
+        const { product, key, reason, dependency } = await readEntry(
+          products,
+          lookup,
+          resolve,
+          dependencies,
+        );
+        if (product !== undefined && (await sourceClosureCurrent(lookup))) {
+          timing('hit', subject.sourcePath, startedAt, { key });
+          return product;
+        }
+        miss = {
+          key,
+          reason: product === undefined ? reason : 'source-changed',
+          ...(dependency === undefined ? {} : { dependency }),
+        };
       }
-      timing('miss', subject.sourcePath, startedAt, {
-        key: current.key,
-        reason: product === undefined ? current.reason : 'source-changed',
-        ...(current.dependency === undefined ? {} : { dependency: current.dependency }),
-      });
+      timing('miss', subject.sourcePath, startedAt, miss);
       return undefined;
     },
     write,

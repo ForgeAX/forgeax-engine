@@ -755,12 +755,6 @@ describe('dynamic geometry ECS publication host', () => {
     const device = (await adapter.requestDevice()).unwrap();
     const store = new GpuResidencyCache();
     store.configureGpuDevice(device, undefined, device.caps);
-    const invalidated: number[] = [];
-    const invalidateMesh = store.invalidateMesh.bind(store);
-    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, scope) => {
-      invalidated.push(handle);
-      invalidateMesh(handle, scope);
-    });
     const world = new World({ assets: new AssetRegistry() });
     const oldA = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
     const oldB = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
@@ -827,13 +821,15 @@ describe('dynamic geometry ECS publication host', () => {
     // B only owns a prepared candidate. Cancelling it releases B's lease but
     // cannot evict H while A's submitted frame still owns the cache entry.
     expect(host.cancelDynamicGeometry(preparedB.value).ok).toBe(true);
-    expect(store.getMeshGpuHandles(sharedHandle, worldRenderResources(world))).toBeDefined();
-    expect(invalidated).toEqual([]);
+    const resident = store.getMeshGpuHandles(sharedHandle, worldRenderResources(world));
+    if (resident === undefined) throw new Error('missing shared Mesh residency');
+    expect(resident.vertexBuffer.isDestroyed).toBe(false);
+    const destroy = vi.spyOn(resident.vertexBuffer, 'destroy');
 
     completeA();
     await Promise.resolve();
     expect(store.getMeshGpuHandles(sharedHandle, worldRenderResources(world))).toBeUndefined();
-    expect(invalidated).toEqual([sharedHandle]);
+    expect(destroy).toHaveBeenCalledOnce();
   });
 
   it('keeps pending retirements inside the count and byte budget', async () => {
@@ -841,12 +837,6 @@ describe('dynamic geometry ECS publication host', () => {
     const device = (await adapter.requestDevice()).unwrap();
     const store = new GpuResidencyCache();
     store.configureGpuDevice(device, undefined, device.caps);
-    const invalidated: number[] = [];
-    const invalidateMesh = store.invalidateMesh.bind(store);
-    vi.spyOn(store, 'invalidateMesh').mockImplementation((handle, scope) => {
-      invalidated.push(handle);
-      invalidateMesh(handle, scope);
-    });
     const lifecycle = createDynamicGeometryLifecycle();
     const world = new World({ assets: new AssetRegistry() });
     const liveHandle = runtimeAssetRegistry(world.assets).create(mesh()).unwrap();
@@ -923,18 +913,24 @@ describe('dynamic geometry ECS publication host', () => {
       retired: 32,
       meshBytes: candidateBytes * 32,
     });
-    expect(
-      handles.filter(
-        (handle) => store.getMeshGpuHandles(handle, worldRenderResources(world)) !== undefined,
-      ),
-    ).toHaveLength(32);
+    const vertexBuffers = new Set(
+      handles.map((handle) => {
+        const resident = store.getMeshGpuHandles(handle, worldRenderResources(world));
+        if (resident === undefined) throw new Error('missing pending Mesh residency');
+        expect(resident.vertexBuffer.isDestroyed).toBe(false);
+        return resident.vertexBuffer;
+      }),
+    );
+    expect(vertexBuffers.size).toBe(32);
+    const destroys = [...vertexBuffers].map((buffer) => vi.spyOn(buffer, 'destroy'));
 
     completions.forEach((complete) => {
       complete();
     });
     await Promise.resolve();
     await vi.waitFor(() => expect(lifecycle.inspect().meshBytes).toBe(0));
-    expect(invalidated).toHaveLength(32);
+    expect([...vertexBuffers].every((buffer) => buffer.isDestroyed)).toBe(true);
+    for (const destroy of destroys) expect(destroy).toHaveBeenCalledOnce();
     expect(
       handles.every(
         (handle) => store.getMeshGpuHandles(handle, worldRenderResources(world)) === undefined,

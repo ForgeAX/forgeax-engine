@@ -4,6 +4,9 @@ import { standardTextureMask } from '@forgeax/engine-shader';
 import { assert, expect, it } from 'vitest';
 import { buildPlanarReflectionView } from '../../capture/planar-view';
 import type { CameraSnapshot } from '../../render-contract';
+import { createPresentationDraws, missingDrawEvidence } from '../../render-system-presentation';
+import type { RenderTarget } from '../../targets/contracts';
+import { capturePresentation } from '../target-capture-graph';
 import { captureCullFixture } from './capture-cull.fixture';
 
 it('culls front/back, observes camera rotation and keeps held admission immutable', () => {
@@ -151,4 +154,25 @@ it('observes borrowed displacement values edited in place within the same materi
   expect(f.prepare().visible(source)).toBe(false);
   values.displacementScale = 3;
   expect(f.prepare().visible(source)).toBe(true);
+});
+
+it('requires draw evidence for admitted faces and keeps earlier receipts independent', () => {
+  const f = captureCullFixture();
+  const front = f.put(1),
+    back = f.put(2, 0, 0, 5);
+  const otherLayer = f.put(3, 0, 0, -5, { renderLayers: 2 });
+  const camera = { ...f.camera, cullMask: 1 };
+  const target = {} as RenderTarget;
+  const capture = capturePresentation([{ faceCamera: camera, target }]);
+  assert(capture);
+  capture.observe(camera, f.prepare(camera).visible);
+  const rows = [back, front, otherLayer].filter((row) => capture.admits(row, row.material));
+  expect(rows).toEqual([front]);
+  expect(
+    missingDrawEvidence(rows, createPresentationDraws(), {} as never, {} as never, capture.admits),
+  ).toEqual({ code: 'draw-entity-missing', entity: front.entityKey });
+  const next = capturePresentation([{ faceCamera: camera, target }]);
+  next?.observe(camera, () => false);
+  expect(capture.admits(front, front.material)).toBe(true);
+  expect(next?.admits(front, front.material)).toBe(false);
 });

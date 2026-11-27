@@ -116,7 +116,7 @@ export interface GpuDrivenDrawRange {
 export interface PrepareGpuDrivenDrawInput {
   readonly material: MaterialSnapshot;
   readonly deformation: 'rigid' | 'skin';
-  readonly artifact: MaterialShaderArtifact;
+  readonly artifact: Pick<MaterialShaderArtifact, 'receipt' | 'layoutIdentity' | 'material'>;
   readonly geometry: GpuDrivenGeometryReceipt;
   readonly generation: number;
   /** The submesh draw currently being prepared; never infer draw zero. */
@@ -136,7 +136,8 @@ const ownedVertexInputs = new GenerationalWeakMap<
   readonly MaterialProgramVertexInput[],
   {
     readonly admissions: WeakMap<readonly MaterialProgramVertexInput[], boolean>;
-    readonly vertexColor: boolean;
+    readonly color: boolean;
+    readonly tangentFrame: boolean;
   }
 >();
 const immutableVertexInputs = new WeakSet<readonly MaterialProgramVertexInput[]>();
@@ -158,15 +159,19 @@ export function ownGpuDrivenVertexInputs(
   if (!isImmutableVertexInputs(owned)) return owned;
   ownedVertexInputs.set(owned, {
     admissions: new WeakMap(),
-    vertexColor: owned.some((input) => input.semantic === 'color'),
+    color: owned.some((input) => input.semantic === 'color'),
+    tangentFrame: owned.some((input) => input.semantic === 'tangentFrame'),
   });
   return owned;
 }
 
 /** Derived from the existing scene-owned immutable table; borrowed inputs stay live. */
-export function hasGpuDrivenVertexColor(inputs: readonly MaterialProgramVertexInput[]): boolean {
+export function hasGpuDrivenVertexSemantic(
+  inputs: readonly MaterialProgramVertexInput[],
+  semantic: 'color' | 'tangentFrame',
+): boolean {
   return (
-    ownedVertexInputs.get(inputs)?.vertexColor ?? inputs.some((input) => input.semantic === 'color')
+    ownedVertexInputs.get(inputs)?.[semantic] ?? inputs.some((input) => input.semantic === semantic)
   );
 }
 
@@ -217,7 +222,10 @@ export function hasRequiredVertexInputs(
       (candidate) =>
         candidate.semantic === input.semantic &&
         candidate.location === input.location &&
-        candidate.format === input.format,
+        (candidate.format === input.format ||
+          (input.semantic === 'skinWeight' &&
+            input.format === 'float32x4' &&
+            (candidate.format === 'unorm8x4' || candidate.format === 'unorm16x4'))),
     ),
   );
   if (admissions !== undefined && isImmutableVertexInputs(expected)) {
@@ -226,7 +234,7 @@ export function hasRequiredVertexInputs(
   return matches;
 }
 
-function hasMaterialResources(material: MaterialSnapshot, receipt: MaterialProgramAbi) {
+export function hasMaterialResources(material: MaterialSnapshot, receipt: MaterialProgramAbi) {
   // Video frames and renderer-local target sources have no stable
   // scene-index binding in this feature. Extract keeps those draws on the
   // explicit CPU semantic lane; direct contract callers must fail closed too.

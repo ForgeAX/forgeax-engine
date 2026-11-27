@@ -3,6 +3,7 @@ import {
   LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
   ShaderRegistry,
 } from '@forgeax/engine-shader';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import {
   isShaderCompilerProfile,
   isShaderProgramContract,
@@ -80,6 +81,7 @@ export async function admitSerializedLightTextureResamplePrograms(
   const registry = new ShaderRegistry({
     manifestUrl: url ?? 'memory://current-engine-shader-publication',
     readText: async () => serialized,
+    prepareProgramCompiler: prepareShaderProgramCompiler,
   });
   const admitted = await registry.loadManifest();
   if (!admitted.ok) throw admitted.error;

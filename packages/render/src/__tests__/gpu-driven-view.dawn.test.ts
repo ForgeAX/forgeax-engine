@@ -1,5 +1,9 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { shadowCameraCullDilation } from '../gpu-driven/shadow-views';
+import { GPU_TASK_HEADER_BYTES } from '../gpu-driven/task-header';
 import {
   runGpuDrivenInactiveBatchEvidence,
   runGpuDrivenLodReadbackGenerationEvidence,
@@ -15,6 +19,47 @@ import {
 } from './gpu-driven-view-gpu-evidence';
 
 describe('GPU-driven View Dawn', () => {
+  it.each([
+    'separate',
+    'combined',
+  ] as const)('keeps latest HZB history through address-only preparation with %s passes', async (mode) => {
+    const frames = await runGpuDrivenViewOcclusionEvidence({
+      addressGrowth: true,
+      computePassMode: mode,
+      instanceCopies: 65,
+    });
+    expect(frames[2]).toMatchObject({
+      visible: 195,
+      culled: 0,
+      late: 0,
+      addressPreparation: {
+        allocationDelta: 0,
+        bindingsCreated: 0,
+        rasterUnchanged: true,
+        graphUnchanged: true,
+        intermediate: [
+          { visible: 195, culled: 0, late: 65 },
+          { visible: 195, culled: 65, late: 0 },
+          { visible: 195, culled: 0, late: 65 },
+        ],
+      },
+    });
+    expect(frames.map((frame) => frame.bufferRebuilds)).toEqual([1, 1, 1]);
+  });
+
+  it.each([
+    'separate',
+    'combined',
+  ] as const)('uses the existing Skin graph immediately after address handoff with %s passes', async (mode) => {
+    expect(await runGpuDrivenSkinVisibleAddressEvidence(mode, 'none', true)).toEqual({
+      visibleCount: 1,
+      visibleInstance: 0,
+      candidateIndex: 2,
+      sourceSlot: 1,
+      primitiveIndex: 0,
+    });
+  });
+
   it.each([
     'separate',
     'combined',
@@ -38,11 +83,32 @@ describe('GPU-driven View Dawn', () => {
   ] as const)('keeps true Skin source slot independent with %s passes', async (mode) => {
     const result = await runGpuDrivenSkinVisibleAddressEvidence(mode);
     expect(result, `actual skin visible addresses ${JSON.stringify(result)}`).toEqual({
+      visibleCount: 1,
       visibleInstance: 0,
       candidateIndex: 2,
       sourceSlot: 1,
       primitiveIndex: 0,
     });
+  });
+
+  it.each([
+    ['separate', 'source'],
+    ['combined', 'source'],
+    ['separate', 'other'],
+    ['combined', 'other'],
+  ] as const)('suppresses the physical row while preserving Skin source identity with %s/%s', async (mode, suppressed) => {
+    const result = await runGpuDrivenSkinVisibleAddressEvidence(mode, suppressed);
+    const directory =
+      process.env.FORGEAX_PARITY_EVIDENCE_DIR ?? join(tmpdir(), 'forgeax-suppression-addressing');
+    await mkdir(directory, { recursive: true });
+    if (result.tape === undefined) throw new Error('missing actual suppression frame tape');
+    const stem = join(directory, `${mode}-${suppressed}`);
+    await writeFile(`${stem}.rhitape`, result.tape);
+    const { tape: _tape, ...facts } = result;
+    await writeFile(`${stem}.json`, JSON.stringify(facts, null, 2));
+    expect(result.sourceSlot).toBe(1);
+    expect(result.primitiveIndex).toBe(0);
+    expect(result.visibleCount).toBe(suppressed === 'source' ? 0 : 1);
   });
 
   it('disables and restores a material batch without rewriting candidate ranges', async () => {
@@ -52,7 +118,14 @@ describe('GPU-driven View Dawn', () => {
       [0, 1],
       [1, 1],
     ]);
-    expect(frames.slice(1).map((frame) => frame.sharedInputUploadBytes)).toEqual([0, 0]);
+    expect(frames.slice(1).map((frame) => frame.sharedInputUploadBytes)).toEqual([
+      GPU_TASK_HEADER_BYTES,
+      0,
+    ]);
+    const members = frames[0]?.memberNodesWritten;
+    expect(members).toBeGreaterThan(0);
+    expect(frames.map((frame) => frame.memberNodesWritten)).toEqual([members, members, members]);
+    expect(frames.map((frame) => frame.taskHeadersWritten)).toEqual([2, 3, 3]);
   });
   it('decodes LOD readback members by their encoded (slot, generation), not the current allocation', async () => {
     const result = await runGpuDrivenLodReadbackGenerationEvidence();
@@ -162,6 +235,15 @@ describe('GPU-driven View Dawn', () => {
     // late command must start at zero of its own mirrored window.
     expect(frames[2]?.lateCommands).toEqual([
       { instanceCount: 1, firstInstance: 0, mirrorMatchesUnion: true },
+    ]);
+  });
+
+  it('keeps high instance-address HZB history with only three primitive rows', async () => {
+    const frames = await runGpuDrivenViewOcclusionEvidence({ instanceCopies: 65 });
+    expect(frames.map(({ visible, culled, late }) => ({ visible, culled, late }))).toEqual([
+      { visible: 195, culled: 65, late: 0 },
+      { visible: 130, culled: 65, late: 0 },
+      { visible: 195, culled: 0, late: 65 },
     ]);
   });
 

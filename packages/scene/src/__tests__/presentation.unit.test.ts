@@ -19,6 +19,11 @@ import {
   Transform,
   TransformInterpolation,
 } from '../index';
+import {
+  collectPresentationTransformSpans,
+  createPresentationMatrixReader,
+  type PresentationSpan,
+} from '../presentation';
 import { PropagateTransforms, PropagateTransformsFixed } from '../systems/propagate-transforms';
 
 function x(world: World, entity: EntityHandle): number {
@@ -27,6 +32,37 @@ function x(world: World, entity: EntityHandle): number {
     throw new Error('expected presentation translation');
   return matrix[12];
 }
+
+it('locates interpolation membership with the live matrix row across structural changes', async () => {
+  const world = new World();
+  const ctx = await createWorldContext(world, [scenePlugin()]);
+  try {
+    const read = createPresentationMatrixReader(world);
+    const entity = world.spawn({ component: Transform, data: { pos: [4, 0, 0] } }).unwrap();
+    world.update(1 / 60).unwrap();
+    const sibling = world.spawn({ component: Transform, data: { pos: [73, 0, 0] } }).unwrap();
+    world.update(1 / 60).unwrap();
+    expect(read.locate(sibling)).toBe(true);
+    expect(read.values[read.offset + 12]).toBe(73);
+    expect(read.offset).toBeGreaterThan(0);
+    for (const tagged of [false, true, false]) {
+      if (tagged)
+        world.addComponent(entity, { component: TransformInterpolation, data: {} }).unwrap();
+      else if (world.hasComponent(entity, TransformInterpolation))
+        world.removeComponent(entity, TransformInterpolation).unwrap();
+      // Keep the World between prepared frames while its archetype and pose change.
+      world.set(entity, Transform, { pos: [tagged ? 8 : 6, 0, 0] }).unwrap();
+      const expected = readPresentationWorldMatrix(world, entity);
+      expect(read.locate(entity)).toBe(true);
+      expect(read.values.slice(read.offset, read.offset + 16)).toEqual(expected);
+    }
+    world.despawn(entity).unwrap();
+    world.spawn({ component: Transform, data: {} }).unwrap();
+    expect(read.locate(entity)).toBe(false);
+  } finally {
+    await ctx.fiber.dispose();
+  }
+});
 
 describe('fixed-step transform presentation', () => {
   it('samples every display frame while retaining the exact simulation pose', async () => {
@@ -250,4 +286,40 @@ it('shares one sampler lease and releases it with the propagation owner', () => 
   second();
   expect(systems()).toHaveLength(0);
   expect(x(world, entity)).toBe(0);
+});
+
+it('addresses changed presentation matrices in query order across unavailable poses', async () => {
+  const world = new World();
+  const ctx = await createWorldContext(world, [scenePlugin()]);
+  try {
+    const mesh = world.spawn({ component: Transform, data: { pos: [3, 0, 0] } }).unwrap();
+    const unavailable = world
+      .spawn(
+        { component: GlobalTransform, data: {} },
+        { component: TransformInterpolation, data: {} },
+      )
+      .unwrap();
+    const joint = world
+      .spawn(
+        { component: Transform, data: { pos: [5, 0, 0] } },
+        { component: TransformInterpolation, data: {} },
+      )
+      .unwrap();
+    const query = world.query({ read: [GlobalTransform] }).unwrap();
+    const spans: PresentationSpan[] = [];
+    const addresses = new Map<number, number | undefined>();
+    collectPresentationTransformSpans(world, query, spans, (entities, first) => {
+      for (let i = 0; i < entities.length; i++)
+        addresses.set(entities[i] as number, first === undefined ? undefined : first + i);
+    });
+    expect([...addresses.keys()]).toEqual(Array.from(query, (row) => row.entity));
+    expect(addresses.has(unavailable)).toBe(true);
+    expect(addresses.get(unavailable)).toBeUndefined();
+    const published = spans.flatMap((span) => Array.from(span.entities));
+    expect(published).toHaveLength(2);
+    for (const entity of [mesh, joint])
+      expect(published[addresses.get(entity) as number]).toBe(entity);
+  } finally {
+    await ctx.fiber.dispose();
+  }
 });

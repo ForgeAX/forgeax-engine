@@ -9,6 +9,8 @@ import { LENS_FLARE_PROGRAMS } from '../features/lens-flare';
 import { OUTLINE_PROGRAMS } from '../features/outline/shaders';
 import { SMAA_PROGRAMS } from '../features/smaa/shaders';
 import type { RenderFeature } from '../features/types';
+import { BLOOM_PREFILTER_PROGRAM } from '../pipeline/bloom-prefilter';
+import { POST_SCENE_COLOR_HALF_PROGRAM } from '../pipeline/post-scene-color';
 import {
   SINGLE_LAYER_MEDIUM_MSAA_PAIRED_COLOR_POST_PROCESS_ID,
   SINGLE_LAYER_MEDIUM_MSAA_RAW_DEPTH_POST_PROCESS_ID,
@@ -16,16 +18,22 @@ import {
   SINGLE_LAYER_MEDIUM_RAW_DEPTH_POST_PROCESS_ID,
 } from '../pipeline/single-layer-medium-passes';
 import type { RendererState } from '../render-system';
-import { SSR_SCENE_COLOR_HISTORY_PROGRAM } from '../ssr/scene-color-input';
+import {
+  SSR_HIT_COLOR_DOWNSAMPLE_PROGRAM,
+  SSR_SCENE_COLOR_HISTORY_PROGRAM,
+} from '../ssr/scene-color-input';
 import { WATER_SLW_POST_PROCESS_PROGRAMS } from '../water/slw-graph';
 
 const STANDARD_POST_PROCESS_PROGRAMS = [
+  POST_SCENE_COLOR_HALF_PROGRAM,
+  BLOOM_PREFILTER_PROGRAM,
   CHROMATIC_ABERRATION_PROGRAM,
   LENS_EFFECTS_PROGRAM,
   ...LENS_FLARE_PROGRAMS,
   ...OUTLINE_PROGRAMS,
   ...SMAA_PROGRAMS,
   SSR_SCENE_COLOR_HISTORY_PROGRAM,
+  SSR_HIT_COLOR_DOWNSAMPLE_PROGRAM,
   ...SINGLE_LAYER_MEDIUM_MSAA_SURFACE_PROGRAMS,
   ...WATER_SLW_POST_PROCESS_PROGRAMS.map((entry) => ({ ...entry, kind: 'fullscreen' as const })),
 ];

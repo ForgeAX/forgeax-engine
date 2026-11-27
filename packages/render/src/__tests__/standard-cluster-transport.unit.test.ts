@@ -56,7 +56,7 @@ const STORAGE_FIXTURES: readonly [string, StandardClusterCapabilities, 'cpu' | '
 ];
 
 describe('Standard Cluster transport capability closure', () => {
-  it('packs AO lookup and direct-light strength into disjoint uniform rows', () => {
+  it('keeps the AO usage flag and direct-light strength independent', () => {
     const reflectedAbi = STANDARD_CLUSTER_TEST_ABI;
     expect(reflectedAbi?.clusterUniformBytes).toBe(96);
     expect(reflectedAbi?.clusterUniformOffsets).toEqual({
@@ -73,7 +73,6 @@ describe('Standard Cluster transport capability closure', () => {
       far: 100,
       ssaoIntensity: 2,
       lightCount: 12,
-      aoLayout: { baseWord: 6144, width: 128, height: 64, rowWords: 128 },
       directLightingStrength: 0.75,
       textureAddressing: { width: 1024, gridOffset: 6144, indexOffset: 6260 },
     });
@@ -81,31 +80,12 @@ describe('Standard Cluster transport capability closure', () => {
     const f32 = new Float32Array(payload);
 
     expect(payload.byteLength).toBe(96);
-    expect(Array.from(u32.subarray(8, 12))).toEqual([6144, 128, 64, 128]);
+    expect(Array.from(u32.subarray(8, 12))).toEqual([0, 0, 0, 0]);
     expect(f32[12]).toBe(0.75);
     expect(Array.from(f32.subarray(13, 16))).toEqual([0, 0, 0]);
     expect(f32[12]).not.toBe(f32[7]);
     expect(Array.from(u32.subarray(16, 20))).toEqual([6, 6144, 6260, 1024]);
     expect(Array.from(u32.subarray(20, 24))).toEqual([2, 1, 0, 0]);
-  });
-
-  it('maps AO words through a contiguous physical Cluster texture viewport', () => {
-    const texture = standardClusterTextureLayout(
-      createStandardClusterLayout(STANDARD_CLUSTER_TEST_ABI.directLightSlot.capacity),
-      STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize,
-      { width: 128, height: 128 },
-    );
-
-    expect(texture.ao).toMatchObject({
-      width: 128,
-      height: 128,
-      packedWidth: 32,
-      rowWords: 128,
-      textureWidth: 1024,
-      writeHeight: 4,
-    });
-    expect(texture.height).toBe((texture.ao?.originY ?? 0) + 4);
-    expect(texture.ao?.baseWord).toBe((texture.ao?.originY ?? 0) * 1024 * 4);
   });
 
   it('admits all 256 lights and the identical CPU membership through a baseline integer texture', () => {
@@ -242,7 +222,7 @@ describe('Standard Cluster transport capability closure', () => {
     const withoutCapacity = {
       ...STANDARD_CLUSTER_TEST_REFLECTION,
       boundGlobals: STANDARD_CLUSTER_TEST_REFLECTION.boundGlobals.map((global) => {
-        if (global.group !== 2 || global.binding !== 3) return global;
+        if (global.group !== 0 || global.binding !== 30) return global;
         const { arrayLength: _arrayLength, ...legacy } = global;
         return legacy;
       }),
@@ -262,51 +242,32 @@ describe('Standard Cluster transport capability closure', () => {
   });
 });
 
-it('reserves disjoint half-float screen tiles without moving the existing AO payload', () => {
+it('keeps Forward screen coordinates without reserving any Cluster texels', () => {
   const layout = createStandardClusterLayout(STANDARD_CLUSTER_TEST_ABI.directLightSlot.capacity);
-  const before = standardClusterTextureLayout(
-    layout,
-    STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize,
-    { width: 65, height: 33 },
+  const bytes = STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize;
+  const screen = { width: 129, height: 67 };
+  expect(standardClusterTextureLayout(layout, bytes, { screen })).toEqual(
+    standardClusterTextureLayout(layout, bytes),
   );
-  const after = standardClusterTextureLayout(
-    layout,
-    STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize,
-    { width: 65, height: 33, screen: { width: 129, height: 67 } },
-  );
-  expect(after.ao).toEqual(before.ao);
-  expect(after.gridOffset).toBe(before.gridOffset);
-  expect(after.indexOffset).toBe(before.indexOffset);
-  const screen = after.screen;
-  if (screen === undefined || after.ao === undefined) throw new Error('missing screen/AO region');
-  expect(screen.baseWord).toBeGreaterThanOrEqual(
-    after.ao.baseWord + after.ao.rowWords * after.ao.height,
-  );
-  expect(screen.baseWord % 4096).toBe(0);
-  expect(after.height * 4096).toBeGreaterThanOrEqual(screen.baseWord + 129 * 67 * 8);
   const payload = packTestClusterUniform({
     grid: { x: 16, y: 9, z: 24 },
     near: 0.1,
     far: 100,
-    aoLayout: after.ao,
     screen,
   });
   expect(Array.from(new Float32Array(payload).subarray(13, 16))).toEqual([1, 129, 67]);
-  expect(new Uint32Array(payload)[22]).toBe(screen.baseWord);
 });
 
-it('keeps full atmosphere tables disjoint from host light, AO and screen regions', () => {
+it('keeps full atmosphere tables disjoint from host light regions', () => {
   const layout = createStandardClusterLayout(STANDARD_CLUSTER_TEST_ABI.directLightSlot.capacity);
   const bytes = STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize;
-  const extent = { width: 257, height: 129, screen: { width: 257, height: 129 } };
+  const extent = { screen: { width: 257, height: 129 } };
   const base = standardClusterTextureLayout(layout, bytes, extent);
   const packed = standardClusterTextureLayout(layout, bytes, { ...extent, atmosphere: true });
   expect(packed.width).toBe(base.width);
   expect(packed.height).toBe(base.height + 50);
   expect(packed.gridOffset).toBe(base.gridOffset);
   expect(packed.indexOffset).toBe(base.indexOffset);
-  expect(packed.ao).toEqual(base.ao);
-  expect(packed.screen).toEqual(base.screen);
   expect(packed.atmosphere?.originY).toBe(base.height);
   expect(packed.atmosphere?.writeHeight).toBe(50);
   expect(base.atmosphere).toBeUndefined();

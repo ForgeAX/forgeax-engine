@@ -20,8 +20,8 @@ function cardInputs(device: RhiDevice, rayCount = 65): globalCards.GlobalSdfCard
       hits: rayCount * 64,
       instances: 288,
       fields: 256,
-      bounds: 96,
-      grid: 48,
+      bounds: 192,
+      grid: 64,
       candidates: rayCount * 32,
       cards: 160,
       output: rayCount * 4 * 112,
@@ -81,14 +81,15 @@ it('records both Card kernels into borrowed passes and exact ranges without owni
   const bind = vi.spyOn(device, 'createBindGroup');
   const dispatch = vi.spyOn(pass, 'dispatchWorkgroups');
   const end = vi.spyOn(pass, 'end');
-  const recorder = globalCards.createGlobalSdfCardLookupRecorder(device, module).unwrap();
+  const recorder = (await globalCards.createGlobalSdfCardLookupRecorder(device, module)).unwrap();
   // Freeze the existing WGSL binding ABI independently of recorder table order.
   expect(Array.from(layout.mock.calls[0]?.[0].entries ?? [])).toEqual([
     { binding: 0, visibility: 4, buffer: { type: 'read-only-storage', minBindingSize: 64 } },
     { binding: 1, visibility: 4, buffer: { type: 'read-only-storage', minBindingSize: 144 } },
     { binding: 2, visibility: 4, buffer: { type: 'read-only-storage', minBindingSize: 4 } },
-    { binding: 3, visibility: 4, buffer: { type: 'read-only-storage', minBindingSize: 48 } },
-    { binding: 4, visibility: 4, buffer: { type: 'uniform', minBindingSize: 48 } },
+    { binding: 3, visibility: 4, buffer: { type: 'read-only-storage', minBindingSize: 144 } },
+    // Cards borrow the complete source-owner Grid, including its source tuple.
+    { binding: 4, visibility: 4, buffer: { type: 'uniform', minBindingSize: 64 } },
     { binding: 5, visibility: 4, buffer: { type: 'storage', minBindingSize: 32 } },
     { binding: 6, visibility: 4, buffer: { type: 'read-only-storage', minBindingSize: 80 } },
     { binding: 7, visibility: 4, buffer: { type: 'storage', minBindingSize: 112 } },
@@ -99,6 +100,9 @@ it('records both Card kernels into borrowed passes and exact ranges without owni
     { binding: 12, visibility: 4, texture: { sampleType: 'unfilterable-float' } },
     { binding: 13, visibility: 4, texture: { sampleType: 'depth' } },
   ]);
+  expect(
+    recorder.record(pass, { ...input, grid: { ...input.grid, size: 48 } }, 65, stages[0]).ok,
+  ).toBe(false);
   for (const stage of stages) recorder.record(pass, input, 65, stage).unwrap();
   expect(dispatch.mock.calls).toEqual([[2], [2]]);
   expect(Array.from(bind.mock.calls[0]?.[0].entries ?? [], (entry) => entry.resource)).toEqual([
@@ -121,7 +125,7 @@ it('rejects invalid counts, layouts, offsets and output aliases before either Ca
   const device = await cardDevice();
   const module = (await createShaderModule(device, { code: '' })).unwrap();
   const input = cardInputs(device);
-  const recorder = globalCards.createGlobalSdfCardLookupRecorder(device, module).unwrap();
+  const recorder = (await globalCards.createGlobalSdfCardLookupRecorder(device, module)).unwrap();
   const encoder = device.createCommandEncoder({}).unwrap();
   const pass = encoder.beginComputePass({});
   const bind = vi.spyOn(device, 'createBindGroup');
@@ -167,7 +171,7 @@ it('rejects invalid counts, layouts, offsets and output aliases before either Ca
       ).toBe(false);
     }
     expect(
-      recorder.record(pass, { ...input, instances: { ...input.instances, size: 144 } }, 65, stage)
+      recorder.record(pass, { ...input, instances: { ...input.instances, size: 143 } }, 65, stage)
         .ok,
     ).toBe(false);
     expect(
@@ -199,7 +203,9 @@ it('preserves capability, device-limit and backend binding failures without disp
     return result;
   };
   for (const caps of [{ compute: false }, { storageBuffer: false }])
-    expect(globalCards.createGlobalSdfCardLookupRecorder(limited({}, caps), module)).toMatchObject({
+    expect(
+      await globalCards.createGlobalSdfCardLookupRecorder(limited({}, caps), module),
+    ).toMatchObject({
       ok: false,
       error: { code: 'rhi-not-available' },
     });
@@ -213,7 +219,9 @@ it('preserves capability, device-limit and backend binding failures without disp
     { maxComputeWorkgroupSizeX: 63 },
     { maxComputeInvocationsPerWorkgroup: 63 },
   ])
-    expect(globalCards.createGlobalSdfCardLookupRecorder(limited(limits), module)).toMatchObject({
+    expect(
+      await globalCards.createGlobalSdfCardLookupRecorder(limited(limits), module),
+    ).toMatchObject({
       ok: false,
       error: { code: 'limit-exceeded' },
     });
@@ -225,16 +233,16 @@ it('preserves capability, device-limit and backend binding failures without disp
     { maxStorageBufferBindingSize: 1024 },
     { maxBufferSize: 1024 },
   ]) {
-    const recorder = globalCards
-      .createGlobalSdfCardLookupRecorder(limited(limits), module)
-      .unwrap();
+    const recorder = (
+      await globalCards.createGlobalSdfCardLookupRecorder(limited(limits), module)
+    ).unwrap();
     for (const stage of stages)
       expect(recorder.record(pass, input, 65, stage)).toMatchObject({
         ok: false,
         error: { code: 'limit-exceeded' },
       });
   }
-  const recorder = globalCards.createGlobalSdfCardLookupRecorder(device, module).unwrap();
+  const recorder = (await globalCards.createGlobalSdfCardLookupRecorder(device, module)).unwrap();
   const failure = new RhiError({
     code: 'rhi-descriptor-invalid',
     expected: 'injected Card binding rejection',
@@ -290,6 +298,7 @@ it('reuses the recorder in the reference helper and closes passes and allocation
   const cache = {
     kind: 'cards',
     resolution: 4,
+    allocatedTiles: 0,
     entries: [],
     textures,
   } as unknown as SurfaceCapture;

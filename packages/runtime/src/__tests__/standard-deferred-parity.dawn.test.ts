@@ -6,13 +6,13 @@ import {
   replayDeviceRequest,
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 import { verifyStandardDeferredParity } from './standard-deferred-parity.fixture';
 
-const manifest = await buildEngineShaderManifest();
+const manifest = await buildEngineShaderTemplateManifest();
 const manifestUrl = shaderManifestUrl(manifest);
 
 it.each([

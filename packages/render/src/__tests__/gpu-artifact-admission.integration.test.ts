@@ -52,7 +52,7 @@ async function fixture() {
   scene.sync(projection.apply(rows.map(updateSnapshot))).unwrap();
   const topology = new BatchTopology();
   topology.rebuild(projection.slotsSnapshot());
-  const plan = topology.query(topology.sourcePlan(), undefined);
+  const plan = topology.query(topology.sourcePlan(), undefined).active;
   expect(plan.batches).toHaveLength(2);
   const shared = mesh(device);
   const meshes = new Map(projection.slotsSnapshot().map(({ slot }) => [slot, shared]));

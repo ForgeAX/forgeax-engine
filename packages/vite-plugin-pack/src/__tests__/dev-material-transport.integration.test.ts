@@ -1,5 +1,4 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,18 +7,18 @@ import {
   serializeCookedMaterialRecord,
 } from '@forgeax/engine-pack';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
-import type { MaterialAsset, RuntimeAssetBinding } from '@forgeax/engine-types';
+import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { materialRecordFixture } from '../../../assets-runtime/src/__tests__/fixtures/material-publication.js';
 import { AssetRegistry, createCatalogSource } from '../../../assets-runtime/src/index.js';
 import { runtimeAssets } from '../../../assets-runtime/src/internal/runtime-assets.js';
 import { materialContribution } from '../../../render/src/assets/asset-decoders.js';
-import type { DispatcherHandler } from '../dev/dispatcher.js';
 import { createPluginPackInternal } from '../plugin-pack.js';
 import { installPackAuthorDependencies } from './pack-author-dependencies.js';
+import { packHttpFixture } from './vite-fixtures.js';
 
 it.each([
-  'legacy',
+  'direct',
   'dynamic',
 ] as const)('omits only external shader bytes in the final served %s DEV Pack and restores the complete material', async (format) => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-dev-material-transport-'));
@@ -33,18 +32,15 @@ it.each([
   const originalBefore = JSON.stringify(original);
   const sourcePath = join(root, format === 'dynamic' ? 'material.pack.ts' : 'material.pack.json');
   const authored = {
-    schemaVersion: '2.0.0',
-    kind: 'internal-text-package',
-    assets: [
-      {
-        guid: record.guid,
+    schemaVersion: '3.0.0',
+    packageId,
+    assets: {
+      'material/main': {
         kind: 'material',
-        execution: 'cooked',
         payload: { kind: 'material', ...record.resolved },
         refs: [],
-        artifacts: {},
       },
-    ],
+    },
   };
   const source =
     format === 'dynamic'
@@ -55,7 +51,6 @@ export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('
 });`
       : JSON.stringify(authored);
   await writeFile(sourcePath, source);
-  const middlewares: DispatcherHandler[] = [];
   const plugin = createPluginPackInternal({
     roots: [root],
     watch: false,
@@ -78,48 +73,11 @@ export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('
       },
     ],
   });
-  const server = createServer((request, response) => {
-    let index = 0;
-    const next = (error?: unknown): void => {
-      if (error !== undefined) {
-        response.statusCode = 500;
-        response.end(String(error));
-        return;
-      }
-      const middleware = middlewares[index++];
-      if (middleware === undefined) {
-        response.statusCode = 404;
-        response.end('missing');
-        return;
-      }
-      Promise.resolve(middleware(request, response, next)).catch(next);
-    };
-    next();
-  });
+  const http = packHttpFixture(plugin);
   let registry: AssetRegistry | undefined;
   let decoder: ReturnType<AssetRegistry['installDecoder']> | undefined;
   try {
-    plugin.configResolved({ root, command: 'serve', base: '/' });
-    plugin.configureServer({
-      middlewares: { use: (middleware) => middlewares.push(middleware) },
-      ws: { send: () => {} },
-    });
-    const binding: RuntimeAssetBinding = {
-      schemaVersion: 'runtime-asset-binding-v1',
-      gameId: 'dev-material-transport',
-      scopeId: 'dev-material-transport',
-      generation: 1,
-      status: 'unbound',
-      catalogUrl: '/__pack/scopes/dev-material-transport/1/catalog.json',
-      importUrlBase: '/__pack/scopes/dev-material-transport/1/import',
-      packageUrlBase: '/__pack/scopes/dev-material-transport/1/asset',
-    };
-    const accepted = await plugin.rebind(binding, [root], join(root, 'ddc'));
-    await plugin.ready();
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const address = server.address();
-    if (address === null || typeof address === 'string') throw new Error('missing HTTP address');
-    const base = `http://127.0.0.1:${address.port}`;
+    const { base, accepted } = await http.listen(root, 'dev-material-transport');
     const catalogResponse = await fetch(new URL(accepted.catalogUrl, base));
     expect(catalogResponse.status).toBe(200);
     const catalog = decodeCatalogWire(await catalogResponse.json()).unwrap();
@@ -183,11 +141,7 @@ export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('
   } finally {
     decoder?.dispose();
     registry?.dispose();
-    if (server.listening)
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
-    await plugin.closeBundle();
+    await http.close();
     await rm(root, { recursive: true, force: true });
   }
 });

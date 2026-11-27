@@ -164,7 +164,9 @@ it('publishes a storage-backed Standard program for a 16-texture WebGPU device',
   expect(minimum).toHaveLength(1);
   const wgsl = new TextDecoder().decode(minimum[0]?.artifact.bytes);
   expect(wgsl).toMatch(/var<storage(?:,\s*read)?>/);
-  expect(wgsl).not.toMatch(/@group\(0\)\s+@binding\((?:9|11|12|13|14|15|16|17)\)/);
+  expect(wgsl).not.toMatch(/@group\(0\)\s+@binding\((?:9|11|12|13|14|15|16)\)/);
+  expect(wgsl).toMatch(/@group\(0\)\s+@binding\(29\)\s+var \w+: texture_2d<f32>/);
+  expect(wgsl).toMatch(/@group\(0\)\s+@binding\(17\)\s+var \w+: sampler/);
   expect(wgsl).toContain('fs_opaque');
 });
 

@@ -128,13 +128,13 @@ fn sceneIndexLocalLoads() -> u32 { return sceneIndexLocalReadCount; }`
       });
       if (!result.ok) throw result.error;
       const compiled = result.value;
-      expect(compiled.bindings).toHaveLength(3);
-      // The compiler returns occupied groups; preserve the physical group-1 gap.
+      expect(compiled.bindings.map(({ label }) => label)).toEqual(['@group(0)', '@group(3)']);
+      // The witness uses a readback group and resident Scene data.
       const layouts = [
         compiled.bindings[0],
         { entries: [] },
+        { entries: [] },
         compiled.bindings[1],
-        compiled.bindings[2],
       ].map((descriptor) => {
         if (descriptor === undefined) throw new Error('Missing reflected witness group');
         return device
@@ -195,18 +195,25 @@ fn sceneIndexLocalLoads() -> u32 { return sceneIndexLocalReadCount; }`
       const readback = buffer(bytes, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
       for (const { pipeline, layouts, counted } of pipelines) {
         const entries = [
-          [output, rowBuffer],
+          [
+            [0, output],
+            [1, rowBuffer],
+          ],
           [],
-          [scene.transformBuffer],
-          [scene.instanceBuffer, scene.primitiveBuffer],
-        ];
+          [],
+          [
+            [0, scene.instanceBuffer],
+            [6, scene.primitiveBuffer],
+            [9, scene.transformBuffer],
+          ],
+        ] as const;
         const groups = layouts.map((layout, group) =>
           device
             .createBindGroup({
               layout,
-              entries: (entries[group] ?? []).map((value, index) => ({
-                binding: group === 3 && index === 1 ? 6 : index,
-                resource: { kind: 'buffer' as const, value: { buffer: value } },
+              entries: (entries[group] ?? []).map(([binding, buffer]) => ({
+                binding,
+                resource: { kind: 'buffer' as const, value: { buffer } },
               })),
             })
             .unwrap(),

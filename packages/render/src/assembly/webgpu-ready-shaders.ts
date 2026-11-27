@@ -1,5 +1,14 @@
 import { manifestShaderSource, materialShaderSource } from '@forgeax/engine-shader';
-import { type ShaderSource, shaderSourceDescriptor } from '@forgeax/engine-types';
+import {
+  type ShaderReflection,
+  type ShaderSource,
+  shaderSourceDescriptor,
+} from '@forgeax/engine-types';
+import {
+  DEFERRED_CAPSULE_SHADOW_FEATURE,
+  DEFERRED_PCF_LIGHTING_FEATURE,
+  DEFERRED_SCREEN_AO_FEATURE,
+} from '../pipeline/standard-deferred-lighting';
 import type { SeedShaderModule } from './material-shader-policy';
 // Engine shader roster for one ready device generation: device variant axes,
 // manifest entry classification, capability variant patching and the eager
@@ -16,6 +25,7 @@ import {
   materialShaderAxes,
   materialShaderPreparedSourceRows,
   materialShaderSourceEquals,
+  prepareMaterialShaderTemplateVariant,
   type ShaderCatalog,
   shaderTemplateVariantEntry,
 } from '@forgeax/engine-shader';
@@ -69,6 +79,7 @@ export interface EngineShaderModules {
   readonly bloomComposite: ShaderModule | null;
   readonly ssao: ShaderModule | null;
   readonly ssaoGBufferV2?: boolean;
+  readonly ssaoCompactGBuffer?: boolean;
   readonly gtaoGBufferV2?: boolean;
   readonly gtaoCompute: ShaderModule | null;
   readonly gpuDrivenPbrPrograms: ReadonlyMap<string, GpuDrivenPbrProgram>;
@@ -221,7 +232,6 @@ export interface EngineManifestEntries {
   spriteLit?: ManifestEntry | undefined;
   sprite?: ManifestEntry | undefined;
   iblEquirect?: ManifestEntry | undefined;
-  iblIrradiance?: ManifestEntry | undefined;
   iblPrefilter?: ManifestEntry | undefined;
   iblBrdfLut?: ManifestEntry | undefined;
   probeBackground?: ManifestEntry | undefined;
@@ -248,14 +258,14 @@ type MarkerRole = Exclude<keyof EngineManifestEntries, 'pbrSkin' | 'shadowCaster
  * entry would mis-shade indistinguishably). Order matters: sprite-lit carries
  * sprite's `pivotAndSize` field, and marker roles precede the unlit fallback.
  */
-function markerRoleOf(wgsl: string): MarkerRole {
+function markerRoleOf(wgsl: string): MarkerRole | 'iblIrradiance' {
+  if (wgsl.includes('irradianceConvolve_fs')) return 'iblIrradiance';
   if (wgsl.includes('TonemapParams')) return 'tonemap';
   if (wgsl.includes('MotionBlurParams')) return 'motionBlur';
   if (wgsl.includes('fs_taa_resolve')) return 'taaResolve';
   if (wgsl.includes('spriteLitShadeAccum')) return 'spriteLit';
   if (wgsl.includes('pivotAndSize')) return 'sprite';
   if (wgsl.includes('equirectToCube_fs')) return 'iblEquirect';
-  if (wgsl.includes('irradianceConvolve_fs')) return 'iblIrradiance';
   if (wgsl.includes('prefilterEnv_fs')) return 'iblPrefilter';
   if (wgsl.includes('brdfLutBake_fs')) return 'iblBrdfLut';
   if (wgsl.includes('probe_background_fs')) return 'probeBackground';
@@ -290,7 +300,7 @@ function classifyEngineManifestEntries(
   for (const entry of manifestEntries) {
     const role =
       entry.role ?? (isShaderTemplateManifestRow(entry) ? undefined : markerRoleOf(entry.wgsl));
-    if (role !== undefined) found[role] ??= entry;
+    if (role !== undefined && role !== 'iblIrradiance') found[role] ??= entry;
   }
   return found;
 }
@@ -516,17 +526,10 @@ export function resolveEngineManifestEntries(
 
 /** Publish the generation's compiled IBL programs before resource preparation. */
 export function publishIblPrograms(entries: EngineManifestEntries): void {
-  const { iblEquirect, iblIrradiance, iblPrefilter, iblBrdfLut, probeBackground } = entries;
-  if (
-    iblEquirect === undefined ||
-    iblIrradiance === undefined ||
-    iblPrefilter === undefined ||
-    iblBrdfLut === undefined
-  )
-    return;
+  const { iblEquirect, iblPrefilter, iblBrdfLut, probeBackground } = entries;
+  if (iblEquirect === undefined || iblPrefilter === undefined || iblBrdfLut === undefined) return;
   setIblComposedShaders({
     equirectToCube: iblEquirect.wgsl,
-    irradiance: iblIrradiance.wgsl,
     prefilter: iblPrefilter.wgsl,
     brdfLut: iblBrdfLut.wgsl,
     ...(probeBackground === undefined ? {} : { probeBackground: probeBackground.wgsl }),
@@ -580,70 +583,135 @@ type CompileUtilityShader = (
 ) => Promise<ShaderModule>;
 
 const STANDARD_COMPANION_PROGRAMS = [
-  ['forwardScreenPack', 'forgeax::engine-forward-screen-pack'],
   ['forwardScreenCompose', 'forgeax::engine-forward-screen-compose'],
   ['forwardContact', 'forgeax::engine-forward-contact-shadow'],
-  ['shadowVariance', 'forgeax::engine-shadow-variance'],
   ['decalProject', 'forgeax::engine-decal-project'],
   ['decalApply', 'forgeax::engine-decal-apply'],
   ['subsurface', 'forgeax::engine-subsurface-diffusion'],
 ] as const;
 
-/** Deferred lighting variants plus their decal/subsurface companions, or undefined when absent. */
-export async function prewarmStandardScenePrograms(
+/** Publish Deferred source contracts and prepare the companions that still need boot modules. */
+export async function prepareStandardSceneSources(
   registry: ShaderCatalog,
   compileUtility: CompileUtilityShader,
   seed: SeedShaderModule,
   caps: ReadyDeviceCapabilities,
 ): Promise<StandardSceneShaderSources | undefined> {
   const deferred = findMaterialShaderEntry(registry, 'forgeax::engine-standard-deferred-lighting');
+  const forwardShadow = findMaterialShaderEntry(
+    registry,
+    'forgeax::engine-forward-directional-shadow',
+  );
 
   const declarations = [...registry.entries()];
   const contractFor = (material: MaterialShaderManifestEntry | undefined) => {
     if (material === undefined) return undefined;
     const declared = declarations.find((entry) => entry.identifier === material.identifier);
-    if (declared !== undefined) return declared.programContract;
+    // Native declarations use recipe handles, so a compiled hash lookup cannot fill this contract.
+    if (declared !== undefined || isShaderTemplateManifestRow(material))
+      return declared?.programContract;
     const hash = material.hash;
     return hash === undefined
       ? undefined
       : declarations.find((entry) => entry.hash === hash)?.programContract;
   };
-  let gbufferCompatible = contractFor(deferred)?.gbuffer === 'standard-gbuffer/2';
-  const resolve = async (clustered: boolean, directDfgLut = false): Promise<ShaderSource> => {
+  const deferredContract = contractFor(deferred);
+  const lutAvailable =
+    deferred !== undefined &&
+    (isShaderTemplateManifestRow(deferred)
+      ? materialShaderAxes(deferred).includes('DIRECT_DFG_LUT_AVAILABLE')
+      : deferred.variants.some((variant) => variant.defines.DIRECT_DFG_LUT_AVAILABLE === true));
+  let gbufferCompatible = deferredContract?.gbuffer === 'standard-gbuffer/2';
+  const deferredReflections = new Map<ShaderSource, ShaderReflection>();
+  interface DeferredShaderSelection {
+    readonly variant: MaterialShaderManifestVariant;
+    source?: ShaderSource;
+  }
+  const selectedDeferred = new Map<number, DeferredShaderSelection>();
+  const select = (
+    clustered: boolean,
+    directDfgLut = false,
+    features = 0,
+  ): DeferredShaderSelection => {
+    const key = Number(clustered) * 2 + Number(directDfgLut) + features * 4;
+    const selected = selectedDeferred.get(key);
+    if (selected !== undefined) return selected;
     if (deferred === undefined)
       throw new RhiError({
         code: 'shader-compile-failed',
         expected: 'published Deferred lighting',
         hint: 'Rebuild the Engine shader manifest.',
       });
-    const variant = deferred.variants.find((candidate) =>
-      isDeferredLightingVariant(candidate.defines, clustered, directDfgLut, caps),
-    );
+    const pcf = (features & DEFERRED_PCF_LIGHTING_FEATURE) !== 0;
+    const atmosphere = !pcf && caps.atmosphere && (features & 4) === 0;
+    // The restricted device program already has precisely the desired texture
+    // footprint, including the no-cloud path. Select it on capable devices
+    // only when the accepted lighting graph needs the same resource family.
+    const lightingCaps = {
+      ...caps,
+      atmosphere,
+      extendedLighting: !pcf && caps.extendedLighting,
+      projector: !pcf && caps.projector,
+    };
+    const optionalBindings = {
+      DEFERRED_SCREEN_AO_AVAILABLE: (features & DEFERRED_SCREEN_AO_FEATURE) !== 0,
+      DEFERRED_CAPSULE_SHADOW_AVAILABLE: (features & DEFERRED_CAPSULE_SHADOW_FEATURE) !== 0,
+    };
+    const variant = isShaderTemplateManifestRow(deferred)
+      ? findVariantByDefines(deferred, {
+          ...optionalBindings,
+          CLUSTER_FORWARD_AVAILABLE: clustered,
+          DIRECT_DFG_LUT_AVAILABLE: directDfgLut,
+          ...(materialShaderAxes(deferred).includes('DEFERRED_DIFFUSE_GI_AVAILABLE') ||
+          features !== 0
+            ? {
+                DEFERRED_DIFFUSE_GI_AVAILABLE: (features & 1) !== 0,
+                DEFERRED_LIGHT_PROBE_AVAILABLE: (features & 2) !== 0,
+              }
+            : {}),
+          ATMOSPHERE_AVAILABLE: atmosphere,
+          EXTENDED_LIGHTING_AVAILABLE: lightingCaps.extendedLighting,
+          PROJECTOR_AVAILABLE: lightingCaps.projector,
+        })
+      : deferred.variants.find(
+          (candidate) =>
+            isDeferredLightingVariant(candidate.defines, clustered, directDfgLut, lightingCaps) &&
+            Object.entries(optionalBindings).every(
+              ([axis, value]) => (candidate.defines[axis] ?? false) === value,
+            ) &&
+            (candidate.defines.DEFERRED_DIFFUSE_GI_AVAILABLE ?? false) === ((features & 1) !== 0) &&
+            (candidate.defines.DEFERRED_LIGHT_PROBE_AVAILABLE ?? false) === ((features & 2) !== 0),
+        );
     if (variant === undefined)
       throw new RhiError({
         code: 'shader-compile-failed',
         expected: 'capability-matched deferred lighting variant',
         hint: 'rebuild the Engine shader manifest',
       });
-    const label = `standard_deferred_${clustered}_${directDfgLut}`;
-    seed(
-      label,
-      await compileUtility(label, materialShaderSource(variant), 'Deferred'),
-      materialShaderSource(variant),
-    );
-    return materialShaderSource(variant);
+    const selection = { variant };
+    selectedDeferred.set(key, selection);
+    return selection;
   };
+  const resolve = (clustered: boolean, directDfgLut = false, features = 0): ShaderSource => {
+    const selected = select(clustered, directDfgLut, features);
+    if (selected.source !== undefined) return selected.source;
+    const source = materialShaderSource(selected.variant);
+    const reflection = selected.variant.reflection;
+    if (reflection !== undefined) deferredReflections.set(source, reflection);
+    // Deferred PSO preparation uses this immutable source as a device-cache key.
+    selected.source = source;
+    return source;
+  };
+  let compactDecalPrograms = 0;
   const companions: {
-    forwardScreenPack?: ShaderSource;
     forwardScreenCompose?: ShaderSource;
     forwardContact?: ShaderSource;
-    shadowVariance?: ShaderSource;
     decalProject?: ShaderSource;
     decalApply?: ShaderSource;
     subsurface?: ShaderSource;
   } = {};
   for (const [field, identifier] of STANDARD_COMPANION_PROGRAMS) {
-    if (!caps.storageBuffer && (field === 'shadowVariance' || field === 'subsurface')) continue;
+    if (!caps.storageBuffer && field === 'subsurface') continue;
     const entry = findMaterialShaderEntry(registry, identifier);
     if (entry === undefined) continue;
     if (
@@ -651,30 +719,53 @@ export async function prewarmStandardScenePrograms(
       contractFor(entry)?.gbuffer !== 'standard-gbuffer/2'
     )
       gbufferCompatible = false;
+    if (
+      (field === 'decalProject' || field === 'decalApply') &&
+      contractFor(entry)?.compactGbuffer === 'standard-gbuffer/4'
+    )
+      compactDecalPrograms += 1;
     const source = materialShaderSource(entry.variants[0] ?? entry);
-    seed(
-      identifier,
-      await compileUtility(identifier, source, field === 'subsurface' ? 'Subsurface' : 'Decal'),
-      source,
-    );
+    if (field !== 'subsurface')
+      seed(identifier, await compileUtility(identifier, source, 'Decal'), source);
     companions[field] = source;
   }
   return {
     ...companions,
+    get forwardDirectionalShadow() {
+      return forwardShadow === undefined
+        ? undefined
+        : materialShaderSource(forwardShadow.variants[0] ?? forwardShadow);
+    },
+    ...(compactDecalPrograms === 2 ? { compactDecals: true as const } : {}),
     ...(gbufferCompatible ? { gbuffer: 'standard-gbuffer/2' as const } : {}),
+    ...(caps.directionalPcss && deferredContract?.compactGbuffer === 'standard-gbuffer/4'
+      ? { compactGbuffer: deferredContract.compactGbuffer }
+      : {}),
     ...(caps.storageBuffer && deferred !== undefined
       ? {
+          deferredReflections,
+          specializedDeferredLighting: resolve,
+          ...(isShaderTemplateManifestRow(deferred)
+            ? {
+                prepareDeferredLighting: (clustered: boolean, usesLut: boolean, features = 0) =>
+                  prepareMaterialShaderTemplateVariant(
+                    select(clustered, usesLut, features).variant,
+                  ).unwrap(),
+              }
+            : {}),
           deferred: {
-            clustered: await resolve(true),
-            unclustered: await resolve(false),
-            ...(deferred.variants.some(
-              (variant) => variant.defines.DIRECT_DFG_LUT_AVAILABLE === true,
-            )
-              ? {
-                  clusteredLut: await resolve(true, true),
-                  unclusteredLut: await resolve(false, true),
-                }
-              : {}),
+            get clustered() {
+              return resolve(true);
+            },
+            get unclustered() {
+              return resolve(false);
+            },
+            get clusteredLut() {
+              return lutAvailable ? resolve(true, true) : undefined;
+            },
+            get unclusteredLut() {
+              return lutAvailable ? resolve(false, true) : undefined;
+            },
           },
         }
       : {}),

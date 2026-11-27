@@ -7,7 +7,7 @@ import {
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
 import { renderWorldFor } from '../world/render-world';
-import type { ValidatedRenderable } from './frame-snapshot';
+import type { DrawRows, ValidatedRenderable } from './frame-snapshot';
 import {
   type FoldBucket,
   type FoldDispatchPlan,
@@ -23,11 +23,11 @@ function foldInstanceBufferKey(drawIndex: number): number {
 /** Physical fold slots belong to actual admitted draw heads, across graph nodes. */
 export function* retainedFoldInstanceKeys(
   plan: FoldDispatchPlan | null,
-  rows: readonly ValidatedRenderable[],
+  rows: DrawRows,
 ): Iterable<number> {
   if (plan === null) return;
   for (const head of plan.headBuckets.keys()) {
-    const row = rows[head];
+    const row = rows.at(head);
     if (row !== undefined) yield foldInstanceBufferKey(row.renderableIndex);
   }
 }
@@ -92,9 +92,9 @@ export function resolveFoldInstanceBuffer(
 export function createFoldedDrawRecorder(
   c: Pick<_InternalRenderPipelineContext, 'validatedOrdered' | 'onRenderableDraw'>,
 ) {
-  let members: ReadonlyMap<number, NonNullable<(typeof c.validatedOrdered)[number]>> | undefined;
+  let members: ReadonlyMap<number, ValidatedRenderable> | undefined;
   return (
-    entry: NonNullable<(typeof c.validatedOrdered)[number]>,
+    entry: ValidatedRenderable,
     submesh?: number,
     receipt?: import('./gpu-draw-receipts').RenderableDrawReceipt,
     bucket?: FoldBucket,

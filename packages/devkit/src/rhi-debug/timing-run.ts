@@ -1,11 +1,7 @@
-import type {
-  ReplayBenchmark,
-  ReplayComparison,
-  ReplaySession,
-  RhiDebugError,
-} from '@forgeax/engine-rhi-debug';
+import type { ReplayBenchmark, ReplayComparison, RhiDebugError } from '@forgeax/engine-rhi-debug';
 import type { CommandError, CommandResult } from '../types.js';
-import type { ArtifactRef, RhiDebugOperationContext } from './operations.js';
+import { completeCommand, failCommand } from '../types.js';
+import type { ArtifactRef, OpenedReplayLease, RhiDebugOperationContext } from './operations.js';
 import {
   DEFAULT_TIMING_TIMEOUT_MS,
   type RhiTimingInput,
@@ -25,44 +21,47 @@ import {
   invalidReasons,
   measuredValues,
   quantizationCheck,
-  type ReplayAdapterInfo,
   type TimedTape,
   type TimestampQuantization,
   type TimingCheck,
 } from './timing-environment.js';
 
-/** What `rhi.timing` needs from an opened tape replay. */
-export interface OpenedTimingReplay {
-  readonly session: ReplaySession;
-  readonly byteLength: number;
-  readonly adapterInfo?: ReplayAdapterInfo;
-  readonly timestampQuantization?: TimestampQuantization;
-  readonly close: () => Promise<void>;
-}
-
 /** operations.ts helpers, injected so this module never imports operations values (no cycle). */
 export interface TimingRunDeps {
   readonly validateArtifactRef: (value: unknown) => CommandResult<ArtifactRef>;
-  readonly openTapeReplay: (artifact: ArtifactRef) => Promise<CommandResult<OpenedTimingReplay>>;
+  readonly openTapeReplay: (artifact: ArtifactRef) => Promise<CommandResult<OpenedReplayLease>>;
   readonly coreError: (error: RhiDebugError) => CommandError;
 }
 
 interface Measured {
   readonly benchmark?: ReplayBenchmark;
   readonly comparison?: ReplayComparison;
-  readonly tapes: readonly OpenedTimingReplay[];
+  readonly tapes: readonly OpenedReplayLease[];
 }
 
 function invalidInput(expected: string, hint: string): CommandResult<never> {
   return { ok: false, error: { code: 'timing-input-invalid', expected, hint, detail: {} } };
 }
 
-function tapeOf(artifact: ArtifactRef, opened: OpenedTimingReplay): TimedTape {
+function tapeOf(artifact: ArtifactRef, opened: OpenedReplayLease): TimedTape {
   return {
     ...(artifact.path === undefined ? {} : { path: artifact.path }),
     digest: artifact.digest,
     bytes: opened.byteLength,
   };
+}
+
+async function closeTimingReplays(opened: readonly OpenedReplayLease[]): Promise<void> {
+  const failures: unknown[] = [];
+  for (const replay of opened) {
+    try {
+      await replay.close();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, 'Replay device cleanup failed');
 }
 
 async function measure(
@@ -73,7 +72,7 @@ async function measure(
   signal: AbortSignal,
   setStage: (stage: string) => void,
 ): Promise<CommandResult<Measured>> {
-  const opened: OpenedTimingReplay[] = [];
+  const opened: OpenedReplayLease[] = [];
   try {
     for (const ref of baseline === undefined ? [artifact] : [artifact, baseline]) {
       setStage(`open ${ref.path ?? ref.digest}`);
@@ -82,7 +81,7 @@ async function measure(
       opened.push(replay.value);
     }
     setStage('measure');
-    const [candidate, base] = opened as [OpenedTimingReplay, OpenedTimingReplay | undefined];
+    const [candidate, base] = opened as [OpenedReplayLease, OpenedReplayLease | undefined];
     if (base === undefined) {
       const benchmark = await candidate.session.benchmarkPasses(
         timingBenchmarkOptions(input),
@@ -100,7 +99,7 @@ async function measure(
     return { ok: true, value: { comparison: comparison.value, tapes: opened } };
   } finally {
     setStage('close');
-    for (const replay of opened) await replay.close();
+    await closeTimingReplays(opened);
   }
 }
 
@@ -173,15 +172,12 @@ function requiredIdleError(
 ): CommandResult<never> | undefined {
   if (input.requireIdle !== true) return undefined;
   if (gpuIdleCheck('gpu-idle-before', before, maxGpuPercent).ok) return undefined;
-  return {
-    ok: false,
-    error: {
-      code: 'gpu-busy',
-      expected: `GPU utilization below ${maxGpuPercent}% before timing`,
-      hint: 'Close other GPU work (browser tabs, headless pages, other benchmarks) or wait for the machine slot, then rerun.',
-      detail: { sample: before },
-    },
-  };
+  return failCommand(
+    'gpu-busy',
+    `GPU utilization below ${maxGpuPercent}% before timing`,
+    'Close other GPU work (browser tabs, headless pages, other benchmarks) or wait for the machine slot, then rerun.',
+    { sample: before },
+  );
 }
 
 /**
@@ -218,33 +214,30 @@ export async function runTimingOperation(
   const after = (await context.sampleHostLoad?.('after')) ?? null;
   const build = (await context.buildIdentity?.()) ?? null;
   const [candidateTape, baselineTape] = measured.value.tapes as [
-    OpenedTimingReplay,
-    OpenedTimingReplay | undefined,
+    OpenedReplayLease,
+    OpenedReplayLease | undefined,
   ];
   const declared = candidateTape.timestampQuantization ?? 'unknown';
   const checks = resultChecks(measured.value, declared, before, after, maxGpuPercent);
   const reasons = invalidReasons(checks);
   const { benchmark, comparison } = measured.value;
-  return {
-    ok: true,
-    value: {
-      artifact: artifact.value,
-      valid: reasons.length === 0,
-      invalidReasons: reasons,
-      preflight: { checks, before, after, maxGpuPercent },
-      environment: {
-        device: candidateTape.adapterInfo ?? null,
-        timestampQuantization: declared,
-        build,
-        tape: tapeOf(artifact.value, candidateTape),
-        ...(baseline === undefined || baselineTape === undefined
-          ? {}
-          : { baselineTape: tapeOf(baseline, baselineTape) }),
-        startedAt: startedAt.toISOString(),
-        elapsedMs: Date.now() - startedAt.getTime(),
-      },
-      ...(benchmark === undefined ? {} : { timing: timingFromBenchmark(benchmark), benchmark }),
-      ...(baseline === undefined || comparison === undefined ? {} : { baseline, comparison }),
+  return completeCommand({
+    artifact: artifact.value,
+    valid: reasons.length === 0,
+    invalidReasons: reasons,
+    preflight: { checks, before, after, maxGpuPercent },
+    environment: {
+      device: candidateTape.adapterInfo ?? null,
+      timestampQuantization: declared,
+      build,
+      tape: tapeOf(artifact.value, candidateTape),
+      ...(baseline === undefined || baselineTape === undefined
+        ? {}
+        : { baselineTape: tapeOf(baseline, baselineTape) }),
+      startedAt: startedAt.toISOString(),
+      elapsedMs: Date.now() - startedAt.getTime(),
     },
-  };
+    ...(benchmark === undefined ? {} : { timing: timingFromBenchmark(benchmark), benchmark }),
+    ...(baseline === undefined || comparison === undefined ? {} : { baseline, comparison }),
+  });
 }

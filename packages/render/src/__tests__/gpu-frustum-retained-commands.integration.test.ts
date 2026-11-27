@@ -21,7 +21,7 @@ it.each([
     if (entry.identifier !== 'forgeax::default-standard-pbr') continue;
     // RhiNull checks routing only; these markers extend the maintained
     // placeholder manifest for the temporal source admission contract.
-    entry.composedWgsl += '\nfn vs_temporal() {}\nfn fs_temporal() {}\n';
+    entry.composedWgsl += '\nfn vs_temporal() {}\nfn fs_temporal() {}\nfn fs_scene_velocity() {}\n';
     entry.receipt = createStandardPbrArtifactReceipt(false, false);
     for (const variant of entry.variants) {
       variant.composedWgsl = entry.composedWgsl;
@@ -37,8 +37,8 @@ it.each([
     'fs_main',
     'fs_opaque',
     'fs_forward_screen',
-    'fs_ao_input',
     'fs_depth_masked',
+    'fs_scene_velocity',
   ].map((name) => ({
     name,
     stage: 'fragment',
@@ -58,7 +58,11 @@ it.each([
   const profiler = createProfiler();
   const renderer = await createRenderer(
     { width: 64, height: 64, getContext: () => null },
-    { profiler, standardProfile: { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: true } },
+    {
+      profiler,
+      retainIndirectBundles: true,
+      standardProfile: { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: true },
+    },
     { shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}` },
     {
       rhi,
@@ -112,10 +116,18 @@ it.each([
       world.update().unwrap();
       const drawn = renderer.draw({ source: attached });
       if (!drawn.ok) throw drawn.error;
+      if (drawn.value === undefined) throw new Error('missing GPU submission receipt');
+      const prepared = await drawn.value.preparationCompleted;
+      if (prepared?.ok === false) throw prepared.error;
+      const completed = await drawn.value.completed;
+      if (!completed.ok) throw completed.error;
     }
     expect(errors).toEqual([]);
     const phaseCapture = profiler.latestCapture();
-    expect(phaseCapture?.completeness.status).toBe('complete');
+    expect(
+      phaseCapture?.completeness.status,
+      JSON.stringify(phaseStarted.value.firstSourceFailure() ?? phaseCapture?.completeness),
+    ).toBe('complete');
     expect(
       phaseCapture?.records.some(
         (row) => row.kind === 'phase' && row.phase.endsWith('/groups/key'),
@@ -132,8 +144,8 @@ it.each([
     expect(first.gpuDriven.indirectDrawCount).toBe(9);
     // Off-screen singleton batches keep their commands: the GPU cull, not a
     // per-frame CPU camera classification, rejects their instance.
-    // Early and late Forward depth prepass plus `main`, once per batch.
-    expect(first.gpuDriven.encodedIndirectDraws).toBe(27);
+    // The complete Forward prepass and main consume the same indirect rows.
+    expect(first.gpuDriven.encodedIndirectDraws).toBe(18);
     // A rapid camera reversal reuses the same admitted plan and sees the
     // eight formerly hidden meshes in this frame, with no history delay and
     // without re-encoding a single command.
@@ -143,7 +155,7 @@ it.each([
     if (!reversedDraw.ok) throw reversedDraw.error;
     const reversed = renderer.inspect().renderScene;
     expect(reversed.gpuDriven.batchCount).toBe(9);
-    expect(reversed.gpuDriven.encodedIndirectDraws).toBe(27);
+    expect(reversed.gpuDriven.encodedIndirectDraws).toBe(18);
     expect(reversed.gpuDriven.preparedBundleBuilds).toBe(first.gpuDriven.preparedBundleBuilds);
     expect(reversed.gpuDriven.preparedBundleHits).toBeGreaterThan(
       first.gpuDriven.preparedBundleHits ?? 0,
@@ -175,7 +187,7 @@ it('re-encodes in proportion to edited batches, not to the batch count', async (
   for (const count of [64, 512]) {
     const renderer = await createRenderer(
       { width: 64, height: 64, getContext: () => null },
-      {},
+      { retainIndirectBundles: true },
       {
         shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`,
       },

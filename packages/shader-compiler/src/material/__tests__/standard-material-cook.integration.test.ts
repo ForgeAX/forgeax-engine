@@ -7,8 +7,11 @@ import {
   standardSurfaceParameters,
 } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { cookMaterialAsset } from '../cook.js';
 import { captureMaterialSourceSnapshot, createMaterialPackCooker } from '../pack-cooker.js';
 import { projectMaterial } from '../project.js';
+import { buildMaterialSourceCatalog } from '../source-catalog.js';
+import { DEFAULT_MATERIAL_VARIANT_CONTEXT } from '../variant-context.js';
 
 const parameters: readonly MaterialParameter[] = standardSurfaceParameters([
   { name: 'baseColor', type: 'color' },
@@ -29,6 +32,29 @@ const passes: [MaterialPass, ...MaterialPass[]] = [
   },
 ];
 
+// Sampling assertions use one real raster address. Alpha, ABI and multi-pass
+// cases still exercise all portable programs through the complete cooker.
+const sharedCookers = new Map<
+  'webgpu-storage' | undefined,
+  Promise<ReturnType<typeof createMaterialPackCooker>>
+>();
+let builtinSources: ReturnType<typeof captureMaterialSourceSnapshot> | undefined;
+async function cookStandard(input: unknown, profile?: 'webgpu-storage') {
+  let cooker = sharedCookers.get(profile);
+  if (cooker === undefined) {
+    builtinSources ??= captureMaterialSourceSnapshot([]);
+    cooker = builtinSources.then((sourceSnapshot) =>
+      createMaterialPackCooker([], {
+        sourceSnapshot,
+        ...(profile === undefined ? {} : { profile }),
+      }),
+    );
+    sharedCookers.set(profile, cooker);
+  }
+  return (await cooker).cook(input);
+}
+const cookStorageStandard = (input: unknown) => cookStandard(input, 'webgpu-storage');
+
 // Cold publication validates both color ABIs, both addresses and each View ABI.
 describe('standard material cook integration', { timeout: 30_000 }, () => {
   it.each([true, false])('cooks a declared or omitted alphaHash parameter: %s', async (enabled) => {
@@ -37,7 +63,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
         (entry) => entry.type !== 'texture2d' && (enabled || entry.name !== 'alphaHash'),
       ).map((entry) => entry.name),
     );
-    const cooked = await createMaterialPackCooker().cook({
+    const cooked = await cookStandard({
       guid: `alpha-hash-${enabled}`,
       source: {
         kind: 'material',
@@ -70,7 +96,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
         (parameter) => parameter.name,
       ),
     );
-    const cooked = await createMaterialPackCooker().cook({
+    const cooked = await cookStorageStandard({
       guid: 'standard-no-textures',
       source: {
         kind: 'material',
@@ -149,7 +175,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
       ),
     );
     for (const texture of textures) names.add(texture);
-    const cooked = await createMaterialPackCooker().cook({
+    const cooked = await cookStorageStandard({
       guid: `standard-textures-${name.replaceAll(' ', '-')}`,
       source: {
         kind: 'material',
@@ -219,81 +245,46 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
   it('cooks anisotropy with an identity direction fallback and an RG/B texture path', {
     timeout: 30_000,
   }, async () => {
-    const baseParameters: readonly MaterialParameter[] = [
+    // Keep this paired cook focused on the direction and tangent contract.
+    // The texture sampling matrix above owns the unrelated base maps.
+    const baseParameters = standardSurfaceParameters([
       { name: 'baseColor', type: 'color' },
       { name: 'metallic', type: 'f32' },
       { name: 'roughness', type: 'f32' },
-      { name: 'metallicChannel', type: 'f32' },
-      { name: 'roughnessChannel', type: 'f32' },
-      { name: 'aoChannel', type: 'f32' },
-      { name: 'extraChannel', type: 'f32' },
-      { name: 'emissive', type: 'vec3' },
-      { name: 'emissiveIntensity', type: 'f32' },
-      { name: 'occlusionStrength', type: 'f32' },
-      { name: 'alphaCutoff', type: 'f32' },
-      { name: 'normalScale', type: 'vec2' },
-      { name: 'specular', type: 'f32' },
-      { name: 'specularColor', type: 'vec3' },
-      { name: 'ior', type: 'f32' },
-      { name: 'baseColorTexture', type: 'texture' },
-      { name: 'metallicRoughnessTexture', type: 'texture' },
-      { name: 'normalTexture', type: 'texture' },
-      { name: 'emissiveTexture', type: 'texture' },
-      { name: 'occlusionTexture', type: 'texture' },
       { name: 'anisotropyStrength', type: 'f32' },
       { name: 'anisotropyRotation', type: 'f32' },
-    ];
-    // Both publications own one immutable source set inside the original cold clock.
-    const cooker = createMaterialPackCooker([], {
-      sourceSnapshot: await captureMaterialSourceSnapshot([]),
-    });
-    const cook = async (parameters: readonly MaterialParameter[]) =>
-      cooker.cook({
-        guid: `anisotropy-${parameters.some((parameter) => parameter.name === 'anisotropyTexture') ? 'map' : 'scalar'}`,
-        source: {
-          kind: 'material',
-          staticSwitches: {
-            clearcoat: true,
-            anisotropy: true,
-            sheen: true,
-            iridescence: true,
-            diffuseTransmission: true,
-            transmission: true,
-            subsurfaceDiffusion: true,
-          },
-          parameters,
-          passes: [{ name: 'Forward', program: { module: 'forgeax_material::standard' } }],
-        },
-      });
+    ]);
+    builtinSources ??= captureMaterialSourceSnapshot([]);
+    const { roots, engine, project } = await builtinSources;
+    const sources = buildMaterialSourceCatalog({ roots, engine, project }).unwrap();
+    const cook = async (parameters: readonly MaterialParameter[]) => {
+      const source: MaterialAsset = {
+        kind: 'material',
+        staticSwitches: { anisotropy: true },
+        parameters,
+        passes: [{ name: 'forward', program: { module: 'forgeax_material::standard' } }],
+      };
+      const material = 'anisotropy';
+      return (
+        await cookMaterialAsset({
+          material,
+          table: { [material]: source },
+          sources,
+          context: DEFAULT_MATERIAL_VARIANT_CONTEXT,
+        })
+      ).unwrap();
+    };
 
-    // Independent contracts use the existing process-wide bounded material pool.
     const [scalar, mapped] = await Promise.all([
       cook(baseParameters),
       cook([...baseParameters, { name: 'anisotropyTexture', type: 'texture' }]),
     ]);
-    const scalarArtifact = Object.values(scalar.artifacts)[0];
-    const mappedArtifact = Object.values(mapped.artifacts)[0];
-    expect(scalarArtifact).toBeDefined();
-    expect(mappedArtifact).toBeDefined();
-    if (scalarArtifact === undefined || mappedArtifact === undefined) return;
-    const scalarWgsl = new TextDecoder().decode(scalarArtifact.bytes);
-    const mappedWgsl = new TextDecoder().decode(mappedArtifact.bytes);
-    const scalarPayload = scalar.payload as {
-      readonly cooked?: {
-        readonly receipt?: { readonly derivedInterface?: { readonly layerPlanIdentity?: string } };
-      };
-    };
-    const mappedPayload = mapped.payload as {
-      readonly cooked?: {
-        readonly receipt?: { readonly derivedInterface?: { readonly layerPlanIdentity?: string } };
-      };
-    };
-    expect(scalarPayload.cooked?.receipt?.derivedInterface?.layerPlanIdentity).toContain(
-      'physical:anisotropy',
-    );
-    expect(mappedPayload.cooked?.receipt?.derivedInterface?.layerPlanIdentity).toBe(
-      scalarPayload.cooked?.receipt?.derivedInterface?.layerPlanIdentity,
-    );
+    const scalarWgsl = scalar.passes[0]?.compile.wgsl;
+    const mappedWgsl = mapped.passes[0]?.compile.wgsl;
+    expect(scalarWgsl).toBeDefined();
+    expect(mappedWgsl).toBeDefined();
+    expect(scalar.layerPlan.identity).toContain('physical:anisotropy');
+    expect(mapped.layerPlan.identity).toBe(scalar.layerPlan.identity);
     expect(scalarWgsl).not.toContain('anisotropyTexture');
     expect(mappedWgsl).toContain('encodedAnisotropyDirection');
     expect(mappedWgsl).toContain('tangent.w');
@@ -322,7 +313,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
       { name: 'emissiveTexture', type: 'texture' },
       { name: 'occlusionTexture', type: 'texture' },
     ];
-    const cooked = await createMaterialPackCooker().cook({
+    const cooked = await cookStorageStandard({
       guid: 'base-only',
       source: {
         kind: 'material',
@@ -388,7 +379,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
       { name: 'emissiveTexture', type: 'texture' },
       { name: 'occlusionTexture', type: 'texture' },
     ];
-    const cooked = await createMaterialPackCooker().cook({
+    const cooked = await cookStorageStandard({
       guid: 'specular-color-map',
       source: {
         kind: 'material',
@@ -422,7 +413,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
     const parameters = standardMaterialParameters(
       new Set(STANDARD_MATERIAL_PARAM_SCHEMA.map((entry) => entry.name)),
     );
-    const cooked = await createMaterialPackCooker().cook({
+    const cooked = await cookStandard({
       guid: 'physical-all-layers',
       source: {
         kind: 'material',
@@ -459,21 +450,22 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
     ]) {
       expect(wgsl).toContain(field);
     }
-    expect(wgsl).toMatch(/@binding\(25\)\s+var irradianceMap/);
-    expect(wgsl).toMatch(/@binding\(48\)\s+var clearcoatSampler/);
-    expect(wgsl).toMatch(/@binding\(52\)\s+var clearcoatNormalSampler/);
+    expect(wgsl).toMatch(/@group\(0\)\s*@binding\(34\)\s+var<uniform> skySh/);
+    expect(wgsl).toMatch(/@group\(2\)\s*@binding\(32\)\s+var prefilterMap/);
+    expect(wgsl).toMatch(/@binding\(48\)\s+var clearcoatTexture_sampler/);
+    expect(wgsl).toMatch(/@binding\(52\)\s+var clearcoatNormalTexture_sampler/);
     expect(wgsl).toMatch(/@binding\(53\)\s+var clearcoatNormalTexture/);
     // Regression (r1 Threejs-Punk quadra.glb): the KHR specular samplers must
     // move with their textures, or a cooked program declares binding 42/44
     // that the physical bind-group layout never creates.
-    expect(wgsl).toMatch(/@binding\(64\)\s+var specularSampler/);
+    expect(wgsl).toMatch(/@binding\(64\)\s+var specularTexture_sampler/);
     expect(wgsl).toMatch(/@binding\(65\)\s+var specularTexture/);
-    expect(wgsl).toMatch(/@binding\(66\)\s+var specularColorSampler/);
+    expect(wgsl).toMatch(/@binding\(66\)\s+var specularColorTexture_sampler/);
     expect(wgsl).toMatch(/@binding\(67\)\s+var specularColorTexture/);
     expect(wgsl).not.toMatch(/@binding\(4[2-5]\)\s+var specular/);
-    expect(wgsl).toMatch(/@binding\(68\)\s+var diffuseTransmissionSampler/);
+    expect(wgsl).toMatch(/@binding\(68\)\s+var diffuseTransmissionTexture_sampler/);
     expect(wgsl).toMatch(/@binding\(69\)\s+var diffuseTransmissionTexture/);
-    expect(wgsl).toMatch(/@binding\(70\)\s+var diffuseTransmissionColorSampler/);
+    expect(wgsl).toMatch(/@binding\(70\)\s+var diffuseTransmissionColorTexture_sampler/);
     expect(wgsl).toMatch(/@binding\(71\)\s+var diffuseTransmissionColorTexture/);
   });
 
@@ -494,7 +486,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
     expect(deriveStandardLayerPlan(foliage).layers.map((layer) => layer.name)).toEqual([
       'diffuseTransmission',
     ]);
-    const cooked = await createMaterialPackCooker().cook({
+    const cooked = await cookStorageStandard({
       guid: 'thin-foliage',
       source: {
         kind: 'material',
@@ -508,7 +500,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
           subsurfaceDiffusion: true,
         },
         parameters: foliage,
-        passes,
+        passes: [passes[0]],
         values: { diffuseTransmission: 0.6, diffuseTransmissionColor: [0.6, 0.9, 0.3] },
       },
     });
@@ -522,7 +514,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
   });
 
   it('publishes a default Alpha Mask ShadowCaster with a reflected scene-index ABI', async () => {
-    const cooked = await createMaterialPackCooker().cook({
+    const cooked = await cookStandard({
       guid: 'default-surface-shadow-abi',
       source: {
         kind: 'material',
@@ -577,7 +569,7 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
   });
 
   it('publishes complete Standard and shadow programs for a multi-pass root', async () => {
-    const cooked = await createMaterialPackCooker().cook({
+    const cooked = await cookStandard({
       guid: 'multi-pass-standard',
       source: {
         kind: 'material',

@@ -1,4 +1,21 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-devkit
+
+Workspace project status optionally includes `preparation`: project and Vite
+setup, Shader input/variant compilation, Pack stages, bounded active sources,
+recent completed sources and host timestamps. Shader counts describe one source,
+not a whole-project completion percentage.
+It is available before project Vite readiness through the existing backend
+status subscription and snapshot. Source changes are coalesced over 200 ms;
+stage changes publish immediately. Closing a session retires its observer.
+An asset task ends at readiness; scene attachment does not extend its clock.
+New production after a terminal stage starts a fresh clock and recent-source list,
+including work within the same producer generation. Reloading a presentation
+does not restart an active backend task.
+Pack readiness does not establish a rendered frame; the existing project
+lifecycle remains the readiness authority.
 
 Ordinary project build, development and packaging publish native shader source
 templates by default. Pack remains the material program authority; selected
@@ -9,15 +26,22 @@ validation. Single-HTML browser and Worker process compatibility objects do not
 advertise a Node version, so portable WASM loaders use embedded browser resources
 rather than Node filesystem imports.
 
-Resource and workspace previews publish their tool-owned texture-view materials
-through the complete compiled manifest route. These programs are supplied as
-material packages, outside the Engine source-family library. Ordinary Play and
-game builds retain the project's selected publication.
+Resource and workspace previews publish Engine templates alongside their cooked
+texture-view materials. Their host supplies these tool-owned material packages
+for resource inspection. Ordinary Play and game builds use Pack to publish
+project materials.
 
 Custom build hosts use `readProjectFacts` from the package root and
 `loadProjectCookers` from `@forgeax/engine-devkit/plugin-build` to execute the
 selected project's declared build root. The returned session exposes cookers and
 watched source files; its owner disposes it on shutdown or failed startup.
+
+Official local Engine bindings select the public `@forgeax/engine` package for
+authored source execution. Metadata scans, plugin bootstrap, lazy Pack builds,
+interactive generators and Vite production receive that same explicit package
+root. Without a local binding, source-relative npm resolution is unchanged.
+Selected-package exports are authoritative; a missing export never falls back to
+an older game installation. Pack workers do not read DevKit bindings themselves.
 
 Detached backends reserve at most one quarter of admitted machine/container
 memory for their V8 heap, capped at 8 GiB. Their build child inherits the same
@@ -192,7 +216,7 @@ project tool discovery starts Vite only when a declared tool contract needs modu
 loading. Browser execution and build operations retain their existing owners;
 Pack authoring activates one gateway per client and preserves request-id
 deduplication. The package ships the CLI's dynamic chunks under `dist` together
-with the public entry, so SDK/archive consumers follow the same path. Generated Node program tables load the shipped internal `pack-program-host.mjs` artifact directly; restoring their module closure does not import the DevKit facade or activate Vite/Playwright.
+with the public entry, so installed Engine consumers follow the same path. Generated Node program tables load the shipped internal `pack-program-host.mjs` artifact directly; restoring their module closure does not import the DevKit facade or activate Vite/Playwright.
 
 Exact `dev start/status/stop/reload` commands dispatch directly to the built-in
 live owner without a preliminary project tool inventory. Start and reload keep
@@ -333,14 +357,11 @@ authoritative, and its lifecycle disposes the prepared platform with the target.
 `callDevKitBackend(root, operation, args)` calls one active ToolApi provider over
 the authenticated local transport; absent or ambiguous capabilities fail.
 
-Normal View startup is `node /path/to/view/start.mjs [--project G]`. View owns
-installation discovery, its packaged Host Pack and temporary workspace defaults;
-it calls the public `ensureDevKitView` API directly. DevKit retains backend process
-ownership without adding built-in View startup commands. Default H is shared per
-Engine/View installation independently of cwd and G; `--new-instance` allocates
-a unique temporary H unless explicit `--root H` takes precedence. Use the returned
-H explicitly for `view status`, `view stop` and `backend stop`. Omitting G preserves
-a bound project or leaves a fresh owner ready for project selection.
+Start installed View with `forgeax project view --root G --json`. DevKit selects
+the bundled Host Pack and owns backend startup at G. Open the returned URL for
+the selected project. Use `forgeax backend status --root G` and
+`forgeax backend stop --root G` for the process lifecycle. View contributors can
+use the source checkout launcher to control an explicit workspace root H.
 
 For example, an installed View host Pack contributes separate `view start`,
 `view status` and `view stop` commands. `view start` requires this backend and
@@ -385,7 +406,7 @@ presentation clients decide how query results affect their selection.
 - [RHI-debug operations](#rhi-debug-operations)
 - [Authoring preview](#authoring-preview)
 - [Project authority](#project-authority)
-- [Migration and carrier](#migration-and-carrier)
+- [Carrier](#carrier)
 
 ## CLI and catalog
 
@@ -734,6 +755,151 @@ Static deployment is an Engine-owned build product. A publishing host supplies
 the project root, public URL base, and dedicated output directory; DevKit owns
 the generated host, asset cooking, shader compilation, Pack index, and
 `forgeax-dist.json` closure.
+
+### Native desktop development build
+
+The desktop target compiles the ordinary project roots to Node ESM and includes
+the matching native addon, audio runtime, Packs and Shader publications. Build
+or install the addon for a source checkout. A Windows x64 SDK can supply an
+admitted prebuilt addon through its artifact inventory.
+
+```sh
+pnpm --filter @forgeax/engine-rhi-wgpu-native build:native
+forgeax project build --root templates/game-3d --target native --out-dir dist/native
+node templates/game-3d/dist/native/game.mjs
+```
+
+`--platform windows|macos|linux` and `--arch x64|arm64` select the destination
+addon when staging an explicit destination, and the build requires its
+artifact. This development target runs with a compatible Node installation.
+Its output includes the selected addon. It uses the existing RHI
+and App frame receipts, local Catalog and Bundle files, native keyboard/pointer
+input, Blitz UI, Host-owned audio and local quality preferences. Click the
+scene to grab the cursor when the game allows it. <kbd>Esc</kbd> and loss of
+focus release the grab. Device loss runs the Renderer recovery path before
+the App resumes simulation. Windows uses XInput and macOS uses the system Game
+Controller extended profile. Both publish up to four controllers through
+`InputSnapshot.gamepad(index)` with the standard gamepad mapping. Text controls in
+Blitz receive keyboard and system IME input while focused, with the candidate
+window anchored to the control. The desktop build includes the native UI font
+subsets used to render Latin and Simplified Chinese text.
+
+`GameHost.audio` exposes `listOutputDevices()`, `getOutputDevice()` and
+`setOutputDevice(id)` to game settings. An empty ID selects the system default.
+The Host switches its active AudioContext in place. Cooked streaming WAVs use
+bounded byte ranges from the installed game, including while seeking or looping.
+
+Game plugins use `GameHost.saves` to persist versioned JSON in named slots. Web
+uses origin and project-scoped IndexedDB. Windows uses atomic files in
+`%LOCALAPPDATA%/ForgeaX/<projectKey>/saves`. macOS and Linux use
+`~/.local/share/ForgeaX/<projectKey>/saves`. Each game owns schema interpretation
+and migration. Game 3D demonstrates checkpoint save and resume.
+
+The build emits authored Runtime
+Pack programs as Node ESM files. On a cache miss the installed player's Task
+Worker generates their assets, then the project disk cache stores the outputs.
+WeChat bundles ordinary Runtime Pack generators as lazy local modules and runs
+them in the game realm on demand. Its target rejects an explicit
+`execution: 'task-worker'` requirement.
+
+### Windows native installer
+
+`forgeax project package --format native` builds the native game and creates a
+Windows x64 MSI with a GUI launcher, a Start Menu shortcut, Node and the Visual C++
+runtime libraries. Use a Windows x64 source checkout or SDK with its matching
+native addon, the .NET Framework C# compiler and WiX 5 or later on PATH. Supply the extracted
+official Windows x64 Node distribution, including its LICENSE, and the
+`x64/Microsoft.VC143.CRT` redistributable directory from the Visual Studio toolchain.
+
+```powershell
+forgeax project package --format native --platform windows --arch x64 --publisher "Studio" --version 1.0.0 --node-dist $NodeDist --vc-runtime $VcRuntime --output release/Game.msi
+```
+
+The publisher, project ID and `--channel` identify an installation family. Keep them
+stable and increase the three-part version for a major upgrade. The channel defaults
+to `stable` and the version defaults to the project's package version. Launch logs
+are written under `%LOCALAPPDATA%/ForgeaX/<installDirectory>/logs`.
+
+To sign both the launcher and installer, add `--sign-thumbprint` and
+`--timestamp-url` and put Windows SDK SignTool on PATH. The signer is selected from
+`CurrentUser/My` unless `--sign-store machine` selects `LocalMachine/My`. The CLI
+validates the MSI and verifies the timestamped signatures before publishing. The JSON
+receipt identifies the resulting MSI by SHA-256 and includes its product and upgrade codes.
+
+### macOS native disk image
+
+On Apple Silicon, `forgeax project package --format native --platform macos`
+builds a relocatable `.app` inside a DMG. The app carries Node, the Metal and
+CoreAudio addons, and the game's sealed assets. Install the Apple command line
+tools and supply the extracted official macOS arm64 Node distribution. Keep the
+bundle ID stable across upgrades. Use a separate bundle ID for a release channel
+that players should be able to install alongside the stable app.
+
+```sh
+forgeax project package --format native --platform macos --arch arm64 \
+  --bundle-id com.example.game --version 1.0.0 --node-dist "$NodeDist" \
+  --output release/Game.dmg
+```
+
+The default produces an ad hoc signed DMG for local testing. The launcher writes
+logs to `~/Library/Logs/ForgeaX/<bundle-id>/launcher.log`.
+For public distribution, pass a Developer ID Application identity available in
+the signing keychain with `--sign-identity`. Add `--notary-keychain-profile` with
+a configured `notarytool` profile to submit the DMG, staple its ticket and verify
+it before publication. The JSON receipt records the signature type, notarization
+status, deployment target and final SHA-256.
+
+### Installed desktop acceptance
+
+The native build resolves the destination's device profile before bundling.
+Use a browser-specific profile for browser Workers or WebGL2 when the same
+project targets the native desktop Host. Unsupported settings fail with
+`configuration-domain-unavailable` and the setting path. The launch log reports
+the selected profile, Renderer backend, native adapter and graphics API, Ray
+Query capability, and the Renderer-reported diffuse GI traversal and fallback
+when the game uses that feature.
+
+> [!IMPORTANT]
+> Run installed acceptance manually on a Windows x64 or Apple Silicon macOS
+> test account. CI exercises the platform-independent checks on Linux.
+
+1. Build two increasing versions of Game 3D with the same MSI upgrade family
+   or macOS bundle ID. Capture each `forgeax project package --format native
+   … --json` receipt to a separate file.
+2. Install the baseline MSI or copy the `.app` from the baseline DMG to a
+   writable installation location. Launch the installed app, move away from
+   spawn, select **Save checkpoint**, observe **Checkpoint saved**, then quit.
+3. Record baseline evidence using the corresponding launcher log.
+4. Upgrade the same installation with the second MSI or replace the installed
+   macOS app. Launch it, observe **Checkpoint restored** and the saved position,
+   then quit. Record upgrade evidence with the baseline JSON and new log.
+
+| Target | Launcher log |
+| --- | --- |
+| Windows x64 | `%LOCALAPPDATA%/ForgeaX/<installDirectory>/logs/` contains one file per launch |
+| Apple Silicon | `~/Library/Logs/ForgeaX/<bundle-id>/launcher.log` contains successive launches |
+
+Run the evidence tool with Node on the target. [Evidence tool](../../scripts/forgeax/accept-installed-desktop.mjs)
+
+```sh
+node accept-installed-desktop.mjs --receipt v1-package.json --artifact v1.dmg \
+  --log launcher.log --observed saved --output baseline.json
+node accept-installed-desktop.mjs --receipt v2-package.json --artifact v2.dmg \
+  --log launcher.log --observed restored --baseline baseline.json --output upgrade.json
+```
+
+On Windows, substitute each MSI and its individual launch log. The tool
+correlates the installer digest and sealed game manifest with the installed
+launch's 60 completed frames and compares checkpoint bytes across versions.
+`--observed` records the HUD observation. Add `--controller`, `--ime` or
+`--audio` only after observing, respectively, a physical controller across a
+disconnect and reconnect, system composition and candidate selection in a
+focused text field, or continued sound after switching an output device during
+play. Device observations omitted from the invocation remain unverified.
+Use a package with a text field for the IME observation.
+
+For a public macOS release, use Developer ID signing and notarization, then
+repeat first launch with the downloaded package through Gatekeeper.
 
 ### WeChat mini-game
 
@@ -1323,30 +1489,19 @@ font closure in the candidate HTML. Follow the normal `forgeax project preview`
 path for a built directory, upload a Web ZIP to an HTTPS static host, or open
 the exact single-HTML candidate through the release browser profile.
 
-`forgeax project new` accepts an absent or empty target only when that target is outside the unpacked SDK
-root. An SDK-owned target fails before template copying with `project-target-inside-sdk`; use a
-sibling directory or an absolute path outside the SDK.
-
-`forgeax project new` requires an explicit template: choose `game-3d` for every 3D game, including custom
-3D genres, and choose `empty` otherwise. Omitting `--template` fails with `sdk-template-required`.
-
-SDK initialization and project creation return two required `onboarding.read` paths:
-the selected root's `AGENTS.md` and SDK skill. The skill links the capability catalog
-on demand. The generated game guide selects local playable delivery by default;
-publication and Engine/SDK production have their own explicit routes.
-
-The installed `@forgeax/engine` CLI does not carry SDK templates. If it reports
-`sdk-context-missing`, install the matching SDK in a sibling directory, initialize
-it, and use that SDK's entry to create the new project:
+`forgeax project new` takes an absent or empty target outside the Engine
+installation. Select `game-3d` for a third-person starting point or `empty` for a
+minimal project. The generated project records the exact Engine version. Its
+`onboarding.read` points to the project's `AGENTS.md` and Engine authoring skill.
 
 ```bash
-pnpm exec forgeax sdk install --root ../forgeax-sdk
-node ../forgeax-sdk/bin/forgeax.mjs project init --root ../forgeax-sdk
-node ../forgeax-sdk/bin/forgeax.mjs project new ../my-game --template game-3d
+npm install -g @forgeax/engine
+forgeax project new my-game --template game-3d
 ```
 
-`sdk install` defaults to the invoking Engine's version. If that SDK is already
-installed, use its `bin/forgeax.mjs` entry or set `FORGEAX_SDK_ROOT` to its root.
+If the command reports `sdk-context-missing`, select an Engine version that
+includes project templates and retry. Use `forgeax project init` for an existing
+project.
 
 > [!IMPORTANT]
 > `game-3d` is a runnable, contentful third-person reference, not an empty 3D scene. It copies
@@ -1492,13 +1647,17 @@ native compiler is needed for this Browser capture route.
 The command starts the source-development host on an ephemeral loopback port, creates an Xvfb display
 for a headed capture when `$DISPLAY` is absent on Linux, launches a real Chromium browser, waits for an engine frame signal
 and non-flat **canvas** pixels, then takes a Playwright **page screenshot**.
-Explicit `--headless true` bypasses Xvfb/X11 entirely. Local capture, play, and
-live sessions launched by Linux root use an unprivileged Chromium child. The
-launcher uses the invoking account from `sudo`, the Playwright image's
-`pwuser`, or the system `nobody` account, in that order, with `setpriv` and a
-temporary browser profile. With no display, an unspecified private browser
-mode defaults to headless. An existing borrowed page needs no local
-display or browser launch. See Linux unattended validation for Ubuntu/TencentOS image dependencies, writable XDG state and non-root sandbox requirements. A page screenshot
+Explicit `--headless true` bypasses Xvfb/X11. DevKit starts Chrome with its sandbox
+for live sessions, playthroughs, captures, resource previews, and thumbnails. On
+Linux root, it prepares a regular browser identity and a writable profile when an
+executable path is available. When that preparation or Chromium itself reports a
+sandbox failure, DevKit logs the fallback and retries once with the same browser
+selection and sandboxing disabled. The retry uses the browser's own temporary
+profile and a reduced environment. If it succeeds, the command continues through
+its usual frame and input checks. For Linux root with no display, an unspecified
+live browser mode defaults to headless. An existing borrowed page needs no
+browser launch. See the Linux unattended setup
+for browser and display prerequisites. A page screenshot
 composites the WebGPU canvas with normal DOM and open ShadowRoot UI;
 `canvas.toDataURL()` cannot provide that proof. `--wait-ms` is an additional settle interval after the
 first non-flat canvas frame, not a guess for CPU startup time.
@@ -1803,6 +1962,9 @@ An Engine-aware presentation such as the SDK's embedded View borrows the executi
 source Host's Engine graph. Its own installed Engine dependency supplies the default
 for a packaged Host. The game must match that selected graph by binding or runtime
 bytes; a conflicting game Engine still fails before frontend startup.
+The failure names the conflicting Engine paths and directs npm games to their own
+installed `tools/view/start.mjs`. Source-development games can explicitly select
+the Host's Engine through the binding commands above.
 
 `forgeax project doctor` accepts third-party workspace and `file:` directory dependencies in
 registry/SDK games as well as games with a healthy local Engine binding. It checks the project and
@@ -1827,10 +1989,9 @@ Vite resolver fallback, using each package's declared exports. Project-installed
 packages keep priority; an explicit source binding continues to select that source
 workspace. This fallback does not install packages or write a project binding.
 
-Physical realm consumers use `createRealmDispatch`. Each descriptor is routed to
-one owner for its declared realm (the `ToolRealm` contract). A missing owner
-returns `tool-capability-unavailable` with the realm in `detail`; it never falls
-through to another realm.
+Use the host-owned Tool API to discover and run tools. Tool descriptors declare
+their execution realm. If multiple providers publish the same operation,
+pass the source and provider identifiers returned by discovery.
 
 ## Platform SDK adaptation
 
@@ -1928,7 +2089,7 @@ repair the validator rather than obfuscating Engine code or bypassing publishing
 
 ## Startup diagnostics
 
-Ordinary game pages show `Game <version> | Engine <version> | FPS <rate>`
+Ordinary game pages show `Game <version> | Engine <version> | Render FPS <rate>`
 after their first scene-ready Renderer completion. The shared browser/WeChat
 startup document owns this unobtrusive bottom-left line: 10px, half-opacity white
 text, no border or background, and no pointer input. Game releases use
@@ -1939,9 +2100,12 @@ and SDK source archives use SDK provenance. A `0.0.0-dev.<hash>` archive shows
 its hash. Without either version or Git provenance the label is `unversioned`.
 Labels are baked into generated HTML, including static and offline delivery.
 Browser and WeChat hosts count the same successful scene
-receipts over one-second monotonic-clock windows; rAF, loading-only completions
-and duplicate/retired receipts do not count. The line updates FPS text only when its
-value changes, takes no input and requests no extra render frames. Visibility,
+receipts over one-second monotonic-clock windows. The same line shows the
+longest completion gap, including the wait for the next receipt. The browser
+compositor can display fewer Canvas updates than the Renderer completes.
+The line ignores rAF, loading-only completions and duplicate or retired
+receipts. It updates text only when its value changes, takes no input and
+requests no extra render frames. Visibility,
 Surface/device and session changes reset the sample; failure or disposal removes
 its timer and listeners. Workspace and tool pages omit it.
 
@@ -2032,13 +2196,19 @@ startup-module refresh also prevent reuse of stale HTTP entry bytes. The Engine
 never deletes arbitrary CacheStorage or unregisters Service Workers.
 
 Cover text comes from `devkitAppOptions.loadingLabels` (`lang`, `phases`,
-`loading`, `elapsed`, `slow`, `reload`) over the English defaults. Its optional
+`loading`, `elapsed`, `slow`, `reload`) over the English defaults. Set
+`loadingLabels: { lang: 'zh-CN' }` to select the complete Simplified Chinese
+catalog; `zh`, `zh-SG` and `zh-Hans` also select Simplified Chinese. Other languages
+fall back to English unless the project supplies translations. Its optional
 `host` group also supplies the version labels, completed-frame accessibility
 label, failure and diagnostic controls, no-script notice and cache-recovery text.
-Both groups accept partial overrides; omitted Host fields retain their English
-defaults. The build rejects unknown Host keys and non-string labels and emits
+Both groups accept partial overrides; omitted fields retain the selected
+language's defaults. The build rejects unknown Host keys and non-string labels and emits
 the same resolved text into the HTML, the native WeChat cover and the generated
-module. Original error codes, causes and stacks remain unchanged.
+module. Early native WeChat failure modals use the same configuration, including
+`host.nativeStartupFailureTitle`, `host.nativePackageFailureTitle`,
+`host.nativeReloadHint`, `host.confirm` and `reload`. Original error codes,
+causes and stacks remain unchanged.
 
 ### Project-owned loading and failure screens
 
@@ -2335,9 +2505,11 @@ contracts. `createNodePackProgramImports` rebinds recorded imports in a fresh Ho
 Generic npm imports retain a project package authority, dependency route and selected
 entry, preserving distinct installed instances even when their bytes match. Content
 identities include runtime peers; Node builtins and Cordis use their actual identities.
-嵌套作者包的 locator 使用 slash 分隔的项目相对 anchor（如 `plugins/local`），
-恢复时仍逐边检查声明权限并核验原生真实路径。分隔符统一不折叠 `..`、盘符或包身份；
-反斜杠、相对盘符、目录逃逸和未声明依赖均拒绝，源码快照仍校验原始字节。
+Nested authored-package locators use slash-separated project-relative anchors
+(for example `plugins/local`). Recovery checks declared permissions at every edge
+and verifies native real paths. Separator normalization never collapses `..`, drive
+letters or package identities. Backslashes, drive-relative paths, directory escapes
+and undeclared dependencies are rejected; source snapshots still verify original bytes.
 Declared npm dependencies retain their installed package authority even when their
 names also identify Node builtins, such as the `punycode` package.
 Missing dependencies or changed bytes cannot satisfy the archived import contract.
@@ -2933,22 +3105,10 @@ its project server in another process; passing a carrier does not transfer a
 BackendHost or a Catalog across that boundary. Ordinary calls without `host`
 retain their existing behavior.
 
-## Migration and carrier
+## Carrier
 
-Only operations with committed, owner-attributed ArtifactRef proofs are admitted
-to the migration roster. Operations without a verifiable digest remain absent:
-
-| Operation | Owner | Evidence | Fallback |
-|:--|:--|:--|:--|
-| `preview.run` | Preview host | RHI, ProfileCapture, and PNG refs | Private executor |
-| `preview.analyze` | RHI-debug consumer | RHI and ProfileCapture refs | Private executor |
-
-`resolveMigration` rechecks target realm, catalog digest, RHI backend, and
-evidence before selecting a service. Service admission is optional; absent or
-invalid admission selects the private executor.
-Executor options derive their workload identity from ToolRuntime's
-`ServiceAdmissionExpectation`; the contribution supplies the tool ID and the
-service adapter supplies the backend.
+Import service admission and migration primitives from
+`@forgeax/engine-tool-runtime`.
 
 `createCarrierProviderService` owns an authenticated, ephemeral provider
 process. It exposes only POD carrier routes and keeps no provider registry after
@@ -3062,12 +3222,14 @@ The existing `rhi inspect` command accepts `--buffer` JSON with a resource ID, r
 
 `rhi timing` (`rhi.timing`) replays the artifact once with replay-owned pass timestamps and returns `timing.passes` (pass index, kind, label, work indices, `gpuNanoseconds`) plus `totalGpuNanoseconds`. It needs a replay device with `timestamp-query` and otherwise fails with `replay-capability-mismatch`; times rank passes on the replay device. See [RHI Debug per-pass timing](../rhi-debug/README.md#per-pass-gpu-timing).
 
-## Selected tool sources and SDK runtime
+## Selected tool sources
 
 A package-owned Host frontend that declares `@forgeax/engine` is admitted against the Host's Engine graph. Generic presentation packages need not depend on Engine. Frontend aliases
 select that graph across all physical Engine packages. An explicitly bound game graph
 must resolve to the same package roots or equal runtime bytes; equal version labels alone
 do not admit conflicting code. The failure is `host-assembly-invalid` before target boot.
+
+### Earlier SDK installations
 
 SDK manifest 1.11.0 distinguishes runtime/tool packages and records `viewCommit`. View is a
 private built tool under SDK `tools/view/`, installed through `file:../../tools/view`;
@@ -3091,6 +3253,8 @@ independent writable outputs and checks every reused file's byte count and SHA-2
 before moving entries through private staging. This avoids a second complete SDK copy and preserves hard
 links and relative symbolic links. The target must be absent or empty; temporary
 download and staging directories are removed after success or failure.
+
+### Target frontend ownership
 
 A headed target samples the native `devkitWorkspaceFrontend` lease when the
 project opens. Retirement of that service marks its frontend target lost; the
@@ -3204,12 +3368,6 @@ that choice while `backend` reports the observed adapter. Software rendering use
 the same `browserCaptureCommand` / `createBrowserCapture` APIs and
 `browser-capture-*` failures; there is no separate software option or facade.
 
-The tool-service benchmark harness and admission report share their ordered mode
-and phase vocabulary and default thresholds. Completeness requires the configured
-sample count for each mode in each phase; balanced totals cannot substitute for
-missing cold or warm measurements. Timing thresholds and alternation remain
-independent admission checks.
-
 Direct JSON discovery uses Scene schemas for common transform, name, camera,
 light and mesh components. Scalar and short-vector fields can preview directly;
 asset references and unknown component fields remain generation inputs.
@@ -3249,9 +3407,12 @@ Only explicit capture/thumbnail operations may request bounded readback.
 
 ## Compact offline delivery
 
-Production builds keep automatic/enabled execution Worker entries. An explicit
-`workers.<kind>: false` removes only that App-owned Worker URL and its publication;
-a later override fails explicitly. Consumer-owned Worker URLs are unchanged.
+Production builds keep automatic and enabled App-owned Worker entries.
+`workers.engine: false` removes the Engine Worker and its Task Worker entry.
+`workers.render: false` removes the Render Worker entry. `workers.kernels: false`
+disables shared kernels while leaving Task Workers available for other jobs.
+An override that tries to start a removed Worker fails explicitly. Consumer-owned
+Worker URLs remain available.
 Native local Engine bootstrap uses its already imported module without publishing
 an unused remote bootstrap copy. Ordinary automatic placement is unchanged.
 

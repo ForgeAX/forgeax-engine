@@ -1,7 +1,7 @@
 import type { MaterialProgramVertexInput } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  hasGpuDrivenVertexColor,
+  hasGpuDrivenVertexSemantic,
   hasRequiredVertexInputs,
   ownGpuDrivenVertexInputs,
 } from '../gpu-driven/prepared-draw';
@@ -67,11 +67,12 @@ describe('owned vertex input admission', () => {
     const owned = ownGpuDrivenVertexInputs(raw);
     const scans = vi.spyOn(Array.prototype, 'some');
     try {
-      for (let frame = 0; frame < 8; frame++) expect(hasGpuDrivenVertexColor(owned)).toBe(false);
+      for (let frame = 0; frame < 8; frame++)
+        expect(hasGpuDrivenVertexSemantic(owned, 'color')).toBe(false);
       expect(scans).not.toHaveBeenCalled();
       Object.assign(raw[0], { semantic: 'color' });
-      expect(hasGpuDrivenVertexColor(raw)).toBe(true);
-      expect(hasGpuDrivenVertexColor(owned)).toBe(false);
+      expect(hasGpuDrivenVertexSemantic(raw, 'color')).toBe(true);
+      expect(hasGpuDrivenVertexSemantic(owned, 'color')).toBe(false);
       let semantic = 'color';
       const accessor = Object.freeze([
         Object.freeze({
@@ -82,15 +83,16 @@ describe('owned vertex input admission', () => {
           format: 'float32x3',
         }),
       ]);
-      expect(hasGpuDrivenVertexColor(accessor)).toBe(true);
+      expect(hasGpuDrivenVertexSemantic(accessor, 'color')).toBe(true);
       semantic = 'position';
-      expect(hasGpuDrivenVertexColor(accessor)).toBe(false);
+      expect(hasGpuDrivenVertexSemantic(accessor, 'color')).toBe(false);
     } finally {
       scans.mockRestore();
     }
     expect(
-      hasGpuDrivenVertexColor(
+      hasGpuDrivenVertexSemantic(
         ownGpuDrivenVertexInputs([{ semantic: 'color', location: 3, format: 'float32x4' }]),
+        'color',
       ),
     ).toBe(true);
   });
@@ -188,9 +190,9 @@ describe('owned vertex input admission', () => {
     const owned = ownGpuDrivenVertexInputs(source);
     expect(owned).toBe(returned);
     expect(read).not.toHaveBeenCalled();
-    expect(hasGpuDrivenVertexColor(owned)).toBe(true);
+    expect(hasGpuDrivenVertexSemantic(owned, 'color')).toBe(true);
     semantic = 'position';
-    expect(hasGpuDrivenVertexColor(owned)).toBe(false);
+    expect(hasGpuDrivenVertexSemantic(owned, 'color')).toBe(false);
     const required = ownGpuDrivenVertexInputs(inputs());
     expect(hasRequiredVertexInputs(required, owned)).toBe(true);
     semantic = 'color';
@@ -225,11 +227,11 @@ describe('owned vertex input admission', () => {
     expect(owned).toBeInstanceOf(VertexInputs);
     expect(owned).not.toBe(source);
     expect(read).not.toHaveBeenCalled();
-    expect(hasGpuDrivenVertexColor(owned)).toBe(true);
+    expect(hasGpuDrivenVertexSemantic(owned, 'color')).toBe(true);
     matches = false;
-    expect(hasGpuDrivenVertexColor(owned)).toBe(false);
+    expect(hasGpuDrivenVertexSemantic(owned, 'color')).toBe(false);
     fail = true;
-    expect(() => hasGpuDrivenVertexColor(owned)).toThrow(failure);
+    expect(() => hasGpuDrivenVertexSemantic(owned, 'color')).toThrow(failure);
     expect(read).toHaveBeenCalledTimes(3);
   });
 

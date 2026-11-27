@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import * as naga from '@forgeax/engine-naga';
@@ -13,6 +13,7 @@ import { forgeaxShader } from '../index.js';
 it('reuses Standard code across authored packages without accepting an invalid entry or retaining closed-server work', async () => {
   const root = resolve(import.meta.dirname, '../../../..');
   const temporary = await mkdtemp(resolve(tmpdir(), 'forgeax-authored-reuse-'));
+  const shaderName = 'default-standard-pbr.wgsl';
   const compose = vi.spyOn(naga, 'composeShader');
   try {
     const template = JSON.parse(
@@ -21,12 +22,15 @@ it('reuses Standard code across authored packages without accepting an invalid e
         'utf8',
       ),
     );
+    await symlink(
+      resolve(root, `packages/shader/src/${shaderName}`),
+      resolve(temporary, shaderName),
+    );
     const packages: string[] = [];
     for (const [index, alias] of ['first', 'second', 'invalid'].entries()) {
       const pack = structuredClone(template);
-      const asset = pack.assets[0];
-      asset.guid = `8a5a0001-0000-4000-8000-00000000000${index + 3}`;
-      asset.sourceKey = resolve(root, 'packages/shader/src/default-standard-pbr.wgsl');
+      const asset = pack.assets[shaderName];
+      pack.packageId = `8a5a0001-0000-4000-8000-00000000000${index + 3}`;
       asset.payload.values = { roughness: index === 0 ? 0.25 : 0.8 };
       asset.payload.passes[0].program.module = `test::${alias}`;
       if (alias === 'invalid') asset.payload.passes[0].program.vertexEntry = 'missing';
@@ -209,12 +213,16 @@ it('shares exact Standard compilation across aliases without sharing publication
     ),
   );
   const packages: string[] = [];
+  const shaderName = 'default-standard-pbr.wgsl';
   try {
+    await symlink(
+      resolve(root, `packages/shader/src/${shaderName}`),
+      resolve(directory, shaderName),
+    );
     for (const [index, module] of ['alias::first', 'alias::second'].entries()) {
       const pack = structuredClone(original);
-      const asset = pack.assets[0];
-      asset.guid = `00000000-0000-4000-8000-00000000000${index}`;
-      asset.sourceKey = resolve(root, 'packages/shader/src/default-standard-pbr.wgsl');
+      const asset = pack.assets[shaderName];
+      pack.packageId = `00000000-0000-4000-8000-00000000000${index}`;
       asset.payload.passes[0].program.module = module;
       const path = resolve(directory, `${index}.pack.json`);
       await writeFile(path, JSON.stringify(pack));
@@ -260,7 +268,7 @@ it('shares exact Standard compilation across aliases without sharing publication
     const secondPath = packages[1];
     if (secondPath === undefined) throw new Error('Missing second alias fixture');
     const invalid = JSON.parse(await readFile(secondPath, 'utf8'));
-    invalid.assets[0].payload.passes[0].program.fragmentEntry = 'missing_fragment';
+    invalid.assets[shaderName].payload.passes[0].program.fragmentEntry = 'missing_fragment';
     await writeFile(secondPath, JSON.stringify(invalid));
     await expect(publish(packages)).rejects.toThrow();
   } finally {

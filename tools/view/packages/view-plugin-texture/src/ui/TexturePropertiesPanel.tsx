@@ -31,7 +31,7 @@ export function TexturePropertiesPanel({
 }
 
 function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient; assetActions?: ResourceAssetActionResolver }) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const reader = useMemo(() => createWorkspaceStateReader(client), [client]);
   const workspace = useSyncExternalStore(
     reader.subscribe,
@@ -90,7 +90,7 @@ function LiveProperties({ client, assetActions }: { client: ViewWorkspaceClient;
         <h3>{t('texture.information')}</h3>
         {texturePreviewFactRows(binding).map(row => <PropertyRow key={row.key} label={t(`texture.stats.${row.key}`)}>{previewFactValue(row.value, t('texture.valueUnavailable'), t('texture.yes'), t('texture.no'))}</PropertyRow>)}
       </section>
-      <InspectorForm assetActions={assetActions} inspection={binding ? boundPreviewInspection(subject, binding) : inspection ?? { guid: subject.guid, asset: subject }} identityTitle={t('texture.facts')} />
+      <InspectorForm locale={locale} assetActions={assetActions} inspection={binding ? boundPreviewInspection(subject, binding) : inspection ?? { guid: subject.guid, asset: subject }} identityTitle={t('texture.facts')} />
     </div>
   );
 }

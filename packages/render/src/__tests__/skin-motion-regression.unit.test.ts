@@ -7,7 +7,7 @@ import {
 } from '../assembly/factory';
 
 describe('custom skinned mesh motion consumer contract', () => {
-  it('prepares both URP and HDRP pbr-skin consumers with the skin-cluster contract', () => {
+  it('prepares both ordinary and clustered pbr-skin consumers with the same Primitive palette', () => {
     const variants = selectSkinPrewarmVariants(
       {
         identifier: 'forgeax::pbr-skin',
@@ -56,7 +56,7 @@ describe('custom skinned mesh motion consumer contract', () => {
               VERTEX_COLOR_AVAILABLE: false,
             },
             composedWgsl:
-              '@group(2) @binding(1) var<storage> palette: array<u32>; @group(2) @binding(4) var<storage> lights: array<u32>;',
+              '@group(2) @binding(1) var<storage> palette: array<u32>; @group(0) @binding(30) var<storage> light_data: array<u32>;',
           },
         ],
       },
@@ -66,9 +66,9 @@ describe('custom skinned mesh motion consumer contract', () => {
       'CLUSTER_FORWARD_AVAILABLE=false+STORAGE_BUFFER_AVAILABLE=true+VERTEX_COLOR_AVAILABLE=false',
       'CLUSTER_FORWARD_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true+VERTEX_COLOR_AVAILABLE=false',
     ]);
-    expect(createMaterialShaderProgram(variants[1]?.composedWgsl ?? '').group2).toBe(
-      'skin-cluster',
-    );
+    expect(
+      variants.map((variant) => createMaterialShaderProgram(variant.composedWgsl).group2),
+    ).toEqual(['skin', 'skin-cluster']);
     expect(
       selectPipelineLayoutForVariant(
         {

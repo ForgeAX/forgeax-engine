@@ -53,7 +53,7 @@ const PHYSICAL_MATERIAL_MODULES = {
   skinFull: 'physical-material::pbr-skin-full-physical',
 } as const;
 const PHYSICAL_MATERIAL_GUIDS = {
-  full: '8a5a0001-0000-4000-8000-000000000008',
+  full: '57fdfe2f-0978-56de-a112-883c404b18ed',
 } as const;
 const PHYSICAL_MATERIAL_MUTANT = 'physical-material::standard-clearcoat-mutant';
 

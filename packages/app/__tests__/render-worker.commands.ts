@@ -4,6 +4,18 @@ import type { PlaywrightBrowserProvider } from '@vitest/browser-playwright';
 import type { BrowserCommandContext } from 'vitest/node';
 
 export const renderWorkerCommands = {
+  async openLevelRuntimeFixture() {
+    return (await import('./level-runtime-split.server.mjs')).openLevelRuntimeFixture();
+  },
+  async waitForLevelRuntimeDownload(_context: BrowserCommandContext, origin: string) {
+    await (await import('./level-runtime-split.server.mjs')).waitForLevelRuntimeDownload(origin);
+  },
+  async releaseLevelRuntimeDownload(_context: BrowserCommandContext, origin: string) {
+    (await import('./level-runtime-split.server.mjs')).releaseLevelRuntimeDownload(origin);
+  },
+  async closeLevelRuntimeFixture(_context: BrowserCommandContext, origin: string) {
+    await (await import('./level-runtime-split.server.mjs')).closeLevelRuntimeFixture(origin);
+  },
   async renderWorkerDevTools(context: BrowserCommandContext, action: 'open' | 'close', targetId: string) {
     const browser = (context.provider as PlaywrightBrowserProvider).browser;
     if (!browser) throw new Error('Recovery test requires its Playwright browser');

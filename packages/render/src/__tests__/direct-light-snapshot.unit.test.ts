@@ -58,12 +58,17 @@ describe('one direct-light snapshot proof', () => {
 
     expect(extract.match(/const spotLightQuery =/g)).toHaveLength(1);
     expect(extract).toContain('direction: dirN');
-    expect(lighting).toContain('lightTable.write(prepared.local, projectorLightSlotIndex)');
-    expect(lighting).toContain('prepared.local.some((local) => local.source === undefined)');
+    expect(lighting).toMatch(
+      /lightTable\.write\(\s*prepared.local,\s*projectorLightSlotIndex,\s*channelMapping/,
+    );
+    expect(lighting).toContain('const work = lightSlotWorkOf(prepared);');
+    expect(lighting).toContain('if (!work.complete)');
     expect(lighting).not.toMatch(/packDirectLightSlot\(/);
-    expect(lightTable.match(/packDirectLightSlot\(/g)).toHaveLength(1);
+    expect(lightTable.match(/this\.writer\.write\(/g)).toHaveLength(1);
     expect(lightTable).toContain('const source = local[slot]?.source;');
-    expect(lightTable).toContain('packDirectLightSlot(source, this.layout, selected)');
+    expect(lightTable).toContain(
+      'this.writer.write(source, selected, channelMapping, projectedChannel)',
+    );
     expect(lighting).toContain('prepareStandardLighting');
     expect(shader).not.toContain('normalize(light.direction.xyz)');
   });

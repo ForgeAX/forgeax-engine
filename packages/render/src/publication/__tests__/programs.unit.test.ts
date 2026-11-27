@@ -5,6 +5,7 @@ import {
   ShaderRegistry,
   STANDARD_PIPELINE_PARAM_SCHEMA,
 } from '@forgeax/engine-shader';
+import { type MaterialRasterSourceInputs, ok, sha256 } from '@forgeax/engine-types';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { RenderPublication } from '../contract';
 import { capturePublicationProgram, installPublicationPrograms } from '../programs';
@@ -467,4 +468,88 @@ it.each([
   expect(
     receiver.shaderRegistry.findMaterialArtifact(plain.key).unwrap().variantReferences,
   ).toEqual(references);
+});
+
+it('publishes source recipes across a cloned packet while compilation stays with the selected receiver', async () => {
+  const source = new AssetRegistry();
+  const receiver = new AssetRegistry();
+  const guid = '01900000-0000-7000-8000-000000000a01';
+  const bytes = new TextEncoder().encode(program().shader.source);
+  const digest = `sha256:${sha256(bytes)}`;
+  const modules = {
+    schemaVersion: 'material-source-modules/1',
+    modules: [{ kind: 'engine', module: 'forgeax::fixture', digest: '0'.repeat(64) }],
+  } as const;
+  const inputs: MaterialRasterSourceInputs = {
+    modules,
+    materials: { [guid]: { kind: 'material', passes: [] } },
+  };
+  const prepareOnSource = vi.fn(async () => ok(bytes));
+  const prepareOnReceiver = vi.fn(async () => ok(bytes));
+  receiver.setMaterialSourceCompiler(prepareOnReceiver);
+  const keys = ['test::direct', 'test::scene-index'] as const;
+  for (const [index, key] of keys.entries()) {
+    source.shaderRegistry.installMaterialArtifactSource(key, {
+      paramSchema: [],
+      digest,
+      prepare: prepareOnSource,
+      recipe: {
+        inputs,
+        selection: {
+          material: guid,
+          pass: 'forward',
+          context: {
+            backend: 'webgpu',
+            capability: 'storage-buffer',
+            pipeline: 'forward',
+            geometry: 'mesh',
+            pass: 'forward',
+            profile: 'forgeax-material-wgsl-v1',
+            toolchain: 'naga-oil',
+            instrumentation: 'none',
+          },
+          address: index === 0 ? 'direct' : 'scene-index',
+          artifactDigest: digest,
+        },
+      },
+    });
+  }
+  const packet = structuredClone(keys.map((key) => capturePublicationProgram(source, key)));
+  expect(
+    packet.map(({ shader, artifact }) => [
+      'sourceEncoding' in shader && shader.sourceEncoding,
+      artifact,
+    ]),
+  ).toEqual([
+    ['raster-source', undefined],
+    ['raster-source', undefined],
+  ]);
+  const brokenPacket = structuredClone(packet);
+  const broken = brokenPacket[1];
+  if (broken === undefined || !('recipe' in broken)) throw new Error('Missing source recipe');
+  Object.assign(broken.recipe.selection, { address: 'unknown' });
+  expect(() => installPublicationPrograms(receiver, brokenPacket)).toThrow('invalid raster source');
+  expect(receiver.shaderRegistry.materialArtifactDeclaration(keys[0])).toBeUndefined();
+  installPublicationPrograms(receiver, packet);
+  expect(receiver.shaderRegistry.materialArtifactSourceRecipe(keys[0])?.inputs).toBe(
+    receiver.shaderRegistry.materialArtifactSourceRecipe(keys[1])?.inputs,
+  );
+  expect(prepareOnSource).not.toHaveBeenCalled();
+  expect(prepareOnReceiver).not.toHaveBeenCalled();
+  const selected = keys[1];
+  const shaders = receiver.shaderRegistry;
+  expect(shaders.prepareMaterialArtifact(selected).unwrap()).toBe(false);
+  (await shaders.pendingMaterialPreparations())?.unwrap();
+  expect(prepareOnReceiver).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      selection: expect.objectContaining({ address: 'scene-index' }),
+    }),
+  );
+  expect(shaders.findMaterialArtifact(selected).unwrap().source).toBe(program().shader.source);
+  expect(shaders.findMaterialArtifact(keys[0]).ok).toBe(false);
+  expect(capturePublicationProgram(receiver, selected)).toHaveProperty(
+    'shader.sourceEncoding',
+    'raster-source',
+  );
+  expect(prepareOnSource).not.toHaveBeenCalled();
 });

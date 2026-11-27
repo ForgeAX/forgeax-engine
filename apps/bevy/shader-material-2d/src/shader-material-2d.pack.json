@@ -1,12 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "2c7d6b27-2af2-5fdd-a620-f9e0e7b7f451",
+  "schemaVersion": "3.0.0",
+  "packageId": "5f61d0d1-e898-54dc-bfc3-a72f39c5d2e0",
+  "assets": {
+    "shader-material-2d.wgsl": {
       "kind": "material",
-      "execution": "cooked",
-      "sourceKey": "shader-material-2d.wgsl",
       "payload": {
         "kind": "material",
         "passes": [
@@ -23,7 +20,12 @@
           {
             "name": "baseColor",
             "type": "color",
-            "default": [1, 1, 1, 1]
+            "default": [
+              1,
+              1,
+              1,
+              1
+            ]
           },
           {
             "name": "baseColorTexture",
@@ -33,5 +35,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

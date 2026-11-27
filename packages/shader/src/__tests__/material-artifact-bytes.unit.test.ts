@@ -1,9 +1,13 @@
 import { Buffer } from 'node:buffer';
-import { ShaderSource } from '@forgeax/engine-types';
+import { ok, ShaderSource } from '@forgeax/engine-types';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { expect, it, vi } from 'vitest';
-import { createMaterialProgramArtifactReceipt, ShaderRegistry } from '../index.js';
+import {
+  createMaterialProgramArtifactReceipt,
+  materialShaderPreparedSourceRows,
+  ShaderRegistry,
+} from '../index.js';
 
 function entry(suffix = 'byte-contract') {
   const bytes = new TextEncoder().encode(
@@ -218,4 +222,80 @@ it('admits a second registry by digest identity without rehashing its bytes', ()
   expect(second.validateMaterialArtifactBytes('game::first', input)).toMatchObject({ ok: true });
   second.installMaterialArtifactBytes('game::first', input);
   expect([...second.materialShaderIdentifiers()]).toEqual(['game::first']);
+});
+
+it('prepares one selected source owner without reading other variants or repeating work in a fork', async () => {
+  const registry = new ShaderRegistry({ manifestUrl: undefined });
+  const plain = 'game::source-plain';
+  const clipped = 'game::source-clipped';
+  const { bytes: plainBytes, ...plainInput } = entry('plain');
+  const { bytes: clippedBytes, ...clippedInput } = entry('clipped');
+  const compilePlain = vi.fn(async () => ok(plainBytes));
+  const compileClipped = vi.fn(async () => ok(clippedBytes));
+
+  registry.installMaterialArtifactSource(plain, {
+    ...plainInput,
+    prepare: compilePlain,
+    variantReferences: [
+      { identifier: plain, defines: { CLIPPING_PLANES: false } },
+      { identifier: clipped, defines: { CLIPPING_PLANES: true } },
+    ],
+  });
+  registry.installMaterialArtifactSource(clipped, { ...clippedInput, prepare: compileClipped });
+  const target = new ShaderRegistry({ manifestUrl: undefined });
+  target.installMaterialArtifactsFrom(registry, [plain, clipped]);
+
+  expect(target.materialArtifactDeclaration(plain)?.kind).toBe('source');
+  expect(target.materialParamSchemaProjection(plain)?.schema).toEqual([]);
+  expect(target.materialVariantArtifactIdentifier(plain, '')).toBe(clipped);
+  const family = target.materialShaderManifestEntry(plain);
+  if (family === undefined) throw new Error('Missing source family');
+  expect(materialShaderPreparedSourceRows(family)).toEqual([]);
+  expect(target.findMaterialArtifact(clipped).ok).toBe(false);
+  expect(compileClipped).not.toHaveBeenCalled();
+  expect(target.pendingMaterialPreparations()).toBeUndefined();
+  const targetPending = vi.fn();
+  const sourcePending = vi.fn();
+  expect(target.prepareMaterialArtifact(clipped, targetPending).unwrap()).toBe(false);
+  expect(registry.prepareMaterialArtifact(clipped, sourcePending).unwrap()).toBe(false);
+  expect(targetPending).toHaveBeenCalledTimes(1);
+  expect(sourcePending).toHaveBeenCalledWith(targetPending.mock.calls[0]?.[0]);
+  expect(compileClipped).toHaveBeenCalledTimes(1);
+  const pending = target.pendingMaterialPreparations();
+  expect(await targetPending.mock.calls[0]?.[0]).toMatchObject({ ok: true });
+  (await pending)?.unwrap();
+  expect(target.prepareMaterialArtifact(clipped, targetPending).unwrap()).toBe(true);
+  expect(targetPending).toHaveBeenCalledTimes(1);
+  expect(materialShaderPreparedSourceRows(family)).toEqual([
+    family,
+    family.variants.find(({ definesKey }) => definesKey === ''),
+  ]);
+  expect(target.findMaterialArtifact(clipped).unwrap().source).toBe(
+    new TextDecoder().decode(clippedBytes),
+  );
+  expect(registry.findMaterialArtifact(clipped).unwrap().program).toBe(
+    target.findMaterialArtifact(clipped).unwrap().program,
+  );
+  expect(compilePlain).not.toHaveBeenCalled();
+  target.prepareMaterialArtifact(plain).unwrap();
+  (await target.pendingMaterialPreparations())?.unwrap();
+  target.findMaterialArtifact(plain).unwrap();
+  expect(target.materialVariantArtifactIdentifier(plain, '')).toBe(clipped);
+  expect(target.materialVariantArtifactIdentifier(plain, 'UNKNOWN=true')).toBe(plain);
+});
+
+it('reports a digest mismatch without publishing program source or retrying a rejected artifact', async () => {
+  const registry = new ShaderRegistry({ manifestUrl: undefined });
+  const compiled = entry('wrong');
+  const prepare = vi.fn(async () => ok(compiled.bytes));
+  const { bytes: _expected, ...expected } = entry('expected');
+  registry.installMaterialArtifactSource('game::source-digest', { ...expected, prepare });
+  expect(registry.prepareMaterialArtifact('game::source-digest').unwrap()).toBe(false);
+  expect(await registry.pendingMaterialPreparations()).toMatchObject({
+    ok: false,
+    error: { code: 'shader-compile-failed' },
+  });
+  expect(registry.findMaterialArtifact('game::source-digest').ok).toBe(false);
+  expect(registry.prepareMaterialArtifact('game::source-digest').ok).toBe(false);
+  expect(prepare).toHaveBeenCalledTimes(1);
 });

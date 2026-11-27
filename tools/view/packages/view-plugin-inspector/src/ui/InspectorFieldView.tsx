@@ -5,7 +5,7 @@ import { useTranslation } from '../i18n/useTranslation';
 import { InspectorAssetReference } from './InspectorAssetReference';
 
 export function InspectorFieldView({ field, openAsset, browseAsset }: { field: InspectorField; openAsset: (guid: string) => void; browseAsset?: (guid: string) => void }) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const [showAll, setShowAll] = useState(false);
   if (field.unavailable) return <span>{t('inspector.unavailable')}</span>;
   if (field.inherited) return <span title={JSON.stringify(field.rawValue)}>{t('inspector.inheritedCloudMaterial')}</span>;
@@ -15,7 +15,7 @@ export function InspectorFieldView({ field, openAsset, browseAsset }: { field: I
     <span className="insp-material-index">{index}</span><InspectorAssetReference reference={resource} openAsset={openAsset} browseAsset={browseAsset} inline />
   </div>)}</div>;
   if (field.presentation === 'color' && field.colorChannels) {
-    return <InspectorFieldControl field={{ ...field, kind: 'color', value: field.colorChannels }} />;
+    return <InspectorFieldControl locale={locale} field={{ ...field, kind: 'color', value: field.colorChannels }} />;
   }
   if (field.presentation === 'collection') {
     const collection = inspectorCollection(field.rawValue);
@@ -36,5 +36,5 @@ export function InspectorFieldView({ field, openAsset, browseAsset }: { field: I
     useSelection: t('inspector.assetRef.useSelection'), browse: t('inspector.assetRef.browse'), reveal: t('inspector.assetRef.reveal'),
     more: t('inspector.assetRef.more'), clear: t('inspector.assetRef.clear'), copyGuid: t('inspector.assetRef.copyGuid'),
   };
-  return <span className="insp-scalar-value" data-wide-vector={wideVector ? 'true' : undefined} title={JSON.stringify(field.rawValue)}><InspectorFieldControl field={field} assetLabels={assetLabels} /></span>;
+  return <span className="insp-scalar-value" data-wide-vector={wideVector ? 'true' : undefined} title={JSON.stringify(field.rawValue)}><InspectorFieldControl field={field} locale={locale} assetLabels={assetLabels} /></span>;
 }

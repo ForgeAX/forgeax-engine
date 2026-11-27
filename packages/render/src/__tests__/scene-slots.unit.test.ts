@@ -1,9 +1,8 @@
 import { assert, expect, test, vi } from 'vitest';
-import type { RenderableSnapshot } from '../render-system-extract';
-import { setSceneRow } from '../scene/__tests__/scene-row-writes';
+import { sceneSnapshot, setSceneRow } from '../scene/__tests__/scene-row-writes';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { SceneRows } from '../scene/scene-rows';
-import { RowViews, SceneSlotFrame, SceneSlots } from '../scene/scene-slots';
+import { SceneSlotFrame, SceneSlotPage, SceneSlots } from '../scene/scene-slots';
 
 function record(slot: number, generation = 0): RenderSceneSlot {
   return {
@@ -11,9 +10,41 @@ function record(slot: number, generation = 0): RenderSceneSlot {
     generation,
     version: 0,
     entityKey: slot + generation * 100000,
-    snapshot: { entityKey: slot } as RenderableSnapshot,
+    snapshot: sceneSnapshot(slot, new Float32Array(16)),
   };
 }
+
+test('tracks active WaterMesh owners across replacement, removal, and clear', () => {
+  const slots = new SceneSlots();
+  const ordinary = record(0);
+  const owner: RenderSceneSlot = {
+    ...ordinary,
+    snapshot: {
+      ...ordinary.snapshot,
+      waterMeshSource: {
+        guid: 'water',
+        generation: 1,
+        worldIdentity: 'scene',
+        zoneGuid: 'zone',
+        zoneGeneration: 1,
+        targetFormat: 'rgba16float',
+        materialStartIndex: 0,
+        views: [],
+      },
+    },
+  };
+  expect(slots.hasSource('waterMeshSource')).toBe(false);
+  setSceneRow(slots, 0, owner);
+  expect(slots.hasSource('waterMeshSource')).toBe(true);
+  setSceneRow(slots, 0, ordinary);
+  expect(slots.hasSource('waterMeshSource')).toBe(false);
+  setSceneRow(slots, 0, owner);
+  slots.remove(0);
+  expect(slots.hasSource('waterMeshSource')).toBe(false);
+  setSceneRow(slots, 0, owner);
+  slots.clear();
+  expect(slots.hasSource('waterMeshSource')).toBe(false);
+});
 
 test('keeps returned rows and matrix windows fixed across repeated pending writes and address reuse', () => {
   const slots = new SceneSlots();
@@ -47,6 +78,23 @@ test('keeps returned rows and matrix windows fixed across repeated pending write
   expect(secondPose[12]).toBe(17);
 });
 
+test('an issued row keeps its original eight-row pose chunk before anyone asks for its matrix', () => {
+  const slots = new SceneSlots();
+  const slot = 13;
+  const held = setSceneRow(slots, slot, record(slot));
+  assert(held);
+  const pose = new Float32Array(16);
+  pose[12] = 31;
+  const second = slots.writePose(slot, pose);
+  pose[12] = 77;
+  const third = slots.writePose(slot, pose);
+  expect(held.snapshot.transform.world[12]).toBe(0);
+  expect(second.snapshot.transform.world[12]).toBe(31);
+  expect(third.snapshot.transform.world[12]).toBe(77);
+  expect(second.snapshot.transform.world).toHaveLength(16);
+  expect(second.snapshot.transform.world).toBe(second.snapshot.transform.world);
+});
+
 test('cycling pose edits keep current row observations within a bounded matrix backing budget', () => {
   const slots = new SceneSlots();
   const pose = new Float32Array(16);
@@ -72,26 +120,51 @@ test('cycling pose edits keep current row observations within a bounded matrix b
     expect(slots.capture().slotAt(slot)?.snapshot.transform.world[12]).toBe(19 * 64 + slot + 1);
 });
 
-test('removal drops cached row references from the current page while preserving held roots', () => {
+test('eight edits at scattered addresses issue one packed pose backing and leave all prior frames readable', () => {
+  const slots = new SceneSlots();
+  const pose = new Float32Array(16);
+  const addresses = Array.from({ length: 8 }, (_, index) => index * 64 + 5);
+  for (const slot of addresses) setSceneRow(slots, slot, record(slot));
+  const original = slots.capture();
+  const held: Float32Array[] = [];
+  for (let frame = 1; frame <= 16; frame++) {
+    const columns = new Set<ArrayBufferLike>();
+    for (const slot of addresses) {
+      pose[12] = frame * 1024 + slot;
+      const matrix = slots.writePose(slot, pose).snapshot.transform.world;
+      columns.add(matrix.buffer);
+      if (frame === 1) held.push(matrix);
+    }
+    expect(columns.size).toBe(1);
+    expect([...columns][0]?.byteLength).toBe(8 * 16 * Float32Array.BYTES_PER_ELEMENT);
+    const captured = slots.capture();
+    for (const slot of addresses)
+      expect(captured.slotAt(slot)?.snapshot.transform.world[12]).toBe(frame * 1024 + slot);
+  }
+  slots.clear();
+  expect(held.map((matrix) => matrix[12])).toEqual(addresses.map((slot) => 1024 + slot));
+  for (const slot of addresses) expect(original.slotAt(slot)?.snapshot.transform.world[12]).toBe(0);
+});
+
+test('removal drops the issued row from the current page while preserving held roots', () => {
   const slots = new SceneSlots();
   setSceneRow(slots, 0, record(0));
   setSceneRow(slots, 1, record(1));
   const before = slots.capture();
   const held = before.slotAt(0);
   // Inspect the retaining edge directly; collection scheduling is not a memory contract.
-  const owner = Reflect.get(slots, 'views') as RowViews;
-  const cache = Reflect.get(owner, 'pages') as WeakMap<object, (RenderSceneSlot | undefined)[]>;
   slots.remove(0);
   const current = slots.capture();
   const page = current.pageAt(0);
   assert(page);
-  expect(cache.get(page)?.[0]).toBeUndefined();
+  expect(page.rows[0]).toBeUndefined();
+  expect(page.contents[0]).toBeUndefined();
   expect(current.slotAt(0)).toBeUndefined();
   expect(current.slotAt(1)).toBe(before.slotAt(1));
   expect(before.slotAt(0)).toBe(held);
 });
 
-test('pose writes share cold identity/content columns and copy them only for actual content changes', () => {
+test('pose and content edits replace only their issued rows and share all other rows with the held page', () => {
   const slots = new SceneSlots();
   for (let slot = 0; slot < 64; slot++) setSceneRow(slots, slot, record(slot));
   const before = slots.capture();
@@ -103,19 +176,26 @@ test('pose writes share cold identity/content columns and copy them only for act
   const moved = slots.capture();
   const page = moved.pageAt(0);
   assert(page);
+  expect(page.rows).not.toBe(oldPage.rows);
+  expect(page.rows[0]).not.toBe(oldPage.rows[0]);
   expect(page.contents).toBe(oldPage.contents);
-  expect(page.ids).toBe(oldPage.ids);
-  expect(page.poses).not.toBe(oldPage.poses);
-  expect(page.poses[0]).not.toBe(oldPage.poses[0]);
-  for (let chunk = 1; chunk < page.poses.length; chunk++)
-    expect(page.poses[chunk]).toBe(oldPage.poses[chunk]);
-  expect(slots.inspect().estimatedCopiedPagePointerBytes).toBe(64 * 8 + 8 * 8 + 8 * 16 * 4);
+  expect(page.entities).toBe(oldPage.entities);
+  expect(page.rows[0]?.content).toBe(oldPage.rows[0]?.content);
+  for (let lane = 1; lane < page.rows.length; lane++)
+    expect(page.rows[lane]).toBe(oldPage.rows[lane]);
+  expect(slots.inspect().estimatedCopiedPagePointerBytes).toBe(64 * 8);
   pose[12] = 31;
   slots.writePose(1, pose);
   setSceneRow(slots, 2, record(2, 1));
   const content = slots.capture().pageAt(0);
-  expect(content?.contents).not.toBe(page.contents);
-  expect(content?.ids).not.toBe(page.ids);
+  assert(content);
+  for (let lane = 0; lane < page.rows.length; lane++) {
+    if (lane === 1 || lane === 2) expect(content.rows[lane]).not.toBe(page.rows[lane]);
+    else expect(content.rows[lane]).toBe(page.rows[lane]);
+  }
+  expect(content.contents).not.toBe(page.contents);
+  expect(content.entities).not.toBe(page.entities);
+  expect(slots.inspect().estimatedCopiedPagePointerBytes).toBe(2 * 64 * 8 + 64 * 16);
   expect(moved.slotAt(1)?.snapshot.transform.world[12]).toBe(0);
   expect(moved.slotAt(2)?.generation).toBe(0);
   expect(before.slotAt(0)?.snapshot.transform.world[12]).toBe(0);
@@ -193,7 +273,7 @@ test('quiet publication reads keep row identity without rebuilding a per-row map
     Array.from({ length: 1000 }, (_, entityKey) => ({
       kind: 'update' as const,
       entityKey,
-      snapshot: { entityKey, transform: { world: pose } } as RenderableSnapshot,
+      snapshot: sceneSnapshot(entityKey, pose),
     })),
   );
   const frame = rows.capture();
@@ -256,15 +336,12 @@ test('unchanged transform columns do not hydrate rows or stage per-identity work
     return {
       kind: 'update' as const,
       entityKey,
-      snapshot: {
-        entityKey,
-        transform: { world: pose },
-      } as RenderableSnapshot,
+      snapshot: sceneSnapshot(entityKey, pose),
     };
   });
   rows.apply(operations, [], true);
   const before = rows.capture();
-  const read = vi.spyOn(RowViews.prototype, 'read');
+  const read = vi.spyOn(SceneSlotPage.prototype, 'read');
   try {
     const unchanged = rows.apply([], [{ entities, worlds }], true);
     expect(unchanged.updated).toBe(0);
@@ -278,7 +355,8 @@ test('unchanged transform columns do not hydrate rows or stage per-identity work
     expect(changed.updated).toBe(1);
     expect(changed.updatedSlots[0]?.entityKey).toBe(64);
     expect(changed.contentUpdatedSlots).toHaveLength(0);
-    expect(read).toHaveBeenCalledTimes(2);
+    // Admission reads the prior row. The writer returns the row it just issued.
+    expect(read).toHaveBeenCalledTimes(1);
     expect(old?.snapshot.transform.world[12]).toBe(0);
     expect(rows.capture().slotAt(64)?.snapshot.transform.world[12]).toBe(7);
   } finally {
@@ -290,7 +368,7 @@ test('unchanged transform columns do not hydrate rows or stage per-identity work
 test('numeric pose admission respects prior staged edits, selected offsets and late identities', () => {
   const rows = new SceneRows();
   const pose = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
-  const snapshot = { entityKey: 5, transform: { world: pose } } as RenderableSnapshot;
+  const snapshot = sceneSnapshot(5, pose);
   rows.apply([{ kind: 'update', entityKey: 5, snapshot }], [], true);
   const old = rows.capture().slotAt(0);
   const moved = pose.slice();
@@ -338,7 +416,7 @@ test('numeric pose admission respects prior staged edits, selected offsets and l
 test('numeric pose admission reports parity changes and preserves strict NaN comparisons', () => {
   const rows = new SceneRows();
   const pose = Float32Array.of(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
-  const snapshot = { entityKey: 1, transform: { world: pose } } as RenderableSnapshot;
+  const snapshot = sceneSnapshot(1, pose);
   rows.apply([{ kind: 'update', entityKey: 1, snapshot }], [], true);
   const before = rows.capture();
   const mirrored = pose.slice();
@@ -365,10 +443,7 @@ test('numeric pose admission consumes a borrowed source window once and leaves a
       {
         kind: 'update',
         entityKey: 1,
-        snapshot: {
-          entityKey: 1,
-          transform: { world: pose },
-        } as RenderableSnapshot,
+        snapshot: sceneSnapshot(1, pose),
       },
     ],
     [],

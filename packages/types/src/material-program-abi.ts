@@ -39,6 +39,7 @@ export type MaterialProgramBindingContract =
   | 'render-material-with-scene-depth'
   | 'render-material-and-scene-depth'
   | 'render-standard-material-and-scene-depth'
+  | 'render-lit-material-and-scene-depth'
   | 'post-process'
   | 'render-material';
 
@@ -108,6 +109,7 @@ export function isMaterialProgramBindingContract(
       'render-material-with-scene-depth',
       'render-material-and-scene-depth',
       'render-standard-material-and-scene-depth',
+      'render-lit-material-and-scene-depth',
       'post-process',
       'render-material',
     ].includes(value)
@@ -128,16 +130,45 @@ export interface MaterialProgramVertexInput {
   readonly format: string;
 }
 
-export type MaterialSurfacePassKind = 'nearest-layer' | 'color' | 'depth' | 'shadow' | 'velocity';
+export type MaterialSurfacePassKind =
+  | 'nearest-layer'
+  | 'color'
+  | 'depth'
+  | 'visibility'
+  | 'coverage'
+  | 'depth-velocity'
+  | 'forward-color'
+  | 'forward-color-temporal'
+  | 'forward-color-velocity'
+  | 'shadow'
+  | 'velocity';
 
 /** The versioned Water template owns these outputs in WGSL location order. */
 export const SINGLE_LAYER_WATER_PASS_OUTPUTS: Readonly<
   Record<Exclude<MaterialSurfacePassKind, 'nearest-layer'>, readonly MaterialColorOutput[]>
 > = Object.freeze({
   depth: Object.freeze([
-    { name: 'normalRoughness', format: 'rgba32uint' as const },
+    { name: 'normalRoughness', format: 'r32uint' as const },
     { name: 'coverage', format: 'rgba16float' as const },
     { name: 'temporal', format: 'rgba16float' as const },
+  ]),
+  visibility: Object.freeze([
+    { name: 'coverage', format: 'rgba16float' as const },
+    { name: 'temporal', format: 'rgba16float' as const },
+  ]),
+  coverage: Object.freeze([{ name: 'coverage', format: 'rgba16float' as const }]),
+  'depth-velocity': Object.freeze([
+    { name: 'coverage', format: 'rgba16float' as const },
+    { name: 'velocity', format: 'r32uint' as const },
+  ]),
+  'forward-color': Object.freeze([{ name: 'color', format: 'rgba16float' as const }]),
+  'forward-color-temporal': Object.freeze([
+    { name: 'color', format: 'rgba16float' as const },
+    { name: 'temporal', format: 'rgba16float' as const },
+  ]),
+  'forward-color-velocity': Object.freeze([
+    { name: 'color', format: 'rgba16float' as const },
+    { name: 'velocity', format: 'r32uint' as const },
   ]),
   color: Object.freeze([
     { name: 'color', format: 'rgba16float' as const },
@@ -167,7 +198,14 @@ export const MATERIAL_SURFACE_MODEL_PASSES: Readonly<
 > = Object.freeze({
   standard: Object.freeze(['color'] as const),
   'single-layer-medium': Object.freeze(['nearest-layer', 'color'] as const),
-  'single-layer-water': Object.freeze(['depth', 'color', 'shadow', 'velocity'] as const),
+  'single-layer-water': Object.freeze([
+    'depth',
+    'visibility',
+    'color',
+    'forward-color',
+    'shadow',
+    'velocity',
+  ] as const),
 });
 
 /** Producer-owned model facts shared by the direct and scene-index entries. */
@@ -190,11 +228,15 @@ export interface MaterialSurfaceProgramAbi {
 
 /** Complete immutable ABI projection for one material program family. */
 export const STANDARD_GBUFFER_V2_LAYOUT = 'standard-gbuffer/2' as const;
+export const STANDARD_GBUFFER_COMPACT_LAYOUT = 'standard-gbuffer/4' as const;
 export type MaterialGBufferLayout = typeof STANDARD_GBUFFER_V2_LAYOUT;
+export type CompactGBufferLayout = typeof STANDARD_GBUFFER_COMPACT_LAYOUT;
 
 export interface MaterialProgramAbi {
   /** Complete surface layout certified by this exact producer. */
   readonly gbuffer?: MaterialGBufferLayout;
+  /** Independently certified output of the compact fragment entry. */
+  readonly compactGbuffer?: CompactGBufferLayout;
   /** Producer-owned color-stage fog semantics; independent of the binding layout. */
   readonly forwardFog?: 'height-vertex/1';
   /** Certified template position = input + bounded Standard displacement,
@@ -494,6 +536,7 @@ export function isMaterialProgramAbi(value: unknown): value is MaterialProgramAb
   const validSurface = abi.surface === undefined || isMaterialSurfaceProgramAbi(abi.surface);
   const validProgramContracts = () =>
     (abi.gbuffer === undefined || abi.gbuffer === STANDARD_GBUFFER_V2_LAYOUT) &&
+    (abi.compactGbuffer === undefined || abi.compactGbuffer === STANDARD_GBUFFER_COMPACT_LAYOUT) &&
     (abi.forwardFog === undefined || abi.forwardFog === 'height-vertex/1') &&
     (abi.positionBounds === undefined || abi.positionBounds === 'standard-input') &&
     (abi.entryPoints === undefined || isShaderEntryPointReads(abi.entryPoints)) &&

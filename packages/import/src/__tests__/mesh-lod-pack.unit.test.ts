@@ -3,8 +3,10 @@ import { AssetGuid, definePack, definePackageId } from '@forgeax/engine-pack/sou
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { generatePackMeshLods, type PackMeshLodRequest } from '../mesh-lod-generator.js';
-import { buildScriptablePack } from '../scriptable-pack-build.js';
-import { createStandardAssetOutputProducerRegistry } from '../standard-output-producers.js';
+import {
+  buildScriptablePack,
+  createStandardAssetOutputProducerRegistry,
+} from '../scriptable-pack-build.js';
 
 const packageId = definePackageId('01900000-0000-7000-8000-0000000c0151');
 const request: PackMeshLodRequest = {

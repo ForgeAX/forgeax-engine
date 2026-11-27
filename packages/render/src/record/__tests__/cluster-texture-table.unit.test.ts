@@ -53,7 +53,11 @@ async function fixture() {
     })
     .unwrap() as Texture;
   const writeTexture = vi.spyOn(device.queue, 'writeTexture');
-  const table = new ClusterTextureTable(layout.width, layout.height, 4);
+  const table = new ClusterTextureTable(
+    layout.width,
+    layout.height,
+    STANDARD_CLUSTER_TEST_ABI.directLightSlot,
+  );
   return { device, layout, table, texture, writeTexture };
 }
 
@@ -77,7 +81,6 @@ describe('ClusterTextureTable', () => {
         clusterGrid: grid,
         lightIndices,
         lightIndexCount: lightIndices.length,
-        slotLayout: STANDARD_CLUSTER_TEST_ABI.directLightSlot,
       });
 
     expect(write().ok).toBe(true);
@@ -137,6 +140,38 @@ describe('ClusterTextureTable', () => {
     expect(writeTexture).toHaveBeenCalledTimes(1);
   });
 
+  it('invalidates a projected light slot when the view map changes', async () => {
+    const { device, layout, table, texture, writeTexture } = await fixture();
+    const local = [{ source: { ...point(1), lightingChannels: 0x80000000 } }];
+    const slotLayout = STANDARD_CLUSTER_TEST_ABI.directLightSlot;
+    const channels = slotLayout.lightingChannelsByteOffset / 4;
+    const write = (channelMapping: number) =>
+      table.write({
+        device,
+        texture,
+        layout,
+        local,
+        channelMapping,
+        clusterGrid: new Uint32Array([0, 1]),
+        lightIndices: new Uint32Array([0]),
+        lightIndexCount: 1,
+      });
+    const highBitFirst = (1 << 15) | 31;
+    const highBitSecond = (2 << 15) | (31 << 5);
+    expect(write(highBitFirst).ok).toBe(true);
+    expect(table.words[channels]).toBe(0x80000000);
+    expect(table.words[channels + 2]).toBe(1);
+    writeTexture.mockClear();
+    expect(write(highBitSecond).ok).toBe(true);
+    expect(table.words[channels + 2]).toBe(2);
+    expect(writeTexture).toHaveBeenCalledOnce();
+    expect(write(highBitSecond).ok).toBe(true);
+    expect(writeTexture).toHaveBeenCalledOnce();
+    expect(write(0).ok).toBe(true);
+    expect(table.words[channels]).toBe(0x80000000);
+    expect(table.words[channels + 2]).toBe(0);
+  });
+
   it('retries the complete host region after a failed texture write', async () => {
     const { device, layout, table, texture, writeTexture } = await fixture();
     const local = [{ source: point(1) }];
@@ -156,7 +191,6 @@ describe('ClusterTextureTable', () => {
         clusterGrid,
         lightIndices,
         lightIndexCount: lightIndices.length,
-        slotLayout: STANDARD_CLUSTER_TEST_ABI.directLightSlot,
       });
 
     writeTexture.mockReturnValueOnce(
@@ -195,7 +229,11 @@ describe('ClusterTextureTable', () => {
         usage: GPU_TEXTURE_USAGE_COPY_DST | GPU_TEXTURE_USAGE_TEXTURE_BINDING,
       })
       .unwrap() as Texture;
-    const table = new ClusterTextureTable(layout.width, layout.height, 0);
+    const table = new ClusterTextureTable(
+      layout.width,
+      layout.height,
+      STANDARD_CLUSTER_TEST_ABI.directLightSlot,
+    );
     const writeTexture = vi.spyOn(device.queue, 'writeTexture');
     const write = (clusterGrid: Uint32Array) =>
       table.write({
@@ -207,7 +245,6 @@ describe('ClusterTextureTable', () => {
         clusterGrid,
         lightIndices: new Uint32Array(),
         lightIndexCount: 0,
-        slotLayout: STANDARD_CLUSTER_TEST_ABI.directLightSlot,
       });
 
     const initial = write(new Uint32Array([1, 0, 0, 0, 0, 0, 0, 0, 1]));

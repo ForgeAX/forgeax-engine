@@ -22,6 +22,7 @@ const output = resolve(process.env.FORGEAX_MODELING_VIEW_OUTPUT ?? join(checkout
 const view = resolve(checkout, 'tools/view');
 const examples = resolve(checkout, 'packages/modeling/examples');
 const source = 'assets/wheel-rim/wheel-rim.pack.ts';
+const labels = JSON.parse(await readFile(join(checkout, 'tools/view-plugins/locales/en.json'), 'utf8'));
 
 await rm(join(root, 'assets'), { recursive: true, force: true });
 await mkdir(join(root, 'node_modules/@forgeax'), { recursive: true });
@@ -77,6 +78,7 @@ const idle = () => panel.locator('.fx-model[data-modeling-status="idle"]').waitF
 const selector = () => panel.locator('[data-selector]').textContent();
 const reportFacts = async () => ({
  expression: await selector(),
+ imageKey: await panel.locator('.fx-model-image img').getAttribute('data-rendered'),
  summary: (await panel.locator('.fx-model-report > p').first().textContent())?.trim(),
  stability: await panel.locator('.fx-model-report').getAttribute('data-stability'),
  notes: await panel.locator('.fx-model-report .fx-model-note').allTextContents(),
@@ -114,6 +116,14 @@ try {
  await panel.getByLabel('View').selectOption('top');
  const topImage = panel.locator('.fx-model-image img[data-rendered*="|top||"]');
  await topImage.waitFor({ timeout: 300000 });
+ // The panel owns this key: state.key | view | selector | valuesKey (ui.tsx).
+ // This journey keeps its initial checkpoint while picks and draft values change.
+ const initialImageKey = await topImage.getAttribute('data-rendered');
+ const initialImageState = /^(\d+:[^|]+)\|top\|\|(\{.*\})$/.exec(initialImageKey ?? '');
+ assert.ok(initialImageState, 'the initial top image carries the complete owner key');
+ const checkpoint = await panel.locator('.fx-model-checkpoints button.selected').getAttribute('data-checkpoint');
+ assert.equal(initialImageState[1].slice(initialImageState[1].indexOf(':') + 1), checkpoint);
+ const imageState = { key: initialImageState[1], checkpoint };
  const plain = await render({ views: ['top'], width: 512, height: 512, projection: 'orthographic', annotate: false });
  const mapping = plain.views[0].camera.mapping;
  assert.ok(mapping, 'model.render reports the orthographic pixel mapping');
@@ -134,10 +144,19 @@ try {
   for (const key of modifiers) await page.keyboard.up(key);
  };
  const waitReport = async (previous) => {
-  await page.waitForFunction(prev => {
-   const code = document.querySelector('[data-forgeax-view-surface="modeling"] [data-selector]')?.textContent;
-   return code && code !== prev;
-  }, previous, { timeout: 900000 });
+  await page.waitForFunction(({ previous, state }) => {
+   const panel = document.querySelector('[data-forgeax-view-surface="modeling"]');
+   const code = panel?.querySelector('[data-selector]')?.textContent;
+   const view = panel?.querySelector('[aria-label="View"]')?.value;
+   const checkpoint = panel?.querySelector('.fx-model-checkpoints button.selected')?.getAttribute('data-checkpoint');
+   // data-recheck belongs only to the current report expression (ui.tsx), and
+   // carries the exact draft values key used by the owner's render request.
+   const valuesKey = panel?.querySelector('[data-recheck]')?.getAttribute('data-recheck');
+   const image = panel?.querySelector('.fx-model-image img[data-rendered]');
+   const requestedKey = `${state.key}|${view}|${code}|${valuesKey}`;
+   return Boolean(code && code !== previous && view && checkpoint === state.checkpoint && valuesKey &&
+    image?.getAttribute('data-rendered') === requestedKey && image.complete && image.naturalWidth > 0);
+  }, { previous, state: imageState }, { timeout: 900000 });
   await idle();
  };
  // Spoke k sits at k * 72 degrees from +Z; its flat front face is at y = width/2 + 12 mm - 30 mm.
@@ -147,7 +166,7 @@ try {
  // Step 2: five clicks (Shift adds) on the five spoke fronts.
  for (let k = 0; k < 5; k++) {
   await click(spoke(k), k === 0 ? [] : ['Shift']);
-  await page.waitForFunction(count => document.querySelector('.fx-model-view > .fx-model-note')?.textContent?.includes(`${count} picks.`), k + 1, { timeout: 30000 });
+  await page.waitForFunction(expected => document.querySelector('.fx-model-view > .fx-model-note')?.textContent === expected, labels.pickCount.replace('{{count}}', String(k + 1)), { timeout: 30000 });
  }
  await waitReport(null);
  const fronts = await reportFacts();
@@ -213,6 +232,8 @@ try {
    assert.ok(display.overlays.includes('modeling.selection'), 'Mesh preview receives the Modeling overlay');
    await page.locator('[role="tab"][data-page-id="page-mesh"]').click();
    await page.locator(`[data-forgeax-asset-preview="${target.targetId}"]`).waitFor({ state: 'visible' });
+   // Mesh enables reset after its initial orbit-pivot camera transaction settles.
+   await page.locator('[data-testid="mesh-reset-view"]:enabled').waitFor({ timeout: 15_000 });
    // Look down on the hub so the lug pocket overlay faces the preview camera.
    const before = await client.getCamera(identity);
    const interaction = { ...identity, interactionId: 'modeling-top' };
@@ -247,12 +268,40 @@ try {
   await writeFile(join(output, 'data/step-03-select.json'), JSON.stringify(at7, null, 2));
  }
  assert.deepEqual(errors, [], 'the page reports no uncaught errors');
+ // The browser owns the live preview. Retire it through the workspace
+ // while that browser can acknowledge cleanup, then stop the daemon.
+ if (process.env.FORGEAX_MODELING_VIEW_KEEP !== '1') {
+  const { project } = await client.getState();
+  assert.ok(project, 'the Modeling project stays open until explicit closure');
+  await client.closeProject(project.id);
+  assert.equal((await client.getState()).project ?? null, null, 'the Modeling project is retired');
+ }
  await writeFile(join(output, 'journey.json'), JSON.stringify({ ...journey, passed: true }, null, 2));
 } catch (error) {
  failed = true;
- await page.screenshot({ path: join(output, 'failure.png') }).catch(() => {});
- await page.content().then(html => writeFile(join(output, 'failure.html'), html)).catch(() => {});
- await writeFile(join(output, 'journey.json'), JSON.stringify({ ...journey, passed: false, error: String(error.stack), errors }, null, 2));
+ const evidenceErrors = [];
+ const retain = async (name, collect) => {
+  try { await collect(); } catch (failure) { evidenceErrors.push({ name, error: String(failure) }); }
+ };
+ await retain('failure.png', () => page.screenshot({ path: join(output, 'failure.png') }));
+ await retain('failure.html', async () => writeFile(join(output, 'failure.html'), await page.content()));
+ await retain('failure-panel.json', async () => {
+ const panelState = await panel.evaluate(element => ({
+  status: element.querySelector('[data-modeling-status]')?.getAttribute('data-modeling-status'),
+  error: element.querySelector('[role="alert"]')?.textContent,
+  selector: element.querySelector('[data-selector]')?.textContent,
+  notes: [...element.querySelectorAll('.fx-model-note')].map(node => node.textContent),
+  image: element.querySelector('img[data-rendered]')?.getAttribute('data-rendered'),
+  view: element.querySelector('[aria-label="View"]')?.value,
+  valuesKey: element.querySelector('[data-recheck]')?.getAttribute('data-recheck'),
+  checkpoint: element.querySelector('.fx-model-checkpoints button.selected')?.getAttribute('data-checkpoint'),
+  imageBounds: element.querySelector('img[data-rendered]')?.getBoundingClientRect().toJSON(),
+  viewport: { width: innerWidth, height: innerHeight },
+ }));
+ await writeFile(join(output, 'failure-panel.json'), JSON.stringify(panelState, null, 2));
+ });
+ await retain('journey.json', () => writeFile(join(output, 'journey.json'), JSON.stringify({ ...journey, passed: false, error: String(error.stack), errors, evidenceErrors }, null, 2)));
+ if (evidenceErrors.length) console.error('Modeling secondary evidence errors:', JSON.stringify(evidenceErrors));
  throw error;
 } finally {
  await client.close(); await browser.close();

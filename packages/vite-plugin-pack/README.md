@@ -53,6 +53,12 @@ and dependency waits, while native durations measure the actual recipe call.
 These observations leave cache identities, input bytes, concurrency, generation
 validation and readiness deadlines unchanged.
 
+Dev hosts may pass `onProgress` to observe inventory, source cache/cook/write,
+Meta import and publication stages without enabling timing logs. Source events
+refer to producer source files, not individual output assets or GPU compilation.
+Observer exceptions cannot reject production. Generations distinguish replaced
+sessions; hosts own snapshot retention, path presentation and notification rate.
+
 For production Meta imports, DevKit also supplies `producerIdentity` from its
 sealed build-program graph and plugin configuration. Custom hosts may supply
 the same evidence explicitly; it must change when importer code or configuration
@@ -268,7 +274,7 @@ The audit input and category conclusions live in [`schemas/asset-authority.schem
 
 | Need | Entry | Safe action |
 |:--|:--|:--|
-| Inspect | `buildCatalogResult()` and Catalog JSON | Branch on `authority`, `diagnostics`, and lifecycle fields |
+| Inspect | `buildCatalogProjection()` and Catalog JSON | Branch on `authority`, `diagnostics`, and lifecycle fields |
 | Rebuild | Declared importer or native cooker | Re-run the producer and publish only validated output |
 | Preview LKG | Explicit evidence locator | Keep `lastKnownGood` read-only and out of shipped output |
 | Stop publish | Degraded authority or failed lifecycle | Block the release and follow the diagnostic recovery |
@@ -325,61 +331,11 @@ same Catalog revision or the host supplies an empty `refresh` callback. Failed
 rebuilds keep the current page. Independent plugin instances retain their own
 server sets.
 
-The browser adapter is `createCatalogClient(enumerate, import.meta.hot)`. It
-provides the browser-side subscription and enumeration pair; the application
-keeps one Catalog owner and does not import Vite into the runtime. Subscribe
-before requesting the initial snapshot, then merge `added`, `changed`, and
-`removed` by stable GUID. Consult the exported `CatalogEntry` and
-`CatalogDelta` types in `@forgeax/engine-types` for the schema rather than
-reproducing it here.
-
-```ts
-import type { CatalogDelta, CatalogEntry } from '@forgeax/engine-types';
-import { createCatalogClient } from '@forgeax/engine-vite-plugin-pack/catalog-client';
-
-const rowsByGuid = new Map<string, CatalogEntry>();
-
-function mergeRows(rows: readonly CatalogEntry[]): void {
-  for (const row of rows) rowsByGuid.set(row.guid.toLowerCase(), row);
-}
-
-function mergeDelta(delta: CatalogDelta): void {
-  for (const guid of delta.removed) rowsByGuid.delete(guid.toLowerCase());
-  mergeRows(delta.added);
-  mergeRows(delta.changed);
-}
-
-const client = createCatalogClient(
-  () => assets.enumerateCatalog(),
-  import.meta.hot,
-);
-
-const stop = assets.subscribeCatalog(mergeDelta);
-
-async function reconcileCatalog(): Promise<void> {
-  const snapshot = await assets.enumerateCatalog();
-  if (!snapshot.ok) {
-    console.error(snapshot.error.code, snapshot.error.hint);
-    return;
-  }
-  mergeRows(snapshot.value);
-}
-
-await reconcileCatalog();
-// Call reconcileCatalog() again after a late subscription or transport interruption.
-
-// Call from the host's teardown / unmount path, not after setup.
-function disposeCatalog(): void {
-  stop();
-}
-```
-
-The Vite client contributes the HMR subscription and a structured failure
-result. The application keeps only its derived `rowsByGuid` view: apply every
-delta as removals followed by complete row replacements, and merge each
-successful snapshot into that same view. On a late subscription or interrupted
-transport, call `reconcileCatalog()` again. Keep the subscription alive until
-the host's teardown or unmount path calls `disposeCatalog()`.
+Use `createCatalogHotSubscription` for the Vite delta stream and wire it to the
+existing [runtime Catalog source](../assets-runtime/README.md). Subscribe before
+enumerating, merge validated deltas by GUID, and dispose the subscription with
+the host. On an interrupted transport, call `assets.reconcileCatalog()` to obtain
+the current snapshot.
 
 Engine app composition roots that require a full refresh for watched asset
 content declare that choice directly:
@@ -452,7 +408,7 @@ This prevents large authored packs from expanding their complete output roster
 once per Catalog row and exceeding the JavaScript string limit.
 Scope/generation checks and package publication identity remain in force, and
 production exposes no development import transport. A host that needs live updates uses
-`createCatalogClient` with the plugin's scoped Catalog stream; runtime asset
+`createCatalogHotSubscription` with the plugin's scoped Catalog stream; runtime asset
 loading stays on the one Catalog/Pack reader path.
 # Static asset evidence
 
@@ -506,8 +462,8 @@ deadline. Shutdown cancels the timer and awaits in-flight work.
 
 Development imports request the terminal product without a preliminary Pack.
 The shared transport finalizer projects that product once for publication;
-source sampling and GUID closure are unchanged. Cook finalization and recovery
-fences retain their existing owners.
+source sampling and GUID closure are unchanged. The accepted DDC entry stores
+the complete Pack and artifacts for cold-process recovery.
 
 A development generation queues validated ImportPublication inputs while source owners finish their Cook work. The outer commit acquires and commits each DDC lease immediately; a slow synchronous shader Cook for another source therefore cannot expire an earlier source's lease. Candidate Catalog and artifact maps remain private until the complete generation succeeds. Failed commits restore the already committed DDC candidates through their existing CAS fences and discard the remaining queued inputs.
 
@@ -521,3 +477,17 @@ Player loading carries no Recast compiler dependency.
 The revision observer exposes one asynchronous `close()` fence. Plugin shutdown and
 rebind await that fence after watcher readiness, reconciliation and pending batch
 work; there is no callable stop handle or alternate close method.
+
+Hosts that select a local Engine pass `enginePackageRoot`, the absolute directory
+of its public `@forgeax/engine/package.json`. Both dev and build source inventories
+and their isolated publication leases receive this selection. Omission preserves
+the authored source's installed npm package; the Pack plugin does not infer a
+workspace or inspect a DevKit binding.
+
+## Bounded isolated source preparation
+
+Meta imports retain serial declaration-order Catalog and transport publication.
+The session-owned image importer uses the same detached preparation queue
+when its encoder pool admits concurrent workers. The default image importer
+and custom importers without this capability remain serial. Completed build-DDC
+products remain available after cancellation.

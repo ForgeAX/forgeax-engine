@@ -1501,6 +1501,8 @@ export interface RhiCanvasSurfacePresentationProof {
 }
 
 export interface RhiCanvasContext {
+  /** Concrete surface usages. Absent retains the WebGPU canvas contract; zero admits none. */
+  readonly supportedTextureUsages?: number | undefined;
   /** Concrete surface composition modes. Absent uses the WebGPU context contract; [] admits none. */
   readonly supportedAlphaModes?: readonly GPUCanvasAlphaMode[] | undefined;
   /** Backend-produced configure-time presentation proof; absent means fail closed. */
@@ -2548,7 +2550,7 @@ export function cubeArrayDepthFaceView(
 }
 
 export { projectAdapterCapabilities } from './adapter-capabilities';
-export { bufferWriteRange } from './buffer-write-range';
+export { bufferWriteRange, readBufferWriteRange } from './buffer-write-range';
 export {
   type MultisampleRenderCapability,
   multisampleRenderCapability,

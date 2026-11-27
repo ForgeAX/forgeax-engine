@@ -41,9 +41,9 @@ vi.mock('../node-program-compiler.js', async (loadOriginal) => {
 });
 afterAll(() => compilerFixture.close());
 
-it('reuses full Standard raster and ray programs across Play cookers while publishing fresh values', async () => {
+it('reuses Standard storage raster and ray programs across Play cookers while publishing fresh values', async () => {
   const initialCompilations = compilerFixture.compilations;
-  const cooker = createMaterialPackCooker();
+  const cooker = createMaterialPackCooker([], { profile: 'webgpu-storage-ray' });
   const source: MaterialAsset = {
     kind: 'material',
     parameters: standardSurfaceParameters([
@@ -57,14 +57,6 @@ it('reuses full Standard raster and ray programs across Play cookers while publi
         program: {
           module: 'forgeax_material::standard',
           fragmentEntry: 'fs_main',
-          moduleSlots: { surface: DEFAULT_STANDARD_SURFACE_MODULE },
-        },
-      },
-      {
-        name: 'deferred',
-        program: {
-          module: 'forgeax_material::standard',
-          fragmentEntry: 'fs_gbuffer',
           moduleSlots: { surface: DEFAULT_STANDARD_SURFACE_MODULE },
         },
       },
@@ -83,6 +75,11 @@ it('reuses full Standard raster and ray programs across Play cookers while publi
   const firstRecord = validateCookedMaterialRecord(
     (first.payload as { cooked: unknown }).cooked,
   ).unwrap();
+  expect(
+    firstRecord.programs.some((program) =>
+      program.selections.some((selection) => selection.pass === 'forward'),
+    ),
+  ).toBe(true);
   // A color Surface also owns shadow coverage. Derivative pruning must not
   // drop the colored shadow ABI beside the four independent view/LOD states.
   for (const viewClipping of [false, true])
@@ -115,7 +112,7 @@ it('reuses full Standard raster and ray programs across Play cookers while publi
   const firstCompilations = compilerFixture.compilations;
   expect(firstCompilations).toBeGreaterThan(initialCompilations);
 
-  const second = await createMaterialPackCooker().cook({
+  const second = await createMaterialPackCooker([], { profile: 'webgpu-storage-ray' }).cook({
     guid: 'material-second',
     source: { ...source, values: { roughness: 0.75 } },
   });
@@ -143,7 +140,7 @@ it('reuses full Standard raster and ray programs across Play cookers while publi
 it('rejects an eligible Card compile failure and retries without retaining the failed program', async () => {
   const failure = await compileShader('invalid WGSL', { id: 'card-rejection-control' });
   if (failure.ok) throw new Error('invalid shader control compiled');
-  const cooker = createMaterialPackCooker();
+  const cooker = createMaterialPackCooker([], { profile: 'webgpu-storage-ray' });
   const source: MaterialAsset = {
     kind: 'material',
     parameters: standardSurfaceParameters([{ name: 'baseColor', type: 'color' }]),
@@ -196,7 +193,10 @@ it('observes edited project WGSL and rejects changed entry selections across Pla
     passes: [{ name: 'forward', program: { module: 'play::freshness' } }],
   };
   const cook = async () => {
-    const draft = await createMaterialPackCooker([root]).cook({ guid: 'play-freshness', source });
+    const draft = await createMaterialPackCooker([root], { profile: 'webgpu-storage' }).cook({
+      guid: 'play-freshness',
+      source,
+    });
     return validateCookedMaterialRecord((draft.payload as { cooked: unknown }).cooked).unwrap();
   };
   try {
@@ -206,7 +206,7 @@ it('observes edited project WGSL and rejects changed entry selections across Pla
     const second = await cook();
     expect(second.programs[0]?.artifact.digest).not.toBe(first.programs[0]?.artifact.digest);
     await expect(
-      createMaterialPackCooker([root]).cook({
+      createMaterialPackCooker([root], { profile: 'webgpu-storage' }).cook({
         guid: 'play-missing-entry',
         source: {
           ...source,

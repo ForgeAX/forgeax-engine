@@ -14,6 +14,9 @@ the shallow, real River Bake and independent FFT operations remain unchanged.
 The shallow controls select saved collision recipes and real native rotating
 box/capsule, empty-aggregate bounds, nonuniform distance-field and overlapping
 fixtures. Rotation changes ordinary Scene poses while centers remain fixed.
+The fixture selector controls both collision participation and visibility. Only
+the selected group is drawn; the deliberately intersecting overlap specimens
+appear when selecting that group or all fixtures.
 The world-water-level control changes the Body Transform; the vertical fixture
 group keeps native boxes at world Y `4`, `2.5` and `7 m` for the nonzero-height
 selector case. A fourth thin box sits above Y `4 m` with a positive surface gap
@@ -21,7 +24,7 @@ of `3/16` of the loaded recipe's cell size, separating a plane from a cell-thick
 selector. Automatic NDC impacts have a separate control.
 
 The yellow trajectory specimen has an admitted kinematic sphere collider.
-“投放原生动态球” hands it to the native dynamic solver with CCD and buoyancy,
+The native dynamic sphere action hands it to the native dynamic solver with CCD and buoyancy,
 launches from 7 m above the water, and derives its entry impulse from the
 completed native crossing. The basin floor is a native static collider.
 Reset restores the trajectory specimen. Runtime facts distinguish this body
@@ -44,8 +47,20 @@ after water contact ends. Selecting `source-default`
 fails recipe creation with `water-advanced-source-parameter-unavailable`; it does
 not simulate a guessed zero cap or indicate a device capability failure.
 
-Ocean defaults to the loaded `recipe/ocean` with `gridMesh: null`. The mesh
-control selects the separately authored `recipe/ocean-grid` through the World
+Ocean defaults to the loaded `recipe/ocean` with `gridMesh: null`.
+The spectrum, normal derivative domain and material sampling all use 16 m.
+The authored 4 m/s wind, spectrum amplitude and real-time clock retain coherent
+waves without magnifying a small laboratory spectrum across a larger surface.
+The active Ocean material opts into `waterOceanDisplacement`: its vertices and
+surface normals consume the same FFT history. The spectrum amplitude is `0.0064`
+for inspectable metre-scale waves; River FFT remains normal detail only.
+The authored time scale compensates the legacy FFT phase coefficient in the
+16 m domain, giving its longest gravity wave a period of about 3.2 seconds
+instead of about 51 seconds.
+The Ocean command distinguishes asset loading and GPU initialization. After a
+completed FFT frame it becomes an enabled rebuild command; rebuilding resets the
+World patch generation while retaining the selected recipe and pause setting.
+The mesh control selects the separately authored `recipe/ocean-grid` through the World
 owner, whose flat grid extent is `[16,16] m` independently of the FFT normal
 domain. It emits GPU buffers without attaching a visible Scene mesh or applying
 FFT displacement. Changing recipes retires the previous World patch.
@@ -69,7 +84,7 @@ Acceptance is registered before the first demo run:
   height, depth and velocity before and after publication.
 - Rebake retains stable source keys/GUIDs and changes the content identity.
   Failed replacement retains the accepted query source. A cold page reload
-  restores the durable Pack snapshot, loads its ordinary recipe and paired
+  admits the persisted bake content against the current fixed dependencies, loads its ordinary recipe and paired
   grid/solver-normal textures, then republishes the query grid for the current
   Body generation. The `/2` normal is the direct solver output in the Bake
   lattice; `/1` remains readable but cannot authorize cold admission.

@@ -37,24 +37,25 @@ describe('domain-owned quality projection', () => {
   it('retains source appearance and restores A to B to A without deriving from B', () => {
     const source = {
       ...DEFAULT_STANDARD_PROFILE,
-      ssao: {
-        algorithm: 'gtao' as const,
+      ambientOcclusion: {
+        enabled: true,
+        method: 'gtao' as const,
         radius: 3,
         intensity: 2,
         bias: 0.03,
-        quality: 'high' as const,
-        resolutionScale: 1,
+        quality: 100,
       },
     };
     const original = structuredClone(source);
     const first = renderProfileForQuality(source, high);
     const reduced = renderProfileForQuality(source, low);
-    expect(reduced.ssao).toMatchObject({
-      algorithm: 'gtao',
+    expect(reduced.ambientOcclusion).toMatchObject({
+      method: 'gtao',
       radius: 3,
       intensity: 2,
-      quality: 'low',
-      resolutionScale: 0.5,
+      quality: 100,
+      maxQuality: 25,
+      gtao: { downsample: true },
     });
     expect(renderProfileForQuality(source, high)).toEqual(first);
     expect(source).toEqual(original);
@@ -63,15 +64,17 @@ describe('domain-owned quality projection', () => {
   it('caps camera AO after authoring and keeps an already lower author budget', () => {
     const budget = resolveRenderQualityBudgets(low).ambientOcclusion;
     expect(
-      applyAmbientOcclusionQuality(
-        { algorithm: 'gtao', radius: 5, quality: 'high', resolutionScale: 1 },
-        budget,
-      ),
-    ).toMatchObject({ radius: 5, algorithm: 'gtao', quality: 'low', resolutionScale: 0.5 });
-    expect(
-      applyAmbientOcclusionQuality({ quality: 'low', resolutionScale: 0.25 }, budget)
-        .resolutionScale,
-    ).toBe(0.25);
+      applyAmbientOcclusionQuality({ method: 'gtao', radius: 5, quality: 100 }, budget),
+    ).toMatchObject({
+      radius: 5,
+      method: 'gtao',
+      quality: 100,
+      maxQuality: 25,
+      gtao: { downsample: true },
+    });
+    expect(applyAmbientOcclusionQuality({ quality: 20, maxQuality: 20 }, budget).maxQuality).toBe(
+      20,
+    );
   });
 
   it('bounds all shadow maps before fitting without changing light coverage or source facts', () => {
@@ -109,14 +112,13 @@ describe('domain-owned quality projection', () => {
     expect(validateRenderQualityLimits({ ssr: { refineSteps: 5 } })).toBeUndefined();
   });
 
-  it('accounts half-density trace storage while keeping full-resolution histories and resolve', () => {
+  it('accounts half-density trace storage with a full-resolution depth hierarchy', () => {
     const full = estimateSsrSpatialMemory({ width: 1920, height: 1080 });
     const half = estimateSsrSpatialMemory({ width: 1920, height: 1080 }, { resolutionScale: 0.5 });
     expect(half.traceWidth).toBe(960);
     expect(half.traceHeight).toBe(540);
     expect(half.traceBytes * 4).toBe(full.traceBytes);
-    expect(half.historyBytes).toBe(full.historyBytes);
-    expect(half.resolvedBytes).toBe(full.resolvedBytes);
+    expect(half.depthPyramidBytes).toBe(full.depthPyramidBytes);
     expect(half.ssrOwnedBytes).toBeLessThan(full.ssrOwnedBytes);
   });
 });

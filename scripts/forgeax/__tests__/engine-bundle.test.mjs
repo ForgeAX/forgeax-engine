@@ -74,8 +74,15 @@ test('npm and pnpm install one offline bundle with transitive and duplicate vers
     const platformManifest = JSON.parse(await readFile(resolve(platformRoot, 'package.json')));
     platformManifest.os = [process.platform === 'linux' ? 'darwin' : 'linux'];
     await writeFile(resolve(platformRoot, 'package.json'), JSON.stringify(platformManifest));
+    const dawn = resolve(leaf, 'node_modules/upstream-webgpu');
+    await fixture(dawn, 'webgpu', '0.6.2', 'export const create = () => ({ gpu: true });');
+    const dawnManifest = JSON.parse(await readFile(resolve(dawn, 'package.json')));
+    dawnManifest.scripts = { postinstall: 'exit 1' };
+    await writeFile(resolve(dawn, 'package.json'), JSON.stringify(dawnManifest));
     const leafManifest = JSON.parse(await readFile(resolve(leaf, 'package.json')));
     leafManifest.optionalDependencies = { 'foreign-platform-binary': '1.0.0' };
+    leafManifest.peerDependencies = { 'upstream-webgpu': 'npm:webgpu@0.6.2' };
+    leafManifest.peerDependenciesMeta = { 'upstream-webgpu': { optional: true } };
     await writeFile(resolve(leaf, 'package.json'), JSON.stringify(leafManifest));
     const memberArchive = resolve(root, 'member.tgz');
     // Source node_modules are deliberately excluded from the member archive.
@@ -87,28 +94,16 @@ test('npm and pnpm install one offline bundle with transitive and duplicate vers
       resolve(root, 'member'),
       'package',
     ]);
-    const view = resolve(root, 'view');
-    await fixture(
-      view,
-      '@forgeax/view',
-      '1.2.3',
-      "import {answer} from '@forgeax/engine'; import a from 'a'; export const result=[answer,a];",
-      { '@forgeax/engine': '1.2.3', a: '1.0.0' },
-    );
-    await writeFile(resolve(view, 'host.pack.json'), '{}');
-    const viewTool = { root: view, dependencySource: leaf };
     await bundleEngineArchive({
       engineArchive: archive,
       members: [{ name: '@forgeax/engine-leaf', root: leaf, archive: memberArchive }],
       version: '1.2.3',
-      viewTool,
     });
     const first = await readFile(archive);
     await bundleEngineArchive({
       engineArchive: archive,
       members: [{ name: '@forgeax/engine-leaf', root: leaf, archive: memberArchive }],
       version: '1.2.3',
-      viewTool,
     });
     assert.deepEqual(await readFile(archive), first, 'repeat packaging preserves sealed bytes');
     for (const manager of ['npm', 'pnpm']) {
@@ -147,22 +142,46 @@ test('npm and pnpm install one offline bundle with transitive and duplicate vers
         { cwd: consumer },
       );
       assert.equal(result.stdout.trim(), '[1,2]');
-      const embedded = await execute(
-        process.execPath,
-        [
-          '--input-type=module',
-          '-e',
-          "import {createRequire} from 'node:module'; import {pathToFileURL} from 'node:url'; const r=createRequire(import.meta.url); const e=r.resolve('@forgeax/engine'); const v=new URL('./tools/view/index.mjs',pathToFileURL(e)); console.log(JSON.stringify((await import(v)).result));",
-        ],
-        { cwd: consumer },
-      );
-      assert.equal(embedded.stdout.trim(), '[[1,2],1]');
       const installed = resolve(consumer, 'node_modules/@forgeax/engine');
       const manifest = JSON.parse(await readFile(resolve(installed, 'package.json'), 'utf8'));
       assert.equal(Object.hasOwn(manifest.dependencies, '@forgeax/view'), false);
       assert.equal(manifest.bundledDependencies.includes('@forgeax/view'), false);
-      assert.equal(await readFile(resolve(installed, 'tools/view/host.pack.json'), 'utf8'), '{}');
+      await assert.rejects(readFile(resolve(installed, 'tools/view/host.pack.json')), {
+        code: 'ENOENT',
+      });
+      assert.equal(manifest.bundledDependencies.includes('upstream-webgpu'), false);
+      assert.equal(Object.hasOwn(manifest.dependencies, 'upstream-webgpu'), false);
+      await assert.rejects(
+        readFile(resolve(installed, 'node_modules/upstream-webgpu/package.json')),
+        {
+          code: 'ENOENT',
+        },
+      );
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a View dependency cannot enter the Engine runtime graph', async () => {
+  const root = await mkdtemp(resolve(tmpdir(), 'engine-bundle-view-boundary-'));
+  try {
+    await fixture(resolve(root, 'stage/package'), '@forgeax/engine', '1.2.3', '');
+    const archive = resolve(root, 'engine.tgz');
+    await writePackageArchive(resolve(root, 'stage'), archive);
+    const leaf = resolve(root, 'member');
+    await fixture(leaf, '@forgeax/engine-leaf', '1.2.3', '', { '@forgeax/view': '1.2.3' });
+    await fixture(resolve(leaf, 'node_modules/@forgeax/view'), '@forgeax/view', '1.2.3', '');
+    const before = await readFile(archive);
+    await assert.rejects(
+      bundleEngineArchive({
+        engineArchive: archive,
+        members: [{ name: '@forgeax/engine-leaf', root: leaf }],
+        version: '1.2.3',
+      }),
+      /engine-bundle-view-dependency-forbidden: @forgeax\/view/,
+    );
+    assert.deepEqual(await readFile(archive), before, 'rejected graphs do not alter the archive');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -185,6 +204,35 @@ test('a missing required dependency blocks the tarball before publication', asyn
       }),
       /engine-bundle-dependency-missing/,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('dependencies resolved through the local pnpm store stay outside the Engine archive', async () => {
+  const root = await mkdtemp(resolve(tmpdir(), 'engine-bundle-pnpm-store-'));
+  try {
+    const stage = resolve(root, 'stage');
+    const archive = resolve(root, 'engine.tgz');
+    await fixture(resolve(stage, 'package'), '@forgeax/engine', '1.2.3', '');
+    await writePackageArchive(stage, archive);
+    const leaf = resolve(root, 'member');
+    await fixture(leaf, '@forgeax/engine-leaf', '1.2.3', '', { external: '^1.0.0' });
+    const registry = resolve(root, 'node_modules/.pnpm/external@1.0.0/node_modules/external');
+    await fixture(registry, 'external', '1.0.0', '');
+    await mkdir(resolve(leaf, 'node_modules'));
+    await symlink(registry, resolve(leaf, 'node_modules/external'), 'junction');
+    const result = await bundleEngineArchive({
+      engineArchive: archive,
+      members: [{ name: '@forgeax/engine-leaf', root: leaf }],
+      version: '1.2.3',
+    });
+    const manifest = JSON.parse(
+      (await execute('tar', ['-xOf', archive, 'package/package.json'])).stdout,
+    );
+    assert.equal(result.registryDependencies, 1);
+    assert.equal(manifest.dependencies.external, '1.0.0');
+    assert.deepEqual(manifest.bundledDependencies, ['@forgeax/engine-leaf']);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -521,7 +569,7 @@ test('registry packages stay exact dependencies while Engine owners, patches and
         '@forgeax/engine-b',
         "import shared from 'shared'; export const b=shared;",
         { shared: '2.0.0' },
-        { shared: shared2 },
+        { shared: shared2, tool },
       ],
     ];
     const members = [];
@@ -529,6 +577,13 @@ test('registry packages stay exact dependencies while Engine owners, patches and
       const directory = resolve(root, 'members', name.replace('/', '+'));
       const member = resolve(directory, 'package');
       await fixture(member, name, '1.2.3', source, dependencies);
+      if (name === '@forgeax/engine-b') {
+        const path = resolve(member, 'package.json');
+        const manifest = JSON.parse(await readFile(path, 'utf8'));
+        manifest.peerDependencies = { tool: '^1.0.0' };
+        manifest.peerDependenciesMeta = { tool: { optional: true } };
+        await writeFile(path, JSON.stringify(manifest));
+      }
       await mkdir(resolve(member, 'node_modules'));
       for (const [link, target] of Object.entries(links)) {
         await symlink(target, resolve(member, 'node_modules', link));
@@ -589,6 +644,30 @@ test('registry packages stay exact dependencies while Engine owners, patches and
       ],
     ]));
     const registry = `http://127.0.0.1:${server.address().port}`;
+    const prefix = resolve(root, 'global');
+    await execute('npm', [
+      'install',
+      '--global',
+      '--prefix',
+      prefix,
+      archive,
+      '--no-audit',
+      '--no-fund',
+      '--registry',
+      registry,
+    ]);
+    const installedEngine = resolve(
+      prefix,
+      ...(process.platform === 'win32' ? [] : ['lib']),
+      'node_modules/@forgeax/engine/index.mjs',
+    );
+    const { stdout } = await execute(process.execPath, [
+      '--input-type=module',
+      '-e',
+      "import {pathToFileURL} from 'node:url'; const {a,b}=await import(pathToFileURL(process.argv[1]).href); console.log(JSON.stringify([a,b]));",
+      installedEngine,
+    ]);
+    assert.equal(stdout.trim(), '[[10,1,100],2]');
     for (const manager of ['npm', 'pnpm']) {
       const consumer = resolve(root, manager);
       await mkdir(consumer);

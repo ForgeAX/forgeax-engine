@@ -1,11 +1,18 @@
-import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
+import { AssetRegistry, CatalogReplica, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, meshAssetContribution } from '@forgeax/engine-geometry';
 import { prepareRuntimePackContent } from '@forgeax/engine-import';
-import { preparePackProgram } from '@forgeax/engine-pack/runtime';
+import { createRuntimePackPublication, preparePackProgram } from '@forgeax/engine-pack/runtime';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import type { PluginPrograms } from '@forgeax/engine-plugin';
-import type { PackageFetcher, PackV2 } from '@forgeax/engine-types';
+import {
+  AssetError,
+  type CatalogSource,
+  err,
+  ok,
+  type PackageFetcher,
+  type PackV2,
+} from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 
 function defined<T>(value: T | undefined): T {
@@ -16,11 +23,12 @@ function defined<T>(value: T | undefined): T {
 import { createAssetRuntimeAssembly } from '../assets-runtime-assembly.js';
 import { assembleRuntimePacks } from '../runtime-packs.js';
 
-async function fixture(programs?: PluginPrograms) {
+async function fixture(
+  programs?: PluginPrograms,
+  catalogSource: CatalogSource = createCatalogSource({ entries: [] }),
+) {
   const assets = new AssetRegistry({ shaderRegistry: {} as never });
-  const assembly = createAssetRuntimeAssembly(assets, {
-    catalogSource: createCatalogSource({ entries: [] }),
-  }).unwrap();
+  const assembly = createAssetRuntimeAssembly(assets, { catalogSource }).unwrap();
   const context = await createWorldContext(new World(), []);
   if (programs) context.provide('pluginPrograms', programs);
   const runtime = assembleRuntimePacks(context, assembly, { scopeId: 'prepared-integration' });
@@ -38,7 +46,16 @@ async function fixture(programs?: PluginPrograms) {
 }
 
 it('loads native Mesh without transport, exports only on demand, and survives fresh-reader decode', async () => {
-  const f = await fixture();
+  const get = vi.fn(async (guid: string) =>
+    err(
+      new AssetError({
+        code: 'asset-not-imported',
+        expected: 'a base publication',
+        hint: `the base Catalog does not own ${guid}`,
+      }),
+    ),
+  );
+  const f = await fixture(undefined, { ...createCatalogSource({ entries: [] }), get });
   const other = new AssetRegistry();
   other.installDecoder(meshAssetContribution.kind, meshAssetContribution.decoder);
   try {
@@ -92,10 +109,44 @@ it('loads native Mesh without transport, exports only on demand, and survives fr
     expect(first).toBe(again);
     native.vertices.fill(55);
     (await f.assets.reload(nativeHandle, { conflict: 'reject' })).unwrap();
+    expect(get).not.toHaveBeenCalled();
     const reloaded = f.assets.read(nativeHandle).unwrap();
     expect(reloaded.vertices).toEqual(decoded.vertices);
   } finally {
     other.clearCatalogSource();
+    await f.dispose();
+  }
+});
+
+it('refreshes a delivered dependency through the accepted base Catalog publication', async () => {
+  const guid = '01900000-0000-7000-8000-000000000955';
+  const url = 'https://pack.invalid/dependencies/index.json';
+  const packageUrl = new URL('sampler.pack.json', url).href;
+  const { publication } = createRuntimePackPublication({
+    scopeId: 'prepared-integration',
+    sourcePath: 'sampler',
+    sourceRevision: 'sampler-1',
+    packageUrl,
+    pack: {
+      assets: [{ guid, kind: 'sampler', payload: { kind: 'sampler' }, refs: [], artifacts: {} }],
+    },
+  });
+  const row = {
+    guid,
+    kind: 'sampler',
+    sourcePath: 'sampler',
+    packageUrl: 'sampler.pack.json',
+    publication,
+  };
+  const get = vi.fn(async () => ok([row]));
+  const f = await fixture(undefined, { ...createCatalogSource({ entries: [row] }), url, get });
+  const reader = new CatalogReplica(f.runtime.catalog);
+  try {
+    (await reader.start()).unwrap();
+    expect((await reader.require(guid, true)).unwrap().packageUrl).toBe(packageUrl);
+    expect(get).not.toHaveBeenCalled();
+  } finally {
+    reader.dispose();
     await f.dispose();
   }
 });

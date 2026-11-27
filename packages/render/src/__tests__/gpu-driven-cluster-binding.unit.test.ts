@@ -1,12 +1,6 @@
 import { mat4 } from '@forgeax/engine-math';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
-import {
-  type BindGroup,
-  type Buffer,
-  ok,
-  type RenderPipeline,
-  type TextureFormat,
-} from '@forgeax/engine-rhi';
+import { type BindGroup, ok, type RenderPipeline, type TextureFormat } from '@forgeax/engine-rhi';
 import { RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import {
   createMaterialShaderProgram,
@@ -18,7 +12,6 @@ import { GpuDrivenProduction, type PreparedGpuDrivenFrame } from '../gpu-driven/
 import { GpuScene } from '../gpu-scene';
 import { MaterialResource } from '../material-resource';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
-import type { SkinTaskBinding } from '../record/skin-tasks';
 import type { GpuDrivenStandardPbrFrameResources, RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
@@ -47,12 +40,14 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
   const state = defined(programs.materialPipelineState);
   const rigid = {
     ...base,
-    program: createMaterialShaderProgram(clustered ? '@group(2) @binding(3) var light: u32;' : ''),
+    program: createMaterialShaderProgram(
+      clustered ? '@group(0) @binding(30) var light_data: u32;' : '',
+    ),
   };
   const skin = {
     ...rigid,
     program: createMaterialShaderProgram(
-      '@group(2) @binding(1) var joints: u32; @group(2) @binding(3) var light: u32;',
+      '@group(2) @binding(1) var joints: u32; @group(0) @binding(30) var light_data: u32;',
     ),
     receipt: createStandardPbrArtifactReceipt(true),
   };
@@ -153,6 +148,7 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
               ...state,
               gpuDrivenPbrSkinPipelineLayout: defined(state.gpuDrivenPbrPipelineLayout),
               pbrSkinMeshBindGroupLayout: skinLayout,
+              gpuDrivenSkinPrimitiveBindGroupLayout: skinLayout,
             },
             materialArtifacts: new Map([
               ['forgeax::default-standard-pbr', rigid],
@@ -161,7 +157,7 @@ async function fixture(kinds: readonly ('rigid' | 'skin')[], clustered = true) {
             scene: {
               scene: available.scene,
               skin: skinFrame,
-              plan: topology.query(topology.sourcePlan(), undefined),
+              plan: topology.query(topology.sourcePlan(), undefined).active,
               slots: scene.slotsSnapshot(),
               slotAt: scene.slotAt,
             },
@@ -208,6 +204,8 @@ function recorder(
   const bindings: { group: BindGroup; offsets: readonly number[] }[] = [];
   const pipelines: RenderPipeline[] = [];
   let encodeError: unknown;
+  let submitted = false;
+  let sealed = false;
   graph
     .addRasterPass('cluster-bindings', {
       accesses: [...gpu.accesses, { resource: view, usage: 'color-attachment' }],
@@ -254,15 +252,25 @@ function recorder(
       return encodeError;
     },
     record(next: Partial<GpuDrivenStandardPbrFrameResources>) {
+      if (submitted) {
+        prepared = f.prepare();
+        submitted = false;
+        sealed = false;
+      }
       encodeError = undefined;
       overrides = next;
       bindings.length = 0;
       pipelines.length = 0;
       const before = f.device.totalDrawCount;
+      if (!sealed) {
+        prepared._sealResourceReads().unwrap();
+        sealed = true;
+      }
       const encoder = f.device.createCommandEncoder().unwrap();
       compiled.execute({ encoder } as RenderPipelineFrame).unwrap();
       f.device.queue.submit([encoder.finish().unwrap()]).unwrap();
       prepared._commitResourceReplacement();
+      submitted = true;
       return {
         bindings: [...bindings],
         pipelines: [...pipelines],
@@ -273,137 +281,21 @@ function recorder(
   };
 }
 
-describe('GPU-driven rigid clustered binding resolution', () => {
-  it('resolves and binds once per encode across PSO transitions while remaining lazy', async () => {
-    const f = await fixture(['rigid', 'rigid', 'rigid']);
-    const r = recorder(f, f.prepare());
-    const cluster = f.group();
-    const clusterBindGroupForMesh = vi.fn((_buffer: Buffer, _bytes: number) => cluster);
-    const frame = { clusterBindGroupForMesh, clusterBindGroup: f.group() };
-    try {
-      expect(clusterBindGroupForMesh).not.toHaveBeenCalled();
-      expect(r.record({ ...frame, selectedMaterialSlots: new Set() }).draws).toBe(0);
-      expect(clusterBindGroupForMesh).not.toHaveBeenCalled();
-      expect(() =>
-        r.record({
-          ...frame,
-          prepareMaterialBinding: (
-            (groups: readonly (import('@forgeax/engine-rhi').BindGroup | undefined)[]) =>
-            (slot: number) => {
-              const group = groups[slot];
-              return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
-            }
-          )([]),
-        }),
-      ).toThrow();
-      expect(clusterBindGroupForMesh).not.toHaveBeenCalled();
-      const first = r.record(frame);
-      expect(first.draws).toBe(3);
-      expect(first.pipelines).toHaveLength(3);
-      expect(new Set(first.pipelines).size).toBe(2);
-      expect(first.bindings).toEqual([{ group: cluster, offsets: [0] }]);
-      expect(clusterBindGroupForMesh).toHaveBeenCalledExactlyOnceWith(
-        f.scene.transformBuffer,
-        f.scene.transformByteLength,
-      );
-      expect(r.record(frame)).toEqual(first);
-      expect(clusterBindGroupForMesh).toHaveBeenCalledTimes(2);
-      const nextLighting = f.group();
-      clusterBindGroupForMesh.mockReturnValue(nextLighting);
-      expect(r.record(frame).bindings).toEqual([{ group: nextLighting, offsets: [0] }]);
-      expect(clusterBindGroupForMesh).toHaveBeenCalledTimes(3);
-    } finally {
-      await r.close();
-      f.close();
-    }
-  });
-
-  it('keeps current skin palette bindings separate from shared rigid bindings', async () => {
-    const f = await fixture(['rigid', 'skin', 'rigid', 'skin']);
-    const r = recorder(f, f.prepare());
-    const rigid = f.group(),
-      skin = f.group();
-    const clusterBindGroupForMesh = vi.fn((_buffer: Buffer, _bytes: number) => rigid);
-    const clusterBindGroupForSkin = vi.fn(
-      (_buffer: Buffer, _bytes: number, _task: SkinTaskBinding) => skin,
-    );
-    try {
-      const frame = r.record({ clusterBindGroupForMesh, clusterBindGroupForSkin });
-      expect(frame.draws).toBe(4);
-      expect(frame.bindings).toEqual([
-        { group: rigid, offsets: [0] },
-        { group: skin, offsets: [0, 768] },
-        { group: rigid, offsets: [0] },
-        { group: skin, offsets: [0, 768] },
-      ]);
-      expect(clusterBindGroupForMesh).toHaveBeenCalledTimes(1);
-      expect(clusterBindGroupForSkin).toHaveBeenCalledTimes(2);
-      for (const call of clusterBindGroupForSkin.mock.calls) {
-        expect(call).toEqual([
-          f.scene.transformBuffer,
-          f.scene.transformByteLength,
-          expect.objectContaining({
-            data: expect.anything(),
-            auxiliary: expect.anything(),
-            auxiliaryOffset: 768,
-            auxiliarySize: 16,
-          }),
-        ]);
-      }
-    } finally {
-      await r.close();
-      f.close();
-    }
-  });
-
-  it('retries failed resolution and observes the new scene buffer after capacity growth', async () => {
-    const f = await fixture(['rigid', 'rigid']);
-    const r = recorder(f, f.prepare());
-    let next: ReturnType<typeof recorder> | undefined;
-    const group = f.group();
-    const clusterBindGroupForMesh = vi.fn(
-      (_buffer: Buffer, _bytes: number): BindGroup | undefined => group,
-    );
-    clusterBindGroupForMesh.mockReturnValueOnce(undefined);
-    try {
-      expect(() => r.record({ clusterBindGroupForMesh })).toThrow();
-      expect(r.record({ clusterBindGroupForMesh }).draws).toBe(2);
-      expect(clusterBindGroupForMesh).toHaveBeenCalledTimes(2);
-      const previous = f.scene.transformBuffer;
-      const source = defined(f.snapshots[0]);
-      const instanceCount = f.scene.rowCapacity * 2;
-      const transforms = new Float32Array(instanceCount * 16);
-      for (let i = 0; i < instanceCount; i++) transforms.set(source.transform.world, i * 16);
-      f.publish([
-        { ...source, instances: { transforms, instanceCount, cacheKey: 1, archVersion: 1 } },
-      ]);
-      expect(f.scene.transformBuffer).not.toBe(previous);
-      next = recorder(f, f.prepare());
-      expect(next.record({ clusterBindGroupForMesh }).draws).toBe(2);
-      expect(clusterBindGroupForMesh).toHaveBeenCalledTimes(3);
-      expect(clusterBindGroupForMesh).toHaveBeenLastCalledWith(
-        f.scene.transformBuffer,
-        f.scene.transformByteLength,
-      );
-    } finally {
-      await next?.close();
-      await r.close();
-      f.close();
-    }
-  });
-
-  it('does not resolve cluster resources for nonclustered draws', async () => {
-    const f = await fixture(['rigid', 'rigid'], false);
-    const r = recorder(f, f.prepare());
-    const clusterBindGroupForMesh = vi.fn(() => f.group());
-    try {
-      expect(r.record({ clusterBindGroupForMesh }).draws).toBe(2);
-      expect(clusterBindGroupForMesh).not.toHaveBeenCalled();
-    } finally {
-      await r.close();
-      f.close();
-    }
-  });
+it('reuses one rigid Primitive across clustered pipeline changes', async () => {
+  const f = await fixture(['rigid', 'rigid', 'rigid']);
+  const r = recorder(f, f.prepare());
+  try {
+    expect(r.record({ selectedMaterialSlots: new Set() }).draws).toBe(0);
+    const first = r.record({});
+    expect(first.draws).toBe(3);
+    expect(new Set(first.pipelines).size).toBe(2);
+    expect(first.bindings).toHaveLength(1);
+    expect(first.bindings[0]?.offsets).toEqual([]);
+    expect(r.record({})).toEqual(first);
+  } finally {
+    await r.close();
+    f.close();
+  }
 });
 
 describe('GPU-driven frame resource observation scopes', () => {
@@ -452,45 +344,6 @@ describe('GPU-driven frame resource observation scopes', () => {
     }
   });
 
-  it('resolves unknown cluster callbacks for every selected batch', async () => {
-    const f = await fixture(['rigid', 'rigid']);
-    const r = recorder(f, f.prepare(), false);
-    const groups = [f.group(), f.group()];
-    let calls = 0;
-    try {
-      const recorded = r.record({ clusterBindGroupForMesh: () => groups[calls++] });
-      expect(recorded.draws).toBe(2);
-      expect(recorded.bindings.map((row) => row.group)).toEqual(groups);
-      expect(calls).toBe(2);
-    } finally {
-      await r.close();
-      f.close();
-    }
-  });
-
-  it('preserves a later callback error and retries all callbacks on the next encode', async () => {
-    const f = await fixture(['rigid', 'rigid']);
-    const r = recorder(f, f.prepare(), false);
-    const group = f.group();
-    const expected = new Error('second raw cluster callback');
-    let calls = 0;
-    const clusterBindGroupForMesh = () => {
-      if (++calls === 2) throw expected;
-      return group;
-    };
-    try {
-      expect(() => r.record({ clusterBindGroupForMesh })).toThrow();
-      expect(r.encodeError).toBe(expected);
-      expect(calls).toBe(2);
-      expect(r.record({ clusterBindGroupForMesh }).draws).toBe(2);
-      expect(r.encodeError).toBeUndefined();
-      expect(calls).toBe(4);
-    } finally {
-      await r.close();
-      f.close();
-    }
-  });
-
   it('does not read attachment formats when no material is selected', async () => {
     const f = await fixture(['rigid', 'rigid'], false);
     const r = recorder(f, f.prepare(), false);
@@ -508,32 +361,6 @@ describe('GPU-driven frame resource observation scopes', () => {
       Object.defineProperty(formats, 0, { value: 'rgba8unorm', configurable: true });
       expect(r.record({ colorFormats: formats }).draws).toBe(2);
     } finally {
-      await r.close();
-      f.close();
-    }
-  });
-
-  it('observes attachment changes made by an earlier batch callback', async () => {
-    const f = await fixture(['rigid', 'rigid']);
-    const r = recorder(f, f.prepare(), false);
-    const group = f.group();
-    const formats: TextureFormat[] = ['rgba8unorm'];
-    const join = vi.spyOn(formats, 'join');
-    let calls = 0;
-    try {
-      const recorded = r.record({
-        colorFormats: formats,
-        clusterBindGroupForMesh: () => {
-          if (++calls === 1) formats[0] = 'bgra8unorm';
-          return group;
-        },
-      });
-      expect(recorded.draws).toBe(2);
-      expect(calls).toBe(2);
-      expect(join).toHaveBeenCalledTimes(2);
-      expect(new Set(recorded.pipelines).size).toBe(2);
-    } finally {
-      join.mockRestore();
       await r.close();
       f.close();
     }

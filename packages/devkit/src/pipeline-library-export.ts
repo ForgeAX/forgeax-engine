@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import type { RenderInspection } from '@forgeax/engine-render';
+import { sha256 } from '@forgeax/engine-types';
 
 type PipelineLibraryInspection = NonNullable<RenderInspection['pipelineLibrary']>;
 type PipelineLibraryManifest = NonNullable<RenderInspection['pipelineLibraryManifest']>;
@@ -87,7 +87,7 @@ export async function exportPipelineLibrary(
   const receipt = {
     revision: value.revision,
     output,
-    sha256: createHash('sha256').update(bytes).digest('hex'),
+    sha256: sha256(bytes),
     byteLength: Buffer.byteLength(bytes),
     inspection,
     frame,

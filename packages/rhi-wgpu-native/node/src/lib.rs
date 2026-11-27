@@ -8,6 +8,7 @@
 //! returns a JS exception the TypeScript side converts into a validation error, and every
 //! export catches unwinds.
 
+mod async_pipeline;
 mod desc;
 mod device;
 mod errors;

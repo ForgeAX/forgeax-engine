@@ -6,14 +6,7 @@ import {
   type RasterPipelineShape,
 } from '../gpu-driven/production-raster-classes';
 
-it.each([
-  { simpleReceiver: true, leanLighting: false },
-  { simpleReceiver: true, leanLighting: true },
-  { simpleReceiver: false, leanLighting: true },
-])('preserves receiver=$simpleReceiver and lean=$leanLighting while the native PSO builds', ({
-  simpleReceiver,
-  leanLighting,
-}) => {
+function receiverFixture(leanLighting: boolean, simpleReceiver = true) {
   const general = { label: 'general' };
   const simple = { label: 'simple' };
   let simpleReady = false;
@@ -51,6 +44,29 @@ it.each([
     leanLighting,
   } as unknown as RasterPipelineShape;
   const { pipelineFor } = createRasterPipelines(shape);
+  return {
+    general,
+    simple,
+    pipeline,
+    pipelineFor,
+    complete: () => {
+      simpleReady = true;
+    },
+  };
+}
+
+it.each([
+  { simpleReceiver: true, leanLighting: false },
+  { simpleReceiver: true, leanLighting: true },
+  { simpleReceiver: false, leanLighting: true },
+])('preserves receiver=$simpleReceiver and lean=$leanLighting while the native PSO builds', ({
+  simpleReceiver,
+  leanLighting,
+}) => {
+  const { general, simple, pipeline, pipelineFor, complete } = receiverFixture(
+    leanLighting,
+    simpleReceiver,
+  );
   // A frame that just turned simple (e.g. the light stopped casting) is not held.
   const first = pipelineFor(['rgba8unorm']);
   expect(first.ok && first.value).toBe(general);
@@ -62,10 +78,26 @@ it.each([
     'DIRECTIONAL_SHADOW_SIMPLE=false+LEAN_LIGHTING=false',
   ]);
   // The fallback is not retained; the simple receiver takes over once built.
-  simpleReady = true;
+  complete();
   const second = pipelineFor(['rgba8unorm']);
   expect(second.ok && second.value).toBe(simple);
   const third = pipelineFor(['rgba8unorm']);
   expect(third.ok && third.value).toBe(simple);
   expect(pipeline).toHaveBeenCalledTimes(3);
+});
+
+it.each([
+  false,
+  true,
+])('requires selected PSO completion for private lean=%s preparation', (lean) => {
+  const { general, simple, pipelineFor, complete } = receiverFixture(lean);
+  expect(pipelineFor(['rgba8unorm'], undefined, true).ok).toBe(false);
+  const ordinary = pipelineFor(['rgba8unorm']);
+  expect(ordinary.ok && ordinary.value).toBe(general);
+  expect(pipelineFor(['rgba8unorm'], undefined, true).ok).toBe(false);
+  complete();
+  const prepared = pipelineFor(['rgba8unorm'], undefined, true);
+  expect(prepared.ok && prepared.value).toBe(simple);
+  const displayed = pipelineFor(['rgba8unorm']);
+  expect(displayed.ok && displayed.value).toBe(simple);
 });

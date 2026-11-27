@@ -111,11 +111,12 @@ async function fixture() {
     );
     return value;
   };
-  const render = async (
+  const draw = async (
     entry: string,
     values: Float32Array,
-    input: Uint8Array | Uint16Array,
+    input: Uint8Array | Uint16Array | GPUTexture,
     options: {
+      format?: 'rgba8unorm' | 'rgba16float';
       exposure?: number;
       bloom?: Uint8Array;
       lut?: readonly number[];
@@ -124,7 +125,9 @@ async function fixture() {
     const hasBloom = entry.includes('bloom'),
       hasLut = entry.includes('lut'),
       grade = entry.startsWith('fs_grade');
-    const inputTexture = texture(input);
+    const inputTexture =
+      input instanceof Uint8Array || input instanceof Uint16Array ? texture(input) : input;
+    const format = options.format ?? 'rgba8unorm';
     const uniform = device.createBuffer({
       size: 160,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -159,18 +162,17 @@ async function fixture() {
       });
       bindings.push({ binding: 3, resource: { buffer: candidate } });
     }
-    if (hasBloom)
-      for (let level = 0; level < 5; level++) {
-        entries.push({
-          binding: level + 4,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: { sampleType: 'float' },
-        });
-        bindings.push({
-          binding: level + 4,
-          resource: texture(options.bloom ?? image(() => [0, 0, 0, 255])).createView(),
-        });
-      }
+    if (hasBloom) {
+      entries.push({
+        binding: 4,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: 'float' },
+      });
+      bindings.push({
+        binding: 4,
+        resource: texture(options.bloom ?? image(() => [0, 0, 0, 255])).createView(),
+      });
+    }
     const inputLayout = device.createBindGroupLayout({ entries });
     const lutLayout = hasLut
       ? device.createBindGroupLayout({
@@ -189,19 +191,18 @@ async function fixture() {
         bindGroupLayouts: lutLayout === undefined ? [inputLayout] : [inputLayout, lutLayout],
       }),
       vertex: { module, entryPoint: 'vs_main' },
-      fragment: { module, entryPoint: entry, targets: [{ format: 'rgba8unorm' }] },
+      fragment: { module, entryPoint: entry, targets: [{ format }] },
       primitive: { topology: 'triangle-list' },
     });
     const target = device.createTexture({
       size: [width, height],
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+      format,
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT |
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_SRC,
     });
-    const output = device.createBuffer({
-      size: 256 * height,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    });
-    owned.push(target, output);
+    owned.push(target);
     const encoder = device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [
@@ -227,6 +228,17 @@ async function fixture() {
     }
     pass.draw(3);
     pass.end();
+    device.queue.submit([encoder.finish()]);
+    return target;
+  };
+  const readback = async (target: GPUTexture) => {
+    expect(target.format).toBe('rgba8unorm');
+    const output = device.createBuffer({
+      size: 256 * height,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    owned.push(output);
+    const encoder = device.createCommandEncoder();
     encoder.copyTextureToBuffer({ texture: target }, { buffer: output, bytesPerRow: 256 }, [
       width,
       height,
@@ -241,7 +253,9 @@ async function fixture() {
     return result;
   };
   return {
-    render,
+    draw,
+    readback,
+    render: async (...args: Parameters<typeof draw>) => readback(await draw(...args)),
     dispose: async () => {
       await device.queue.onSubmittedWorkDone();
       expect(errors).toEqual([]);
@@ -461,6 +475,78 @@ it('preserves negative Rec.709 components of representable Display-P3 colors thr
     close(
       await gpu.render('fs_grade', values, input),
       image(() => [...p3.map((v) => byte(encode(clamp(v)))), 255]),
+    );
+  } finally {
+    await gpu.dispose();
+  }
+});
+
+/** Positive binary16 inputs with normal exponents, plus the clear endpoint. */
+function linearHalf(value: number): number {
+  if (value === 0) return 0;
+  const exponent = Math.floor(Math.log2(value));
+  return ((exponent + 14) << 10) + Math.round((value / 2 ** exponent) * 1024);
+}
+
+it('preserves dark ramps, low-contrast FXAA and alpha through the dithered UNORM8 seam', async () => {
+  const gpu = await fixture();
+  try {
+    const rampCodes = (x: number) => (x === 0 ? 0 : 1.375 + (x - 1) * 0.27);
+    const pattern = (codes: (x: number, y: number) => number) => {
+      const input = new Uint16Array(width * height * 4);
+      for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++) {
+          const shade = linearHalf(decode(codes(x, y) / 255));
+          const alpha = linearHalf(x / (width - 1));
+          input.set([shade, shade, shade, alpha], (y * width + x) * 4);
+        }
+      return input;
+    };
+    const policy = (dither: 0 | 1 | 2) => {
+      const values = params();
+      new Uint32Array(values.buffer)[38] = dither;
+      return values;
+    };
+    const encodeAndFilter = async (input: Uint16Array, compact: boolean, dither: 0 | 1 | 2) => {
+      const values = policy(dither);
+      const grade = await gpu.draw('fs_grade', values, input, {
+        format: compact ? 'rgba8unorm' : 'rgba16float',
+      });
+      return gpu.render('fs_final_fxaa', values, grade);
+    };
+    const ramp = pattern(rampCodes);
+    const compact = await encodeAndFilter(ramp, true, 2);
+    const float = await encodeAndFilter(ramp, false, 1);
+    const undithered = await encodeAndFilter(ramp, true, 0);
+    close(compact, float, 1);
+    const firstDarkColumn = Array.from({ length: height }, (_, y) =>
+      at(compact, (y * width + 1) * 4),
+    );
+    expect(new Set(firstDarkColumn)).toEqual(new Set([1, 2]));
+    expect(
+      new Set(Array.from({ length: height }, (_, y) => at(undithered, (y * width + 1) * 4))),
+    ).toEqual(new Set([1]));
+    expect(await encodeAndFilter(ramp, true, 2)).toEqual(compact);
+    for (let y = 0; y < height; y++)
+      for (let x = 0; x < width; x++) {
+        const offset = (y * width + x) * 4;
+        expect(Math.abs(at(compact, offset) - rampCodes(x))).toBeLessThanOrEqual(1);
+        expect(Math.abs(at(compact, offset + 3) - byte(x / (width - 1)))).toBeLessThanOrEqual(1);
+      }
+
+    // A shallow diagonal with 9/255 of contrast exercises FXAA close to its
+    // 0.0312 absolute threshold, with room for one input quantization step.
+    const edge = pattern((x, y) => (x * 2 + y > 16 ? 19.45 : 10.45));
+    const grade = await gpu.draw('fs_grade', policy(2), edge);
+    const preAA = await gpu.readback(grade);
+    const afterAA = await gpu.render('fs_final_fxaa', policy(2), grade);
+    const floatEdge = await encodeAndFilter(edge, false, 1);
+    close(afterAA, floatEdge, 2);
+    expect(afterAA.some((value, i) => i % 4 !== 3 && Math.abs(value - at(preAA, i)) >= 2)).toBe(
+      true,
+    );
+    expect(afterAA.filter((_value, i) => i % 4 === 3)).toEqual(
+      preAA.filter((_value, i) => i % 4 === 3),
     );
   } finally {
     await gpu.dispose();

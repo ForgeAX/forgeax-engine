@@ -7,6 +7,7 @@ import {
 } from '@forgeax/engine-geometry';
 import type {
   Buffer,
+  RenderPipeline,
   RhiCommandEncoder,
   RhiDevice,
   RhiError,
@@ -20,27 +21,56 @@ import {
   admitRayMaterialValues,
   type RayMaterialError,
   rayMaterialContract,
+  rayMaterialFailure,
 } from '@forgeax/engine-shader';
 import { ok, type ParamSchemaEntry, type Result } from '@forgeax/engine-types';
 import { packMaterialProgramRow } from '../material-row';
 import { type MaterialSnapshot, materialTextureValue } from '../render-system-extract';
 import { standardDisplacementRadius } from '../standard-displacement-bounds';
-import { buildRaySurfaceScene, type RaySurfaceInstance } from './attributes';
+import { buildRayRasterSurface, type RaySurfaceInstance } from './attributes';
 import {
   captureViewProjection,
   type SurfaceViewProjection,
   transformCardProjection,
 } from './capture-view';
 import type { CardCaptureWork } from './card-capture-schedule';
+import {
+  CARD_RECEIVER_FACT_BYTES,
+  CardReceiverGeometry,
+  packCardReceiverFacts,
+} from './card-receiver';
 import { createIndexAllocator, type IndexRun } from './index-allocator';
 import {
   createSurfaceMaterialBindings,
   createSurfaceMaterialGroup,
   type ResolveSurfaceTexture,
   referenceSurfaceMaterialSnapshot,
+  referenceSurfaceMaterialValues,
 } from './material-bindings';
 import type { RayPathMaterial } from './path-tracer';
-import { type RayReferenceError, rayGeometryKey, rayReferenceFailure } from './scene';
+import {
+  RAY_TRIANGLE_STRIDE,
+  type RayReferenceError,
+  rayGeometryKey,
+  rayReferenceFailure,
+} from './scene';
+import type { SdfMeshInstance } from './sdf-query';
+
+/** Private CardProjection uniform: projection, eye, proxy coverage, and padded mat3 basis. */
+function captureContextBytes(
+  projection: { readonly matrix: ArrayLike<number>; readonly eye: ArrayLike<number> },
+  transform: ArrayLike<number>,
+  geometryCoverage: boolean,
+): Uint8Array {
+  const values = new Float32Array(36);
+  values.set(projection.matrix);
+  values.set(projection.eye, 16);
+  new Uint32Array(values.buffer)[20] = Number(geometryCoverage);
+  for (let column = 0; column < 3; column++)
+    for (let axis = 0; axis < 3; axis++)
+      values[24 + column * 4 + axis] = transform[column * 4 + axis] ?? NaN;
+  return new Uint8Array(values.buffer);
+}
 
 export interface SurfaceCardSource {
   /** Whole geometry identity; material sections are draws within this instance. */
@@ -60,6 +90,8 @@ export interface SurfaceCaptureSource {
   readonly instance: SurfaceCardSource['instance'];
   readonly layout: MeshCardLayout;
   readonly captureKey: string;
+  /** Derived from this source's accepted canonical geometry, never a caller valid bit. */
+  readonly receiverGeometry?: CardReceiverGeometry;
   readonly sections: readonly {
     readonly indexOffset: number;
     readonly indexCount: number;
@@ -95,6 +127,102 @@ export const CARD_PLANES = [
   'f0Validity',
 ] as const;
 export const CARD_TEXTURES = [...CARD_PLANES, 'depth'] as const;
+
+function cardReceiverGeometry(source: SurfaceCaptureSource) {
+  const geometry = source.receiverGeometry;
+  return geometry instanceof CardReceiverGeometry &&
+    geometry.matches(source.instance.positions, source.instance.indices)
+    ? geometry
+    : undefined;
+}
+
+function receiverSourceValid(expected: readonly number[], previousEpoch: number) {
+  return (
+    expected.length === 4 &&
+    expected[3] !== 0 &&
+    (expected[3] ?? 0) >= previousEpoch &&
+    Array.from(expected).every(
+      (word) => Number.isSafeInteger(word) && word >= 0 && word <= 0xffffffff,
+    )
+  );
+}
+
+function receiverRangeValid(
+  range: { readonly first: number; readonly count: number },
+  count: number,
+) {
+  return (
+    Number.isSafeInteger(range.first) &&
+    Number.isSafeInteger(range.count) &&
+    range.first >= 0 &&
+    range.count >= 0 &&
+    range.count <= count &&
+    (range.count === 0 || range.first < count)
+  );
+}
+
+function createCardPrimitiveTarget(device: RhiDevice, width: number, height: number) {
+  const texture = device.createTexture({
+    label: 'cards.primitiveIndex',
+    size: { width, height },
+    format: 'r32uint',
+    textureBindingViewDimension: '2d',
+    usage: 21,
+  });
+  if (!texture.ok) return texture;
+  const view = device.createTextureView(texture.value, {});
+  if (!view.ok) {
+    device.destroyTexture(texture.value);
+    return view;
+  }
+  return ok({ texture: texture.value, view: view.value });
+}
+
+function createCardReceiverStorage(
+  make: (
+    label: string,
+    bytes: Uint8Array,
+    uniform: boolean,
+    rasterInput: boolean,
+  ) => Result<Buffer, RhiError | RayReferenceError>,
+  size: number,
+) {
+  const staging = make('cards.receiver-staging', new Uint8Array(size), false, false);
+  if (!staging.ok) return staging;
+  const published = make('cards.receivers', new Uint8Array(size), false, false);
+  if (!published.ok) return published;
+  return ok({ staging: staging.value, published: published.value });
+}
+
+/** Pack section-local attributes before restoring the original Mesh primitive namespace. */
+function captureSectionScene(
+  instance: SurfaceCaptureSource['instance'],
+  section: {
+    readonly indexOffset: number;
+    readonly indexCount: number;
+    readonly materialId: number;
+  },
+): ReturnType<typeof buildRayRasterSurface> {
+  const result = buildRayRasterSurface({
+    ...instance,
+    materialId: section.materialId,
+    indices: Array.from(
+      { length: section.indexCount },
+      (_, i) => instance.indices[section.indexOffset + i] ?? NaN,
+    ),
+  });
+  if (!result.ok || section.indexOffset === 0) return result;
+  const data = result.value.triangles;
+  const ids = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const first = section.indexOffset / 3;
+  for (let row = 0; row < result.value.triangleCount; row++) {
+    const at = row * RAY_TRIANGLE_STRIDE + 56;
+    ids.setUint32(at, first + ids.getUint32(at, true), true);
+  }
+  return result;
+}
+
+export type CardCapturePhase = 'material' | 'identity';
 export interface SurfaceCapture {
   /** Accept one shared value root without discovering or visiting its captured instances. */
   adoptMaterial(
@@ -109,7 +237,37 @@ export interface SurfaceCapture {
     readonly uniformUploads: number;
     readonly assetRoots: number;
     readonly bindingRefreshes: number;
+    readonly rasterDraws: number;
+    readonly clearDraws: number;
   };
+  /** Exact integer geometry identity; intentionally outside the filtering material textures. */
+  readonly primitiveIndex: { readonly texture: Texture; readonly view: TextureView };
+  readonly receivers: { readonly buffer: Buffer; readonly staging: Buffer; readonly size: number };
+  /** Copy the just-completed identity's immutable facts in the same GPU submission. */
+  recordReceiverFacts(
+    encoder: Pick<RhiCommandEncoder, 'copyBufferToBuffer'>,
+    source: {
+      readonly expected: readonly number[];
+      readonly instances: readonly SdfMeshInstance[];
+    },
+    tiles: { readonly first: number; readonly count: number },
+    captured?: object,
+  ): Result<void, RayReferenceError | RhiError>;
+  /** Called only for the owning frame's successfully submitted identity slice. */
+  commitReceiverCapture(captured: object): void;
+  /** Actual draw calls for both phases, including local clear quads; tiles remain the scheduling unit. */
+  rasterWork(
+    tiles?: { readonly first: number; readonly count: number },
+    clearMaterial?: boolean,
+  ): Result<
+    {
+      readonly material: number;
+      readonly identity: number;
+      readonly clears: number;
+      readonly total: number;
+    },
+    RayReferenceError
+  >;
   readonly kind: 'cards' | 'view';
   readonly width: number;
   readonly bytes: number;
@@ -118,6 +276,8 @@ export interface SurfaceCapture {
   readonly textures: Readonly<Record<(typeof CARD_TEXTURES)[number], Texture>>;
   readonly entries: readonly {
     readonly instanceId: number;
+    /** Physical atlas run; entry order may change after removal. */
+    readonly firstTile: number;
     readonly geometryKey: string;
     readonly captureKey: string;
     readonly projections: readonly SurfaceCardProjection[];
@@ -148,13 +308,18 @@ export interface SurfaceCapture {
   recordPass(
     pass: RhiRenderPassEncoder,
     tiles?: { readonly first: number; readonly count: number },
+    phase?: CardCapturePhase,
   ): Result<void, RayReferenceError>;
   /** One coherent unlit capture: all material planes and depth share each raster work. */
-  record(encoder: RhiCommandEncoder): Result<void, RayReferenceError>;
+  record(
+    encoder: RhiCommandEncoder,
+    tiles?: { readonly first: number; readonly count: number },
+  ): Result<void, RayReferenceError>;
   /** Clears a tile slice (zero planes, far depth) inside a loading pass before recapture. */
   clearTiles(
     pass: RhiRenderPassEncoder,
     tiles: { readonly first: number; readonly count: number },
+    phase?: CardCapturePhase,
   ): Result<void, RayReferenceError>;
   /**
    * Moves one captured instance in place: rewrites its world-space triangles and Card
@@ -204,7 +369,55 @@ struct ClearOut { @location(0) a: vec4f, @location(1) b: vec4f, @location(2) c: 
  let p=vec2f(f32((i<<1u)&2u),f32(i&2u));return vec4f(p*2.0-vec2f(1.0),1.0,1.0);
 }
 @fragment fn fs_clear() -> ClearOut { return ClearOut(vec4f(0),vec4f(0),vec4f(0),vec4f(0)); }
+@fragment fn fs_clear_identity() -> @location(0) u32 { return 0xffffffffu; }
 `;
+
+/** Both stages must be ready before a capture can enter an encoding transaction. */
+function prepareCardRasterPipelines(
+  device: RhiDevice,
+  descriptor: Parameters<RhiDevice['createRenderPipeline']>[0],
+  identityEntry: 'fs_card_identity' | 'fs_clear_identity',
+): Result<{ readonly material: RenderPipeline; readonly identity: RenderPipeline }, RhiError> {
+  const material = device.createRenderPipeline(descriptor);
+  if (!material.ok) return material;
+  const identity = device.createRenderPipeline({
+    ...descriptor,
+    label: `${descriptor.label}.identity`,
+    fragment: {
+      module: descriptor.vertex.module,
+      entryPoint: identityEntry,
+      targets: [{ format: 'r32uint' }],
+    },
+  });
+  if (!identity.ok) return identity;
+  return ok({ material: material.value, identity: identity.value });
+}
+
+async function prepareCardTileClear(
+  device: RhiDevice,
+  compile: Parameters<typeof prepareSurfaceCapture>[1],
+) {
+  const module = await compile(device, { code: CARD_TILE_CLEAR_WGSL, label: 'cards.clear' });
+  if (!module.ok) return module;
+  const layout = device.createPipelineLayout({ bindGroupLayouts: [] });
+  if (!layout.ok) return layout;
+  return prepareCardRasterPipelines(
+    device,
+    {
+      label: 'cards.clear-tile',
+      layout: layout.value,
+      vertex: { module: module.value, entryPoint: 'vs_clear', buffers: [] },
+      fragment: {
+        module: module.value,
+        entryPoint: 'fs_clear',
+        targets: CARD_PLANES.map(() => ({ format: 'rgba16float' as const })),
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'always' },
+    },
+    'fs_clear_identity',
+  );
+}
 
 export function surfaceCardKey(source: SurfaceCardSource): string {
   return JSON.stringify([
@@ -232,6 +445,21 @@ export function packCardProjection(p: SurfaceCardProjection, winding = 1): Uint8
   );
 }
 
+/** One producer for the 64-byte projection and its physical lookup owner/state. */
+export function writeCardLookupProjection(
+  bytes: Uint8Array,
+  tile: number,
+  projection: SurfaceCardProjection,
+  instanceId: number,
+  state: number,
+): void {
+  const offset = tile * 80;
+  bytes.set(packCardProjection(projection), offset);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  view.setUint32(offset + 64, instanceId, true);
+  view.setUint32(offset + 68, state, true);
+}
+
 /** Frozen real-mesh raster capture. The caller owns submit/completion and borrowed textures. */
 export async function createSurfaceCapture(
   device: RhiDevice,
@@ -250,9 +478,13 @@ export async function createSurfaceCapture(
       const { material } = section;
       if (
         material.program.context !== 'card-capture' ||
-        material.program.contract !== rayMaterialContract(material.asset)
+        material.program.contract !== rayMaterialContract(material.asset, 'card-capture')
       )
-        return rayReferenceFailure('card material identity/context is stale or mismatched');
+        return rayMaterialFailure(
+          String(material.id),
+          'card-capture',
+          'matching forgeax-material-card-v4 cooked context and material identity',
+        );
       const admitted = admitRayMaterial(material.asset, String(material.id), 'card-capture');
       if (!admitted.ok) return admitted;
       if (
@@ -260,14 +492,15 @@ export async function createSurfaceCapture(
         !section.textureContentKey
       )
         return rayReferenceFailure('textured cards require a producer textureContentKey');
+      const values = referenceSurfaceMaterialValues(material.asset);
       sections.push({
         ...section,
         material: {
           id: material.id,
           program: { source: material.program.wgsl, paramSchema: material.program.paramSchema },
-          snapshot: referenceSurfaceMaterialSnapshot(material),
+          snapshot: referenceSurfaceMaterialSnapshot(material, values),
           resolveTexture: (parameter) => {
-            const value = materialTextureValue(material.asset.values?.[parameter]);
+            const value = materialTextureValue(values[parameter]);
             return value && resolveTexture
               ? resolveTexture(value)
               : rayReferenceFailure(`missing texture binding ${parameter}`);
@@ -343,7 +576,7 @@ export async function prepareSurfaceCapture(
       sum + source.sections.length * (request.kind === 'cards' ? source.layout.cards.length : 1),
     0,
   );
-  if (workCount > 65_536 && residency === undefined)
+  if (2 * (workCount + cardCount) > 65_536 && residency === undefined)
     return rayReferenceFailure('capture exceeds 65536 material-card draw budget', true);
   const shape = (tiles: number) => {
     const columns = request.kind === 'cards' ? Math.max(1, Math.ceil(Math.sqrt(tiles))) : 1;
@@ -353,7 +586,7 @@ export async function prepareSurfaceCapture(
   const fits = (s: ReturnType<typeof shape>, bytes: number) =>
     s.width <= 8192 &&
     s.height <= 8192 &&
-    s.width * s.height * 36 <= bytes &&
+    s.width * s.height * 40 + s.columns * s.rows * CARD_RECEIVER_FACT_BYTES * 2 <= bytes &&
     (residency === undefined || s.width * s.height <= residency.maxTexels);
   let target = request.kind === 'cards' ? Math.min(4096, cardCount + reserve) : cardCount;
   // Residency keeps every source's tiles only when they fit; otherwise the atlas
@@ -376,12 +609,14 @@ export async function prepareSurfaceCapture(
   const textureReads: TextureView[] = [];
   const bufferPositions = new Map<Buffer, number>();
   const ownedTextures: Texture[] = [];
+  const privateBuffers: Buffer[] = [];
   // Buffers of removed instances: `retired` until a completion is tracked, then in flight.
   const retired: Buffer[] = [];
   const retiring = new Set<Buffer[]>();
   let revision = 0;
   const dispose = () => {
     for (const read of bufferReads) device.destroyBuffer(read.buffer);
+    for (const buffer of privateBuffers) device.destroyBuffer(buffer);
     for (const b of retired) device.destroyBuffer(b);
     for (const group of retiring) for (const b of group) device.destroyBuffer(b);
     for (const t of ownedTextures) device.destroyTexture(t);
@@ -390,6 +625,7 @@ export async function prepareSurfaceCapture(
     retired.length = 0;
     retiring.clear();
     ownedTextures.length = 0;
+    privateBuffers.length = 0;
   };
   /** Drops buffers from every read list and the byte total; destruction waits for `track`. */
   const retire = (buffers: readonly Buffer[]) => {
@@ -417,6 +653,7 @@ export async function prepareSurfaceCapture(
     label: string,
     bytes: Uint8Array,
     uniform = false,
+    rasterInput = true,
   ): Result<Buffer, RhiError | RayReferenceError> => {
     if (allocatedBytes + bytes.byteLength > maxBytes)
       return rayReferenceFailure('capture exceeds its complete resource byte budget', true);
@@ -426,17 +663,19 @@ export async function prepareSurfaceCapture(
       usage: (uniform ? 64 : 128) | 12,
     });
     if (!b.ok) return b;
-    bufferPositions.set(b.value, bufferReads.length);
-    bufferReads.push({
-      buffer: b.value,
-      size: bytes.byteLength,
-      usage: uniform ? 'uniform-read' : 'storage-read',
-    });
+    if (rasterInput) {
+      bufferPositions.set(b.value, bufferReads.length);
+      bufferReads.push({
+        buffer: b.value,
+        size: bytes.byteLength,
+        usage: uniform ? 'uniform-read' : 'storage-read',
+      });
+    } else privateBuffers.push(b.value);
     allocatedBytes += bytes.byteLength;
     const write = device.queue.writeBuffer(b.value, 0, bytes);
     return write.ok ? b : write;
   };
-  allocatedBytes += width * height * 36;
+  allocatedBytes += width * height * 40;
   const textures = {} as Record<(typeof CARD_TEXTURES)[number], Texture>;
   const views: TextureView[] = [];
   for (const name of CARD_PLANES) {
@@ -466,6 +705,14 @@ export async function prepareSurfaceCapture(
   textures.depth = depth.value;
   const depthView = device.createTextureView(depth.value, {});
   if (!depthView.ok) return fail(depthView);
+  const primitive = createCardPrimitiveTarget(device, width, height);
+  if (!primitive.ok) return fail(primitive);
+  const { texture: primitiveTexture, view: primitiveView } = primitive.value;
+  ownedTextures.push(primitiveTexture);
+  const receiverSize = columns * atlasRows * CARD_RECEIVER_FACT_BYTES;
+  const receiverStorage = createCardReceiverStorage(make, receiverSize);
+  if (!receiverStorage.ok) return fail(receiverStorage);
+  const { staging: receiverStaging, published: receiverPublished } = receiverStorage.value;
   const layout = device.createBindGroupLayout({
     entries: [
       { binding: 0, visibility: 1, buffer: { type: 'read-only-storage' } },
@@ -520,6 +767,8 @@ export async function prepareSurfaceCapture(
     uniformUploads: 0,
     assetRoots: 0,
     bindingRefreshes: 0,
+    rasterDraws: 0,
+    clearDraws: 0,
   };
   const textureUsers = new Map<TextureView, number>();
   const textureIndices = new Map<TextureView, number>();
@@ -613,6 +862,7 @@ export async function prepareSurfaceCapture(
   };
   type Draw = {
     pipeline: import('@forgeax/engine-rhi').RenderPipeline;
+    identityPipeline: import('@forgeax/engine-rhi').RenderPipeline;
     root: CapturedMaterial;
     cards: import('@forgeax/engine-rhi').BindGroup[];
     vertices: number;
@@ -621,6 +871,38 @@ export async function prepareSurfaceCapture(
   };
   const drawsByTile = new Map<number, Set<Draw>>();
   let drawCount = 0;
+  type ReceiverSnapshot = {
+    readonly record: object;
+    readonly instance: SurfaceCaptureSource['instance'];
+    readonly context: Uint8Array;
+    readonly geometry: CardReceiverGeometry | undefined;
+    readonly materials: readonly {
+      readonly root: CapturedMaterial;
+      readonly snapshot: MaterialSnapshot;
+      readonly group: CapturedMaterial['group'];
+      readonly assets: readonly {
+        readonly root: CapturedMaterial['assets'][number]['root'];
+        readonly revision: number;
+      }[];
+    }[];
+  };
+  // A transient encoding fence retains the actual accepted facts, not another source clock.
+  let pendingIdentity:
+    | {
+        readonly first: number;
+        readonly count: number;
+        readonly revision: number;
+        readonly receivers: ReadonlyMap<number, ReceiverSnapshot>;
+        identitySlice?: object;
+        readonly draws: readonly {
+          readonly draw: Draw;
+          readonly snapshot: MaterialSnapshot;
+          readonly group: CapturedMaterial['group'];
+          readonly instance: SurfaceCaptureSource['instance'] | undefined;
+        }[];
+      }
+    | undefined;
+  let completedIdentity: typeof pendingIdentity;
   // In-place edit facts per live instance: section scene buffers and Card projection uniforms.
   const editable = new Map<
     number,
@@ -630,6 +912,9 @@ export async function prepareSurfaceCapture(
       layout: MeshCardLayout;
       firstTile: number;
       projections: Buffer[];
+      contexts: Uint8Array[];
+      receiverGeometry: CardReceiverGeometry | undefined;
+      captured: (ReceiverSnapshot | undefined)[];
       /** Every buffer this install created; removal retires them. */
       buffers: Buffer[];
       draws: Draw[];
@@ -719,6 +1004,7 @@ export async function prepareSurfaceCapture(
     source: SurfaceCaptureSource,
     firstTile: number,
   ): Result<void, RayReferenceError | RayMaterialError | RhiError> => {
+    pendingIdentity = undefined;
     const mark = bufferReads.length;
     const installed = installAt(source, firstTile, mark);
     if (!installed.ok) retire(bufferReads.slice(mark).map((read) => read.buffer));
@@ -746,16 +1032,19 @@ export async function prepareSurfaceCapture(
       }
     const cards = request.kind === 'cards' ? cardProjections : [request.projection];
     const projectionBuffers: Buffer[] = [];
+    const contexts: Uint8Array[] = [];
     for (const card of cards) {
       const projection = captureViewProjection(card);
       if (!projection.ok) return projection;
-      const bytes = new Float32Array(24);
-      bytes.set(projection.value.matrix);
-      bytes.set(projection.value.eye, 16);
-      new Uint32Array(bytes.buffer)[20] = request.kind === 'cards' ? 1 : 0;
-      const buffer = make('cards.projection', new Uint8Array(bytes.buffer), true);
+      const bytes = captureContextBytes(
+        projection.value,
+        instance.transform,
+        request.kind === 'cards',
+      );
+      const buffer = make('cards.projection', bytes, true);
       if (!buffer.ok) return buffer;
       projectionBuffers.push(buffer.value);
+      contexts.push(bytes);
     }
     const editSections: NonNullable<ReturnType<typeof editable.get>>['sections'] = [];
     const installed: Draw[] = [];
@@ -794,16 +1083,11 @@ export async function prepareSurfaceCapture(
       const cullMode = material.snapshot.renderState?.cullMode ?? 'back';
       if (cullMode !== 'back' && cullMode !== 'none')
         return rayReferenceFailure('invalid card culling');
-      const scene = buildRaySurfaceScene([
-        {
-          ...instance,
-          materialId: material.id,
-          indices: Array.from(
-            { length: section.indexCount },
-            (_, i) => instance.indices[section.indexOffset + i] ?? NaN,
-          ),
-        },
-      ]);
+      const scene = captureSectionScene(instance, {
+        indexOffset: section.indexOffset,
+        indexCount: section.indexCount,
+        materialId: material.id,
+      });
       if (!scene.ok) return scene;
       const value = scene.value;
       const triangles = make('cards.triangles', value.triangles),
@@ -866,22 +1150,26 @@ export async function prepareSurfaceCapture(
       });
       if (!pipelineLayout.ok) return pipelineLayout;
       const winding = new DataView(value.attributes.buffer).getFloat32(108, true);
-      const pipeline = device.createRenderPipeline({
-        label: `cards.capture.instance-${instance.instanceId}.indices-${section.indexOffset}-${section.indexCount}.material-${material.id}`,
-        layout: pipelineLayout.value,
-        vertex: { module, entryPoint: 'vs_card', buffers: [] },
-        fragment: {
-          module,
-          entryPoint: 'fs_card',
-          targets: CARD_PLANES.map(() => ({ format: 'rgba16float' as const })),
+      const pipeline = prepareCardRasterPipelines(
+        device,
+        {
+          label: `cards.capture.instance-${instance.instanceId}.indices-${section.indexOffset}-${section.indexCount}.material-${material.id}`,
+          layout: pipelineLayout.value,
+          vertex: { module, entryPoint: 'vs_card', buffers: [] },
+          fragment: {
+            module,
+            entryPoint: 'fs_card',
+            targets: CARD_PLANES.map(() => ({ format: 'rgba16float' as const })),
+          },
+          primitive: {
+            topology: 'triangle-list',
+            cullMode,
+            frontFace: winding < 0 ? 'cw' : 'ccw',
+          },
+          depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less' },
         },
-        primitive: {
-          topology: 'triangle-list',
-          cullMode,
-          frontFace: winding < 0 ? 'cw' : 'ccw',
-        },
-        depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less' },
-      });
+        'fs_card_identity',
+      );
       if (!pipeline.ok) return pipeline;
       const groups = [];
       for (const buffer of projectionBuffers) {
@@ -896,7 +1184,8 @@ export async function prepareSurfaceCapture(
         groups.push(group.value);
       }
       installed.push({
-        pipeline: pipeline.value,
+        pipeline: pipeline.value.material,
+        identityPipeline: pipeline.value.identity,
         root,
         cards: groups,
         vertices: value.triangleCount * 3,
@@ -912,7 +1201,7 @@ export async function prepareSurfaceCapture(
         winding,
       });
     }
-    drawCount += installed.length;
+    drawCount += installed.reduce((sum, draw) => sum + draw.cards.length, 0);
     for (const draw of installed)
       for (let card = 0; card < draw.cards.length; card++) {
         const tile = firstTile + card;
@@ -936,6 +1225,9 @@ export async function prepareSurfaceCapture(
       layout: cardLayout,
       firstTile,
       projections: projectionBuffers,
+      contexts,
+      receiverGeometry: cardReceiverGeometry(source),
+      captured: [],
       buffers: bufferReads
         .slice(mark)
         .map((read) => read.buffer)
@@ -946,6 +1238,7 @@ export async function prepareSurfaceCapture(
     });
     entries.push({
       instanceId: instance.instanceId,
+      firstTile,
       geometryKey: rayGeometryKey(instance, cardLayout.meshDigest),
       captureKey: source.captureKey,
       projections: cardProjections,
@@ -953,10 +1246,11 @@ export async function prepareSurfaceCapture(
     return ok(undefined);
   };
   const detach = (instanceId: number) => {
+    pendingIdentity = undefined;
     const record = editable.get(instanceId);
     if (record !== undefined) {
       retire(record.buffers);
-      drawCount -= record.draws.length;
+      drawCount -= record.draws.reduce((sum, draw) => sum + draw.cards.length, 0);
       for (const draw of record.draws)
         for (let card = 0; card < draw.cards.length; card++) {
           const tile = draw.firstTile + card;
@@ -994,7 +1288,12 @@ export async function prepareSurfaceCapture(
     if (
       residency !== undefined &&
       (editable.size >= 1024 ||
-        drawCount + source.sections.length * source.layout.cards.length > 65_536)
+        2 *
+          (drawCount +
+            source.sections.length * source.layout.cards.length +
+            tiles.end +
+            source.layout.cards.length) >
+          65_536)
     )
       break;
     const admittedSource = await admit(source);
@@ -1014,60 +1313,252 @@ export async function prepareSurfaceCapture(
       return fail(installed);
     }
   }
-  let clearPipeline: import('@forgeax/engine-rhi').RenderPipeline | undefined;
-  if (request.kind === 'cards') {
-    const module = await compile(device, { code: CARD_TILE_CLEAR_WGSL, label: 'cards.clear' });
-    if (!module.ok) return fail(module);
-    const clearLayout = device.createPipelineLayout({ bindGroupLayouts: [] });
-    if (!clearLayout.ok) return fail(clearLayout);
-    const created = device.createRenderPipeline({
-      label: 'cards.clear-tile',
-      layout: clearLayout.value,
-      vertex: { module: module.value, entryPoint: 'vs_clear', buffers: [] },
-      fragment: {
-        module: module.value,
-        entryPoint: 'fs_clear',
-        targets: CARD_PLANES.map(() => ({ format: 'rgba16float' as const })),
-      },
-      primitive: { topology: 'triangle-list', cullMode: 'none' },
-      depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'always' },
-    });
-    if (!created.ok) return fail(created);
-    clearPipeline = created.value;
-  }
+  const clearPair = await prepareCardTileClear(device, compile);
+  if (!clearPair.ok) return fail(clearPair);
+  const clearPipelines = clearPair.value;
   const tileRect = (pass: RhiRenderPassEncoder, tile: number) => {
     const column = tile % columns,
       row = request.kind === 'cards' ? Math.floor(tile / columns) : 0;
     pass.setViewport(column * resolution, row * resolution, resolution, resolution, 0, 1);
     pass.setScissorRect(column * resolution, row * resolution, resolution, resolution);
   };
-  const writeProjection = (buffer: Buffer, card: SurfaceCardProjection) => {
+  const writeProjection = (
+    buffer: Buffer,
+    card: SurfaceCardProjection,
+    transform: ArrayLike<number>,
+  ) => {
     const projection = captureViewProjection(card);
     if (!projection.ok) return projection;
-    const bytes = new Float32Array(24);
-    bytes.set(projection.value.matrix);
-    bytes.set(projection.value.eye, 16);
-    new Uint32Array(bytes.buffer)[20] = 1;
-    const written = device.queue.writeBuffer(buffer, 0, new Uint8Array(bytes.buffer));
-    return written.ok ? ok(undefined) : rayReferenceFailure(written.error.expected);
+    const bytes = captureContextBytes(projection.value, transform, true);
+    const written = device.queue.writeBuffer(buffer, 0, bytes);
+    return written.ok ? ok(bytes) : rayReferenceFailure(written.error.expected);
   };
   const editableSource = (source: SurfaceCaptureSource) => {
     if (disposed || request.kind !== 'cards')
       return rayReferenceFailure('in-place Card edits require a live Card capture');
     if (!admitted(source))
       return rayReferenceFailure('in-place Card source is not admitted; admit it first');
-    if (drawCount + source.sections.length * source.layout.cards.length > 65_536)
+    if (
+      2 *
+        (drawCount +
+          source.sections.length * source.layout.cards.length +
+          tiles.end +
+          source.layout.cards.length) >
+      65_536
+    )
       return rayReferenceFailure('capture exceeds 65536 material-card draw budget', true);
     return ok(undefined);
   };
   let disposed = false;
+  const rasterWork: SurfaceCapture['rasterWork'] = (range, clearMaterial = false) => {
+    const first = range?.first ?? 0;
+    const count = range?.count ?? (request.kind === 'cards' ? tiles.end : 1);
+    if (
+      disposed ||
+      !Number.isSafeInteger(first) ||
+      !Number.isSafeInteger(count) ||
+      first < 0 ||
+      count < 0 ||
+      first + count > (request.kind === 'cards' ? tiles.end : 1)
+    )
+      return rayReferenceFailure('Card capture requires a live physical tile range');
+    let material = 0;
+    for (let tile = first; tile < first + count; tile++)
+      material += drawsByTile.get(tile)?.size ?? 0;
+    const clears = count * (1 + Number(clearMaterial));
+    const total = material * 2 + clears;
+    if (total > 65_536)
+      return rayReferenceFailure('capture exceeds 65536 raster draw budget', true);
+    return ok({ material, identity: material, clears, total });
+  };
+  const identityReady = (
+    range?: { readonly first: number; readonly count: number },
+    pair = pendingIdentity,
+  ) => {
+    const first = range?.first ?? 0;
+    const count = range?.count ?? (request.kind === 'cards' ? tiles.end : 1);
+    if (
+      disposed ||
+      pair === undefined ||
+      pair.first !== first ||
+      pair.count !== count ||
+      pair.revision !== revision
+    )
+      return rayReferenceFailure(
+        'Card identity requires the matching prepared material tile slice',
+      );
+    for (const prepared of pair.draws) {
+      const root = prepared.draw.root;
+      if (
+        root.snapshot !== prepared.snapshot ||
+        root.group !== prepared.group ||
+        editable.get(prepared.draw.instanceId)?.instance !== prepared.instance ||
+        root.bindingsDirty ||
+        root.assets.some((asset) => asset.revision !== asset.root.revision)
+      )
+        return rayReferenceFailure('Card identity source changed after its material phase');
+    }
+    return ok(undefined);
+  };
+  const beginIdentity = (
+    pass: RhiRenderPassEncoder,
+    range?: { readonly first: number; readonly count: number },
+  ) => {
+    const ready = identityReady(range);
+    if (!ready.ok || range !== undefined) return ready;
+    // Integer attachment clears can round UINT_MAX through a backend f32.
+    // The typed shader owns exact sentinel and depth initialization.
+    pass.setPipeline(clearPipelines.identity);
+    const count = request.kind === 'cards' ? tiles.end : 1;
+    for (let tile = 0; tile < count; tile++) {
+      tileRect(pass, tile);
+      pass.draw(3);
+      materialWork.clearDraws++;
+    }
+    return ready;
+  };
+  const receiverSnapshot = (tile: number): ReceiverSnapshot | undefined => {
+    const members = drawsByTile.get(tile);
+    const draw = members?.values().next().value;
+    if (!draw || [...(members ?? [])].some((item) => item.instanceId !== draw.instanceId))
+      return undefined;
+    const record = editable.get(draw.instanceId);
+    const context = record?.contexts[tile - draw.firstTile];
+    if (!record || !context) return undefined;
+    return {
+      record,
+      instance: record.instance,
+      context,
+      geometry: record.receiverGeometry,
+      materials: [...(members ?? [])].map((item) => ({
+        root: item.root,
+        snapshot: item.root.snapshot,
+        group: item.root.group,
+        assets: item.root.assets.map((asset) => ({
+          root: asset.root,
+          revision: asset.root.revision,
+        })),
+      })),
+    };
+  };
+  const receiverMatches = (
+    snapshot: ReceiverSnapshot,
+    instances: readonly SdfMeshInstance[],
+  ): boolean => {
+    const row = snapshot.instance.instanceId;
+    const record = editable.get(row),
+      accepted = instances[row];
+    if (
+      record !== snapshot.record ||
+      record.instance !== snapshot.instance ||
+      !accepted ||
+      'missing' in accepted.field ||
+      accepted.field.meshDigest !== snapshot.geometry?.meshDigest ||
+      accepted.geometryId !== snapshot.instance.geometryId ||
+      accepted.mask !== snapshot.instance.mask
+    )
+      return false;
+    for (let i = 0; i < 16; i++)
+      if (!Object.is(accepted.transform[i], snapshot.instance.transform[i])) return false;
+    return snapshot.materials.every(
+      ({ root, snapshot: material, group, assets }) =>
+        root.snapshot === material &&
+        root.group === group &&
+        !root.bindingsDirty &&
+        assets.every((asset) => asset.revision === asset.root.revision),
+    );
+  };
+  const receiverSnapshots = (first: number, count: number) => {
+    const receivers = new Map<number, ReceiverSnapshot>();
+    for (let tile = first; tile < first + count; tile++) {
+      const snapshot = receiverSnapshot(tile);
+      if (snapshot) receivers.set(tile, snapshot);
+    }
+    return receivers;
+  };
+  const completeReceiverIdentity = (range: object | undefined, pass: RhiRenderPassEncoder) => {
+    completedIdentity = pendingIdentity;
+    if (completedIdentity) completedIdentity.identitySlice = range ?? pass;
+    pendingIdentity = undefined;
+  };
+  let receiverEpoch = 0;
   return ok({
+    primitiveIndex: { texture: primitiveTexture, view: primitiveView },
+    receivers: {
+      buffer: receiverPublished,
+      staging: receiverStaging,
+      size: receiverSize,
+    },
+    recordReceiverFacts(encoder, source, range, captured) {
+      const { expected, instances } = source;
+      const count = request.kind === 'cards' ? tiles.end : 1;
+      if (
+        disposed ||
+        !receiverSourceValid(expected, receiverEpoch) ||
+        !receiverRangeValid(range, count)
+      )
+        return rayReferenceFailure(
+          'Card receiver publication requires its accepted source and bounded physical tile range',
+        );
+      const fresh =
+        captured !== undefined && completedIdentity?.identitySlice === captured
+          ? completedIdentity
+          : undefined;
+      for (let at = 0; at < range.count; ) {
+        const first = (range.first + at) % count;
+        const length = Math.min(range.count - at, count - first);
+        const bytes = new Uint8Array(length * CARD_RECEIVER_FACT_BYTES);
+        for (let i = 0; i < length; i++) {
+          const tile = first + i,
+            draw = drawsByTile.get(tile)?.values().next().value;
+          const record = draw === undefined ? undefined : editable.get(draw.instanceId);
+          const snapshot =
+            fresh === undefined
+              ? record?.captured[tile - (record?.firstTile ?? 0)]
+              : fresh.receivers.get(tile);
+          if (snapshot && receiverMatches(snapshot, instances)) {
+            const row = packCardReceiverFacts(
+              snapshot.instance.instanceId,
+              snapshot.context,
+              snapshot.instance.transform,
+              snapshot.geometry,
+            );
+            new Uint32Array(row.buffer, 0, 4).set(expected);
+            bytes.set(row, i * CARD_RECEIVER_FACT_BYTES);
+          }
+        }
+        const offset = first * CARD_RECEIVER_FACT_BYTES;
+        const written = device.queue.writeBuffer(receiverStaging, offset, bytes);
+        if (!written.ok) return written;
+        encoder.copyBufferToBuffer(
+          receiverStaging,
+          offset,
+          receiverPublished,
+          offset,
+          bytes.byteLength,
+        );
+        at += length;
+      }
+      receiverEpoch = expected[3] ?? 0;
+      return ok(undefined);
+    },
+    commitReceiverCapture(captured) {
+      const pair = completedIdentity;
+      if (disposed || pair?.identitySlice !== captured) return;
+      for (const [tile, snapshot] of pair.receivers) {
+        const record = editable.get(snapshot.instance.instanceId);
+        if (record === snapshot.record) record.captured[tile - record.firstTile] = snapshot;
+      }
+      completedIdentity = undefined;
+    },
+    rasterWork,
     get materialWork() {
       return { ...materialWork };
     },
     adoptAsset(scope, handle, revision) {
       const root = assetRoots.get(scope)?.get(handle);
       if (disposed || root === undefined || root.revision === revision) return undefined;
+      pendingIdentity = undefined;
       root.revision = revision;
       materialWork.assetRoots++;
       return root;
@@ -1082,6 +1573,7 @@ export async function prepareSurfaceCapture(
             !root.assets.some((asset) => asset.revision !== asset.root.revision)
           )
             continue;
+          pendingIdentity = undefined;
           root.refreshTextures?.(root.snapshot);
           const binding = createSurfaceMaterialGroup(
             device,
@@ -1149,6 +1641,7 @@ export async function prepareSurfaceCapture(
       if (rebind && root.refreshTextures === undefined)
         return rayReferenceFailure('changed Card bindings require a native texture owner');
       if (rebind) detachAssets(root);
+      pendingIdentity = undefined;
       root.snapshot = snapshot;
       root.row = row;
       if (rebind) {
@@ -1196,36 +1689,76 @@ export async function prepareSurfaceCapture(
       };
       void completed.then(destroy, destroy);
     },
-    record(encoder) {
-      if (disposed) return rayReferenceFailure('surface cards are disposed');
+    record(encoder, range) {
+      const work = rasterWork(range, range !== undefined);
+      if (!work.ok) return work;
       const pass = encoder.beginRenderPass({
         label: 'cards.capture',
         colorAttachments: views.map((view) => ({
           view,
-          loadOp: 'clear' as const,
+          loadOp: range === undefined ? ('clear' as const) : ('load' as const),
           storeOp: 'store' as const,
           clearValue: { r: 0, g: 0, b: 0, a: 0 },
         })),
         depthStencilAttachment: {
           view: depthView.value,
-          depthLoadOp: 'clear',
+          depthLoadOp: range === undefined ? 'clear' : 'load',
+          depthStoreOp: 'store',
+          depthClearValue: 1,
+        },
+      });
+      let material: Result<void, RayReferenceError>;
+      try {
+        material = range === undefined ? ok(undefined) : this.clearTiles(pass, range);
+        if (material.ok) material = this.recordPass(pass, range);
+      } finally {
+        pass.end();
+      }
+      if (!material.ok) return material;
+      const ready = identityReady(range);
+      if (!ready.ok) return ready;
+      const identity = encoder.beginRenderPass({
+        label: 'cards.capture-identity',
+        colorAttachments: [
+          {
+            view: primitiveView,
+            loadOp: range === undefined ? 'clear' : 'load',
+            storeOp: 'store',
+            clearValue: { r: 0xffffffff, g: 0, b: 0, a: 0 },
+          },
+        ],
+        depthStencilAttachment: {
+          view: depthView.value,
+          depthLoadOp: range === undefined ? 'clear' : 'load',
           depthStoreOp: 'store',
           depthClearValue: 1,
         },
       });
       try {
-        return this.recordPass(pass);
+        if (range !== undefined) {
+          const cleared = this.clearTiles(identity, range, 'identity');
+          if (!cleared.ok) return cleared;
+        }
+        return this.recordPass(identity, range, 'identity');
       } finally {
-        pass.end();
+        identity.end();
       }
     },
-    clearTiles(pass, tiles) {
-      if (disposed || clearPipeline === undefined)
+    clearTiles(pass, tiles, phase = 'material') {
+      const work = rasterWork(tiles, phase === 'material');
+      if (!work.ok) return work;
+      if (phase === 'identity') {
+        const ready = identityReady(tiles);
+        if (!ready.ok) return ready;
+      } else pendingIdentity = undefined;
+      const pipeline = phase === 'identity' ? clearPipelines?.identity : clearPipelines?.material;
+      if (disposed || pipeline === undefined)
         return rayReferenceFailure('surface card tile clears require live Card capture');
-      pass.setPipeline(clearPipeline);
+      pass.setPipeline(pipeline);
       for (let tile = tiles.first; tile < tiles.first + tiles.count; tile++) {
         tileRect(pass, tile);
         pass.draw(3);
+        materialWork.clearDraws++;
       }
       return ok(undefined);
     },
@@ -1285,6 +1818,11 @@ export async function prepareSurfaceCapture(
       if (disposed || record === undefined || request.kind !== 'cards')
         return rayReferenceFailure('in-place Card edits require a live captured instance');
       const instance = { ...record.instance, transform: Array.from(transform) };
+      // Rebuilding raster vertices must not carry qualification across a change
+      // to the borrowed local source geometry. The Renderer supplies owned arrays.
+      const geometry = record.receiverGeometry;
+      record.receiverGeometry = undefined;
+      pendingIdentity = undefined;
       const projections: SurfaceCardProjection[] = [];
       for (const local of record.layout.cards) {
         const transformed = transformCardProjection(local, instance.transform);
@@ -1293,16 +1831,7 @@ export async function prepareSurfaceCapture(
       }
       const scenes = [];
       for (const section of record.sections) {
-        const scene = buildRaySurfaceScene([
-          {
-            ...instance,
-            materialId: section.materialId,
-            indices: Array.from(
-              { length: section.indexCount },
-              (_, i) => instance.indices[section.indexOffset + i] ?? NaN,
-            ),
-          },
-        ]);
+        const scene = captureSectionScene(instance, section);
         if (!scene.ok) return scene;
         const winding = new DataView(scene.value.attributes.buffer).getFloat32(108, true);
         if (Math.sign(winding) !== Math.sign(section.winding))
@@ -1312,8 +1841,9 @@ export async function prepareSurfaceCapture(
       for (const [i, card] of projections.entries()) {
         const buffer = record.projections[i];
         if (buffer === undefined) return rayReferenceFailure('Card projection count changed');
-        const written = writeProjection(buffer, card);
+        const written = writeProjection(buffer, card, instance.transform);
         if (!written.ok) return written;
+        record.contexts[i] = written.value;
       }
       for (const [i, section] of record.sections.entries()) {
         const scene = scenes[i];
@@ -1327,11 +1857,15 @@ export async function prepareSurfaceCapture(
         }
       }
       record.instance = instance;
+      record.receiverGeometry = geometry?.matches(instance.positions, instance.indices)
+        ? geometry
+        : undefined;
       const index = record.entryIndex;
       const previous = entries[index];
       const geometryKey = rayGeometryKey(instance, record.layout.meshDigest);
       entries[index] = {
         instanceId,
+        firstTile: record.firstTile,
         geometryKey,
         captureKey: JSON.stringify([previous?.captureKey, geometryKey]),
         projections,
@@ -1347,13 +1881,19 @@ export async function prepareSurfaceCapture(
       if (request.kind === 'cards') tiles.free(run);
       return ok({ first: run.first, count: run.end - run.first });
     },
-    recordPass(pass, tiles) {
+    recordPass(pass, range, phase = 'material') {
+      const budget = rasterWork(range);
+      if (!budget.ok) return budget;
+      if (phase === 'identity') {
+        const ready = beginIdentity(pass, range);
+        if (!ready.ok) return ready;
+      } else pendingIdentity = undefined;
       if (disposed) return rayReferenceFailure('surface cards are disposed');
       const work =
-        tiles === undefined
+        range === undefined
           ? drawsByTile.entries()
           : (function* () {
-              for (let tile = tiles.first; tile < tiles.first + tiles.count; tile++) {
+              for (let tile = range.first; tile < range.first + range.count; tile++) {
                 const draws = drawsByTile.get(tile);
                 if (draws !== undefined) yield [tile, draws] as const;
               }
@@ -1370,17 +1910,38 @@ export async function prepareSurfaceCapture(
           }
           const group = draw.cards[tile - draw.firstTile];
           if (group === undefined) return rayReferenceFailure('Card draw lost its physical tile');
-          pass.setPipeline(draw.pipeline);
+          pass.setPipeline(phase === 'identity' ? draw.identityPipeline : draw.pipeline);
           pass.setBindGroup(1, draw.root.group);
           pass.setBindGroup(0, group);
           pass.draw(draw.vertices);
+          materialWork.rasterDraws++;
         }
+      }
+      if (phase === 'identity') {
+        completeReceiverIdentity(range, pass);
+      } else {
+        completedIdentity = undefined;
+        const first = range?.first ?? 0;
+        const count = range?.count ?? (request.kind === 'cards' ? tiles.end : 1);
+        const draws = [];
+        for (let tile = first; tile < first + count; tile++)
+          for (const draw of drawsByTile.get(tile) ?? [])
+            draws.push({
+              draw,
+              snapshot: draw.root.snapshot,
+              group: draw.root.group,
+              instance: editable.get(draw.instanceId)?.instance,
+            });
+        const receivers = receiverSnapshots(first, count);
+        pendingIdentity = { first, count, revision, draws, receivers };
       }
       return ok(undefined);
     },
     dispose() {
       if (!disposed) {
         disposed = true;
+        pendingIdentity = undefined;
+        completedIdentity = undefined;
         for (const root of materialRoots.values()) root.releaseTextures?.();
         dispose();
       }

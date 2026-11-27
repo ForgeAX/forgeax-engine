@@ -1,10 +1,16 @@
-import { PLAYER_STATE_CHANNEL, type PlayerHudState } from '../shared/player-protocol.ts';
+import { CHECKPOINT_CHANNEL, PLAYER_STATE_CHANNEL, type PlayerHudState } from '../shared/player-protocol.ts';
 
 /** Engine -> UI example: a read-only readout of player state received over the host port. */
 export function installPlayerHud(root: ShadowRoot, port: MessagePort) {
   const part = (name: string) => root.querySelector<HTMLElement>(`[data-ui-part="${name}"]`);
   const height = part('hud-height'), speed = part('hud-speed'), ground = part('hud-ground');
+  const saveButton = part('save-checkpoint');
+  const checkpoint = part('checkpoint-status');
+  const save = () => port.postMessage({ channel: CHECKPOINT_CHANNEL, command: 'save' });
+  saveButton?.addEventListener('click', save);
   const receive = (event: MessageEvent) => {
+    if (event.data?.channel === CHECKPOINT_CHANNEL && checkpoint && typeof event.data.status === 'string')
+      checkpoint.textContent = event.data.status;
     if (event.data?.channel !== PLAYER_STATE_CHANNEL || !height || !speed || !ground) return;
     const state = event.data.state as PlayerHudState;
     height.textContent = `Height ${state.height.toFixed(1)} m`;
@@ -13,5 +19,8 @@ export function installPlayerHud(root: ShadowRoot, port: MessagePort) {
   };
   port.addEventListener('message', receive);
   port.start();
-  return { dispose: () => port.removeEventListener('message', receive) };
+  return { dispose: () => {
+    port.removeEventListener('message', receive);
+    saveButton?.removeEventListener('click', save);
+  } };
 }

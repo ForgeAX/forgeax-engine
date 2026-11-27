@@ -2,7 +2,7 @@ import type { Buffer } from '@forgeax/engine-rhi';
 import type { VolumetricFogFrameContext } from '../render-contract';
 import type { ExtractedVolumetricFog } from '../render-system-extract';
 import { inspectVolumetricFog } from '../volume/inspection';
-import { inspectVolumetricFogResources } from '../volume/resources';
+import { withVolumetricFogParameterBuffers } from '../volume/resources';
 import type { VolumeTemporalSignature } from '../volume/temporal';
 import type { ViewLights } from '../world/render-lights';
 import type { RenderFrameState } from './frame-snapshot';
@@ -138,13 +138,13 @@ export function promoteSubmittedVolumetricFog(
 const VOLUMETRIC_FOG_PASS_COUNT = 4;
 
 function volumetricFogResourceFacts(frameState: RenderFrameState) {
-  return frameState.compiledFrameGraph === undefined || frameState.compiledFrameGraph === null
-    ? undefined
-    : inspectVolumetricFogResources(frameState.compiledFrameGraph.graph.inspect(), {
-        parameterBufferCount: frameState.volumetricFogParams.buffers.filter(
-          (buffer) => buffer !== null,
-        ).length,
-      });
+  const textures = frameState.compiledFrameGraph?.volumetricFogTextures;
+  if (textures === undefined) return undefined;
+  const [first, second] = frameState.volumetricFogParams.buffers;
+  return withVolumetricFogParameterBuffers(
+    textures,
+    Number(first !== null) + Number(second !== null),
+  );
 }
 
 type VolumeResourceFacts = ReturnType<typeof volumetricFogResourceFacts>;
@@ -357,6 +357,8 @@ function inspectCandidateVolume(
   });
 }
 
+const FOG_OFF = inspectVolumetricFog({ authored: false, capability: 'available' });
+
 export function updateVolumetricFogInspection(
   frameState: RenderFrameState,
   fog: ExtractedVolumetricFog | undefined,
@@ -384,10 +386,7 @@ export function updateVolumetricFogInspection(
       return;
     }
     if (!submitted) return;
-    frameState.volumetricFogInspection = inspectVolumetricFog({
-      authored: false,
-      capability: 'available',
-    });
+    frameState.volumetricFogInspection = FOG_OFF;
     return;
   }
 

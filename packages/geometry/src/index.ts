@@ -47,6 +47,7 @@ export type {
   FieldVec3,
   GeometricDistanceField,
   MeshDistanceField,
+  MeshDistanceFieldSurface,
 } from './distance-field';
 export {
   buildMeshDistanceField,
@@ -68,6 +69,8 @@ export {
   createMeshBuilder,
   type MeshBuilder,
   type MeshBuilderOptions,
+  type MeshBuilderSection,
+  type MeshBuilderSectionsOptions,
   type MeshBuilderSubmesh,
 } from './mesh-builder';
 export {
@@ -90,6 +93,11 @@ export {
 } from './mesh-data.js';
 export * from './mesh-distance-field-product';
 export {
+  describeMeshDraw,
+  isStandaloneStaticMesh,
+  type MeshDrawDescription,
+} from './mesh-draw-description';
+export {
   applyMeshMaterialSlotTopology,
   meshMaterialSlotsFromTopology,
   meshMaterialSlotsToTopology,
@@ -99,11 +107,13 @@ export {
   copyMeshAttribute,
   interleavedMesh,
   interleavedMeshFiniteFailure,
+  invalidMeshAttributeDeclaration,
   type MeshAttributeKey,
   type MeshAttributeWindow,
   meshAttributeChannels,
   meshAttributeLayout,
   meshAttributeWindow,
+  skinWeightDenominator,
 } from './mesh-storage';
 export { packMeshTangentFrame32 } from './pack-tangent-frame32';
 export { createPlaneGeometry } from './plane';
@@ -133,6 +143,7 @@ export { createTerrainGrids } from './terrain-grid.js';
 export { createTorusGeometry } from './torus';
 export {
   buildMeshAttributeMapForUvSets,
+  captureVertexLayoutProjection,
   DEFAULT_VERTEX_ATTRIBUTE_MAP,
   deriveVertexBufferLayout,
   deriveVertexBufferLayoutFromProjection,
@@ -140,14 +151,23 @@ export {
   deriveVertexLayoutProjection,
   deriveVertexLayoutProjectionFromMask,
   type GpuVertexBufferLayoutEntry,
+  interleaveStaticMeshVertexStreams,
+  type MeshVertexStreamRange,
   type PackedVertexAttributes,
   packInterleavedVertexAttributes,
+  packVertexAttributes,
+  prepareStaticMeshVertexStreams,
+  projectStaticMeshVertexStreams,
   SKIN_VERTEX_ATTRIBUTE_MAP,
+  staticMeshVertexStreamsMatchRows,
   unpackInterleavedVertexAttributes,
   VertexAttributePackError,
   type VertexLayoutProjection,
   type VertexLayoutProjectionAttribute,
   type VertexLayoutProjectionMaskError,
+  vertexLayoutHasColor,
+  visitStaticMeshWordSpans,
+  visitVertexUvAliases,
 } from './vertex-attribute-layout';
 export { type WithVertexColorsOptions, withVertexColor, withVertexColors } from './vertex-color';
 export {

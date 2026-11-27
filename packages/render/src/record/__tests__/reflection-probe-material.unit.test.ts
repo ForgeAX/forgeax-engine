@@ -9,7 +9,7 @@ import { reflectionProbeMaterial } from '../reflection-probe-material';
 import type { ReflectionProbeRecordState } from '../render-context';
 
 const skylight = {
-  irradianceView: {},
+  skySh: {},
   irradianceSampler: {},
   prefilterView: {},
   prefilterSampler: {},
@@ -48,10 +48,9 @@ describe('shared reflection probe resource classes', () => {
     expect(result).toEqual({
       probeIndex: 41,
       resources: {
-        irradianceView: skylight.irradianceView,
+        skySh: skylight.skySh,
         irradianceSampler: skylight.irradianceSampler,
         prefilterView: target.filteredView,
-        skylightPrefilterView: skylight.prefilterView,
         prefilterSampler: target.sampler,
         brdfLutView: skylight.brdfLutView,
         intensityBuffer: target.uniformBuffer,

@@ -1,7 +1,7 @@
 import { Time, type World } from '@forgeax/engine-ecs';
 import type { PhysicsWorld } from '@forgeax/engine-physics';
 import { PhysicsWorldResource } from '@forgeax/engine-physics';
-import { err, ok, type TextureAsset } from '@forgeax/engine-types';
+import { err, ok, type SampledTextureAsset } from '@forgeax/engine-types';
 import {
   prepareWaterFluidFrame,
   WATER_BUOYANCY_RESOURCE,
@@ -70,7 +70,7 @@ export interface WaterFluidFeatureFrame {
     readonly impulseNoise?: {
       readonly handle: number;
       readonly revision: number;
-      readonly asset: TextureAsset;
+      readonly asset: SampledTextureAsset;
     };
   }[];
   readonly sourceBlockers: readonly FluidSourceBlocker[];
@@ -83,7 +83,9 @@ export interface WaterFluidFeatureFrame {
 }
 export interface WaterFluidRenderFrame {
   readonly token: string;
-  readonly simulations: WaterFluidFeatureFrame['simulations'];
+  readonly simulations: readonly (WaterFluidFeatureFrame['simulations'][number] & {
+    readonly previousFrame?: WaterFluidFrame;
+  })[];
   readonly waterInfoViewIdentity: string | undefined;
   readonly frameNumber: number;
   readonly deviceGeneration: number;
@@ -573,7 +575,7 @@ export function createWaterFluidFeature(
                 handle !== undefined &&
                 revision !== undefined &&
                 resolved?.ok &&
-                resolved.value.kind === 'texture'
+                (resolved.value.kind === 'texture' || resolved.value.kind === 'gpu-texture')
               )
                 impulseNoise = { handle, revision, asset: resolved.value };
               else sourceBlockers.push({ ...reference, status: 'unavailable' });
@@ -743,7 +745,7 @@ export function createWaterFluidFeature(
           if (
             impulseNoise === undefined ||
             resolved?.ok !== true ||
-            resolved.value.kind !== 'texture' ||
+            (resolved.value.kind !== 'texture' && resolved.value.kind !== 'gpu-texture') ||
             resolved.value.shape.viewDimension !== '2d'
           )
             return err(
@@ -753,26 +755,29 @@ export function createWaterFluidFeature(
                 'plan',
                 'next-frame',
                 {
-                  expected: 'the exact captured default impulse 2D noise TextureAsset',
+                  expected: 'the exact captured 2D sampled impulse noise texture',
                   worldIndex,
                   guid: frame.instance.recipe.impulseNoiseGuid,
                 },
               ),
             );
+          const previousFrame = submitted.get(waterFluidSimulationKey(entry));
+          const next = prepareWaterFluidFrame(
+            frame.instance,
+            frame.simulationGeneration,
+            frame.timeSeconds,
+            context.deviceGeneration ?? 0,
+            frame.sourceFrame,
+            frame.pendingImpulses,
+            previousFrame,
+            frame.initialActiveImpulses,
+          );
           simulations.push({
             worldIndex,
             worldIdentity,
             impulseNoise: { ...impulseNoise, asset: resolved.value },
-            frame: prepareWaterFluidFrame(
-              frame.instance,
-              frame.simulationGeneration,
-              frame.timeSeconds,
-              context.deviceGeneration ?? 0,
-              frame.sourceFrame,
-              frame.pendingImpulses,
-              submitted.get(waterFluidSimulationKey(entry)),
-              frame.initialActiveImpulses,
-            ),
+            frame: next,
+            ...(next.initialize || previousFrame === undefined ? {} : { previousFrame }),
           });
         }
         return undefined;

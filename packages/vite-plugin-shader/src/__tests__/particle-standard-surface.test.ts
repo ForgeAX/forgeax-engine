@@ -65,8 +65,8 @@ it('shares Standard surface evaluation without importing scene mesh or instance 
         },
       });
       if (!adapter.ok) throw new Error(adapter.error.message);
-      expect(adapter.value.wgsl).not.toMatch(/@group\(3\)|@group\(2\) @binding\([012]\)/);
-      expect(adapter.value.wgsl.includes('@group(2)')).toBe(clustered);
+      expect(adapter.value.wgsl).not.toMatch(/@group\([23]\)/);
+      expect(adapter.value.wgsl.includes('@group(0) @binding(30)')).toBe(clustered);
       expect(adapter.value.wgsl).toContain('evaluateStandardSurface');
     }
   }

@@ -14,7 +14,11 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
-import { admitSdkShaderInputs } from '../../forgeax/sdk-shader-inputs.mjs';
+import {
+  admitSdkShaderInputs,
+  sdkCoreBuildRoot,
+  seedSdkDeclarations,
+} from '../../forgeax/sdk-shader-inputs.mjs';
 import {
   sharedShaderInputFingerprint,
   sharedShaderReceipt,
@@ -34,7 +38,7 @@ test('SDK source export contracts run after their declared dependencies are inst
   assert.match(steps[contracts].run, /sdk-shader-artifacts\.test\.mjs/);
 });
 
-test('SDK seed waits for same-head core and point publications outside its original execution budget', () => {
+test('SDK seed waits for the same-head Core compiler outside its original execution budget', () => {
   const w = parse(readFileSync('.github/workflows/sdk-pr-preflight.yml', 'utf8'));
   const p = w.jobs['shader-producer-inputs'],
     s = w.jobs['build-sdk'];
@@ -43,9 +47,17 @@ test('SDK seed waits for same-head core and point publications outside its origi
   assert.equal(s['timeout-minutes'], 30);
   assert.equal(p['timeout-minutes'], 70);
   assert.equal(w.jobs.consumers['timeout-minutes'], `\${{ matrix.group == 'source' && 40 || 30 }}`);
-  assert.deepEqual(w.jobs.consumers.strategy.matrix.group, ['project', 'source']);
-  assert.equal(w.jobs.consumers.strategy.matrix.include.length, 2);
-  const restore = s.steps.find((x) => x.name === 'Restore admitted SDK shader inputs');
+  assert.equal(
+    w.jobs.consumers.strategy.matrix,
+    `\${{ fromJSON(needs.shader-producer-inputs.outputs.consumer_matrix) }}`,
+  );
+  assert.equal(p.outputs.consumer_matrix, `\${{ steps.profile.outputs.matrix }}`);
+  assert.equal(p.outputs.consumer_count, `\${{ steps.profile.outputs.consumer_count }}`);
+  assert.match(
+    w.jobs.aggregate.steps.find((step) => step.name === 'Download required consumer results').run,
+    /--expected-count .*needs\.shader-producer-inputs\.outputs\.consumer_count/,
+  );
+  const restore = s.steps.find((x) => x.name === 'Restore the admitted Core compiler');
   assert.ok(restore);
   assert.equal(
     s.steps.some((step) => step.id === 'wgpu-release'),
@@ -60,29 +72,22 @@ test('SDK seed waits for same-head core and point publications outside its origi
       s.steps.findIndex((x) => x.name === 'Build exact PR SDK and npm tarballs once'),
   );
   assert.match(restore.run, /core_artifact_id/);
-  assert.match(restore.run, /point_artifact_id/);
+  assert.match(restore.run, /--compiler-only/);
 });
 
-test('Candidate builders receive admitted shader inputs before their cold Engine build', () => {
+test('Candidate production keeps its original execution budgets with no compiled shader input prerequisite', () => {
   const workflow = parse(readFileSync('.github/workflows/sdk-release-candidate.yml', 'utf8'));
-  const resolve = workflow.jobs['resolve-source'];
-  const selector = resolve.steps.find((step) => step.id === 'shaders');
-  assert.ok(selector, 'Candidate must select optional inputs for its pinned source');
-  assert.equal(selector.env.SOURCE_SHA, `\${{ steps.source.outputs.source_sha }}`);
   for (const owner of ['build-sdk', 'reproducibility', 'collision']) {
     const steps = workflow.jobs[owner].steps;
-    const build = steps.findIndex((step) => /pnpm (?:sdk:build|build:engine)/.test(step.run ?? ''));
-    const restore = steps.findIndex((step) =>
-      (step.run ?? '').includes('scripts/ci/download-sdk-shader-inputs.mjs'),
+    assert.ok(steps.some((step) => /pnpm (?:sdk:build|build:engine)/.test(step.run ?? '')));
+    assert.ok(
+      !steps.some((step) => /download-sdk-shader-inputs|--compiled-shaders/.test(step.run ?? '')),
     );
-    assert.ok(restore >= 0 && restore < build, `${owner} must restore before production`);
-    assert.match(steps[restore].if, /needs\.resolve-source\.outputs\.core_artifact_id/);
-    assert.match(steps[restore].run, /needs\.resolve-source\.outputs\.point_artifact_id/);
     assert.equal(workflow.jobs[owner]['timeout-minutes'], owner === 'build-sdk' ? 120 : 90);
   }
 });
 
-test('Candidate Preview and collision use the same admitted or cold shader manifest', {
+test('Candidate Preview and collision share a source template manifest', {
   skip: process.platform === 'win32',
 }, () => {
   const workflow = parse(readFileSync('.github/workflows/sdk-release-candidate.yml', 'utf8'));
@@ -104,7 +109,14 @@ test('Candidate Preview and collision use the same admitted or cold shader manif
       const workspace = join(root, 'workspace');
       writeFileSync(
         binary,
-        '#!/bin/sh\nprintf "%s\\0" "$@" >> "$PNPM_TRACE"\nprintf "\\n" >> "$PNPM_TRACE"\n',
+        `#!/bin/sh
+printf "%s\\0" "$@" >> "$PNPM_TRACE"
+printf "\\n" >> "$PNPM_TRACE"
+if [ "$1" = build:shared ]; then
+  mkdir -p "$GITHUB_WORKSPACE/shared-build-inputs"
+  printf '{"shaderPublication":"source"}\\n' > "$GITHUB_WORKSPACE/shared-build-inputs/manifest.json"
+fi
+`,
       );
       chmodSync(binary, 0o755);
       execFileSync('bash', ['-euo', 'pipefail', '-c', build.run], {
@@ -117,17 +129,14 @@ test('Candidate Preview and collision use the same admitted or cold shader manif
           FORGEAX_SDK_SHADER_INPUTS: restored ? join(root, 'admitted') : '',
         },
       });
-      const manifest = join(
-        workspace,
-        restored ? 'shared-app-inputs' : 'shared-build-inputs',
-        'manifest.json',
-      );
+      const manifest = join(workspace, 'shared-build-inputs', 'manifest.json');
       const commands = readFileSync(trace, 'utf8')
         .trimEnd()
         .split('\n')
         .map((line) => line.split('\0').slice(0, -1));
       assert.deepEqual(commands, [
         ['build:engine'],
+        ['build:shared'],
         ['build:app', 'preview', '--shared-input-manifest', manifest],
       ]);
       assert.equal(
@@ -185,7 +194,7 @@ function producerFixture() {
   };
 }
 
-test('base and point share one capacity-qualified heavy execution owner', () => {
+test('one source publication and catalog share a capacity-qualified heavy execution owner', () => {
   const workflow = parse(readFileSync('.github/workflows/ci.yml', 'utf8'));
   const core = workflow.jobs['core-build'];
   const projection = workflow.jobs['shared-app-inputs'];
@@ -196,17 +205,11 @@ test('base and point share one capacity-qualified heavy execution owner', () => 
     core.steps.some((step) => step.run?.includes('verify-runner-pool-capacity.mjs --pool heavy')),
   );
   assert.ok(core.steps.some((step) => step.id === 'build-shared-inputs'));
-  assert.ok(core.steps.some((step) => step.id === 'point-shader-inputs'));
-  for (const name of [
-    'Fingerprint point shader inputs',
-    'Verify point shaders or compile from source',
-  ]) {
-    const step = core.steps.find((candidate) => candidate.name === name);
-    assert.equal(typeof step.run, 'string');
-    assert.equal(step.env.SHADER_POINT_SHADOWS, 'true');
-    assert.equal(step.env.SHADER_OUTPUT, 'shared-build-inputs');
-  }
-  assert.ok(core.steps.some((step) => step.id === 'shader-inputs'));
+  assert.ok(
+    !core.steps.some((step) =>
+      /--no-point-shadows|prepare-shader-release-inputs/.test(step.run ?? ''),
+    ),
+  );
   assert.ok(
     !projection.steps.some((step) => step.uses || /node|pnpm|checkout/.test(step.run ?? '')),
   );
@@ -538,18 +541,121 @@ test('post-rebuild admission rejects current compiler/source/lock drift, swapped
   }
 });
 
-test('SDK retains base receipt across clean and Engine validates both profiles after rebuilding compiler', () => {
-  const sdk = readFileSync('scripts/forgeax/build-sdk.mjs', 'utf8'),
-    build = readFileSync('scripts/build.mjs', 'utf8');
-  const download = readFileSync('scripts/ci/download-sdk-shader-inputs.mjs', 'utf8');
-  assert.match(download, /RUNNER_TEMP/);
-  assert.match(download, /FORGEAX_SDK_SHADER_INPUTS/);
-  assert.match(sdk, /process.env.FORGEAX_SDK_SHADER_INPUTS/);
-  assert.ok(
-    build.indexOf("await runStage('packages'") < build.indexOf('admitSdkShaderInputs(root)'),
+test('SDK reuses one verified Core archive without a compiled shader prerequisite', () => {
+  const sdk = readFileSync('scripts/forgeax/build-sdk.mjs', 'utf8');
+  const build = readFileSync('scripts/build.mjs', 'utf8');
+  const restore = readFileSync('scripts/ci/restore-core-shader-inputs.mjs', 'utf8');
+  const preflight = parse(readFileSync('.github/workflows/sdk-pr-preflight.yml', 'utf8'));
+  const step = preflight.jobs['build-sdk'].steps.find(
+    (entry) => entry.name === 'Restore the admitted Core compiler',
   );
-  assert.match(build, /admitSdkShaderInputs\(root\)/);
-  assert.match(sdk, /shared-app-inputs/);
+  assert.match(restore, /RUNNER_TEMP/);
+  assert.match(restore, /FORGEAX_SDK_CORE_INPUT/);
+  assert.match(step.run, /--compiler-only --sdk-core/);
+  assert.match(build, /process.env.FORGEAX_SDK_CORE_INPUT/);
+  assert.match(sdk, /'build:engine'/);
+  assert.doesNotMatch(sdk, /--compiled-shaders|prepare-shader-release-inputs/);
+  assert.doesNotMatch(build, /admitSdkShaderInputs|FORGEAX_SDK_SHADER_INPUTS/);
+});
+
+test('only PR SDK packaging opts into Three and declaration reuse', () => {
+  const preflight = parse(readFileSync('.github/workflows/sdk-pr-preflight.yml', 'utf8'));
+  const step = preflight.jobs['build-sdk'].steps.find(
+    (entry) => entry.name === 'Build exact PR SDK and npm tarballs once',
+  );
+  const build = readFileSync('scripts/build.mjs', 'utf8');
+  for (const profile of ['pr-consumer', 'pr-expanded']) {
+    const invocation = execFileSync(
+      'bash',
+      ['-c', `pnpm() { printf '%s\\0' "$@"; }\n${step.run}`],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, SDK_ARCHIVE_PROFILE: profile, SDK_PREFLIGHT_VERSION: 'pr-version' },
+      },
+    )
+      .split('\0')
+      .slice(0, -1);
+    assert.deepEqual(invocation, [
+      'sdk:build',
+      '--',
+      '--version',
+      'pr-version',
+      '--reuse-core-build',
+      '--emit-engine-package',
+      ...(profile === 'pr-consumer' ? ['--skip-game-3d-template-cache'] : []),
+    ]);
+  }
+  assert.doesNotMatch(
+    readFileSync('.github/workflows/sdk-release-candidate.yml', 'utf8'),
+    /--reuse-core-build/,
+  );
+  assert.match(
+    build,
+    /if \(sdkCore !== null\) seedSdkDeclarations\(root, sdkCore\);\s*const engineTypes/,
+  );
+  assert.match(build, /await runStage\('types', process\.execPath, \[/);
+});
+
+test('same-head Core only seeds missing declaration inputs without importing JS or build info', () => {
+  const f = payloadFixture();
+  try {
+    const core = sdkCoreBuildRoot(f.root, join(f.staging, 'core'));
+    const types = 'packages/types/dist';
+    f.write(join(core, types, 'fresh.d.ts'), 'fresh declaration');
+    f.write(join(core, types, 'built.d.ts'), 'archived generated declaration');
+    f.write(join(core, types, '.tsbuildinfo'), 'cannot suppress current checks');
+    f.write(join(core, types, 'fresh.d.ts.map'), 'old map');
+    f.write(join(core, types, 'index.mjs'), 'archive JS');
+    f.write(join(f.root, types, 'built.d.ts'), 'locally emitted declaration');
+    seedSdkDeclarations(f.root, core);
+    assert.equal(readFileSync(join(f.root, types, 'fresh.d.ts'), 'utf8'), 'fresh declaration');
+    assert.equal(
+      readFileSync(join(f.root, types, 'built.d.ts'), 'utf8'),
+      'locally emitted declaration',
+    );
+    for (const path of ['.tsbuildinfo', 'fresh.d.ts.map', 'index.mjs'])
+      assert.equal(existsSync(join(f.root, types, path)), false, path);
+    f.write(
+      join(core, 'engine-prerequisite-build-manifest.json'),
+      JSON.stringify({ engineSha: '0'.repeat(40) }),
+    );
+    assert.throws(() => sdkCoreBuildRoot(f.root, join(f.staging, 'core')), /source SHA mismatch/);
+  } finally {
+    rmSync(f.directory, { recursive: true, force: true });
+  }
+});
+
+test('Three material preparation reuses admitted cooked and template publications', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sdk-three-materials-'));
+  try {
+    const recipe = join(root, 'scripts', 'build-materials.mjs');
+    const core = join(root, 'core');
+    mkdirSync(dirname(recipe));
+    mkdirSync(core);
+    writeFileSync(recipe, readFileSync('packages/three/scripts/build-materials.mjs'));
+    const inputs = new Map([
+      ['materials.mjs', 'materialPrograms'],
+      ['physical.mjs', 'physicalTemplates'],
+    ]);
+    for (const [file, name] of inputs)
+      writeFileSync(join(core, file), `export const ${name} = "KLUv/AAAA";\n`);
+    const run = () =>
+      execFileSync(process.execPath, [recipe], {
+        env: { ...process.env, FORGEAX_THREE_PROGRAM_INPUT: core },
+        stdio: 'pipe',
+      });
+    run();
+    for (const [file, name] of inputs)
+      assert.ok(
+        readFileSync(join(root, 'src/generated', file), 'utf8').includes(
+          `export const ${name} = "KLUv/AAAA";`,
+        ),
+      );
+    writeFileSync(join(core, 'physical.mjs'), 'export const physicalTemplates = "invalid";\n');
+    assert.throws(run, /Invalid prepared Three program publication/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('the download entry pairs exact Core native bytes and keeps shader paths outside SDK clean', async () => {
@@ -628,12 +734,12 @@ test('all transferred profile consumers admit the original verified compiler bef
     (step) => step.name === 'Prepare verified portable scene inputs',
   );
   const base = steps.findIndex(
-    (step) => step.name === 'Restore the admitted core base shader payload',
+    (step) => step.name === 'Restore the admitted Core compiler payload',
   );
   assert.ok(portable >= 0 && portable < base);
   assert.match(steps[portable].run, /prepare-source-checkout.mjs third_party\/wgpu/);
   assert.match(steps[base].run, /restore-core-shader-inputs.mjs/);
-  assert.match(steps[base].run, /--prepare-compiler/);
+  assert.match(steps[base].run, /--compiler-only --build-packages/);
   assert.equal(steps[base]['timeout-minutes'], 5);
   const restore = readFileSync('scripts/ci/restore-core-shader-inputs.mjs', 'utf8');
   assert.ok(

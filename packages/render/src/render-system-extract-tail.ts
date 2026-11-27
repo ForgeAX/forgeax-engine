@@ -1,6 +1,11 @@
-﻿import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
+import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssetRegistry, runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import { ENTITY_NULL_RAW, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import type { EntityHandle, QueryRow, World } from '@forgeax/engine-ecs';
+import {
+  createEntityLookup,
+  type EntityLookupColumns,
+  isQueryIterating,
+} from '@forgeax/engine-ecs/internal';
 import {
   readArrayRangesChangedSince,
   readMutationEpoch,
@@ -10,7 +15,9 @@ import { worldRead } from '@forgeax/engine-ecs/world-read';
 import {
   deriveVertexCount,
   deriveVertexLayoutProjection,
+  describeMeshDraw,
   isFiniteAabb,
+  type MeshDrawDescription,
 } from '@forgeax/engine-geometry';
 import { box3, frustum } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
@@ -20,12 +27,11 @@ import {
   ChildOf,
   GlobalTransform,
   Mobility,
-  MobilityKindValue,
   MorphWeights,
   readPresentationWorldMatrix,
-  Transform,
   WaterBodyInstance,
 } from '@forgeax/engine-scene';
+import { mobilityFromRow } from '@forgeax/engine-scene/internal';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import {
   JointCountMismatchError,
@@ -48,10 +54,10 @@ import {
   createWaterMeshLayoutReceipt,
   waterZoneMeshViewForRenderer,
 } from '@forgeax/engine-water/internal';
+import { materialRasterSourceFacts } from './assembly/material/assembly';
 import { buildCameraFrusta } from './camera-frusta';
 import { setPlanarCaptureDemand } from './capture/planar-material';
 import {
-  CapsuleShadow,
   Instances,
   Layer,
   Lines,
@@ -87,12 +93,18 @@ import {
 import { createEnvironmentQuery } from './extract/environment-gate';
 import { buildGpuDrivenDraws } from './extract/gpu-driven';
 import { extractWorldEnvironment } from './extract/world-environment';
-import { captureHiddenEntities } from './features/hidden-entity-reports';
+import { captureHiddenEntities, NO_HIDDEN_ENTITY_REPORTS } from './features/hidden-entity-reports';
 import { MotionBlurValidationError } from './features/motion-blur/motion-blur-params';
 import { renderFeatureViewIdentity } from './features/view';
 import { extractGlyphSources } from './glyph-source';
 import { type InstanceProjectionStore, validateInstanceTransforms } from './instances';
 import { deriveInstancesUnionBounds } from './instances-derived-bounds';
+import {
+  captureMaterialRasterPrograms,
+  type MaterialProgramSelection,
+  type MaterialRasterPrograms,
+  materialProgramSelectionsForMaterial,
+} from './material-program-selection';
 import { MaterialResource, materialUsesSpriteGeometry } from './material-resource';
 import { captureMaterialSource, materialSourceMatchesCurrent } from './material-source';
 import {
@@ -106,7 +118,7 @@ import { isStandardPbrSkinMaterialShader } from './pbr-pipeline';
 import { expandPointsLinesBounds } from './points-lines/bounds';
 import type { PointsLinesRetainedSnapshot, PointsLinesStyle } from './points-lines/snapshot';
 import { IES_SLICE_CAPACITY } from './prepare/extended-lighting/resources';
-import { renderAsset, worldRenderResources } from './publication/resource-scope';
+import { worldRenderResources } from './publication/resource-scope';
 import { type CameraSnapshot, STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from './render-contract';
 import type {
   DispatchEntry,
@@ -114,7 +126,6 @@ import type {
   ExtractedFrame,
   InstancesSnapshot,
   LightRoster,
-  MaterialProgramSelection,
   MaterialSnapshot,
   MaterialSnapshotCache,
   MaterialSnapshotCacheEntry,
@@ -140,7 +151,6 @@ import {
   DEFAULT_FORWARD_PASS,
   defaultMaterialSnapshot,
   fogState,
-  materialProgramSelectionsForMaterial,
   materialSnapshotContext,
   prepareExtractContext,
   prepareMaterialSnapshot,
@@ -153,8 +163,10 @@ import {
   storeMaterialSnapshot,
   tonemapParams,
 } from './render-system-extract';
+import { ScenePoseWriter } from './scene/captured-transform';
+import { EMPTY_FRAME_ROWS } from './scene/frame-list';
 import { captureMaterialOverrides } from './scene/mesh-materials';
-import { ownPose } from './scene/pose-slab';
+import { renderSourceLayout } from './scene/render-source';
 import { buildShadowFrusta } from './scene/shadow-visibility';
 import { sharedAabb } from './scene/shared-aabb';
 import type { SkinBindingInput } from './scene/skin-scene-inputs';
@@ -228,6 +240,8 @@ export function extractSource(
     readonly instanceCollections?: InstanceProjectionStore;
     /** Change-driven environment entries (a source's publisher owns one). */
     readonly environmentGate?: EnvironmentFrameGate;
+    readonly environmentLightingOnly?: boolean;
+    readonly cameraSource?: import('./extract/environment-frame-gate').EnvironmentCameraReader;
   } = {},
 ): ExtractedFrame {
   const request = options.renderables ?? 'full';
@@ -252,6 +266,8 @@ export function extractSource(
       if (options.instanceCollections !== undefined)
         input.instanceCollections = options.instanceCollections;
       if (options.environmentGate !== undefined) input.environmentGate = options.environmentGate;
+      if (options.environmentLightingOnly) input.environmentLightingOnly = true;
+      if (options.cameraSource !== undefined) input.cameraSource = options.cameraSource;
       if (typeof request === 'object') input.renderableEntities = request.entities;
       if (options.cameraEntityKey !== undefined) input.cameraEntityKey = options.cameraEntityKey;
       if (options.view !== undefined) input.view = options.view;
@@ -277,6 +293,13 @@ export function extractSource(
     return emptyExtractedFrame();
   }
   const gate = options.environmentGate;
+  if (gate !== undefined && options.environmentLightingOnly)
+    return {
+      ...frame,
+      lights: gate.finalizeLighting(world, (routedError) =>
+        finalizeLights(world, frame.lights, routedError),
+      ),
+    };
   const environment =
     gate === undefined
       ? sourceEnvironment(world, frame)
@@ -508,7 +531,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
   // Environment reads are owned by the retained resource projection and are
   // established at the frame boundary; record never revisits World state.
   const worldInternal = createWorldInternalView(world);
-  const gate = context.environmentGate;
+  const gate = context.environmentLightingOnly ? undefined : context.environmentGate;
   const { fog, fogFailure, environment, projectedDecals, postProcessParams } =
     gate === undefined
       ? extractEnvironmentPart(world, context, worldInternal)
@@ -536,15 +559,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
   const cameras = environment.cameras;
   // Planar receivers shade forward only while this source publishes a capture.
   setPlanarCaptureDemand(world, publishesPlanarCapture(environment.auxiliaryCameras));
-  const scope = createWorldExtraction(world, context, worldInternal, environment.lights, cameras);
-  if (context.renderables !== 'none') {
-    extractMeshRenderers(scope);
-    extractDerivedRenderSources(scope);
-  }
-  extractWaterMeshSources(scope);
-  // M3 / w26: sort dispatch entries by queue (ascending, stable sort)
-  // per plan-strategy D-3.
-  const dispatch = sortDispatchByQueue(scope.dispatch);
+  const scope = extractGeometry(world, context, worldInternal, environment.lights, cameras);
   return {
     projectedDecals,
     cameras,
@@ -558,11 +573,11 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
       ? {}
       : { volumetricFog: environment.volumetricFog }),
     ...(environment.cloudLayer === undefined ? {} : { cloudLayer: environment.cloudLayer }),
-    renderables: scope.renderables,
-    ...(scope.waterMeshOwnerRefresh === undefined
+    renderables: scope?.renderables ?? EMPTY_FRAME_ROWS,
+    ...(scope?.waterMeshOwnerRefresh === undefined
       ? {}
       : { waterMeshOwnerRefreshes: [scope.waterMeshOwnerRefresh] }),
-    dispatch,
+    dispatch: scope === undefined ? EMPTY_FRAME_ROWS : sortDispatchByQueue(scope.dispatch),
     skylight: environment.skylight,
     skylightCount: environment.skylightCount,
     lightProbes: environment.lightProbes,
@@ -570,12 +585,18 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
     skyboxCount: environment.skyboxCount,
     fog,
     ...(fogFailure === undefined ? {} : { fogFailure }),
-    frustumStats: { culled: scope.frustumCulled, total: scope.frustumTotal },
-    visibilityStats: { explicitlyHidden: scope.explicitlyHidden.size },
-    materialTextureSources: scope.materialTextureSources,
+    frustumStats: { culled: scope?.frustumCulled ?? 0, total: scope?.frustumTotal ?? 0 },
+    visibilityStats: { explicitlyHidden: scope?.explicitlyHidden.size ?? 0 },
+    materialTextureSources: scope?.materialTextureSources ?? {
+      sourceFieldsVisited: 0,
+      producerRoutes: {},
+    },
     postProcessParams,
     visibilitySnapshot: context.visibility,
-    hiddenEntityReports: captureHiddenEntities(scope.explicitlyHidden),
+    hiddenEntityReports:
+      scope === undefined
+        ? NO_HIDDEN_ENTITY_REPORTS
+        : captureHiddenEntities(scope.explicitlyHidden),
   };
 }
 
@@ -589,6 +610,30 @@ interface MaterialLane {
   readonly materialContext: MaterialCookRasterContext | undefined;
 }
 
+/** Allocate mesh readers only for a producer that can emit geometry or restore water-owned rows. */
+function extractGeometry(
+  world: World,
+  context: PreparedExtractContext,
+  worldInternal: WorldInternalView,
+  lights: LightRoster,
+  cameras: readonly CameraSnapshot[],
+): WorldExtraction | undefined {
+  let scope: WorldExtraction | undefined;
+  if (context.renderables !== 'none') {
+    scope = createWorldExtraction(world, context, worldInternal, lights, cameras);
+    extractMeshRenderers(scope);
+    extractDerivedRenderSources(scope);
+  }
+  const water = world.hasResource(WATER_SYSTEM_RESOURCE)
+    ? world.getResource<WaterSystem>(WATER_SYSTEM_RESOURCE)
+    : undefined;
+  if (water !== undefined || context.waterMeshSourceState?.system !== undefined) {
+    scope ??= createWorldExtraction(world, context, worldInternal, lights, cameras);
+    extractWaterMeshSources(scope, water);
+  }
+  return scope;
+}
+
 /** Mutable state of one extractFrame call: its outputs, caches and cull counters. */
 function createWorldExtraction(
   world: World,
@@ -596,6 +641,7 @@ function createWorldExtraction(
   worldInternal: WorldInternalView,
   lights: LightRoster,
   cameras: readonly CameraSnapshot[],
+  expectedPoseRows = context.renderableEntities?.size,
 ) {
   const renderables: RenderableSnapshot[] = [];
   const dispatch: DispatchEntry[] = [];
@@ -627,84 +673,171 @@ function createWorldExtraction(
     // feat-20260528-frustum-culling M3 / w11: frustum culling counters.
     frustumCulled: 0,
     frustumTotal: 0,
+    preparedPose: false,
+    poses: new ScenePoseWriter(expectedPoseRows),
   };
 }
 
 type WorldExtraction = ReturnType<typeof createWorldExtraction>;
 
-// tweak-20260611 M1: MeshRenderer renderable archetype walk routes through one
-// World-owned Query. Variable-length array reads (`MeshRenderer.materials`,
-// SpriteInstances arrays) still flow through `_getArrayView`; explicit
-// Instances bytes come from the renderer-owned collection store.
-function queryMeshRenderers(world: World, skinComponent: typeof Skin) {
-  return world
-    .query({
-      read: [MeshRenderer],
-      optional: [
-        Transform,
-        GlobalTransform,
-        MeshFilter,
-        Instances,
-        skinComponent,
-        Layer,
-        MorphWeights,
-        SpriteRegionOverride,
-        SpriteInstances,
-        Points,
-        Lines,
-        SortKey,
-      ],
-    })
-    .unwrap();
+/** Engine-only roster read; ordinary extraction retains its Query filtering. */
+export function extractInactiveMeshMember(
+  world: World,
+  context: PreparedExtractContext,
+  entity: EntityHandle,
+) {
+  const internal = createWorldInternalView(world);
+  const scope = createWorldExtraction(
+    world,
+    { ...context, cull: 'none', retainHidden: true },
+    {
+      ...internal,
+      _routeError(error, ctx) {
+        if (ctx.severity === Severity.Warning) internal._routeError(error, ctx);
+        else throw error;
+      },
+    },
+    emptyExtractedFrame().lights,
+    [],
+    1,
+  );
+  scope.preparedPose = true;
+  const source = meshExtractionSource(world);
+  extractMeshRendererRow(scope, entity, new MeshRendererRowRead(source));
+  return {
+    renderables: scope.renderables,
+    dispatch: scope.dispatch,
+    hidden: scope.explicitlyHidden.has(entity),
+  };
+}
+
+// The query owns admission and order. Archetype membership is shared with source observation.
+function queryMeshRenderers(world: World) {
+  return world.query({ read: [MeshRenderer] }).unwrap();
+}
+
+// Each named field addresses one scalar column in the ECS lookup.
+const meshFieldLayout: (readonly [number, string])[] = [];
+function meshField(component: number, field: string): number {
+  return meshFieldLayout.push([component, field]) - 1;
+}
+const MeshField = {
+  lightingChannels: meshField(0, 'lightingChannels'),
+  renderLayers: meshField(0, 'renderLayers'),
+  frustumCulled: meshField(0, 'frustumCulled'),
+  preparePipelines: meshField(0, 'preparePipelines'),
+  cast: meshField(1, 'cast'),
+  receive: meshField(1, 'receive'),
+  shadowChannels: meshField(1, 'channels'),
+  mesh: meshField(2, 'assetHandle'),
+  skeleton: meshField(3, 'skeleton'),
+  sortKey: meshField(4, 'value'),
+  layer: meshField(5, 'value'),
+  mobility: meshField(6, 'kind'),
+  parent: meshField(7, 'parent'),
+};
+
+/** The World owns component identity and table storage. Only column addresses survive extraction. */
+function createMeshExtractionSource(world: World, skin: typeof Skin) {
+  const lookup = createEntityLookup(
+    world,
+    [MeshRenderer, ShadowParticipation, MeshFilter, skin, SortKey, Layer, Mobility, ChildOf],
+    meshFieldLayout,
+  );
+  let query: ReturnType<typeof queryMeshRenderers> | undefined;
+  return {
+    skin,
+    lookup,
+    layout: renderSourceLayout(world),
+    query() {
+      query ??= queryMeshRenderers(world);
+      return isQueryIterating(query) ? queryMeshRenderers(world) : query;
+    },
+  };
+}
+
+type MeshExtractionSource = ReturnType<typeof createMeshExtractionSource>;
+const meshExtractionSources = new WeakMap<World, MeshExtractionSource>();
+const EMPTY_MESH_FIELDS: EntityLookupColumns['fields'] = [];
+
+function meshExtractionSource(world: World): MeshExtractionSource {
+  const skin = (world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
+  let source = meshExtractionSources.get(world);
+  if (source?.skin !== skin) {
+    source = createMeshExtractionSource(world, skin);
+    meshExtractionSources.set(world, source);
+  }
+  return source;
 }
 
 /** Walk MeshRenderer rows in query order, or in the requested partial entity order. */
-function extractMeshRenderers(scope: WorldExtraction): void {
-  const skinComponent =
-    (scope.world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
-  const query = queryMeshRenderers(scope.world, skinComponent);
-  const requested = scope.context.renderableEntities;
-  if (requested === undefined) {
-    for (const row of query) extractMeshRendererRow(scope, row.entity, skinComponent);
-    return;
-  }
-  for (const entity of requested) {
-    const row = query.at(entity as EntityHandle);
-    if (row !== undefined) extractMeshRendererRow(scope, row.entity, skinComponent);
-  }
+function extractMeshRenderers(
+  scope: WorldExtraction,
+  requested = scope.context.renderableEntities,
+): void {
+  const source = meshExtractionSource(scope.world);
+  const query = source.query();
+  const read = new MeshRendererRowRead(source);
+  const visit = (row: QueryRow) => extractMeshRendererRow(scope, row.entity, read);
+  if (requested === undefined) query.forEach(visit);
+  else query.forEachAt(requested as ReadonlySet<EntityHandle>, visit);
 }
 
 /** Terrain, glyph and tilemap producers append to the same renderable/dispatch lists. */
 function extractDerivedRenderSources(scope: WorldExtraction): void {
   const { world, context, renderables, visibility, explicitlyHidden } = scope;
-  if (scope.assets != null)
+  const requested = context.renderableEntities;
+  let terrain: Set<number> | undefined,
+    glyph: Set<number> | undefined,
+    tilemap: Set<number> | undefined;
+  if (requested !== undefined) {
+    const read = renderSourceLayout(world);
+    for (const entity of requested) {
+      const layout = read(entity as EntityHandle);
+      if (layout?.terrain) {
+        terrain ??= new Set();
+        terrain.add(entity);
+      }
+      if (layout?.glyph) {
+        glyph ??= new Set();
+        glyph.add(entity);
+      }
+      if (layout?.tilemap) {
+        tilemap ??= new Set();
+        tilemap.add(entity);
+      }
+    }
+  }
+  if (scope.assets != null && (requested === undefined || terrain !== undefined))
     extractTerrainSources(
       world,
       scope.assets,
       context.materialContext,
       renderables,
       scope.dispatch,
-      context.renderableEntities,
+      terrain,
       visibility,
       context.retainHidden,
       explicitlyHidden,
     );
-  extractGlyphSources(
-    world,
-    renderables,
-    context.renderableEntities,
-    visibility,
-    context.retainHidden,
-    explicitlyHidden,
-  );
-  extractTilemapSources(
-    world,
-    renderables,
-    context.renderableEntities,
-    visibility,
-    context.retainHidden,
-    explicitlyHidden,
-  );
+  if (requested === undefined || glyph !== undefined)
+    extractGlyphSources(
+      world,
+      renderables,
+      glyph,
+      visibility,
+      context.retainHidden,
+      explicitlyHidden,
+    );
+  if (requested === undefined || tilemap !== undefined)
+    extractTilemapSources(
+      world,
+      renderables,
+      tilemap,
+      visibility,
+      context.retainHidden,
+      explicitlyHidden,
+    );
 }
 
 type WaterOwnerMeshDraw =
@@ -789,35 +922,66 @@ function composeWaterMeshOwnerRow(
   };
 }
 
-function replaceWaterMeshOwnerRow(scope: WorldExtraction, renderable: RenderableSnapshot): void {
-  const index = scope.renderables.findIndex((row) => row.entityKey === renderable.entityKey);
-  if (index >= 0) scope.renderables[index] = renderable;
-  else scope.renderables.push(renderable);
+/** Address just the requested water owners in the frame's ordinary output list. Derived
+ * extraction appends rows, so each suffix is joined once and ordinary insertion order survives. */
+class WaterMeshOwnerRows {
+  private readonly positions = new Map<number, number>();
+  private scanned = 0;
+
+  constructor(
+    private readonly rows: RenderableSnapshot[],
+    owners: readonly number[],
+  ) {
+    for (const entity of owners) this.include(entity);
+  }
+
+  include(entity: number): void {
+    if (this.positions.has(entity)) return;
+    this.positions.set(entity, -1);
+    this.scanned = 0;
+  }
+
+  read(entity: number): RenderableSnapshot | undefined {
+    this.include(entity);
+    while (this.scanned < this.rows.length) {
+      const index = this.scanned++;
+      const key = (this.rows[index] as RenderableSnapshot).entityKey;
+      if (this.positions.get(key) === -1) this.positions.set(key, index);
+    }
+    return this.rows[this.positions.get(entity) as number];
+  }
+
+  replace(row: RenderableSnapshot): void {
+    this.read(row.entityKey);
+    const index = this.positions.get(row.entityKey) as number;
+    if (index >= 0) this.rows[index] = row;
+    else {
+      this.positions.set(row.entityKey, this.rows.length);
+      this.rows.push(row);
+      this.scanned = this.rows.length;
+    }
+  }
 }
 
 function extractMissingWaterOwnerMeshRows(
   scope: WorldExtraction,
+  owners: WaterMeshOwnerRows,
   entities: Iterable<number>,
 ): void {
-  const missing = [...new Set(entities)].filter(
-    (entity) => !scope.renderables.some((row) => row.entityKey === entity),
-  );
-  if (missing.length === 0) return;
+  const missing = new Set<number>();
+  for (const entity of entities) {
+    if (owners.read(entity) === undefined) missing.add(entity);
+  }
+  if (missing.size === 0) return;
   extractDerivedRenderSources({
     ...scope,
     context: {
       ...scope.context,
       renderables: 'full',
-      renderableEntities: new Set(missing),
+      renderableEntities: missing,
     },
   });
-  const skinComponent =
-    (scope.world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
-  const query = queryMeshRenderers(scope.world, skinComponent);
-  for (const entity of missing) {
-    const row = query.at(entity as EntityHandle);
-    if (row !== undefined) extractMeshRendererRow(scope, row.entity, skinComponent);
-  }
+  extractMeshRenderers(scope, missing);
 }
 
 function validWaterMeshViewFacts(
@@ -893,12 +1057,31 @@ function waterMeshCameraViews(
   });
 }
 
-function extractWaterMeshSources(scope: WorldExtraction): void {
+const EMPTY_WATER_MESH_REFRESH = Object.freeze({
+  worldId: 0,
+  system: undefined,
+  inputKey: '',
+  ownerEntityKeys: Object.freeze([]),
+  ownerSources: Object.freeze([]),
+});
+
+function extractWaterMeshSources(scope: WorldExtraction, water: WaterSystem | undefined): void {
   const { world, context } = scope;
-  const water = world.hasResource(WATER_SYSTEM_RESOURCE)
-    ? world.getResource<WaterSystem>(WATER_SYSTEM_RESOURCE)
-    : undefined;
-  const bodySnapshots = water?.snapshots() ?? [];
+  if (water === undefined) {
+    const previous = context.waterMeshSourceState;
+    if (previous?.system !== undefined) {
+      extractMissingWaterOwnerMeshRows(
+        scope,
+        new WaterMeshOwnerRows(scope.renderables, previous.ownerEntityKeys),
+        previous.ownerEntityKeys,
+      );
+      scope.waterMeshOwnerRefresh = EMPTY_WATER_MESH_REFRESH;
+    }
+    return;
+  }
+  const acceptedInput = context.waterMeshSourceState;
+  const ownerRows = new WaterMeshOwnerRows(scope.renderables, acceptedInput?.ownerEntityKeys ?? []);
+  const bodySnapshots = water.snapshots();
   const resolveWaterMeshCameraRoster = () => {
     const cameraRoster =
       context.view !== undefined
@@ -950,6 +1133,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
   const bodyFacts = bodySnapshots.map((body) => {
     const match = /^scene-entity:(\d+)$/.exec(body.guid);
     const entity = match === null ? undefined : (Number(match[1]) as EntityHandle);
+    if (entity !== undefined) ownerRows.include(entity);
     const entityLive =
       entity !== undefined &&
       Number.isSafeInteger(entity) &&
@@ -1078,7 +1262,6 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
     materialFacts,
     water?.bakedQueryRevision,
   ]);
-  const acceptedInput = context.waterMeshSourceState;
   if (
     acceptedInput !== undefined &&
     acceptedInput.system === water &&
@@ -1096,8 +1279,8 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
           scope.visibility?.effective(owner.entityKey as EntityHandle) === 'hidden'
         )
           continue;
-        const ordinary = scope.renderables.find((row) => row.entityKey === owner.entityKey);
-        replaceWaterMeshOwnerRow(scope, composeWaterMeshOwnerRow(scope, owner, ordinary));
+        const ordinary = ownerRows.read(owner.entityKey);
+        ownerRows.replace(composeWaterMeshOwnerRow(scope, owner, ordinary));
       }
     };
     restoreAcceptedWaterMeshRows(acceptedInput.ownerSources);
@@ -1110,7 +1293,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
     ownerEntityKeys: Object.freeze([]),
     ownerSources: Object.freeze([]),
   });
-  extractMissingWaterOwnerMeshRows(scope, acceptedInput?.ownerEntityKeys ?? []);
+  extractMissingWaterOwnerMeshRows(scope, ownerRows, acceptedInput?.ownerEntityKeys ?? []);
   if (water === undefined || !waterBodiesPresent || views.length === 0) return;
   const waterMeshEntities = new Set<EntityHandle>();
   const captureWaterMeshEntities = () => {
@@ -1129,7 +1312,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
   };
   captureWaterMeshEntities();
   if (waterMeshEntities.size === 0) return;
-  extractMissingWaterOwnerMeshRows(scope, waterMeshEntities);
+  extractMissingWaterOwnerMeshRows(scope, ownerRows, waterMeshEntities);
   type SelectedOwnerDraws = {
     bodyGuid: string;
     bodyGeneration: number;
@@ -1387,10 +1570,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
       )
         continue;
       const worldIdentity = world.identity;
-      const existingIndex = replacedEntities.has(entity)
-        ? -1
-        : scope.renderables.findIndex((renderable) => renderable.entityKey === entity);
-      const previousRenderable = existingIndex >= 0 ? scope.renderables[existingIndex] : undefined;
+      const previousRenderable = replacedEntities.has(entity) ? undefined : ownerRows.read(entity);
       const waterMaterialResources: MaterialResource[] = [];
       const materialIndices = new Map<number, number>();
       const pendingMaterialSources = new Map<number, number>();
@@ -1692,10 +1872,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
             },
           };
           ownerSources.set(entity, retainedSource);
-          replaceWaterMeshOwnerRow(
-            scope,
-            composeWaterMeshOwnerRow(scope, retainedSource, previousRenderable),
-          );
+          ownerRows.replace(composeWaterMeshOwnerRow(scope, retainedSource, previousRenderable));
           replacedEntities.add(entity);
         }
         continue;
@@ -1716,10 +1893,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
         materials: Object.freeze([...waterMaterialResources]),
       });
       ownerSources.set(entity, ownerSource);
-      replaceWaterMeshOwnerRow(
-        scope,
-        composeWaterMeshOwnerRow(scope, ownerSource, previousRenderable),
-      );
+      ownerRows.replace(composeWaterMeshOwnerRow(scope, ownerSource, previousRenderable));
       replacedEntities.add(entity);
     }
   };
@@ -1738,9 +1912,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
           snapshot.guid === binding.zoneGuid && snapshot.generation === binding.zoneGeneration,
       );
       if (zone === undefined) continue;
-      const previousRenderable = scope.renderables.find(
-        (renderable) => renderable.entityKey === entity,
-      );
+      const previousRenderable = ownerRows.read(entity);
       const targetFormat =
         zone.asset.waterInfo.format === 'rgba32f' ? 'rgba32float' : 'rgba16float';
       const ownerSource: WaterMeshOwnerSource = Object.freeze({
@@ -1758,10 +1930,7 @@ function extractWaterMeshSources(scope: WorldExtraction): void {
         materials: Object.freeze([]),
       });
       ownerSources.set(entity, ownerSource);
-      replaceWaterMeshOwnerRow(
-        scope,
-        composeWaterMeshOwnerRow(scope, ownerSource, previousRenderable),
-      );
+      ownerRows.replace(composeWaterMeshOwnerRow(scope, ownerSource, previousRenderable));
       replacedEntities.add(entity);
     }
   };
@@ -1813,41 +1982,9 @@ function collectPostProcessParams(
 function extractMeshRendererRow(
   scope: WorldExtraction,
   entity: EntityHandle,
-  skinComponent: typeof Skin,
+  read: MeshRendererRowRead,
 ): void {
-  // The required query component owns this scalar. Read it without
-  // materialising MeshRenderer's unrelated variable-length materials array.
-  const lightingChannels = scope.world[worldRead].getFieldValue(
-    entity,
-    MeshRenderer,
-    'lightingChannels',
-  ) as number;
-  if (!admitChannelMask(scope, validateChannelMask(lightingChannels), 'lighting-channels')) return;
-  const renderLayers = scope.world[worldRead].getFieldValue(
-    entity,
-    MeshRenderer,
-    'renderLayers',
-  ) as number;
-  if (!admitChannelMask(scope, validateChannelMask(renderLayers, 'renderLayers'), 'render-layers'))
-    return;
-  const participation = readShadowParticipation(scope.world, entity);
-  if (
-    participation !== undefined &&
-    !admitChannelMask(
-      scope,
-      validateChannelMask(participation.channels, 'shadowChannels'),
-      'shadow-channels',
-    )
-  )
-    return;
-  const read = readMeshRendererRow(
-    scope,
-    entity,
-    skinComponent,
-    lightingChannels,
-    renderLayers,
-    participation,
-  );
+  if (!read.load(scope, entity)) return;
   if (!read.authorVisible) scope.explicitlyHidden.add(entity);
   if (!read.authorVisible && !scope.context.retainHidden) return;
   // A scalar shared<T> field uses slot 0 as the schema-level unbound
@@ -1858,7 +1995,8 @@ function extractMeshRendererRow(
   // Dispatch entries are staged locally and flushed into the shared list only
   // when the entity survives culling, so a culled entity never leaves entries
   // whose renderableIndex aliases a later visible entity (PR #598).
-  const pending: DispatchEntry[] = [];
+  const pending = read.pending;
+  pending.length = 0;
   const materialsView = scope.worldInternal._getArrayView(entity, MeshRenderer, 'materials') as
     | Uint32Array
     | undefined;
@@ -1884,127 +2022,96 @@ function admitChannelMask(
   return false;
 }
 
-function readShadowParticipation(world: World, entity: EntityHandle) {
-  if (!world.hasComponent(entity, ShadowParticipation)) return undefined;
-  const read = world[worldRead];
-  return {
-    cast: read.getFieldValue(entity, ShadowParticipation, 'cast') === 1,
-    receive: read.getFieldValue(entity, ShadowParticipation, 'receive') === 1,
-    channels: read.getFieldValue(entity, ShadowParticipation, 'channels') as number,
-  };
-}
-
-/**
- * Blended surfaces (light beams, glows, glass, additive VFX) do not occlude
- * light by default: an entity whose every material blends drops its
- * ShadowCaster work unless ShadowParticipation is authored on it, which
- * remains the explicit opt-in (`cast: true`) or opt-out.
+/** One synchronous extraction owns the working row and its unpublished passes.
+ * Snapshots and dispatch entries copy the values they publish. Nested extraction gets its own row.
  */
-function withBlendedShadowDefault(
-  read: MeshRendererRowRead,
-  materials: readonly MaterialSnapshot[],
-): MeshRendererRowRead {
-  if (read.shadowParticipationAuthored || read.shadowCastDisabled) return read;
-  if (!materials.every((material) => material.transparent === true)) return read;
-  return { ...read, shadowCastDisabled: true };
-}
+class MeshRendererRowRead {
+  readonly pending: DispatchEntry[] = [];
+  entity!: EntityHandle;
+  layout: ReturnType<MeshExtractionSource['layout']>;
+  preparationMesh: PreparedExtractContext['preparationMesh'];
+  meshHandle: number | undefined;
+  lightingChannels = 0;
+  renderLayers = 0;
+  authorVisible = true;
+  frustumCulled = true;
+  isRenderable = false;
+  preparePipelines = false;
+  skinSkeleton: number | undefined;
+  morphWeights: ReturnType<WorldInternalView['_getArrayView']>;
+  shadowChannels: number | undefined;
+  shadowCastDisabled = false;
+  shadowParticipationAuthored = false;
+  shadowReceiveDisabled = false;
+  mobilityKind: number | undefined;
+  mobilityParent: number | undefined;
+  sortKey: number | undefined;
+  pointsLinesComponent: 'Points' | 'Lines' | undefined;
+  layer = 0;
+  archVersion = 0;
 
-/** Ancestors one Mobility lookup climbs before treating the entity as movable. */
-const MOBILITY_INHERIT_DEPTH = 64;
+  constructor(readonly source: MeshExtractionSource) {}
 
-/**
- * An entity without its own Mobility takes its nearest ancestor's: declaring a
- * placed scene root static declares its whole subtree, and a descendant that
- * moves on its own opts out with `Mobility 'movable'`. Absence everywhere on
- * the path is movable.
- */
-function readMobilityStatic(world: World, entity: EntityHandle): boolean {
-  const read = world[worldRead];
-  let current = entity;
-  for (let depth = 0; depth <= MOBILITY_INHERIT_DEPTH; depth += 1) {
-    const kind = read.getFieldValue(current, Mobility, 'kind');
-    if (kind !== undefined) return kind === MobilityKindValue.static;
-    const parent = read.getFieldValue(current, ChildOf, 'parent');
-    if (parent === undefined || parent === ENTITY_NULL_RAW) return false;
-    current = parent as EntityHandle;
-  }
-  return false;
-}
-
-/**
- * Presence and scalar reads of one MeshRenderer row. A missing optional
- * component surfaces as an absent bundle key; presence-only checks use
- * QueryRow.has so array-bearing components are not materialised.
- */
-function readMeshRendererRow(
-  scope: WorldExtraction,
-  entity: EntityHandle,
-  skinComponent: typeof Skin,
-  lightingChannels: number,
-  renderLayers: number,
-  participation: ReturnType<typeof readShadowParticipation>,
-) {
-  const preparationMesh =
-    scope.context.preparationMesh?.entity === entity ? scope.context.preparationMesh : undefined;
-  const scalar = scope.world[worldRead];
-  const meshHandle = scalar.getFieldValue(entity, MeshFilter, 'assetHandle');
-  const hasInstances = scope.world.hasComponent(entity, Instances);
-  const hasSpriteInstances = scope.world.hasComponent(entity, SpriteInstances);
-  const hasPoints = scope.world.hasComponent(entity, Points);
-  const hasLines = scope.world.hasComponent(entity, Lines);
-  const pointsLinesComponent: 'Points' | 'Lines' | undefined = hasPoints
-    ? 'Points'
-    : hasLines
-      ? 'Lines'
+  load(scope: WorldExtraction, entity: EntityHandle): boolean {
+    const lookup = this.source.lookup;
+    const fields = lookup.get(entity) ? lookup.columns.fields : EMPTY_MESH_FIELDS;
+    const row = lookup.row;
+    const lightingChannels = fields[MeshField.lightingChannels]?.view[row] as number;
+    if (!admitChannelMask(scope, validateChannelMask(lightingChannels), 'lighting-channels'))
+      return false;
+    const renderLayers = fields[MeshField.renderLayers]?.view[row] as number;
+    if (
+      !admitChannelMask(scope, validateChannelMask(renderLayers, 'renderLayers'), 'render-layers')
+    )
+      return false;
+    const shadowChannels = fields[MeshField.shadowChannels]?.view[row];
+    const hasParticipation = fields[MeshField.cast] !== undefined;
+    if (
+      hasParticipation &&
+      !admitChannelMask(
+        scope,
+        validateChannelMask(shadowChannels as number, 'shadowChannels'),
+        'shadow-channels',
+      )
+    )
+      return false;
+    const layout = this.source.layout(entity);
+    const meshHandle = fields[MeshField.mesh]?.view[row];
+    this.entity = entity;
+    this.layout = layout;
+    this.preparationMesh =
+      !scope.preparedPose && scope.context.preparationMesh?.entity === entity
+        ? scope.context.preparationMesh
+        : undefined;
+    this.meshHandle = this.preparationMesh?.meshHandle ?? meshHandle;
+    this.isRenderable = layout?.transform === true && meshHandle !== undefined;
+    this.authorVisible = !(this.isRenderable && scope.visibility?.effective(entity) === 'hidden');
+    this.lightingChannels = lightingChannels;
+    this.renderLayers = renderLayers;
+    this.frustumCulled = fields[MeshField.frustumCulled]?.view[row] !== 0;
+    this.preparePipelines =
+      this.preparationMesh !== undefined || fields[MeshField.preparePipelines]?.view[row] === 1;
+    this.skinSkeleton = fields[MeshField.skeleton]?.view[row];
+    this.morphWeights = layout?.morph
+      ? scope.worldInternal._getArrayView(entity, MorphWeights, 'weights')
       : undefined;
-  const isRenderable = scope.world.hasComponent(entity, Transform) && meshHandle !== undefined;
-  return {
-    entity,
-    authorVisible: !(isRenderable && scope.visibility?.effective(entity) === 'hidden'),
-    lightingChannels,
-    renderLayers,
-    preparationMesh,
-    preparePipelines:
-      preparationMesh !== undefined ||
-      scope.world[worldRead].getFieldValue(entity, MeshRenderer, 'preparePipelines') === 1,
-    // The resolved world transform is read from `GlobalTransform.world`; keep
-    // the defensive Transform check because an owner can explicitly remove a
-    // required component during recovery.
-    isRenderable,
-    meshHandle: preparationMesh?.meshHandle ?? meshHandle,
-    hasInstances,
-    skinSkeleton: scalar.getFieldValue(entity, skinComponent, 'skeleton'),
-    skinComponent,
-    morphWeights: scope.worldInternal._getArrayView(entity, MorphWeights, 'weights'),
-    capsuleShadowRequested: scope.world.hasComponent(entity, CapsuleShadow),
-    shadowChannels:
-      participation === undefined || participation.channels === 0xffffffff
-        ? undefined
-        : participation.channels,
-    shadowCastDisabled: participation?.cast === false,
-    shadowParticipationAuthored: participation !== undefined,
-    shadowReceiveDisabled: participation?.receive === false,
-    mobilityStatic: readMobilityStatic(scope.world, entity),
-    // SpriteInstances validation fires structured EcsErrors at extraction
-    // (D-6 fail-fast at the render domain entry, not at ECS spawn-time).
-    hasSpriteInstances,
-    sortKey: scalar.getFieldValue(entity, SortKey, 'value'),
-    pointsLinesComponent,
-    // Layer is folded into each DispatchEntry so transparent sorting uses it
-    // as the primary key without a second ECS round-trip.
-    layer: scalar.getFieldValue(entity, Layer, 'value') ?? 0,
-    // SpriteRegionOverride displaces the asset-side `values.region` for this
-    // entity only; 9-slice logic measures slices against the effective region.
-    hasSpriteRegionOverride: scope.world.hasComponent(entity, SpriteRegionOverride),
-    // Only the two instance-bearing paths consume the version in their cache key.
-    archVersion:
-      hasInstances || hasSpriteInstances
+    this.shadowChannels =
+      !hasParticipation || shadowChannels === 0xffffffff ? undefined : shadowChannels;
+    this.shadowCastDisabled = hasParticipation && fields[MeshField.cast]?.view[row] !== 1;
+    this.shadowParticipationAuthored = hasParticipation;
+    this.shadowReceiveDisabled = hasParticipation && fields[MeshField.receive]?.view[row] !== 1;
+    this.mobilityKind = fields[MeshField.mobility]?.view[row];
+    this.mobilityParent = fields[MeshField.parent]?.view[row];
+    this.sortKey = fields[MeshField.sortKey]?.view[row];
+    this.pointsLinesComponent = layout?.points ? 'Points' : layout?.lines ? 'Lines' : undefined;
+    this.layer = fields[MeshField.layer]?.view[row] ?? 0;
+    this.archVersion =
+      layout?.instances || layout?.spriteInstances
         ? spriteInstancesArchVersion(scope.worldInternal, entity)
-        : 0,
-  };
+        : 0;
+    return true;
+  }
 }
-
-type MeshRendererRowRead = ReturnType<typeof readMeshRendererRow>;
 
 /**
  * QueryRow deliberately exposes component data, not an archetype version.
@@ -2034,7 +2141,7 @@ interface EntityMaterialBindings {
   readonly handles: readonly number[];
   readonly sources: readonly MeshMaterialBindingSource[];
   readonly diagnostics: readonly MeshMaterialBindingDiagnostic[];
-  readonly mesh: MeshAsset | undefined;
+  readonly mesh: MeshDrawDescription | undefined;
 }
 
 /** The entity's resolved materials; `primary` (slot 0) owns entity-level shading dispatch. */
@@ -2060,13 +2167,24 @@ function resolveEntityMesh(
   return resolved.ok && resolved.value.kind === 'mesh' ? (resolved.value as MeshAsset) : undefined;
 }
 
+function resolveEntityMeshDraw(
+  scope: WorldExtraction,
+  read: MeshRendererRowRead,
+): MeshDrawDescription | undefined {
+  const handle = Math.round(read.meshHandle ?? 0);
+  if (handle === 0) return undefined;
+  if (read.preparationMesh !== undefined) return describeMeshDraw(read.preparationMesh.mesh);
+  const result = runtimeAssets(scope.world.assets).meshDraw(handle);
+  return result.ok ? result.value : undefined;
+}
+
 /** `undefined` means a routed slot failure rejected the entity. */
 function resolveEntityMaterialBindings(
   scope: WorldExtraction,
   read: MeshRendererRowRead,
   materialsView: Uint32Array | undefined,
 ): EntityMaterialBindings | undefined {
-  const mesh = scope.assets == null ? undefined : resolveEntityMesh(scope, read);
+  const mesh = scope.assets == null ? undefined : resolveEntityMeshDraw(scope, read);
   const bindings =
     mesh === undefined
       ? rendererMaterialBindings(materialsView)
@@ -2094,10 +2212,10 @@ function rendererMaterialBindings(materialsView: Uint32Array | undefined): Entit
 function resolveMeshSlotBindings(
   scope: WorldExtraction,
   entity: EntityHandle,
-  mesh: MeshAsset,
+  mesh: MeshDrawDescription,
   materialsView: Uint32Array | undefined,
 ): EntityMaterialBindings | undefined {
-  const guid = (mesh as { guid?: string }).guid ?? '<no-guid>';
+  const guid = mesh.guid ?? '<no-guid>';
   const resolved = resolveMeshMaterialBindings(
     mesh,
     materialsView ?? [],
@@ -2136,7 +2254,7 @@ function resolveMeshSlotBindings(
 
 function meshBindingDiagnosticDetail(
   diagnostic: MeshMaterialBindingDiagnostic,
-  mesh: MeshAsset,
+  mesh: MeshDrawDescription,
   materialCount: number,
   guid: string,
 ) {
@@ -2156,7 +2274,7 @@ function meshBindingDiagnosticDetail(
 function routeMeshSlotFailure(
   scope: WorldExtraction,
   entity: EntityHandle,
-  mesh: MeshAsset,
+  mesh: MeshDrawDescription,
   guid: string,
   failure: Extract<ResolveMeshMaterialBindingsResult, { readonly ok: false }>,
 ): void {
@@ -2165,7 +2283,7 @@ function routeMeshSlotFailure(
       new AssetError({
         code: 'load-failed',
         expected: 'every MeshAsset producer supplies materialSlots[]',
-        hint: `fix the MeshAsset producer; renderer inheritance never guesses slot topology (mesh=${guid}, entity=${entity}, vertices=${mesh.vertices.length}, indices=${mesh.indices?.length ?? 0})`,
+        hint: `fix the MeshAsset producer; renderer inheritance never guesses slot topology (mesh=${guid}, entity=${entity}, vertices=${mesh.vertexWordCount}, indices=${mesh.indexCount})`,
         detail: {
           referencedByGuid: guid,
           referencedByKind: 'mesh',
@@ -2203,13 +2321,13 @@ function routeMeshSlotFailure(
 function materialLaneFor(
   scope: WorldExtraction,
   read: MeshRendererRowRead,
-  mesh: MeshAsset | undefined,
+  mesh: MeshDrawDescription | undefined,
 ): MaterialLane {
-  const vertexColorAvailable = mesh?.attributes.color !== undefined;
+  const vertexColorAvailable = mesh?.layout.attributes.some(({ key }) => key === 'color') === true;
   const geometry: MaterialCookRasterContext['geometry'] =
     read.skinSkeleton !== undefined
       ? 'skinned'
-      : read.hasSpriteInstances
+      : read.layout?.spriteInstances
         ? 'sprite-instances'
         : 'mesh';
   const key = `${geometry}:${vertexColorAvailable}`;
@@ -2293,7 +2411,7 @@ function resolveFreshMaterial(
   lane: MaterialLane,
   handle: number,
   assets: AssetRegistry,
-  mesh: MeshAsset | undefined,
+  mesh: MeshDrawDescription | undefined,
   pending: DispatchEntry[],
 ): MaterialSelection | undefined {
   const resolved = runtimeAssets(scope.world.assets).resolveAsset(
@@ -2305,13 +2423,12 @@ function resolveFreshMaterial(
   }
   const material = resolved.value;
   if (material.kind !== 'material') return { snapshot: defaultMaterialSnapshot(handle) };
-  let programSelections: readonly MaterialProgramSelection[] | undefined;
+  let programs: MaterialRasterPrograms;
   try {
-    programSelections = materialProgramSelectionsForMaterial(
+    programs = captureMaterialRasterPrograms(
       material,
       assets,
       lane.materialContext,
-      'direct',
       lane.vertexColorAvailable,
     );
   } catch (error) {
@@ -2320,21 +2437,31 @@ function resolveFreshMaterial(
     throw error;
   }
   const world = worldRenderResources(scope.world);
+  const declarationLayout = lane.persistent.get(handle)?.declarationLayout ?? {};
   const snapshot = prepareMaterialSnapshot({
+    declarationLayout,
     handle,
     world,
     assets,
     shaderRegistry: scope.context.assets?.shaderRegistry ?? assets.shaderRegistry,
     material,
-    programSelections,
+    programs,
     materialContext: lane.materialContext,
     textureSourceStats: scope.materialTextureSources,
     vertexColorAvailable: lane.vertexColorAvailable,
     geometry: lane.geometry,
+    previousProgramSnapshot: lane.persistent.get(handle)?.snapshot,
   });
-  if (!admitSkinMaterial(scope, read, snapshot.materialShaderId, programSelections))
+  if (!admitSkinMaterial(scope, read, snapshot.materialShaderId, programs.selections))
     return undefined;
-  const stored = storeMaterialSnapshot(lane.persistent, handle, snapshot, world, programSelections);
+  const stored = storeMaterialSnapshot(
+    lane.persistent,
+    handle,
+    snapshot,
+    world,
+    programs.selections,
+    declarationLayout,
+  );
   lane.cache.set(handle, stored);
   lane.persistent.set(handle, stored);
   if (read.isRenderable) {
@@ -2380,7 +2507,7 @@ function rejectsUncookedSkinProgram(
   material: MaterialAsset,
   assets: AssetRegistry,
   lane: MaterialLane,
-  mesh: MeshAsset | undefined,
+  mesh: MeshDrawDescription | undefined,
   error: unknown,
 ): boolean {
   const materialContext = lane.materialContext;
@@ -2405,9 +2532,11 @@ function rejectsUncookedSkinProgram(
   }
 }
 
-function missingSkinAttributes(mesh: MeshAsset): 'both' | 'skinIndex' | 'skinWeight' | undefined {
-  const indices = mesh.attributes.skinIndex !== undefined;
-  const weights = mesh.attributes.skinWeight !== undefined;
+function missingSkinAttributes(
+  mesh: MeshDrawDescription,
+): 'both' | 'skinIndex' | 'skinWeight' | undefined {
+  const indices = mesh.layout.attributes.some(({ key }) => key === 'skinIndex');
+  const weights = mesh.layout.attributes.some(({ key }) => key === 'skinWeight');
   if (indices && weights) return undefined;
   if (!indices && !weights) return 'both';
   return !indices ? 'skinIndex' : 'skinWeight';
@@ -2417,7 +2546,7 @@ function missingSkinAttributes(mesh: MeshAsset): 'both' | 'skinIndex' | 'skinWei
 function routeMissingSkinAttributes(
   scope: WorldExtraction,
   entity: EntityHandle,
-  mesh: MeshAsset,
+  mesh: MeshDrawDescription,
 ): boolean {
   const missing = missingSkinAttributes(mesh);
   if (missing === undefined) return false;
@@ -2447,9 +2576,7 @@ function admitSkinMaterial(
     return false;
   }
   if (!wantsSkin || read.meshHandle === undefined || read.meshHandle === 0) return true;
-  const current = runtimeAssets(scope.world.assets).resolveAsset<MeshAsset>(
-    read.meshHandle as AssetHandle<'mesh'>,
-  );
+  const current = runtimeAssets(scope.world.assets).meshDraw(read.meshHandle);
   return !current.ok || !routeMissingSkinAttributes(scope, read.entity, current.value);
 }
 
@@ -2477,19 +2604,27 @@ function publishRenderable(
   }
   // feat-20260601 D-3: the resolved world mat4 feeds the record stage with
   // zero per-snapshot compose. A stale slot (generation gone) skips the entity.
-  const worldView = readPresentationWorldMatrix(scope.world, read.entity);
+  const worldView = scope.preparedPose
+    ? (scope.worldInternal._getArrayView(read.entity, GlobalTransform, 'world') as
+        | Float32Array
+        | undefined)
+    : readPresentationWorldMatrix(scope.world, read.entity);
   if (worldView === undefined) return;
-  const transform: TransformSnapshot = { world: ownPose(worldView) };
+  const transform = scope.poses.capture(worldView);
   const submeshMaterials = resolveSubmeshMaterials(scope, materials);
   // Without authored ShadowParticipation, a mesh whose every material blends
   // (transparent, additive) casts no shadow, like Three.js castShadow=false.
-  const castRead = withBlendedShadowDefault(read, submeshMaterials);
-  stageSubmeshDispatch(scope, castRead, materials, submeshMaterials, pending);
-  const geometry = resolveRenderableGeometry(scope, castRead, materials, submeshMaterials);
+  if (
+    !read.shadowParticipationAuthored &&
+    submeshMaterials.every((material) => material.transparent === true)
+  )
+    read.shadowCastDisabled = true;
+  stageSubmeshDispatch(scope, read, materials, submeshMaterials, pending);
+  const geometry = resolveRenderableGeometry(scope, read, materials, submeshMaterials);
   if (geometry === undefined) return;
   const renderable = composeRenderable(
     scope,
-    castRead,
+    read,
     materials,
     submeshMaterials,
     geometry,
@@ -2499,9 +2634,9 @@ function publishRenderable(
   // Material passes stay shared; participation only filters this entity's
   // ShadowCaster work, so every shadow map and cull test sees it absent.
   // Screen-space points and lines have no world-space footprint to cast.
-  if (castRead.shadowCastDisabled || castRead.pointsLinesComponent !== undefined)
+  if (read.shadowCastDisabled || read.pointsLinesComponent !== undefined)
     removeShadowCasterDispatch(pending);
-  const pipelinePreparation = castRead.preparePipelines
+  const pipelinePreparation = read.preparePipelines
     ? pending.map(
         ({ entityIndex: _entityIndex, renderableIndex: _renderableIndex, ...pass }) => pass,
       )
@@ -2509,9 +2644,9 @@ function publishRenderable(
   if (
     !admitFrustumVisibility(
       scope,
-      castRead,
+      read,
       geometry,
-      transform.world,
+      transform,
       pending,
       pipelinePreparation !== undefined,
     )
@@ -2519,9 +2654,11 @@ function publishRenderable(
     return;
   // Retain hidden snapshots for incremental composition, but never publish
   // their display or ShadowCaster passes to either record lane.
-  if (!castRead.authorVisible) pending.length = 0;
+  if (!read.authorVisible) pending.length = 0;
   for (const entry of pending) scope.dispatch.push(entry);
-  scope.renderables.push(withMobilityAndPreparation(renderable, castRead, pipelinePreparation));
+  scope.renderables.push(
+    withMobilityAndPreparation(scope.world, renderable, read, pipelinePreparation),
+  );
 }
 
 /**
@@ -2566,7 +2703,7 @@ function resolveSkinBinding(
   const entity = read.entity;
   const worldInternal = scope.worldInternal;
   // Skin + Instances coexistence is forbidden (D-10).
-  if (read.hasInstances) {
+  if (read.layout?.instances) {
     worldInternal._routeError(new SkinInstancesCoexistForbiddenError(entity), {
       severity: Severity.Error,
       systemName: 'RenderSystem.extract (skin-instances-coexist)',
@@ -2584,7 +2721,7 @@ function resolveSkinBinding(
     return false;
   }
   const jointCount = skeletonRes.value.jointCount;
-  const skinJoints = readRenderArrayView(scope.world, entity, read.skinComponent, 'joints');
+  const skinJoints = readRenderArrayView(scope.world, entity, read.source.skin, 'joints');
   if (skinJoints === undefined) return false;
   if (skinJoints.length !== jointCount) {
     // Keep static membership; the fixed-frame demand rejects incompatible resources.
@@ -2594,7 +2731,12 @@ function resolveSkinBinding(
     });
   }
   if (skinJoints.length === 0) return false;
-  return { skeleton: skeletonHandle, joints: Object.freeze(Array.from(skinJoints, Number)) };
+  const affinePoint = scope.world[worldRead].getFieldValue(entity, read.source.skin, 'affinePoint');
+  return {
+    skeleton: skeletonHandle,
+    joints: Object.freeze(Array.from(skinJoints, Number)),
+    ...(affinePoint ? { affinePoint: true } : {}),
+  };
 }
 
 /**
@@ -2673,9 +2815,10 @@ function resolveRenderableGeometry(
 ) {
   const spriteInstances = resolveSpriteInstances(scope, read, materials.primary.snapshot);
   if (spriteInstances === false) return undefined;
-  const mesh = resolveEntityMesh(scope, read);
-  const morph = mesh === undefined ? undefined : morphSnapshotFor(mesh, read.morphWeights);
-  const localAabb = renderableLocalAabb(read, mesh, morph, submeshMaterials);
+  const cpuMesh = read.morphWeights === undefined ? undefined : resolveEntityMesh(scope, read);
+  const mesh = scope.assets == null ? resolveEntityMeshDraw(scope, read) : materials.bindings.mesh;
+  const morph = cpuMesh === undefined ? undefined : morphSnapshotFor(cpuMesh, read.morphWeights);
+  const localAabb = renderableLocalAabb(read, mesh, cpuMesh, morph, submeshMaterials);
   const pointsLinesStyle = pointsLinesStyleOf(scope, read);
   const cullingLocalAabb = expandPointsLinesBounds(localAabb ?? [], pointsLinesStyle);
   const instances = resolveInstancesSnapshot(scope, read);
@@ -2701,16 +2844,17 @@ type RenderableGeometry = NonNullable<ReturnType<typeof resolveRenderableGeometr
  */
 function renderableLocalAabb(
   read: MeshRendererRowRead,
-  mesh: MeshAsset | undefined,
+  mesh: MeshDrawDescription | undefined,
+  cpuMesh: MeshAsset | undefined,
   morph: MorphSnapshot | undefined,
   submeshMaterials: readonly MaterialSnapshot[],
 ): Float32Array | undefined {
   const meshAabb = read.skinSkeleton !== undefined ? undefined : mesh?.aabb;
   const authored = !isFiniteAabb(meshAabb)
     ? undefined
-    : morph === undefined || mesh === undefined
+    : morph === undefined || cpuMesh === undefined
       ? sharedAabb(meshAabb)
-      : morphLocalAabb(meshAabb, mesh, morph);
+      : morphLocalAabb(meshAabb, cpuMesh, morph);
   const displacementRadius = standardDisplacementRadius(submeshMaterials);
   const expanded = expandDisplacementBounds(authored, displacementRadius);
   return read.skinSkeleton !== undefined && displacementRadius > 0 ? undefined : expanded;
@@ -2755,11 +2899,11 @@ function resolveSpriteInstances(
   read: MeshRendererRowRead,
   material: MaterialSnapshot,
 ): SpriteInstancesSnapshot | undefined | false {
-  if (!read.hasSpriteInstances) return undefined;
+  if (!read.layout?.spriteInstances) return undefined;
   const { entity } = read;
   const worldInternal = scope.worldInternal;
   // (1) mutually exclusive with Instances (peers — pick one).
-  if (read.hasInstances) {
+  if (read.layout?.instances) {
     worldInternal._routeError(new SpriteInstancesMutuallyExclusiveWithInstancesError(entity), {
       severity: Severity.Error,
       systemName: 'RenderSystem.extract (sprite-instances-mutually-exclusive)',
@@ -2815,7 +2959,7 @@ function resolveInstancesSnapshot(
   scope: WorldExtraction,
   read: MeshRendererRowRead,
 ): InstancesSnapshot | undefined | false {
-  if (!read.hasInstances) return undefined;
+  if (!read.layout?.instances) return undefined;
   const { world, worldInternal } = scope;
   const { entity } = read;
   const collections = scope.context.instanceCollections;
@@ -2863,7 +3007,7 @@ function composeRenderable(
 ): RenderableSnapshot {
   // Ordinary meshes do not own a GPU producer. Probe membership before the
   // full component read so absence does not allocate an ECS error per draw.
-  const gpuVertex = scope.world.hasComponent(read.entity, GpuMeshVertexSource)
+  const gpuVertex = read.layout?.gpuVertex
     ? scope.world.get(read.entity, GpuMeshVertexSource)
     : undefined;
   return {
@@ -2872,7 +3016,7 @@ function composeRenderable(
           gpuVertexSource: { feature: gpuVertex.value.feature, resource: gpuVertex.value.resource },
         }
       : {}),
-    ...(read.hasSpriteRegionOverride
+    ...(read.layout?.spriteRegion
       ? {
           spriteRegion: spriteUvRegion(
             scope.worldInternal._getArrayView(read.entity, SpriteRegionOverride, 'region'),
@@ -2888,6 +3032,7 @@ function composeRenderable(
       : {}),
     lightingChannels: read.lightingChannels,
     renderLayers: read.renderLayers,
+    ...(read.frustumCulled ? {} : { frustumCulled: false as const }),
     assetHandle: Math.round(read.meshHandle ?? 0),
     transform,
     ...(geometry.lods === undefined ? {} : { lods: geometry.lods }),
@@ -2953,9 +3098,7 @@ function renderableAttachments(
   const water = scope.world.hasResource(WATER_SYSTEM_RESOURCE)
     ? scope.world.getResource<WaterSystem>(WATER_SYSTEM_RESOURCE)
     : undefined;
-  const body = scope.world.hasComponent(read.entity, WaterBodyInstance)
-    ? water?.snapshot(`scene-entity:${read.entity}`)
-    : undefined;
+  const body = read.layout?.water ? water?.snapshot(`scene-entity:${read.entity}`) : undefined;
   const binding = body?.binding;
   const zone =
     binding?.kind === 'bound'
@@ -2987,7 +3130,7 @@ function renderableAttachments(
         }),
     ...(read.authorVisible ? {} : { authorVisible: false }),
     ...(skinBinding === undefined ? {} : { skinBinding }),
-    ...(read.capsuleShadowRequested ? { capsuleShadowRequested: true as const } : {}),
+    ...(read.layout?.capsuleShadow ? { capsuleShadowRequested: true as const } : {}),
     ...(geometry.morph !== undefined ? { morph: geometry.morph } : {}),
     ...(geometry.instances !== undefined ? { instances: geometry.instances } : {}),
     ...(geometry.spriteInstances !== undefined
@@ -3044,13 +3187,25 @@ function gpuDrivenRenderableFields(
     materials: submeshMaterials,
     fallbackMaterial: materials.primary.snapshot,
     deformation: skinBinding === undefined ? 'rigid' : 'skin',
-    ...(getMaterialShaderArtifact === undefined ? {} : { getMaterialShaderArtifact }),
+    ...(getMaterialShaderArtifact === undefined
+      ? {}
+      : {
+          getMaterialShaderArtifact: (id, request) =>
+            scope.assets?.shaderRegistry.isSourceBackedMaterialArtifact(id) === true
+              ? materialRasterSourceFacts(scope.assets.shaderRegistry, id, request)
+              : getMaterialShaderArtifact(id, request),
+        }),
     ...(lods === undefined
       ? {}
       : {
           lodMeshes: lods.map((lod) => {
-            const lower = renderAsset(worldRenderResources(scope.world), lod.mesh);
-            return lower?.kind === 'mesh' ? lower : undefined;
+            const handle =
+              typeof lod.mesh === 'number'
+                ? lod.mesh
+                : worldRenderResources(scope.world).handleForGuid(AssetGuid.format(lod.mesh));
+            if (handle === undefined) return undefined;
+            const lower = runtimeAssets(scope.world.assets).meshDraw(handle);
+            return lower.ok ? lower.value : undefined;
           }),
         }),
   });
@@ -3084,27 +3239,29 @@ function retainShadowCasterDispatch(pending: DispatchEntry[]): void {
 /**
  * feat-20260528-frustum-culling M3 / w10: skip the entity when a valid AABB
  * exists AND every camera frustum rejects it. Missing or malformed bounds are
- * conservative always-visible fallbacks; culling has no per-entity opt-out.
+ * conservative always-visible fallbacks. MeshRenderer can opt out of this test.
  * `false` drops the entity; a shadow-only survivor keeps only ShadowCaster work.
  */
 function admitFrustumVisibility(
   scope: WorldExtraction,
   read: MeshRendererRowRead,
   geometry: RenderableGeometry,
-  worldMatrix: Float32Array,
+  transform: TransformSnapshot,
   pending: DispatchEntry[],
   preparing: boolean,
 ): boolean {
   const { instances } = geometry;
   // No instance can contribute a visible bound; the retained snapshot still
   // records instanceCount=0 for the record stage.
-  if (geometry.localAabb === undefined || instances?.instanceCount === 0) return true;
+  if (!read.frustumCulled || geometry.localAabb === undefined || instances?.instanceCount === 0)
+    return true;
   // With no camera frustum every entity is visible, so the union bound would
   // only feed a test whose result is already known.
   if (scope.frustumPlanes.length === 0) {
     scope.frustumTotal += 1;
     return true;
   }
+  const worldMatrix = transform.world;
   const instanceBounds =
     instances === undefined
       ? undefined
@@ -3115,7 +3272,8 @@ function admitFrustumVisibility(
         });
   // Missing/malformed derived facts (non-finite producer matrices/AABB) are a
   // conservative no-cull result.
-  if (read.hasInstances && (instances === undefined || instanceBounds === undefined)) return true;
+  if (read.layout?.instances && (instances === undefined || instanceBounds === undefined))
+    return true;
   const worldAabb = worldCullingAabb(geometry.cullingLocalAabb, worldMatrix, instanceBounds);
   scope.frustumTotal += 1;
   if (intersectsAnyFrustum(scope.frustumPlanes, worldAabb)) return true;
@@ -3165,16 +3323,19 @@ function castsVisibleShadow(
 
 /** Pose and capsule shadow admission belong to the selected fixed frame's actual demand. */
 function withMobilityAndPreparation(
+  world: World,
   renderable: RenderableSnapshot,
   read: MeshRendererRowRead,
   pipelinePreparation: RenderableSnapshot['pipelinePreparation'],
 ): RenderableSnapshot {
+  const mobilityStatic =
+    mobilityFromRow(world, read.mobilityKind, read.mobilityParent) === 'static';
   const authored =
-    !read.mobilityStatic && !read.shadowReceiveDisabled
+    !mobilityStatic && !read.shadowReceiveDisabled
       ? renderable
       : {
           ...renderable,
-          ...(read.mobilityStatic ? { mobility: 'static' as const } : {}),
+          ...(mobilityStatic ? { mobility: 'static' as const } : {}),
           ...(read.shadowReceiveDisabled ? { shadowReceiver: false as const } : {}),
         };
   return ownWaterMaterialAdmissionSource(

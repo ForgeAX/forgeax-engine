@@ -2,6 +2,7 @@ import { mat4, type Vec3, vec3 } from '@forgeax/engine-math';
 import { describe, expect, it } from 'vitest';
 import {
   bin,
+  clusterSpaceObjectAabb,
   createClusterBinScratch,
   encodeProducerBounds,
   FROXEL_TILE_PAD,
@@ -10,10 +11,198 @@ import {
   measureClusterOccupancy,
   ndcPositionToCluster,
   producerBoundsInt32Length,
+  producerKeepsLight,
+  refineTextureClusterMembership,
   spotBinningSphere,
+  writeClusterMembershipFromGrid,
 } from '../cluster-binner';
 
 describe('cluster binner structured boundaries', () => {
+  it('prunes rectangle back faces and preserves later eligible lights under the run cap', () => {
+    const view = mat4.identity(mat4.create());
+    const projection = mat4.perspective(mat4.create(), Math.PI / 2, 1, 1, 16);
+    const grid = { x: 4, y: 4, z: 4 };
+    const cell = (1 * grid.y + 2) * grid.x + 2;
+    const lights = [
+      { position: vec3.create(0, 0, -1), range: 15, rectNormal: vec3.create(0, 0, 1) },
+      { position: vec3.create(0, 0, -1), range: 15, rectNormal: vec3.create(0, 0, -1) },
+    ];
+    const scratch = createClusterBinScratch();
+    const reservation = new Uint32Array(grid.x * grid.y * grid.z * 2);
+    bin(
+      lights,
+      view,
+      projection,
+      grid,
+      1,
+      16,
+      reservation,
+      new Uint32Array(64),
+      64,
+      scratch,
+    ).unwrap();
+    const payload = new Int32Array(producerBoundsInt32Length(lights.length));
+    encodeProducerBounds(lights, scratch.lightBounds, view, projection, payload);
+    expect(producerKeepsLight(payload, 0, 2, 2, 1, grid, 1, 16)).toBe(false);
+    expect(producerKeepsLight(payload, 1, 2, 2, 1, grid, 1, 16)).toBe(true);
+    expect(reservation[cell * 2 + 1]).toBe(1);
+    const result = refineTextureClusterMembership(
+      payload,
+      lights.length,
+      grid,
+      reservation,
+      64,
+      1,
+      16,
+      undefined,
+    );
+    expect(result.grid[cell * 2 + 1]).toBe(1);
+    expect(result.indices[result.grid[cell * 2] as number]).toBe(1);
+  });
+
+  it('leaves clipped finite lights out of every run while retaining boundary and no-cutoff lights', () => {
+    const view = mat4.identity(mat4.create());
+    const grid = { x: 8, y: 4, z: 8 };
+    const near = 1,
+      far = 32;
+    const projection = mat4.perspective(mat4.create(), Math.PI / 2, 1, near, far);
+    const positions = [
+      [0, 0, 5, 1],
+      [15, 0, -4, 0.5],
+      [-15, 0, -4, 0.5],
+      [0, 15, -4, 0.5],
+      [0, -15, -4, 0.5],
+      [0, 0, -0.25, 0.125],
+      [0, 0, -39, 1],
+      [0, 0, 0, 1.1],
+      [5, 0, -4, 1.5],
+      [0, 0, -32.5, 1],
+      [99, 99, 99, Infinity],
+    ] as const;
+    const lights = positions.map(([x, y, z, range]) => ({ position: vec3.create(x, y, z), range }));
+    const scratch = createClusterBinScratch();
+    const cells = grid.x * grid.y * grid.z;
+    const layout = new Uint32Array(cells * 2);
+    const indices = new Uint32Array(cells * lights.length);
+    const writes = bin(
+      lights,
+      view,
+      projection,
+      grid,
+      near,
+      far,
+      layout,
+      indices,
+      indices.length,
+      scratch,
+    ).unwrap();
+    expect([...new Set(indices.subarray(0, writes))].sort((a, b) => a - b)).toEqual([7, 8, 9, 10]);
+    for (let i = 0; i < 7; i++) expect(scratch.lightBounds[i * 6]).toBe(-1);
+    for (let cell = 0; cell < cells; cell++) {
+      const end = (layout[cell * 2] ?? 0) + (layout[cell * 2 + 1] ?? 0);
+      expect(indices[end - 1]).toBe(10);
+    }
+  });
+  it('gives a visible light the first slot after clipped sources even when the grid can hold only one', () => {
+    const view = mat4.identity(mat4.create()),
+      projection = mat4.perspective(mat4.create(), Math.PI / 2, 1, 1, 32);
+    const grid = { x: 1, y: 1, z: 1 };
+    const lights = [
+      vec3.create(0, 0, 4),
+      vec3.create(20, 0, -3),
+      vec3.create(0, 0, -4),
+      vec3.create(0, 0, -5),
+    ].map((position) => ({ position, range: 1 }));
+    const layout = new Uint32Array(2),
+      indices = new Uint32Array(1);
+    expect(bin(lights, view, projection, grid, 1, 32, layout, indices, 1).unwrap()).toBe(1);
+    expect(Array.from(indices)).toEqual([2]);
+  });
+
+  it('conservatively covers a scaled, rotated view and a pole inside a custom projection', () => {
+    const view = mat4.identity(mat4.create());
+    view[0] = 0;
+    view[1] = -1;
+    view[4] = 4;
+    view[5] = 0;
+    const projection = mat4.perspective(mat4.create(), Math.PI / 2, 1, 1, 32);
+    const aabb = clusterSpaceObjectAabb(vec3.create(0, 1.5, -4), 1, view, projection);
+    expect(aabb.min[0]).toBeCloseTo(2 / 5, 5);
+    const light = { position: vec3.create(0, 1.5, -4), range: 1 };
+    const scratch = createClusterBinScratch();
+    const grid = { x: 8, y: 4, z: 8 };
+    bin(
+      [light],
+      view,
+      projection,
+      grid,
+      1,
+      32,
+      new Uint32Array(512),
+      new Uint32Array(256),
+      256,
+      scratch,
+    );
+    const payload = new Int32Array(producerBoundsInt32Length(1));
+    encodeProducerBounds([light], scratch.lightBounds, view, projection, payload);
+    expect(payload[5]).toBe(0);
+    expect(scratch.lightBounds[0]).toBe(5);
+    const custom = mat4.identity(mat4.create());
+    custom[3] = 1;
+    custom[15] = 0;
+    custom[12] = 6;
+    const crossing = clusterSpaceObjectAabb(
+      vec3.create(0, 0, -4),
+      1,
+      mat4.identity(mat4.create()),
+      custom,
+    );
+    expect([crossing.min[0], crossing.max[0], crossing.min[1], crossing.max[1]]).toEqual([
+      -1, 1, -1, 1,
+    ]);
+  });
+
+  it('writes the first K independently for irregular overlapping boxes with borrowed scratch', () => {
+    const grid = { x: 7, y: 4, z: 3 },
+      cells = 84,
+      count = 91;
+    const boxes = new Int32Array(count * 6);
+    const expected = Array.from({ length: cells }, () => [] as number[]);
+    for (let i = 0; i < count; i++) {
+      const x = i % 7,
+        y = (i * 3) % 4,
+        z = (i * 7) % 3;
+      const x1 = Math.min(6, x + 3),
+        y1 = Math.min(3, y + 2),
+        z1 = Math.min(2, z + 1);
+      boxes.set([x, y, z, x1, y1, z1], i * 6);
+      for (let k = z; k <= z1; k++)
+        for (let j = y; j <= y1; j++)
+          for (let h = x; h <= x1; h++) expected[(k * 4 + j) * 7 + h]?.push(i);
+    }
+    const scratch = createClusterBinScratch();
+    for (const cap of [1, 7, 0, 3, 2]) {
+      const gridWords = new Uint32Array(cells * 2),
+        ordered: number[] = [];
+      for (const [cell, lights] of expected.entries()) {
+        const kept = lights.slice(0, cap);
+        gridWords.set([ordered.length, kept.length], cell * 2);
+        ordered.push(...kept);
+      }
+      const result = new Uint32Array(ordered.length + 2).fill(0xffff);
+      writeClusterMembershipFromGrid(
+        count,
+        boxes,
+        grid,
+        gridWords,
+        result.subarray(1, result.length - 1),
+        true,
+        scratch,
+      );
+      expect(Array.from(result)).toEqual([0xffff, ...ordered, 0xffff]);
+    }
+  });
+
   it.each([
     false,
     true,

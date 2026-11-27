@@ -44,8 +44,9 @@ describe('mesh-bin v5 roundtrip contract', () => {
       position: new Float32Array(3072),
       normal: new Float32Array(3072),
     }));
+    const morphWeights = Float32Array.from({ length: targets.length }, (_, index) => index / 8);
     const bytes = packMeshBin(
-      { ...buildPayload(1024, 0, false), morphTargets: targets },
+      { ...buildPayload(1024, 0, false), morphTargets: targets, morphWeights },
       'zero-morphs',
     ).unwrap();
     const header = decodeMeshBinHeader(bytes);
@@ -57,7 +58,18 @@ describe('mesh-bin v5 roundtrip contract', () => {
         bytes.subarray(80 + header.value.vertexBytes + header.value.indexBytes),
       ),
     );
+    expect(header.value.version).toBe(5);
     expect(metadata.morphTargetMasks).toEqual(Array(8).fill(27));
+    expect(metadata.morphWeights).toEqual(Array.from(morphWeights));
+    expect(
+      packMeshBin(
+        {
+          ...buildPayload(1024, 0, false),
+          morphTargets: [...targets, { position: new Float32Array(3072) }],
+        },
+        'excess-morphs',
+      ).ok,
+    ).toBe(false);
   });
 
   it('keeps a negative zero in the final scalar and still checks later non-finite values', () => {

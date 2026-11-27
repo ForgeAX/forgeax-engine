@@ -161,6 +161,45 @@ describe('persistent probe object demand', () => {
     }
   });
 
+  it('recomputes only the two translated probe rows in a changing live composition', () => {
+    const f = fixture();
+    try {
+      const members = [f.ordinary, ...Array.from({ length: 126 }, f.spawn), f.surface];
+      const probe = f.world
+        .spawn(
+          { component: Transform, data: {} },
+          { component: LightProbe, data: { radius: 8, irradiance: new Float32Array(27).fill(1) } },
+        )
+        .unwrap();
+      const first = f.draw();
+      let before = new Map(first.renderables.map((row) => [row.entityKey, row.probeBlendRecord]));
+      expect(before.size).toBe(128);
+      const initial = before.get(f.ordinary);
+      expect(initial?.accepted).toBe(true);
+      for (let i = 1; i <= 16; i++) {
+        for (const moving of [f.ordinary, f.surface])
+          f.world.set(moving, Transform, { pos: [i / 4, 0, 0] }).unwrap();
+        f.setMedium(members[16] as typeof f.ordinary, i % 2 === 0);
+        const frame = f.draw();
+        const next = new Map(frame.renderables.map((row) => [row.entityKey, row.probeBlendRecord]));
+        const changed = [...next.keys()].filter((key) => before.get(key) !== next.get(key));
+        expect(changed.sort((a, b) => a - b)).toEqual(
+          [f.ordinary, f.surface].sort((a, b) => a - b),
+        );
+        expect(f.scene.inspect().probeBlend?.dirtyVisitCount).toBe(2);
+        before = next;
+      }
+      expect(first.renderables.find((row) => row.entityKey === f.ordinary)?.probeBlendRecord).toBe(
+        initial,
+      );
+      f.world.set(probe, LightProbe, { irradiance: new Float32Array(27).fill(2) }).unwrap();
+      f.draw();
+      expect(f.scene.inspect().probeBlend?.dirtyVisitCount).toBe(128);
+    } finally {
+      f.close();
+    }
+  });
+
   it('adopts Mesh default medium changes without material-dependent probe rows or entity updates', () => {
     const f = fixture();
     try {

@@ -12,8 +12,8 @@ import {
   prepareLiveSyncSharedInputs,
 } from '../../scripts/live-sync-inputs.mjs';
 import { createViteConfig } from '../host.js';
+import { materializeViteDevPort } from '../loopback.js';
 import { readProjectFacts } from '../project.js';
-import { allocateLoopbackPort } from '../tools/browser-host.js';
 import { createWorkspacePackAuthoring } from '../workspace-pack-authoring.js';
 
 it('publishes saved authoring sources without replacing the editing document', async () => {
@@ -94,7 +94,7 @@ it('publishes saved authoring sources without replacing the editing document', a
       optimizeDeps: { noDiscovery: true, include: [] },
       server: {
         ...config.server,
-        port: await allocateLoopbackPort(),
+        port: await materializeViteDevPort(),
         strictPort: true,
         watch: null,
       },
@@ -389,7 +389,7 @@ it('waits for the Vite read barrier before notifying the Pack authoring owner', 
       optimizeDeps: { noDiscovery: true, include: [] },
       server: {
         ...config.server,
-        port: await allocateLoopbackPort(),
+        port: await materializeViteDevPort(),
         strictPort: true,
         watch: null,
       },

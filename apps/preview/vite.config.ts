@@ -1,7 +1,9 @@
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { discoverPluginAssets, executionWorkerEntries, publishedPluginInventory, pluginProgramsBuild, pluginRuntimeProjection } from '@forgeax/engine-devkit/plugin-build';
-import { dirname, resolve } from 'node:path';
+import { readFile, realpath } from 'node:fs/promises';
+import { discoverPluginAssets, prepareAuthoredRuntimePacks, publishedPluginInventory, pluginProgramsBuild, pluginRuntimeProjection } from '@forgeax/engine-devkit/plugin-build';
+import { STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS, scanInventory } from '@forgeax/engine-pack/scanner';
+import { createScriptablePackSourceSnapshot } from '@forgeax/engine-pack/source-node';
+import { dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pluginPack, reloadAssetHost } from '@forgeax/engine-vite-plugin-pack';
 import { audioImporter } from '@forgeax/engine-audio-webaudio/audio-importer';
@@ -22,6 +24,7 @@ import { defineConfig } from 'vite';
 import { targetProfileImporter } from '../../apps/game-capability-lab/assets/plugins/target-profile-importer';
 import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
 import { resolveProjectPort } from '@forgeax/engine-devkit';
+import { previewRuntimePacks } from './preview-runtime-packs';
 import { loadPreviewProjectCookers } from './src/project-cookers.ts';
 import {
   collectAssetDeclarationRoots,
@@ -114,13 +117,13 @@ const submoduleDejavuFontMetaPath = resolve(
     ? ['dejavu-fonts', 'DejaVuSansMono.ttf.meta.json']
     : ['forgeax-engine-assets', 'dejavu-fonts', 'DejaVuSansMono.ttf.meta.json']),
 );
-const submoduleDejavuLegacyAtlasMetaPath = resolve(
+const submoduleDejavuBakedAtlasMetaPath = resolve(
   isPublicDistribution ? publicTemplateResourceRoot : monorepoRoot,
   ...(isPublicDistribution
     ? ['dejavu-fonts', 'DejaVuSansMono.atlas.png.meta.json']
     : ['forgeax-engine-assets', 'dejavu-fonts', 'DejaVuSansMono.atlas.png.meta.json']),
 );
-const submoduleDejavuLegacyPackPath = resolve(
+const submoduleDejavuBakedPackPath = resolve(
   isPublicDistribution ? publicTemplateResourceRoot : monorepoRoot,
   ...(isPublicDistribution
     ? ['dejavu-fonts', 'DejaVuSansMono.font.pack.json']
@@ -146,8 +149,8 @@ const externalAssetRoots = isPublicDistribution
       submoduleBgmMetaPath,
       submoduleFbxDir,
       submoduleDejavuFontMetaPath,
-      submoduleDejavuLegacyAtlasMetaPath,
-      submoduleDejavuLegacyPackPath,
+      submoduleDejavuBakedAtlasMetaPath,
+      submoduleDejavuBakedPackPath,
       submoduleSpriteAtlasDir,
     ]
   : [
@@ -158,8 +161,8 @@ const externalAssetRoots = isPublicDistribution
       submoduleFbxDir,
       submoduleGlbDir,
       submoduleDejavuFontMetaPath,
-      submoduleDejavuLegacyAtlasMetaPath,
-      submoduleDejavuLegacyPackPath,
+      submoduleDejavuBakedAtlasMetaPath,
+      submoduleDejavuBakedPackPath,
       submoduleSpriteAtlasDir,
     ];
 // Each selected template carries its own declaration and external dependency
@@ -220,6 +223,18 @@ export default defineConfig(async ({ command }) => {
     convoyCookers.push(...projectCookers.session.cookers);
   }
   try {
+  const sourceSnapshot = createScriptablePackSourceSnapshot();
+  let initialSnapshot: typeof sourceSnapshot | undefined = sourceSnapshot;
+  const runtimeInventory = await scanInventory(packRoots.filter(path => path.endsWith('.pack.ts')), {
+    scriptablePack: { ...STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS, metadataOnly: true, sourceSnapshot },
+  });
+  if (!runtimeInventory.ok) throw runtimeInventory.error;
+  const runtimeDeclarations = await Promise.all(
+    [...runtimeInventory.value.declarations.values()].flatMap((declaration) =>
+      declaration.format === 'pack.ts' && declaration.definition.runtime?.export !== undefined
+        ? [realpath(declaration.sourcePath).then(path => [path, declaration] as const)]
+        : []),
+  );
   const pack = pluginPack({
       runtimeBinding,
       producerReadiness: readiness.value,
@@ -229,6 +244,11 @@ export default defineConfig(async ({ command }) => {
         projectDdcRoot: resolve(here, '.forgeax', 'ddc', 'v2'),
       },
       roots: packRoots,
+      takeInitialSourceSnapshot() {
+        const initial = initialSnapshot;
+        initialSnapshot = undefined;
+        return initial;
+      },
       importers: [
         audioImporter,
         imageImporter,
@@ -260,11 +280,19 @@ export default defineConfig(async ({ command }) => {
     ['empty', 'templates/empty/forge.json'],
     ['game-3d', resolve(game3dRoot, 'forge.json')],
   ] as const;
+  const runtimePacks = new Map<string, Awaited<ReturnType<typeof prepareAuthoredRuntimePacks>>['packs']>();
   const programPlugins = await Promise.all(manifests.map(async ([namespace, path]) => {
     const manifest = JSON.parse(await readFile(resolve(monorepoRoot, path), 'utf8'));
     const selected = !surfaceOnly && (!selectedTemplateSlugs.length || selectedTemplateSlugs.includes(namespace) ||
       namespace === 'depth-of-field' && selectedTemplateSlugs.includes('game-capability-lab'));
     const projectRoot = dirname(resolve(monorepoRoot, path));
+    if (selected) {
+      const root = await realpath(projectRoot);
+      const declarations = new Map(runtimeDeclarations.filter(([sourcePath]) =>
+        relative(root, sourcePath).startsWith(`assets${sep}`)));
+      const { packs } = await prepareAuthoredRuntimePacks(root, declarations, sourceSnapshot);
+      runtimePacks.set(namespace, packs);
+    }
     const inventory = selected ? await discoverPluginAssets({ root: projectRoot, assetRoots: ['assets'] }) : { assets: new Map(), sourceInputs: new Map(), deferred: [] };
     return pluginProgramsBuild({ namespace, projectRoot, roots: selected ? manifest.roots : {}, tools: [],
       inventory: () => publishedPluginInventory(projectRoot, inventory, pack), binding: runtimeBinding, pack });
@@ -287,7 +315,7 @@ export default defineConfig(async ({ command }) => {
       : {}),
   plugins: [
     ...(projectCookers === undefined ? [] : [projectCookers.plugin]),
-    executionWorkerEntries(),
+    ...previewRuntimePacks(Object.fromEntries(runtimePacks)),
     forgeaxShader({
       // game-default custom materials are authored packs: the pack owns the
       // parameter contract, while the WGSL module remains the build-time

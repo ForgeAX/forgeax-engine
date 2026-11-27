@@ -19,7 +19,7 @@ it('keeps Direct members fixed when public derived container root is replaced', 
   const members = required(batch.members);
   expect(Reflect.set(members, 'length', 0)).toBe(false);
   expect(Reflect.set(members, 'source', undefined)).toBe(false);
-  const executed = topology.query(source, undefined);
+  const executed = topology.query(source, undefined).active;
   expect(executed.batches.at(0)?.members?.length).toBe(1);
   expect(executed.batches.at(0)?.members?.at(0)?.entityKey).toBe(42);
 });
@@ -40,11 +40,11 @@ it('captures raw query facts and observes same-identity authored edits on the ne
   const batches = new TreeFrame<GpuDrivenBatch>().with(raw, 0, raw.batchId, raw.candidates.length);
   const plan = { ...source, batches };
   const projection = new MeshBatchProjection();
-  const held = projection.query(plan, undefined);
+  const held = projection.query(plan, undefined).active;
   required(draws[0]).key.count = 12;
   required(draws[0]).lod.coverages[1] = 0.5;
   required(required(draws[0]).lod.ranges[0]).count = 6;
-  const latest = projection.query(plan, undefined);
+  const latest = projection.query(plan, undefined).active;
   expect(held.batches.at(0)?.key.count).toBe(3);
   expect(held.batches.at(0)?.lod?.coverages[1]).toBe(0.25);
   expect(held.batches.at(0)?.lod?.ranges?.[0]?.count).toBe(3);

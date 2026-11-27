@@ -1,3 +1,6 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-input
 
 > **Frame-start scanned, frozen `InputSnapshot` Resource for forgeax-engine.** Multi-device surface frozen before user systems run each frame: keyboard (logical key + physical code held/press/release edges) + mouse (position / movementDelta / button held/press/release edges / wheelDelta) + gamepad (7 readpoints: button / buttonValue / justPressed / justReleased / axis / standardMapping / connected) + pointer (per-pointerId position / pressure / delta / phase event queue) + virtualAxis (named joystick readpoint). Higher-level abstractions: **action indirection** (declare once, forget device — `snap.action(name)` / `snap.getAxis` / `snap.getVector`) + **gesture recognizer** (pinch / rotate / swipe / long-press / double-tap — `snap.gesture` + `snap.gestureEvents`). Capability probe (`snap.capabilities`) available at attach time.
@@ -30,7 +33,7 @@ in the current snapshot. Immutable disconnected-gamepad and missing-action
 readers share neutral values; populated readers and backend data remain detached,
 and each frame still publishes a fresh frozen snapshot.
 
-## 4 步 recipe
+## Four-Step Recipe
 
 ```ts
 import { defineSystem, Update, World } from '@forgeax/engine-ecs';
@@ -103,151 +106,151 @@ world.addSystem(Update, defineSystem({
 detach();
 ```
 
-## 多设备表面（charter F2 minimal surface）
+## Multiple Devices (Charter F2 Minimal Surface)
 
 ### keyboard (6 read points)
 
-| 调用 | 返回 | 语义 |
+| Call | Returns | Semantics |
 |:--|:--|:--|
-| `snap.keyboard.down(key)` | `boolean` | `key` 当前帧首仍处于按下状态（`document.hasFocus()` 失焦时保持上一帧状态） |
-| `snap.keyboard.justPressed(key)` | `boolean` | 上一帧未按、本帧按下（一帧寿命；首帧 held key 视为刚按下） |
-| `snap.keyboard.up(key)` | `boolean` | `key` 上一帧 down、本帧 up 的边沿（一帧内 true，下一帧自动消失） |
-| `snap.keyboard.downCode(code)` | `boolean` | `KeyboardEvent.code` physical code 当前帧按下；例如 `KeyA` 不随键盘布局改变 |
-| `snap.keyboard.justPressedCode(code)` | `boolean` | physical code 上一帧未按、本帧按下（一帧寿命） |
-| `snap.keyboard.upCode(code)` | `boolean` | physical code 上一帧按下、本帧释放（一帧寿命） |
+| `snap.keyboard.down(key)` | `boolean` | Held at this frame's start; loss of `document.hasFocus()` retains the preceding frame's state. |
+| `snap.keyboard.justPressed(key)` | `boolean` | Previously released, now pressed; lasts one frame. Initially held keys count as newly pressed. |
+| `snap.keyboard.up(key)` | `boolean` | Previously held, now released; true for one frame only. |
+| `snap.keyboard.downCode(code)` | `boolean` | Physical `KeyboardEvent.code` held this frame; `KeyA` is independent of keyboard layout. |
+| `snap.keyboard.justPressedCode(code)` | `boolean` | Physical code changed from released to pressed; lasts one frame. |
+| `snap.keyboard.upCode(code)` | `boolean` | Physical code changed from held to released; lasts one frame. |
 
-键盘和鼠标的 press/release 是 backend 在事件到达时记录的边沿，而不
-是扫描时用 held 状态反推。因而一次 `keydown → keyup` 或
-`pointerdown → pointerup` 若发生在两个帧首扫描之间，仍会在下一份
-`InputSnapshot` 中同时留下 press 与 release；扫描后各边沿只保留一帧。
-`InputFrameStartScan` 每帧只调用一次 `sample()`，因此用户系统不会看到
-半更新的输入状态，也不应自行读取 DOM 事件。
+Keyboard and mouse press/release edges are recorded by the backend as events
+arrive, rather than inferred from held state during scanning. A `keydown → keyup`
+or `pointerdown → pointerup` between two frame-start scans therefore leaves
+both press and release in the next `InputSnapshot`. Edges last one scan only.
+`InputFrameStartScan` invokes `sample()` once per frame, so user systems never
+observe partially updated input and should not read DOM events themselves.
 
-### mouse（5 读点）
+### mouse (Six Read Points)
 
 Mouse chords use the `PointerEvent.buttons` mask on intermediate `pointermove`
 events. Held state and both press/release edges survive until the next scan,
 including a press and release that occur between two scans.
 
-| 调用 | 返回 | 语义 |
+| Call | Returns | Semantics |
 |:--|:--|:--|
-| `snap.mouse.position` | `{ x: number; y: number } | undefined` | 最新 canvas-pixel 鼠标坐标；悬停时也更新，不需要按键或 pointer capture；尚未收到鼠标事件时为 `undefined` |
-| `snap.mouse.movementDelta` | `{ x: number; y: number }` | PointerLock `movementX/Y` 自上次扫描以来的累加；扫描后 backend 自动清零 |
-| `snap.mouse.pointerLocked` | `boolean` | 合并锁态——W3C `pointerlockchange`（`pointerLockElement === canvas`）OR host `lockProvider.requestLock()` 置位；`required` 字段，非 optional。consumer 写 `if (snap.mouse.pointerLocked)` 判断"仅锁定态消费 look delta"。与 `movementDelta` 同位——两个事实在同一属性路径下（charter F1 单点可索引） |
-| `snap.mouse.button(i)` | `boolean`（`i: 0 \| 1 \| 2`） | 对齐 W3C MouseEvent.button：0=主键 / 1=辅助键 / 2=次键。`i: 3` 触发 TS 编译错误 |
-| `snap.mouse.justPressed(i)` / `justReleased(i)` | `boolean` | 鼠标按钮帧边沿；首帧 held 按钮视为刚按下 |
-| `snap.mouse.wheelDelta` | `number` | 每帧 sign-discrete 滚轮 notches 累加（W3C `WheelEvent.deltaY`：正=下滚/负=上滚）；frame-start 冻结后清零。OOS-7：轨迹板高精度滚动未展开（sub-notch 量值保留给未来 `ScrollSnapshot`） |
+| `snap.mouse.position` | `{ x: number; y: number } \| undefined` | Latest canvas-pixel mouse coordinates, updated on hover without a button or pointer capture; `undefined` before the first mouse event. |
+| `snap.mouse.movementDelta` | `{ x: number; y: number }` | Accumulated PointerLock `movementX/Y` since the last scan; the backend resets it after scanning. |
+| `snap.mouse.pointerLocked` | `boolean` | Required combined lock state: W3C `pointerlockchange` (`pointerLockElement === canvas`) OR host `lockProvider.requestLock()`. Consumers use `if (snap.mouse.pointerLocked)` to consume look deltas only while locked. Co-located with `movementDelta` for single-path discovery (charter F1). |
+| `snap.mouse.button(i)` | `boolean` (`i: 0 \| 1 \| 2`) | W3C MouseEvent.button: 0 primary / 1 auxiliary / 2 secondary. Literal `i: 3` is a TypeScript error. |
+| `snap.mouse.justPressed(i)` / `justReleased(i)` | `boolean` | Per-frame button edges; initially held buttons count as newly pressed. |
+| `snap.mouse.wheelDelta` | `number` | Per-frame sum of sign-discrete wheel notches (`WheelEvent.deltaY`: positive down / negative up), reset after frame-start freezing. OOS-7 excludes high-resolution trackpad scrolling; sub-notch magnitude is reserved for a future `ScrollSnapshot`. |
 
-### gamepad（7 读点）
+### gamepad (Seven Read Points)
 
-| 调用 | 返回 | 语义 |
+| Call | Returns | Semantics |
 |:--|:--|:--|
-| `snap.gamepad(i).connected` | `boolean` | slot `i` 已连接（index-based，null-padded 自动跳过）。越界 / 断连 → `false` |
+| `snap.gamepad(i).connected` | `boolean` | Index-based slot `i` is connected; null padding is skipped automatically. Out-of-range/disconnected slots return `false`. |
 | `snap.gamepad(i).standardMapping` | `boolean` | Standard layout available: **true** when browser reports `mapping==='standard'` **or** the SDL controller DB has normalized a non-standard layout (D-1 redline). `false` = not standard AND DB miss/unavailable — explicitly detectable (AC-10/E-2). When false, all readpoints return empty signals. |
-| `snap.gamepad(i).button(b)` | `boolean`（`b: 0\|1\|...\|16`） | 按钮 `b` 当前帧按下（held）。越界字面量触发 TS 编译错误 |
-| `snap.gamepad(i).buttonValue(b)` | `number` | 按钮 `b` 模拟值（0..1）；扳机半程典型 0.5。OOS-4：不施加 gamepad 死区（轴 deadzone 排除） |
-| `snap.gamepad(i).justPressed(b)` | `boolean`（`b: 0\|1\|...\|16`） | 按钮 `b` 边沿——上帧未按、本帧按下（一帧寿命） |
-| `snap.gamepad(i).justReleased(b)` | `boolean`（`b: 0\|1\|...\|16`） | 按钮 `b` 边沿——上帧按、本帧释放（一帧寿命） |
-| `snap.gamepad(i).axis(a)` | `number`（`a: 0\|1\|2\|3`） | 轴 `a` 原始值（-1..1）。越界字面量触发 TS 编译错误。OOS-4：不施加死区——轴 raw 值直读 |
+| `snap.gamepad(i).button(b)` | `boolean` (`b: 0\|1\|...\|16`) | Button `b` is held; out-of-range literals fail TypeScript compilation. |
+| `snap.gamepad(i).buttonValue(b)` | `number` | Analog button value (0..1), e.g. 0.5 for a half-pressed trigger. OOS-4 applies no gamepad deadzone. |
+| `snap.gamepad(i).justPressed(b)` | `boolean` (`b: 0\|1\|...\|16`) | Released last frame, pressed now; lasts one frame. |
+| `snap.gamepad(i).justReleased(b)` | `boolean` (`b: 0\|1\|...\|16`) | Held last frame, released now; lasts one frame. |
+| `snap.gamepad(i).axis(a)` | `number` (`a: 0\|1\|2\|3`) | Raw axis value (-1..1); out-of-range literals fail compilation. OOS-4 applies no deadzone. |
 
 ### pointer（per-pointerId reader）
 
-| 调用 | 返回 | 语义 |
+| Call | Returns | Semantics |
 |:--|:--|:--|
-| `snap.pointer(id).active` | `boolean` | `pointerId` 当前活跃（触点在 pointerMap 内）。不存在 → `false` + 全字段空信号 |
-| `snap.pointer(id).x` / `.y` | `number` | 当前帧末最后 pointermove 的 canvas-pixel 坐标（DPR 换算：`(clientX-rect.left)*(canvas.width/rect.width)`）。getBoundingClientRect 缺失 → `clientX/Y` 直存（fallback） |
-| `snap.pointer(id).pressure` | `number` | W3C `PointerEvent.pressure`（0..1）。无压感网 → 缺省 0.5 或 0 |
+| `snap.pointer(id).active` | `boolean` | `pointerId` is active in pointerMap. Missing IDs return `false` and empty signals for every field. |
+| `snap.pointer(id).x` / `.y` | `number` | Canvas-pixel coordinates from the latest pointermove at the end of the sampled frame: `(clientX-rect.left)*(canvas.width/rect.width)` accounts for DPR. Without getBoundingClientRect, store `clientX/Y` directly. |
+| `snap.pointer(id).pressure` | `number` | W3C `PointerEvent.pressure` (0..1); devices without pressure use 0.5 or 0. |
 | `snap.pointer(id).pointerType` | `string` | `'mouse'` / `'pen'` / `'touch'`——W3C `PointerEvent.pointerType` |
-| `snap.pointer(id).delta` | `{ x: number; y: number }` | 跨帧位移（本帧冻结位置 − 上帧冻结位置）。一帧内 N 次 pointermove → delta 为末端 − 上帧末端（AC-09：非 0，避 Bevy #12442 反例） |
-| `snap.pointerEvents` | `readonly PointerPhaseEvent[]` | 本帧相位事件队列（down / move / up / cancel），一帧寿命——sample() 末尾 drain |
+| `snap.pointer(id).delta` | `{ x: number; y: number }` | Frozen current position minus frozen preceding-frame position. Multiple pointermove events use the final endpoint, preserving nonzero motion (AC-09; Bevy #12442 counterexample). |
+| `snap.pointerEvents` | `readonly PointerPhaseEvent[]` | This frame's down / move / up / cancel queue; drained at the end of sample(), lasting one frame. |
 
-### virtualAxis（独立命名空间）
+### virtualAxis (Separate Namespace)
 
-| 调用 | 返回 | 语义 |
+| Call | Returns | Semantics |
 |:--|:--|:--|
-| `snap.virtualAxis(name)` | `{ x: number; y: number }` | 名为 `name` 的虚拟摇杆向量：`|vec|<deadzone` → `(0,0)`；`|vec|>radius` → clamp 到模长 1.0；中段 → `clamp(cur−origin, radius)/radius`。不存在 → `(0,0)`（空信号）。fixed 模式 origin=anchor；floating 模式 origin=落点 |
+| `snap.virtualAxis(name)` | `{ x: number; y: number }` | Named virtual-stick vector: magnitude below deadzone gives (0,0); above radius clamps to 1.0; between them uses `clamp(cur-origin, radius)/radius`. Missing names yield (0,0). Fixed mode uses the anchor as origin; floating mode uses the touch-down point. |
 
-### capabilities（一次性探针）
+### capabilities (One-Time Probe)
 
-| 调用 | 返回 | 语义 |
+| Call | Returns | Semantics |
 |:--|:--|:--|
-| `snap.capabilities` | `{ gamepad: boolean; pointer: boolean }` | 后端 attach 时冻结的环境探针（`typeof navigator.getGamepads === 'function'` / `typeof PointerEvent !== 'undefined'`）。不须每帧重查 |
+| `snap.capabilities` | `{ gamepad: boolean; pointer: boolean }` | Environment probes frozen when the backend attaches (`typeof navigator.getGamepads === 'function'` / `typeof PointerEvent !== 'undefined'`); no per-frame reprobe. |
 
-### action（声明式设备无关语义层）
+### action (Declarative Device-Independent Semantics)
 
 4-member `ActionBinding` discriminant union: `'key'` | `'mouseButton'` | `'gamepadButton'` | `'gamepadAxis'`. Declared via `INPUT_MAP_KEY` Resource (`ActionConfig[]`). Per-action deadzone default: **0.2** (Godot prior-art). Aggregation: OR for pressed, MAX for strength/raw. Duplicate action names: last-wins (D-8).
 
-| 调用 | 返回 | 语义 |
+| Call | Returns | Semantics |
 |:--|:--|:--|
-| `snap.action(name).isPressed()` | `boolean` | 任意绑定源当前激活（OR 聚合）。未注册 action → `false` |
-| `snap.action(name).justPressed()` | `boolean` | 上帧未按、本帧按下（一帧寿命）。首帧无 prev → justPressed=pressed |
-| `snap.action(name).justReleased()` | `boolean` | 上帧按下、本帧释放（一帧寿命） |
-| `snap.action(name).strength` | `number` | 死区重映射模拟强度 [0, 1]。`\|raw\|<deadzone` → 0；`\|raw\|≥deadzone` → `inverse_lerp(deadzone, 1, \|raw\|)`。数字绑定 → 1.0 |
-| `snap.getAxis(neg, pos)` | `number` | `strength(pos) − strength(neg)`，值域 [-1, 1]。一端/两端未注册 → 该端贡献 0；同 action 双端 → 恒 0 (E-12) |
-| `snap.getVector(nX, pX, nY, pY, opts?)` | `{x: number, y: number}` | 四行动方向合成 2D 向量，单次径向死区（三分支公式，Godot input.cpp F2）：`length≤deadzone` → (0,0)；`length>1` → 单位圆 clamp；中段 → `vec·inverse_lerp(deadzone, 1, length)/length`。默认 deadzone = 4 个 action 的 per-action deadzone 均值；`opts.deadzone` 覆盖。读 action 的 `raw`（非 `strength`）避免逐轴死区叠加成方形死区。 |
+| `snap.action(name).isPressed()` | `boolean` | Any bound source is active (OR aggregation); unregistered actions return `false`. |
+| `snap.action(name).justPressed()` | `boolean` | Previously released, now pressed; one frame. With no preceding frame, justPressed equals pressed. |
+| `snap.action(name).justReleased()` | `boolean` | Previously pressed, now released; one frame. |
+| `snap.action(name).strength` | `number` | Analog strength remapped through deadzone into [0,1]: `\|raw\|<deadzone` gives 0; otherwise `inverse_lerp(deadzone, 1, \|raw\|)`. Digital bindings yield 1.0. |
+| `snap.getAxis(neg, pos)` | `number` | `strength(pos) - strength(neg)` in [-1,1]. Unregistered sides contribute 0; the same action on both sides always yields 0 (E-12). |
+| `snap.getVector(nX, pX, nY, pY, opts?)` | `{x: number, y: number}` | Four actions form a 2D vector with one radial deadzone (Godot input.cpp F2): `length<=deadzone` gives (0,0); `length>1` clamps to the unit circle; otherwise `vec*inverse_lerp(deadzone, 1, length)/length`. Default deadzone averages the four per-action values; `opts.deadzone` overrides it. Reads action `raw`, not `strength`, to avoid a square deadzone from separate axis remapping. |
 
-WASD 斜向：键盘 a/d/w/s 绑为 `getVector('moveLeft','moveRight','moveUp','moveDown')` → 斜向模长 1（非 √2；AC-06）。
+WASD: bind a/d/w/s through `getVector('moveLeft','moveRight','moveUp','moveDown')`; diagonal magnitude is 1 rather than sqrt(2) (AC-06).
 
-### gesture（触摸手势 recognizer，五类）
+### gesture (Five Touch Recognizers)
 
 Five gesture recognizers running in the backend closure (C-3 single legal cross-frame state). All timers advance off injected `now()` (D-3), decoupled from pointer-event frequency. Two output channels (D-4): continuous values via `snap.gesture`, one-frame lifecycle events via `snap.gestureEvents`. No active gesture → identity empty signal (pinchScale=1.0, rotationAngle=0; AC-12).
 
-| 调用 | 返回 | 语义 |
+| Call | Returns | Semantics |
 |:--|:--|:--|
-| `snap.gesture.pinchScale` | `number` | 双指捏合缩放比值（累计）；无手势 → 1.0。begin 时复位为 1.0，2→1 指抬 end 后冻结，回 2 指 new begin 再复 1.0 (D-11) |
-| `snap.gesture.rotationAngle` | `number` | 双指旋转累计角度（弧度）；无手势 → 0。与 pinch 共用同一双指 tracker，同帧 begin/end 成对 |
-| `snap.gestureEvents` | `readonly GestureEvent[]` | 本帧手势生命周期事件队列（一帧寿命，对齐 pointerEvents）。`GestureEvent` 是封闭判别联合：`pinch-begin/end/cancel`、`rotate-begin/end/cancel`、`swipe`（含 direction）、`long-press`、`double-tap`。每个 event 带 `pointerType`（`'mouse' \| 'pen' \| 'touch'`，AC-19 消费路径） |
+| `snap.gesture.pinchScale` | `number` | Accumulated two-finger scale ratio; identity 1.0 without a gesture. Begin resets it to 1.0; lifting from two fingers to one ends/freezes it; a new two-finger begin resets it again (D-11). |
+| `snap.gesture.rotationAngle` | `number` | Accumulated two-finger angle in radians; identity 0 without a gesture. Shares the pinch tracker with paired begin/end events in the same frame. |
+| `snap.gestureEvents` | `readonly GestureEvent[]` | One-frame lifecycle queue aligned with pointerEvents. Closed `GestureEvent` union: `pinch-begin/end/cancel`, `rotate-begin/end/cancel`, `swipe` (including direction), `long-press`, `double-tap`. Each event includes `pointerType` (`'mouse' \| 'pen' \| 'touch'`, AC-19). |
 
-### 手势阈值默认表
+### Default Gesture Thresholds
 
-| 常量 | 值 | 来源 |
+| Constant | Value | Source |
 |:--|:--|:--|
-| 默认 per-action deadzone | `0.2` | Godot prior-art (F2) |
+| Default per-action deadzone | `0.2` | Godot prior art (F2) |
 | `LONG_PRESS_DURATION_MS` | `500` | LayaAir prior-art |
 | `LONG_PRESS_SLOP` | `10`（canvas px） | LayaAir prior-art |
 | `DOUBLE_TAP_INTERVAL_MS` | `350` | LayaAir prior-art |
 | `DOUBLE_TAP_DISTANCE` | `10`（canvas px） | LayaAir prior-art |
-| `SWIPE_VELOCITY_THRESHOLD` | `0.5`（px/ms） | up 前 100ms 位移窗口推速度 |
-| `SWIPE_WINDOW_MS` | `100` | 速度计算滑动窗口 (D-10) |
+| `SWIPE_VELOCITY_THRESHOLD` | `0.5` (px/ms) | Velocity from the 100 ms movement window before pointer-up |
+| `SWIPE_WINDOW_MS` | `100` | Sliding velocity window (D-10) |
 
-`engine.run()` 启动前调用返回空快照（不抛异常；charter P3 例外：构造阶段无事件源，空快照即"显式无信号"）。
+Calls before `engine.run()` return an empty snapshot without throwing. This charter P3 exception explicitly represents no signal during construction, before any event source exists.
 
-## 形态铁律
+## Invariants
 
-- **Resource 形态唯一入口** — 用户胶水通过 `world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)` 消费；不暴露 `world.input` 平行 API（charter P4 一致抽象）
-- **PointerLock 内部消化** — `requestPointerLock` 用户激活、`pointerlockchange` 状态机、`movementX/Y` 单位陷阱、`firstMouse` flag 全部封装在 `browser-backend.ts`；`InputSnapshot` 表面仅暴露 `snap.mouse.pointerLocked`（合并锁态 boolean）与 `snap.mouse.movementDelta`（累加 delta），不暴露 W3C DOM 细节（plan-strategy OOS-1）
-- **帧首扫描后冻结** — `InputFrameStartScan` system token（顶层 `defineSystem`）先于其他用户系统跑（用 `before` 约束），从 `INPUT_BACKEND_KEY` resource 取 backend、扫描累积器后调用 `world.insertResource` 写入冻结快照；当帧内任何系统调 `snap.*` 看到的都是同一份值（architecture-principles #2 Derive）。backend 经 `world.insertResource(INPUT_BACKEND_KEY, backend)` 注入，descriptor 的 `resources:[INPUT_BACKEND_KEY]` 走结构化 ParamValidation（依赖未注入 -> invalid，非裸 throw）
-- **OOS-1 范围外** — PointerLock 进入/退出事件、`unadjustedMovement` 选项、hot-reload 不在本 MVP 内；后续作为独立 feat 拆出
+- **One Resource entry** -- User glue consumes `world.getResource(INPUT_SNAPSHOT_RESOURCE_KEY)`; no parallel `world.input` API (charter P4).
+- **Encapsulated PointerLock** -- `browser-backend.ts` owns user activation for `requestPointerLock`, `pointerlockchange`, `movementX/Y` units and the `firstMouse` flag. `InputSnapshot` exposes only combined boolean `snap.mouse.pointerLocked` and accumulated `snap.mouse.movementDelta`, not W3C DOM details (plan-strategy OOS-1).
+- **Freeze after frame-start scanning** -- The top-level `defineSystem` token `InputFrameStartScan` runs before user systems via `before`, reads the backend from resource `INPUT_BACKEND_KEY`, scans accumulators and inserts a frozen snapshot with `world.insertResource`. Every `snap.*` read in that frame sees identical values (architecture principle 2: derive). Inject the backend through `world.insertResource(INPUT_BACKEND_KEY, backend)`; descriptor `resources:[INPUT_BACKEND_KEY]` uses structured ParamValidation, returning invalid for a missing dependency rather than throwing.
+- **OOS-1 exclusions** -- PointerLock enter/exit events, `unadjustedMovement` and hot reload are outside this MVP and remain separate future features.
 
-## 错误模型（charter P3 显式失败）
+## Error Model (Charter P3 Explicit Failures)
 
-| 行为 | 形态 |
+| Behavior | Result |
 |:--|:--|
-| `engine.run()` 启动前调用 `snap.*` | 返回空快照（`down/up=false` / `movementDelta={x:0,y:0}` / `button=false`）；不抛 |
-| `keyboard.down(unknownKey)` | 返回 `false`（不抛；未按下即 down=false） |
-| `mouse.button(3)` | TS 编译错误（字面量类型 `0 \| 1 \| 2` 收紧）；运行时表面不暴露 |
-| `snap.gamepad(i)` 越界 / `i` 断连 | `connected=false` + 全读点 `false`/`0`（空信号不抛） |
-| `snap.gamepad(i)` 非标准布局 | `connected=true` + `standardMapping=false` + 全读点空信号（区分断连——显式可检测） |
-| `snap.gamepad(i).standardMapping` 语义 | **true** when browser reports `mapping==='standard'` **or** SDL controller DB has normalized a non-standard layout (D-1 redline). `false` = not standard AND DB miss/unavailable — the downgrade is explicitly detectable (AC-10/E-2) |
-| `snap.action(name)` 未注册 | 返回空信号：`isPressed()=false` / `strength=0` / `justPressed()=false` / `justReleased()=false`（不抛；AC-01/09） |
-| `snap.gesture` 无活跃手势 | `pinchScale=1.0` / `rotationAngle=0`（恒等空信号，不抛；AC-12） |
-| `snap.gestureEvents` 无生命周期事件 | 空数组 `[]`（不抛） |
-| `snap.gamepad(i).button(17)` / `.axis(4)` | TS 编译错误（字面量 union `0\|1\|...\|16` / `0\|1\|2\|3` 收紧） |
-| `typeof navigator.getGamepads !== 'function'` | `snap.capabilities.gamepad=false` + `snap.gamepad(0..N)` 全空信号（不抛） |
-| `snap.pointer(id)` 不存在 | `active=false` + 全字段空信号（不抛） |
-| `snap.virtualAxis(name)` 不存在 | 零向量 `{ x: 0, y: 0 }`（不抛） |
-| pointer 移出 canvas | 越界坐标原样保留不 clamp——`x`/`y` 可为负或超出 canvas 尺寸（文档化行为，charter P3） |
+| `snap.*` before `engine.run()` | Empty snapshot (`down/up=false`, `movementDelta={x:0,y:0}`, `button=false`), without throwing. |
+| `keyboard.down(unknownKey)` | `false`, without throwing; not held means down=false. |
+| `mouse.button(3)` | TypeScript error from literal union `0 \| 1 \| 2`; unavailable on the runtime surface. |
+| Out-of-range/disconnected `snap.gamepad(i)` | `connected=false`; every read point returns `false`/`0`, without throwing. |
+| Nonstandard `snap.gamepad(i)` layout | `connected=true`, `standardMapping=false` and empty signals; explicitly distinguishable from disconnection. |
+| `snap.gamepad(i).standardMapping` | **true** when browser reports `mapping==='standard'` **or** SDL controller DB has normalized a nonstandard layout (D-1). `false` means nonstandard AND DB miss/unavailable; degradation remains detectable (AC-10/E-2). |
+| Unregistered `snap.action(name)` | Empty signals: `isPressed()=false`, `strength=0`, `justPressed()=false`, `justReleased()=false`, without throwing (AC-01/09). |
+| `snap.gesture` without an active gesture | Identity signals `pinchScale=1.0` / `rotationAngle=0`, without throwing (AC-12). |
+| `snap.gestureEvents` without lifecycle events | Empty array `[]`, without throwing. |
+| `snap.gamepad(i).button(17)` / `.axis(4)` | TypeScript error from literal unions `0\|1\|...\|16` / `0\|1\|2\|3`. |
+| `typeof navigator.getGamepads !== 'function'` | `snap.capabilities.gamepad=false`; all `snap.gamepad(0..N)` reads return empty signals, without throwing. |
+| Missing `snap.pointer(id)` | `active=false` and empty signals for all fields, without throwing. |
+| Missing `snap.virtualAxis(name)` | Zero vector `{ x: 0, y: 0 }`, without throwing. |
+| Pointer outside canvas | Preserve coordinates without clamping; `x`/`y` can be negative or exceed canvas dimensions (documented charter P3 behavior). |
 
-## 边界行为
+## Boundary Behavior
 
-| 场景 | 行为 |
+| Scenario | Behavior |
 |:--|:--|
-| 越界坐标 | pointer `x`/`y` 原样保留不 clamp（可为负或超出 canvas 尺寸）；charter P3：显式文档化不隐式行为 |
-| `touch-action` | `attach` 时浏览器 backend 内部设置 `canvas.style.touchAction='none'`（existential 探测——fake canvas 无 `.style` 时静默跳过）；detach 恢复原值。AI 用户不需手动设 CSS |
-| 失焦（blur / visibilitychange `hidden`） | pointerMap 全清 + 每活跃触点 push cancel 相位事件进入队列；W3C/provider pointer lock 立即释放；gamepad justPressed/justReleased 集合复位，并以一次 focus-reset sample 边界抑制旧 snapshot 的 mouse/action release——下帧不喷幽灵边沿。恢复焦点后下次 `sample()` 自然恢复 |
+| Out-of-bounds coordinates | Preserve pointer `x`/`y` without clamping, including negative/oversized values; charter P3 requires explicit documentation. |
+| `touch-action` | Browser backend `attach` sets `canvas.style.touchAction='none'` when `.style` exists, silently skipping fake canvases without it; detach restores the original. AI users need no manual CSS. |
+| Blur / visibilitychange to `hidden` | Clear pointerMap and queue cancel events for active pointers; immediately release W3C/provider pointer lock; reset gamepad edges. A focus-reset sample boundary suppresses mouse/action releases from old snapshots, avoiding stale edges next frame. The next focused `sample()` resumes naturally. |
 | assemble form — action surface | Assemble-form hosts must manually `world.insertResource(INPUT_MAP_KEY, map)` to enable action readpoints (D-7). Canvas-form `createApp` does this automatically. |
-| controller-db 子导出懒加载 | `@forgeax/engine-input/controller-db` is dynamically imported only on first connected non-standard gamepad (D-2). Until then (or on DB miss), non-standard slots maintain the Feat1 empty-signal behavior (`standardMapping=false`). Standard gamepads never trigger the load (C-5). |
-| 手势 cancel on blur | `onBlur` resets all active gesture recognizers: emits cancel events for each active gesture type, resets continuous values to identity, and clears timers (AC-18). Prevent ghost gestures on refocus. |
+| Lazy controller-db subexport | Dynamically import `@forgeax/engine-input/controller-db` only for the first connected nonstandard gamepad (D-2). Until then or on DB miss, nonstandard slots retain empty signals with `standardMapping=false`. Standard gamepads never trigger loading (C-5). |
+| Gesture cancellation on blur | `onBlur` cancels each active recognizer, resets continuous values to identity and clears timers (AC-18), preventing stale gestures after refocus. |
 | pointer-lock gate = game gate AND host predicate | `onCanvasClick` evaluates `gameGate && (predicate?.() ?? true)`. `gameGate` defaults to `true` and is set via `InputBackend.setPointerLockAllowed()`. `predicate` is `BrowserInputBackendOptions.pointerLockAllowed` (frozen at attach). Both must be true for a click to request lock. |
 | `setPointerLockAllowed(false)` immediate release | When `gameGate` transitions from `true` to `false` and a lock is active, the backend immediately releases: W3C path calls `exitPointerLock()`, provider path calls `exitLock()` + clears `providerLocked`. This solves the "mode switches to top-down while locked" boundary. |
 | click while this canvas holds the W3C lock | `onCanvasClick` returns without calling `requestPointerLock()` when `pointerLockElement === canvas`. Fire clicks in a locked FPS keep the current lock; a re-request could re-enter or be refused, and a refusal would surface as `app-pointer-lock-failed` mid-game. |
@@ -323,10 +326,10 @@ Acquiring the first W3C or provider lock discards movement accumulated before th
 
 Frozen into `snap.mouse.pointerLocked` at frame-start. Consumers read `if (snap.mouse.pointerLocked)` to gate look/camera rotation — both facts (`movementDelta` + `pointerLocked`) sit at the same attribute path for single-point indexing (charter F1).
 
-## 相关包
+## Related Packages
 
-- [`@forgeax/engine-ecs`](../ecs) — 提供 `World` + Resource 存储 + Schedule（消费方契约依赖：`world.insertResource('InputSnapshot', frozenSnapshot)`）
-- [`@forgeax/engine-runtime`](../runtime) — 在 `Engine.create({ canvas })` 流水线里调用 `attachBrowserInputBackend(canvas)`、`world.insertResource(INPUT_BACKEND_KEY, backend)` 与 `world.addSystem(Update, InputFrameStartScan)`，对 AI 用户屏蔽组装细节
+- [`@forgeax/engine-ecs`](../ecs) provides `World`, Resource storage and Schedule (consumer contract: `world.insertResource('InputSnapshot', frozenSnapshot)`).
+- [`@forgeax/engine-runtime`](../runtime) assembles `attachBrowserInputBackend(canvas)`, `world.insertResource(INPUT_BACKEND_KEY, backend)` and `world.addSystem(Update, InputFrameStartScan)` within `Engine.create({ canvas })`, hiding assembly details from AI users.
 
 ## Simulation input boundary
 

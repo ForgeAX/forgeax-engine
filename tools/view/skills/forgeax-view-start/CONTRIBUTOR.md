@@ -1,6 +1,6 @@
 # View contributor startup and host integration
 
-For published npm games, use [View startup](SKILL.md). This source-only guide
+For installed SDK startup with npm games, use [View startup](SKILL.md). This source-only guide
 covers contributor builds and explicit Codex integration. After startup, use
 [forgeax-view-cli](../forgeax-view-cli/SKILL.md) for capability discovery and
 page/target operations. Verify the resulting presentation in the actual browser.

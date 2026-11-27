@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
-import { type PackProgram, preparePackProgram } from '@forgeax/engine-pack/runtime';
+import { sha256 } from '@forgeax/engine-types';
 import { normalizePath, type Rolldown } from 'vite';
 import { type EngineCapabilityMeta, engineCapabilityMeta } from './execution-workers.js';
 import { rewriteModuleSpecifiers } from './module-specifiers.js';
+import { sealPluginProgramGraph } from './plugin-program-artifacts.js';
 
 function assertPortableResources(context: Rolldown.PluginContext, chunk: Rolldown.OutputChunk) {
   // Vite records normal assets/CSS in metadata. Worker and public URLs instead
@@ -18,44 +18,24 @@ function assertPortableResources(context: Rolldown.PluginContext, chunk: Rolldow
     throw new TypeError(`plugin program resource requires a portable producer: ${chunk.fileName}`);
 }
 
-/** Modules reachable from a root without crossing an engine capability boundary. */
+type ReadModule = Rolldown.PluginContext['getModuleInfo'];
+
+/** Static reachability never crosses an Engine capability boundary. */
 function reachableModules(
-  context: Rolldown.PluginContext,
-  capability: (id: string) => boolean,
-  root: string,
+  read: ReadModule,
+  roots: Iterable<string>,
+  parsedOnly: boolean,
 ): Set<string> {
   const seen = new Set<string>();
   const visit = (id: string) => {
-    if (seen.has(id) || capability(id)) return;
-    const info = context.getModuleInfo(id);
-    if (!info || info.code === null) return;
+    if (seen.has(id)) return;
+    const node = read(id);
+    if (!node || node.meta[engineCapabilityMeta] || (parsedOnly && node.code === null)) return;
     seen.add(id);
-    for (const dependency of info.importedIds) visit(dependency);
+    for (const dependency of node.importedIds) visit(dependency);
   };
-  visit(root);
+  for (const root of roots) visit(root);
   return seen;
-}
-
-/** Host entries, lazy import targets, and modules shared by programs. */
-function collectHostRoots(
-  context: Rolldown.PluginContext,
-  facades: ReadonlySet<string>,
-  program: (id: string) => boolean,
-  capability: (id: string) => boolean,
-  reach: (root: string) => Set<string>,
-): { entries: Set<string>; lazy: Set<string>; shared: Set<string> } {
-  const entries = new Set<string>();
-  const lazy = new Set<string>();
-  const shared = new Set<string>();
-  for (const id of context.getModuleIds()) {
-    const info = context.getModuleInfo(id);
-    if (!info || capability(id)) continue;
-    if (program(id)) for (const member of reach(id)) shared.add(member);
-    else if (info.isEntry && !facades.has(id)) entries.add(id);
-    for (const dependency of info.dynamicallyImportedIds)
-      if (!program(dependency) && !capability(dependency)) lazy.add(dependency);
-  }
-  return { entries, lazy, shared };
 }
 
 /**
@@ -63,7 +43,7 @@ function collectHostRoots(
  * loaded: drop targets every root running one of their importers reaches.
  */
 function pruneLoadedLazyTargets(
-  context: Rolldown.PluginContext,
+  read: ReadModule,
   entries: ReadonlySet<string>,
   lazy: Set<string>,
   graphs: Map<string, Set<string>>,
@@ -72,7 +52,7 @@ function pruneLoadedLazyTargets(
     changed = false;
     for (const target of lazy) {
       if (entries.has(target)) continue;
-      const importers = context.getModuleInfo(target)?.dynamicImporters ?? [];
+      const importers = read(target)?.dynamicImporters ?? [];
       const loaded = [...graphs].every(
         ([root, graph]) =>
           root === target ||
@@ -85,6 +65,44 @@ function pruneLoadedLazyTargets(
       changed = true;
     }
   }
+}
+
+/** Classify both layout lanes against one set of final module facts. */
+function collectGroupRoots(
+  read: ReadModule,
+  ids: Iterable<string>,
+  selections: Iterable<string>,
+  program: (id: string) => boolean,
+  facades: ReadonlySet<string>,
+) {
+  const capability = (id: string) => Boolean(read(id)?.meta[engineCapabilityMeta]);
+  const programRoots = new Set(selections);
+  const programModules: string[] = [];
+  const hostEntries = new Set<string>();
+  const lazyHost = new Set<string>();
+  for (const id of ids) {
+    const info = read(id);
+    if (!info) continue;
+    const programOwned = program(id);
+    const hostReachable = !info.meta[engineCapabilityMeta];
+    if (info.isEntry && !programOwned) programRoots.add(id);
+    if (hostReachable) {
+      if (programOwned) programModules.push(id);
+      else if (info.isEntry && !facades.has(id)) hostEntries.add(id);
+    }
+    for (const dependency of info.dynamicallyImportedIds) {
+      programRoots.add(dependency);
+      if (hostReachable && !program(dependency) && !capability(dependency))
+        lazyHost.add(dependency);
+    }
+  }
+  return { programRoots, programModules, hostEntries, lazyHost };
+}
+
+function addMembership(memberships: Map<string, string[]>, module: string, root: string): void {
+  const roots = memberships.get(module);
+  if (roots) roots.push(root);
+  else memberships.set(module, [root]);
 }
 
 /** Archive the player's own transformed graph, without reevaluating its bootstrap. */
@@ -105,11 +123,9 @@ export class BrowserPluginProgramArchive {
 
   /** Every provider's sidecar includes all selections and the exact Engine identity. */
   hash(engineIdentity: string): string {
-    return createHash('sha256')
-      .update(
-        JSON.stringify([engineIdentity, [...this.rendered].sort(([a], [b]) => a.localeCompare(b))]),
-      )
-      .digest('hex');
+    return sha256(
+      JSON.stringify([engineIdentity, [...this.rendered].sort(([a], [b]) => a.localeCompare(b))]),
+    );
   }
 
   /** Modules the incremental walk has examined; their parse facts never change. */
@@ -129,59 +145,57 @@ export class BrowserPluginProgramArchive {
         context.emitFile({
           type: 'chunk',
           id,
-          name: `program-${createHash('sha256').update(id).digest('hex').slice(0, 16)}`,
+          name: `program-${sha256(id).slice(0, 16)}`,
           preserveSignature: 'strict',
         }),
       );
   }
 
-  /**
-   * moduleParsed form of {@link preserveModules}. A module's parse facts are
-   * final once parsed, so each one is examined once, when it is both reachable
-   * and parsed, instead of re-walking the whole program graph per parsed module.
-   */
-  preserveParsedModule(context: Rolldown.PluginContext, parsedId: string): void {
-    const parsed = normalizePath(parsedId);
-    this.parsed.add(parsed);
+  private retainGraph(
+    context: Rolldown.PluginContext,
+    starts: Iterable<string>,
+    visited: Set<string>,
+    readModule: (id: string) => ReturnType<Rolldown.PluginContext['getModuleInfo']> | undefined,
+  ): void {
     const entries = new Set([...this.entries.values()].map(normalizePath));
     const visit = (input: string) => {
       const id = normalizePath(input);
-      if (this.walked.has(id)) return;
-      if (!this.parsed.has(id)) {
-        this.waiting.add(id);
-        return;
-      }
-      this.waiting.delete(id);
-      const info = context.getModuleInfo(id);
-      if (!info) {
-        this.waiting.add(id);
-        return;
-      }
-      this.walked.add(id);
-      if (info.meta[engineCapabilityMeta]) return;
+      if (visited.has(id)) return;
+      const info = readModule(id);
+      if (info === undefined) return;
+      visited.add(id);
+      if (!info || info.meta[engineCapabilityMeta]) return;
       this.admit(context, id, entries);
       for (const dependency of [...info.importedIds, ...info.dynamicallyImportedIds])
         visit(dependency);
     };
-    for (const id of this.entries.values()) visit(id);
-    if (this.waiting.has(parsed)) visit(parsed);
+    for (const id of starts) visit(id);
+  }
+
+  /** Examine a module once it is both reachable and parsed. */
+  preserveParsedModule(context: Rolldown.PluginContext, parsedId: string): void {
+    const parsed = normalizePath(parsedId);
+    this.parsed.add(parsed);
+    const starts = this.waiting.has(parsed)
+      ? [...this.entries.values(), parsed]
+      : this.entries.values();
+    this.retainGraph(context, starts, this.walked, (id) => {
+      const info = this.parsed.has(id) ? context.getModuleInfo(id) : null;
+      if (!info) {
+        this.waiting.add(id);
+        return undefined;
+      }
+      this.waiting.delete(id);
+      return info;
+    });
   }
 
   /** Complete walk of the program graph from every selected export. */
   preserveModules(context: Rolldown.PluginContext): void {
-    const entries = new Set([...this.entries.values()].map(normalizePath));
-    const visited = new Set<string>();
-    const visit = (input: string) => {
-      const id = normalizePath(input);
-      if (visited.has(id)) return;
-      visited.add(id);
+    this.retainGraph(context, this.entries.values(), new Set(), (id) => {
       const info = context.getModuleInfo(id);
-      if (!info || info.code === null || info.meta[engineCapabilityMeta]) return;
-      this.admit(context, id, entries);
-      for (const dependency of [...info.importedIds, ...info.dynamicallyImportedIds])
-        visit(dependency);
-    };
-    for (const id of this.entries.values()) visit(id);
+      return !info || info.code === null ? null : info;
+    });
   }
 
   /**
@@ -189,83 +203,47 @@ export class BrowserPluginProgramArchive {
    * `facades` are public Engine facade entries: addresses for programs, not load roots.
    */
   prepareGroups(context: Rolldown.PluginContext, facades: ReadonlySet<string> = new Set()): void {
-    this.prepareHostGroups(context, facades);
-    const roots = new Set(this.entries.values());
-    for (const id of context.getModuleIds()) {
-      const info = context.getModuleInfo(id);
-      if (!info) continue;
-      if (info.isEntry && !this.modules.has(normalizePath(id))) roots.add(id);
-      for (const dependency of info.dynamicallyImportedIds) roots.add(dependency);
-    }
-    const memberships = new Map<string, string[]>();
-    for (const root of [...roots].sort()) {
-      const seen = new Set<string>();
-      const visit = (id: string) => {
-        if (seen.has(id)) return;
-        seen.add(id);
-        const info = context.getModuleInfo(id);
-        if (!info || info.meta[engineCapabilityMeta]) return;
-        if (this.modules.has(normalizePath(id))) {
-          const entries = memberships.get(id) ?? [];
-          entries.push(root);
-          memberships.set(id, entries);
-        }
-        for (const dependency of info.importedIds) visit(dependency);
-      };
-      visit(root);
-    }
-    this.groups.clear();
-    for (const [id, entries] of memberships) {
-      if (!entries.length) continue;
-      this.groups.set(
-        id,
-        `program-group-${createHash('sha256').update(JSON.stringify(entries)).digest('hex').slice(0, 16)}`,
-      );
-    }
-  }
-
-  /**
-   * Startup loads a few chunks instead of one per facade dependency set: the
-   * Engine code behind the public facades shares one chunk, and host-only
-   * modules share a chunk per set of host entries and lazy imports that load
-   * them. Modules a program reaches keep the program split.
-   */
-  private prepareHostGroups(context: Rolldown.PluginContext, facades: ReadonlySet<string>): void {
+    const graph = new Map<string, ReturnType<ReadModule>>();
+    const read: ReadModule = (id) => {
+      if (!graph.has(id)) graph.set(id, context.getModuleInfo(id));
+      return graph.get(id) ?? null;
+    };
     const program = (id: string) => this.modules.has(normalizePath(id));
-    const capability = (id: string) =>
-      Boolean(context.getModuleInfo(id)?.meta[engineCapabilityMeta]);
-    const reach = (root: string) => reachableModules(context, capability, root);
-    const { entries, lazy, shared } = collectHostRoots(
-      context,
-      facades,
+    const { programRoots, programModules, hostEntries, lazyHost } = collectGroupRoots(
+      read,
+      context.getModuleIds(),
+      this.entries.values(),
       program,
-      capability,
-      reach,
+      facades,
     );
-    const graphs = new Map([...entries, ...lazy].map((root) => [root, reach(root)] as const));
-    pruneLoadedLazyTargets(context, entries, lazy, graphs);
+    const programMembership = new Map<string, string[]>();
+    for (const root of [...programRoots].sort())
+      for (const id of reachableModules(read, [root], false))
+        if (program(id)) addMembership(programMembership, id, root);
+    this.groups.clear();
+    for (const [id, entries] of programMembership)
+      this.groups.set(id, `program-group-${sha256(JSON.stringify(entries)).slice(0, 16)}`);
+
+    const reach = (roots: Iterable<string>) => reachableModules(read, roots, true);
+    const graphs = new Map([...hostEntries, ...lazyHost].map((root) => [root, reach([root])]));
+    pruneLoadedLazyTargets(read, hostEntries, lazyHost, graphs);
+    const shared = reach(programModules);
     // Programs load facade code in every realm; host-only code stays apart.
-    const facadeReach = new Set<string>();
-    for (const facade of facades) for (const id of reach(facade)) facadeReach.add(id);
+    const facadeReach = reach(facades);
     const memberships = new Map<string, string[]>();
     for (const id of facadeReach) if (!program(id) && !shared.has(id)) memberships.set(id, []);
     for (const [root, graph] of [...graphs].sort(([a], [b]) => a.localeCompare(b)))
       for (const id of graph) {
         if (program(id) || shared.has(id) || facadeReach.has(id)) continue;
-        const roots = memberships.get(id) ?? [];
-        roots.push(root);
-        memberships.set(id, roots);
+        addMembership(memberships, id, root);
       }
     this.hostGroups.clear();
     for (const [id, roots] of memberships) {
       // Vite may inline the HTML facade into this group. Keep its page name
       // so platform hosts can identify the entry without renaming shared code.
-      const page = roots.length === 1 && entries.has(roots[0] ?? '') ? roots[0] : undefined;
+      const page = roots.length === 1 && hostEntries.has(roots[0] ?? '') ? roots[0] : undefined;
       const name = page?.endsWith('.html') ? posix.basename(page, '.html') : 'engine';
-      this.hostGroups.set(
-        id,
-        `${name}-${createHash('sha256').update(JSON.stringify(roots)).digest('hex').slice(0, 16)}`,
-      );
+      this.hostGroups.set(id, `${name}-${sha256(JSON.stringify(roots)).slice(0, 16)}`);
     }
   }
 
@@ -302,16 +280,16 @@ export class BrowserPluginProgramArchive {
     };
   }
 
+  private chunkPath(context: Rolldown.PluginContext, id: string, label = id): string {
+    const reference = this.chunks.get(normalizePath(id));
+    if (!reference) throw new TypeError(`missing browser plugin export ${label}`);
+    return context.getFileName(reference);
+  }
+
   /** A complete delivered graph contains every selected entry, regardless of its active export. */
   entryFiles(context: Rolldown.PluginContext): readonly string[] {
     return [
-      ...new Set(
-        [...this.entries.values()].map((id) => {
-          const reference = this.chunks.get(normalizePath(id));
-          if (!reference) throw new TypeError(`missing browser plugin export ${id}`);
-          return context.getFileName(reference);
-        }),
-      ),
+      ...new Set(Array.from(this.entries.values(), (id) => this.chunkPath(context, id))),
     ].sort();
   }
 
@@ -328,21 +306,7 @@ export class BrowserPluginProgramArchive {
     return capabilities;
   }
 
-  /** Delivery locators stay in the current Host, outside exported portable programs. */
-  imports(context: Rolldown.PluginContext, engineIdentity: string) {
-    return Object.fromEntries(
-      [...this.capabilities(context)].map(([url, name]) => [
-        name,
-        { identity: engineIdentity, url },
-      ]),
-    );
-  }
-
-  capture(
-    context: Rolldown.PluginContext,
-    bundle: Rolldown.OutputBundle,
-    engineIdentity: string,
-  ): Readonly<Record<string, PackProgram>> {
+  capture(context: Rolldown.PluginContext, bundle: Rolldown.OutputBundle, engineIdentity: string) {
     const capabilities = this.capabilities(context);
     const engineChunks = new Set<string>();
     const protect = (filename: string) => {
@@ -382,19 +346,17 @@ export class BrowserPluginProgramArchive {
     const selections = [...this.entries]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, id]) => {
-        const reference = this.chunks.get(normalizePath(id));
-        if (!reference) throw new TypeError(`missing browser plugin export ${key}`);
-        const entry = context.getFileName(reference);
+        const entry = this.chunkPath(context, id, key);
         visit(entry);
         return [key, entry] as const;
       });
-    // Every selection uses the complete graph, including lazy sibling exports.
-    // Trimming per selection would split native identity for their shared helpers.
-    return Object.fromEntries(
-      selections.map(([key, entry]) => [
-        key,
-        preparePackProgram({ modules, imports, entry, export: 'default' }).unwrap(),
-      ]),
-    );
+    const sealed = sealPluginProgramGraph(modules, imports, selections);
+    return {
+      graph: sealed.graph,
+      programs: Object.fromEntries(sealed.programs),
+      imports: Object.fromEntries(
+        [...capabilities].map(([url, name]) => [name, { identity: engineIdentity, url }]),
+      ),
+    };
   }
 }

@@ -7,12 +7,16 @@ const here = dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = resolve(here, '..', '..', '..');
 
 export default defineConfig({
+  // Resolve emitted WASM beside the bundle in both the browser and Dawn.
+  base: './',
   plugins: [forgeaxShader() as never],
   server: {
     fs: { allow: [monorepoRoot] },
   },
   build: {
     target: 'esnext',
+    // The native Dawn host reads the emitted WASM and its provenance as files.
+    assetsInlineLimit: 0,
     rollupOptions: {
       input: {
         main: resolve(here, 'index.html'),

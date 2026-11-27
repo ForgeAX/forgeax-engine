@@ -2,102 +2,84 @@ import {
   DEFAULT_VERTEX_ATTRIBUTE_MAP,
   deriveVertexLayoutProjection,
 } from '@forgeax/engine-geometry';
-import { fnv1aUtf16 } from '@forgeax/engine-types';
-import { renderStateHash } from '../../pipeline-spec';
+import { pipelineStripIndexFormat, renderStateHash } from '../../pipeline-spec';
 import type { RenderSystemInternals } from '../../record/render-context';
 import type { LayoutKind } from '../material-shader-policy';
 
 type Fact = string | number | boolean | object | null | undefined;
 
-/** Bounded generation-local requests; collisions compare every consumed fact. */
+export type MaterialPipelineRequestFacts = Fact[];
+
+const NEGATIVE_ZERO = Symbol();
+type BranchKey = Fact | typeof NEGATIVE_ZERO;
+type RequestNode<T> =
+  | { readonly facts: readonly Fact[]; value: T }
+  | { readonly field: number; readonly cases: Map<BranchKey, RequestNode<T>> };
+
+// -1 selects the tuple length, which also distinguishes a missing trailing field from undefined.
+function requestKey(facts: readonly Fact[], field: number): BranchKey {
+  const value = field < 0 ? facts.length : facts[field];
+  return Object.is(value, -0) ? NEGATIVE_ZERO : value;
+}
+
+function differingField(left: readonly Fact[], right: readonly Fact[]): number | undefined {
+  if (left.length !== right.length) return -1;
+  for (let field = 0; field < left.length; field++)
+    if (!Object.is(left[field], right[field])) return field;
+  return undefined;
+}
+
+/** Index only fields that distinguish admitted requests. Each leaf owns the complete facts. */
 export class MaterialPipelineRequestCache<T> {
-  private readonly buckets = new Map<number, { facts: readonly Fact[]; value: T }[]>();
-  private readonly strings = new Map<string, number>();
-  private readonly objects = new WeakMap<object, number>();
-  private readonly numeric = new Float64Array(1);
-  private readonly numericWords = new Uint32Array(this.numeric.buffer);
-  private nextObject = 1;
+  private root: RequestNode<T> | undefined;
   private size = 0;
   keyCharacters = 0;
   hits = 0;
   misses = 0;
 
-  constructor(
-    private readonly capacity = 512,
-    private readonly comparisonOnlyTail = 0,
-  ) {}
-
-  private hash(facts: readonly Fact[]): number {
-    let hash = 2166136261;
-    for (let index = 0; index < facts.length - this.comparisonOnlyTail; index++) {
-      const fact = facts[index];
-      if (fact === undefined) continue;
-      hash = Math.imul(hash ^ index, 16777619);
-      let word: number;
-      if (typeof fact === 'string') {
-        const cached = this.strings.get(fact);
-        if (cached !== undefined) word = cached;
-        else {
-          word = fnv1aUtf16(fact);
-          if (this.strings.size >= this.capacity * 8) this.strings.clear();
-          this.strings.set(fact, word);
-        }
-      } else if (typeof fact === 'number') {
-        if (fact === (fact | 0)) word = fact | 0;
-        else {
-          this.numeric[0] = fact;
-          word = (this.numericWords[0] ?? 0) ^ (this.numericWords[1] ?? 0);
-        }
-      } else if (typeof fact === 'object' && fact !== null) {
-        const known = this.objects.get(fact);
-        word = known ?? this.nextObject++;
-        if (known === undefined) this.objects.set(fact, word);
-      } else word = fact === undefined ? 0 : fact === null ? 1 : fact ? 2 : 3;
-      hash = Math.imul(hash ^ word, 16777619);
-    }
-    return hash;
-  }
-
-  private static find<T>(
-    bucket: readonly { facts: readonly Fact[]; value: T }[] | undefined,
-    facts: readonly Fact[],
-  ): { facts: readonly Fact[]; value: T } | undefined {
-    if (bucket === undefined) return undefined;
-    entries: for (const entry of bucket) {
-      if (entry.facts.length !== facts.length) continue;
-      for (let index = 0; index < facts.length; index++)
-        if (!Object.is(entry.facts[index], facts[index])) continue entries;
-      return entry;
-    }
-    return undefined;
-  }
+  constructor(private readonly capacity = 512) {}
 
   get(facts: readonly Fact[]): T | undefined {
-    const entry = MaterialPipelineRequestCache.find(this.buckets.get(this.hash(facts)), facts);
-    if (entry !== undefined) {
+    let node = this.root;
+    while (node !== undefined && 'cases' in node)
+      node = node.cases.get(requestKey(facts, node.field));
+    if (node !== undefined && differingField(node.facts, facts) === undefined) {
       this.hits++;
-      return entry.value;
+      return node.value;
     }
     this.misses++;
     return undefined;
   }
 
-  /** Stores the request's value, replacing an earlier value of the same facts. */
   set(facts: readonly Fact[], value: T): void {
-    const hash = this.hash(facts);
-    const known = MaterialPipelineRequestCache.find(this.buckets.get(hash), facts);
-    if (known !== undefined) {
-      known.value = value;
+    let node = this.root;
+    let parent: Map<BranchKey, RequestNode<T>> | undefined;
+    let key: BranchKey;
+    while (node !== undefined && 'cases' in node) {
+      parent = node.cases;
+      key = requestKey(facts, node.field);
+      node = parent.get(key);
+    }
+    const field = node === undefined ? undefined : differingField(node.facts, facts);
+    if (node !== undefined && field === undefined) {
+      node.value = value;
       return;
     }
+    const leaf = { facts, value };
     if (this.size >= this.capacity) {
-      this.buckets.clear();
-      this.size = 0;
+      this.root = leaf;
+      this.size = 1;
+      return;
     }
-    const entry = { facts, value };
-    const bucket = this.buckets.get(hash);
-    if (bucket === undefined) this.buckets.set(hash, [entry]);
-    else bucket.push(entry);
+    let next: RequestNode<T> = leaf;
+    if (node !== undefined && field !== undefined) {
+      const cases = new Map<BranchKey, RequestNode<T>>();
+      cases.set(requestKey(node.facts, field), node);
+      cases.set(requestKey(facts, field), leaf);
+      next = { field, cases };
+    }
+    if (parent === undefined) this.root = next;
+    else parent.set(key, next);
     this.size++;
   }
 }
@@ -131,27 +113,35 @@ export interface PendingPipelineOwner {
  * in-flight prepared compilation is remembered as pending, so identical
  * requests skip the build until that owner settles a flight.
  */
-export function requestMaterialPipeline<T extends object>(
+export function requestMaterialPipeline<
+  T extends object,
+  Args extends unknown[],
+  Owner extends object,
+>(
   requests: MaterialPipelineRequestCache<T | PendingMaterialPipelineRequest>,
   facts: readonly Fact[],
   lookupOnly: boolean,
-  build: () => T | null,
-  preparedOwner: () => PendingPipelineOwner | undefined,
+  build: (...args: Args) => T | null,
+  args: Args,
+  owners: WeakMap<Owner, PendingPipelineOwner>,
+  state: Owner,
+  observePending = false,
 ): T | null {
   const cached = requests.get(facts);
   if (cached instanceof PendingMaterialPipelineRequest) {
-    if (cached.current || lookupOnly) return null;
+    // A preparation transaction must receive the original flight's completion.
+    if (lookupOnly || (cached.current && !observePending)) return null;
   } else if (cached !== undefined) return cached;
   else if (lookupOnly) return null;
   // A build may request another pipeline through the reused lookup storage.
   const stored = facts.slice();
-  const answered = preparedOwner()?.pendingAnswers ?? 0;
-  const pipeline = build();
+  const answered = owners.get(state)?.pendingAnswers ?? 0;
+  const pipeline = build(...args);
   if (pipeline !== null) {
     requests.set(stored, pipeline);
     return pipeline;
   }
-  const owner = preparedOwner();
+  const owner = owners.get(state);
   if (owner !== undefined && owner.pendingAnswers !== answered)
     requests.set(stored, new PendingMaterialPipelineRequest(owner));
   return null;
@@ -160,25 +150,6 @@ export function requestMaterialPipeline<T extends object>(
 type RequestArgs<T extends unknown[]> = {
   [K in keyof T]: K extends '15' ? LayoutKind | undefined : T[K];
 };
-
-const formatKeys = new WeakMap<
-  readonly string[],
-  { readonly copy: readonly string[]; readonly key: string }
->();
-
-/** Attachment format lists are pass-owned arrays; join each once while unchanged. */
-function formatsKey(formats: readonly string[]): string {
-  const cached = formatKeys.get(formats);
-  if (cached !== undefined && cached.copy.length === formats.length) {
-    let same = true;
-    for (let index = 0; index < formats.length && same; index++)
-      same = cached.copy[index] === formats[index];
-    if (same) return cached.key;
-  }
-  const key = formats.join(',');
-  formatKeys.set(formats, { copy: formats.slice(), key });
-  return key;
-}
 
 /** Immutable layout/state owners and scalar specialization values determine one request. */
 export function materialPipelineRequestFacts(
@@ -189,17 +160,38 @@ export function materialPipelineRequestFacts(
   /** Reused lookup storage; a stored request must keep its own copy. */
   facts: Fact[] = [],
 ): Fact[] {
-  facts.length = 24;
+  let end = 24;
   for (let index = 0; index < 24; index++) facts[index] = args[index];
   facts[2] = renderStateHash(args[2]);
+  facts[4] = pipelineStripIndexFormat(args[3], args[4]);
   facts[7] =
     args[13]?.digest ??
     deriveVertexLayoutProjection(args[7] ?? DEFAULT_VERTEX_ATTRIBUTE_MAP).digest;
   facts[13] = args[13]?.digest;
-  facts[17] = args[17] === undefined ? undefined : formatsKey(args[17]);
+  // Frame-owned attachment sequences contribute their current values to this request.
+  // The count splits the ordered formats from the constant pairs and owner fields.
+  const formats = args[17];
+  const formatCount = formats?.length ?? 0;
+  facts[17] = formats === undefined ? undefined : formatCount;
+  if (formats !== undefined)
+    for (let index = 0; index < formatCount; index++) facts[end++] = formats[index];
   // Constants can be fresh objects or mutated records; compare their current values.
   facts[21] = undefined;
-  if (args[21] !== undefined)
-    for (const key of Object.keys(args[21]).sort()) facts.push(key, args[21][key]);
+  const constants = args[21];
+  if (constants !== undefined) {
+    const keys = Object.keys(constants);
+    // Built-in overrides have equal-width numeric IDs, already in canonical order.
+    for (let i = 1; i < keys.length; i++) {
+      if ((keys[i - 1] as string) > (keys[i] as string)) {
+        keys.sort();
+        break;
+      }
+    }
+    for (const key of keys) {
+      facts[end++] = key;
+      facts[end++] = constants[key];
+    }
+  }
+  facts.length = end;
   return facts;
 }

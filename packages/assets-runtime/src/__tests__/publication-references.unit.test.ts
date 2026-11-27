@@ -5,7 +5,10 @@ import {
   createAssetPublication,
 } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { validatePublicationReferences } from '../internal/publication-references';
+import {
+  validatePublicationReferenceRoots,
+  validatePublicationReferences,
+} from '../internal/publication-references';
 
 const guid = (index: number) => `aaaaaaaa-aaaa-4aaa-8aaa-${String(index).padStart(12, '0')}`;
 const digest = `sha256:${'1'.repeat(64)}`;
@@ -95,6 +98,23 @@ describe('publication reference traversal', () => {
     expect(visited.length).toBeLessThanOrEqual(3);
   });
 
+  it('checks shared Pack evidence once per traversal while visiting sibling outputs', () => {
+    const dependency = guid(4);
+    const current = publication(
+      [output(1, [guid(2), guid(3)]), output(2), output(3)],
+      [{ guid: dependency, usage: 'reference', digest }],
+    );
+    const external = publication([output(4)]);
+    const visited: string[] = [];
+    const lookup = (key: string) => {
+      visited.push(key);
+      return { publication: key === dependency ? external : current };
+    };
+
+    expect(validatePublicationReferences(guid(1), { publication: current }, lookup).ok).toBe(true);
+    expect(visited).toEqual([dependency, guid(2), guid(3)]);
+  });
+
   it.each([
     'digest',
     'generation',
@@ -129,5 +149,39 @@ describe('publication reference traversal', () => {
       key === dependency ? { publication: stale } : undefined,
     );
     expect(result).toMatchObject({ ok: false, error: { code: 'asset-dependency-failed' } });
+  });
+
+  it('checks shared and disconnected roots in one observation, then rechecks changed descendants', () => {
+    const roots = publication([output(1, [guid(3)]), output(2, [guid(3), guid(4)])]);
+    const rows = new Map<string, AssetPublicationEnvelope>([
+      [guid(1), roots],
+      [guid(2), roots],
+      [guid(3), publication([output(3)], [{ guid: guid(5), usage: 'reference', generation: 1 }])],
+      [guid(4), publication([output(4)], [{ guid: guid(6), usage: 'reference', generation: 2 }])],
+      [guid(5), publication([output(5)])],
+      [guid(6), publication([output(6)])],
+    ]);
+    const check = () =>
+      validatePublicationReferenceRoots(
+        [guid(1), guid(2)].map((key) => [key, { publication: rows.get(key) }] as const),
+        (key) => ({ publication: rows.get(key) }),
+      );
+    expect(check()).toMatchObject({
+      ok: false,
+      error: {
+        code: 'asset-dependency-failed',
+        detail: { guid: guid(2), dependencyGuid: guid(6) },
+      },
+    });
+    rows.set(guid(6), { ...publication([output(6)]), generation: 2 });
+    expect(check().ok).toBe(true);
+    rows.set(guid(5), { ...publication([output(5)]), generation: 3 });
+    expect(check()).toMatchObject({
+      ok: false,
+      error: {
+        code: 'asset-dependency-failed',
+        detail: { guid: guid(1), dependencyGuid: guid(5) },
+      },
+    });
   });
 });

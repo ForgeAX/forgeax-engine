@@ -11,7 +11,7 @@ import { GpuScene } from '../gpu-scene';
 import { MaterialResource } from '../material-resource';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
-import { updateShadowView } from './helpers/gpu-input-read-domain';
+import { releaseGpuFixtureReads, updateShadowView } from './helpers/gpu-input-read-domain';
 import { nativeDeviceFixture } from './native-device-fixture';
 
 export async function stableCommandAddressFrames() {
@@ -84,7 +84,7 @@ export async function stableCommandAddressFrames() {
     snapshot: value,
   });
   apply([update(snapshot(1, -4)), update(snapshot(2, 0)), update(snapshot(3, 4))]);
-  const initial = topology.query(topology.sourcePlan(), undefined);
+  const initial = topology.query(topology.sourcePlan(), undefined).active;
   const light = mat4.lookAt(mat4.create(), [0, 0, 10], [0, 0, 0], [0, 1, 0]);
   const views = [
     [-6, 6],
@@ -116,7 +116,7 @@ export async function stableCommandAddressFrames() {
         pool = ShadowViewStatePool.create({ device, shaderModuleFactory }).unwrap();
       }
       if (frame === 48) topology.rebuild(projection.slotsSnapshot());
-      const source = topology.query(topology.sourcePlan(), undefined);
+      const source = topology.query(topology.sourcePlan(), undefined).active;
       if (frame < 48) {
         for (const batch of initial.batches.slice(1))
           expect(
@@ -164,6 +164,7 @@ export async function stableCommandAddressFrames() {
         }
         device.queue.submit([encoder.finish().unwrap()]).unwrap();
         await device.queue.onSubmittedWorkDone();
+        releaseGpuFixtureReads(scene);
         pool._commitResourceReplacement();
         const mapped = (await readback.mapAsync(1)).unwrap();
         try {

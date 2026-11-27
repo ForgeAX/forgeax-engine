@@ -51,7 +51,7 @@ try {
           renderPath: 'deferred',
           visibleSurface,
           ibl: false,
-          ssao: false,
+          ambientOcclusion: { enabled: false },
         },
       },
       {

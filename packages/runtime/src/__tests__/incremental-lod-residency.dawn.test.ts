@@ -112,7 +112,9 @@ it('submits resident LOD1, then admits late LOD2 without using retired mesh buff
   };
   try {
     for (let index = 0; index < 60; index++) await frame();
-    expect(renderer.inspect().output.graphPassNames).toContain('gpu-driven.view-selection');
+    const inspection = renderer.inspect();
+    expect(inspection.perFramePassNames).toContain('gpu-driven.view-selection');
+    expect(inspection.output.graphPassNames).toContain('forward-display-draws');
     await expectColor(1);
     const lowest = assets.create(coloredMesh(2)).unwrap();
     assets

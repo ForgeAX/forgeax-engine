@@ -28,7 +28,10 @@ describe('ReflectionProbeRecordOwner characterization', () => {
     expect(ownerContractsSource).toContain('active: PmremAtlas | undefined;');
     expect(ownerContractsSource).toContain('candidate: PmremAtlas;');
     expect(ownerContractsSource).toContain('spare: PmremAtlas | undefined;');
-    expect(ownerSource).toContain('const active = resource.activeFact?.center.every');
+    expect(ownerSource).toContain('const active = this.acceptedAtlas(resource);');
+    expect(ownerSource).toContain(
+      'return resource.activeFact?.center.every((v, i) => v === resource.fact.center[i])',
+    );
     expect(ownerSource).toMatch(/if \(active === undefined\)\s+return undefined;/);
     expect(ownerSource).toContain('filteredView: active.view');
   });
@@ -101,9 +104,9 @@ describe('ReflectionProbeRecordOwner characterization', () => {
 
   it('keeps fallback capability and recovery facts on the same owner', () => {
     expect(ownerSource).toContain('private fallbackFormatAvailable: boolean;');
-    expect(ownerSource).toContain('this.refreshFallbackCapabilities(frameId);');
+    expect(ownerSource).toContain('this.refreshFallbackCapabilities();');
     expect(ownerSource).toContain('reflection-fallback-format-unavailable');
-    expect(ownerSource).toContain('retireFallbackState(frameId);');
+    expect(ownerSource).toContain('retireFallbackState();');
     expect(ownerSource).toContain('reflectionFallbackInspection');
     expect(ownerSource).toContain('this.clearFallbackFailure();');
   });

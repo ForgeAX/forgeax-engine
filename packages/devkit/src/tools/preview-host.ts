@@ -13,6 +13,7 @@ import type {
   ToolExecutionContext,
 } from '@forgeax/engine-tool-runtime';
 import type { CaptureBackend, CaptureBackendObserved } from '../types.js';
+import { completeCommand, rejectCommand } from '../types.js';
 import { runBrowserPreviewHost } from './browser-host.js';
 import type { BrowserCarrierTarget } from './display-carrier.js';
 
@@ -71,6 +72,16 @@ function carrierRouteFailure(
   return { ok: false, error: { code, expected, hint, detail: detail as never } };
 }
 
+function previewError(error: {
+  readonly code: string;
+  readonly expected: string;
+  readonly hint: string;
+  readonly detail?: unknown;
+}): PreviewRouteResult<never> {
+  const { code, expected, hint, detail } = error;
+  return rejectCommand({ code, expected, hint, detail: detail as never });
+}
+
 export async function runCarrierPreviewRoute<T>(
   presentation: ToolPreviewRecipeOptions['presentation'],
   carrier: PreviewCarrierRoute | undefined,
@@ -86,42 +97,27 @@ export async function runCarrierPreviewRoute<T>(
     now: carrier.now?.() ?? Date.now(),
   });
   if (!leased.ok) return executePrivate();
-  const started = carrier.started(leased.value.leaseId);
-  if (!started.ok) {
-    const exited = carrier.exit(leased.value.leaseId);
-    if (!exited.ok)
-      return carrierRouteFailure(
-        exited.error.code,
-        exited.error.expected,
-        exited.error.hint,
-        exited.error.detail,
-      );
-    return executePrivate();
-  }
-  let result: PreviewRouteResult<T> | undefined;
-  let executionFailed = false;
-  let executionError: unknown;
-  let exitFailure: PreviewRouteResult<T> | undefined;
+  const { leaseId } = leased.value;
+  const release = () => {
+    const exited = carrier.exit(leaseId);
+    if (exited.ok) return undefined;
+    return previewError(exited.error);
+  };
+  if (!carrier.started(leaseId).ok) return release() ?? executePrivate();
+  let completion: { value: PreviewRouteResult<T> } | { cause: unknown };
+  let exitFailure: ReturnType<typeof release>;
   try {
-    result = await executeConsumer(leased.value.leaseId);
-  } catch (error) {
-    executionFailed = true;
-    executionError = error;
+    completion = { value: await executeConsumer(leaseId) };
+  } catch (cause) {
+    completion = { cause };
   } finally {
-    const exited = carrier.exit(leased.value.leaseId);
-    if (!exited.ok) {
-      exitFailure = carrierRouteFailure(
-        exited.error.code,
-        exited.error.expected,
-        exited.error.hint,
-        exited.error.detail,
-      );
-    }
+    exitFailure = release();
   }
   if (exitFailure !== undefined) return exitFailure;
-  if (executionFailed) throw executionError;
-  if (result === undefined) throw new Error('preview carrier consumer returned no result');
-  return result;
+  if ('cause' in completion) throw completion.cause;
+  if (completion.value === undefined)
+    throw new Error('preview carrier consumer returned no result');
+  return completion.value;
 }
 
 export const runPreviewHost: PreviewHostRunner = async (request, context) => {
@@ -157,37 +153,14 @@ export const runPreviewHost: PreviewHostRunner = async (request, context) => {
         );
       }
       const host = await createToolPreviewHost({ recipe, snapshot });
-      if (!host.ok) {
-        return {
-          ok: false,
-          error: {
-            code: host.error.code,
-            expected: host.error.expected,
-            hint: host.error.hint,
-            detail: host.error.detail as never,
-          },
-        };
-      }
+      if (!host.ok) return previewError(host.error);
       try {
         const result = await host.value.run();
-        if (!result.ok) {
-          return {
-            ok: false,
-            error: {
-              code: result.error.code,
-              expected: result.error.expected,
-              hint: result.error.hint,
-              detail: result.error.detail as never,
-            },
-          };
-        }
-        return {
-          ok: true,
-          value: {
-            ...result.value,
-            actualCarrier: recipe.presentation === 'hidden' ? 'headless-private' : 'headed-private',
-          },
-        };
+        if (!result.ok) return previewError(result.error);
+        return completeCommand({
+          ...result.value,
+          actualCarrier: recipe.presentation === 'hidden' ? 'headless-private' : 'headed-private',
+        });
       } finally {
         await host.value.dispose();
       }

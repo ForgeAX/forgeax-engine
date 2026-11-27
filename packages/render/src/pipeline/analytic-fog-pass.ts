@@ -248,19 +248,45 @@ function addFogDepthResolve(
     usage: GPU_TEXTURE_USAGE_RENDER_ATTACHMENT | GPU_TEXTURE_USAGE_TEXTURE_BINDING,
   });
   if (!target.ok) return target;
+  return addMultisampleDepthResolve(graph, depth, target.value, 'fog-depth-resolve');
+}
+
+export function addMultisampleDepthResolve(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  depth: RenderPipelineTarget,
+  target: RenderPipelineTarget,
+  label: string,
+  executeIf?: (frame: RenderPipelineFrame) => boolean,
+): Result<GraphTextureView, RenderGraphError> {
+  const source = graph.view(depth.texture, {
+    label: `${label}.source`,
+    dimension: '2d',
+    aspect: 'depth-only',
+  });
+  if (!source.ok) return source;
+  const attachment = graph.view(target.texture, { label: `${label}.attachment` });
+  if (!attachment.ok) return attachment;
   let state: { pipeline: RenderPipeline; layout: BindGroupLayout } | undefined;
   let binding: { depth: TextureView; group: BindGroup } | undefined;
-  const resolved = graph.addRasterPass('fog-depth-resolve', {
+  const resolved = graph.addRasterPass(label, {
+    ...(executeIf === undefined ? {} : { executeIf }),
     accesses: [
       { resource: source.value, usage: 'sampled-read' },
-      { resource: target.value.view, usage: 'depth-stencil-write' },
+      { resource: attachment.value, usage: 'depth-stencil-write' },
     ],
     colorAttachments: [],
     depthStencilAttachment: {
-      view: target.value.view,
+      view: attachment.value,
       depthClearValue: 0,
       depthLoadOp: 'clear',
       depthStoreOp: 'store',
+      ...(target.format.includes('stencil')
+        ? {
+            stencilLoadOp: 'clear' as const,
+            stencilStoreOp: 'store' as const,
+            stencilClearValue: 0,
+          }
+        : {}),
     },
     encodeDirect(pass, frame, resources) {
       const device = frame.runtime.device;
@@ -292,7 +318,7 @@ function addFogDepthResolve(
               fragment: { module, entryPoint: 'fs_resolve_depth', targets: [] },
               primitive: { topology: 'triangle-list' },
               depthStencil: {
-                format: 'depth32float',
+                format: target.format,
                 depthWriteEnabled: true,
                 depthCompare: 'always',
               },
@@ -316,7 +342,7 @@ function addFogDepthResolve(
       pass.draw(3);
     },
   });
-  return resolved.ok ? ok(target.value.view) : resolved;
+  return resolved.ok ? ok(target.view) : resolved;
 }
 
 /**
@@ -377,7 +403,7 @@ export function addTranslucencyVolumetricFogPasses(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: StandardFogPassInputs & {
     readonly directionalShadow: GraphTextureView | undefined;
-    readonly spotShadow: GraphTextureView;
+    readonly spotShadow: GraphTextureView | undefined;
     readonly clusterBuffers: StandardClusterGraphBuffers | null;
     readonly cloudShadow: GraphTextureView | undefined;
   },

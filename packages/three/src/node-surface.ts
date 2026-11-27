@@ -41,7 +41,13 @@ import {
 } from 'three/src/Three.Core.js';
 import { ThreeCompatibilityError } from './errors';
 import { admitNodeMaterial } from './node-materials';
-import { admitReference, isValueReference, referenceValue } from './node-reference';
+import {
+  admitReference,
+  isValueReference,
+  referenceTarget,
+  referenceValue,
+} from './node-reference';
+import { observedData, ownSourceValue } from './source-fields';
 
 export const SURFACE_ROOTS = [
   'colorNode',
@@ -257,7 +263,7 @@ function dataProperty(initial: object, name: string): unknown {
   let owner: object | null = initial;
   while (owner !== null) {
     const descriptor = Object.getOwnPropertyDescriptor(owner, name);
-    if (descriptor !== undefined) return descriptor.value;
+    if (descriptor !== undefined) return ownSourceValue(owner, name);
     owner = Object.getPrototypeOf(owner) as object | null;
   }
   return undefined;
@@ -268,8 +274,8 @@ function pristine(node: Node): boolean {
   if (
     expected === undefined ||
     dataProperty(node, 'constructor') !== ctor ||
-    Object.values(Object.getOwnPropertyDescriptors(node)).some(
-      (d) => d.get !== undefined || d.set !== undefined,
+    Object.entries(Object.getOwnPropertyDescriptors(node)).some(
+      ([key, descriptor]) => !observedData(node, key, descriptor),
     )
   )
     return false;
@@ -360,7 +366,7 @@ export function normalizeThreeSurface(
       material.onBeforeRender !== Material.prototype.onBeforeRender ||
       SURFACE_ROOTS.some((root) => {
         const descriptor = Object.getOwnPropertyDescriptor(material, root);
-        return descriptor?.get !== undefined || descriptor?.set !== undefined;
+        return descriptor !== undefined && !observedData(material, root, descriptor);
       })
     )
       fail('material', 'unsafe-hook', 'material callbacks and root accessors are unsupported');
@@ -816,15 +822,7 @@ function readSurfaceValues(
       'ordinary map membership changed',
     );
   const values: Record<string, number | readonly number[]> = {};
-  for (const { name, type, node, path } of binding.graph.inputs) {
-    const value = isValueReference(node) ? referenceValue(material, node) : source(node).value;
-    if (
-      valueType(value, type) !== type ||
-      !numbers(value)?.every((v) => Number.isFinite(Math.fround(v)))
-    )
-      throw new ThreeSurfaceError(material, path, 'value', 'live input type/value changed');
-    values[name] = typeof value === 'number' ? value : (numbers(value) ?? []);
-  }
+  for (const input of binding.graph.inputs) values[input.name] = readLiveInput(material, input);
   for (const { node, path, contract } of binding.graph.textures)
     if (!textureValid(node.value) || textureContract(node.value) !== contract)
       throw new ThreeSurfaceError(
@@ -835,21 +833,115 @@ function readSurfaceValues(
       );
   return values;
 }
+function readLiveInput(
+  material: Material,
+  { type, node, path }: LiveInput,
+): number | readonly number[] {
+  const value = isValueReference(node) ? referenceValue(material, node) : source(node).value;
+  if (type === 'float' && typeof value === 'number' && Number.isFinite(Math.fround(value)))
+    return value;
+  const lanes = numbers(value);
+  if (valueType(value, type) !== type || !lanes?.every((v) => Number.isFinite(Math.fround(v))))
+    throw new ThreeSurfaceError(material, path, 'value', 'live input type/value changed');
+  return lanes;
+}
+
+export function readThreeSurfaceInput(
+  material: Material,
+  index: number,
+): number | readonly number[] {
+  const input = bindingFor(material)?.graph.inputs[index];
+  if (input === undefined) throw new Error('tracked Surface lost its live input');
+  return readLiveInput(material, input);
+}
+
+/** Subscribe just to the live leaves accepted by the cooked binding. Structural edits re-admit. */
+export function watchThreeSurfaceInputs(
+  material: Material,
+  watch: (object: object, key: string, notify: () => void) => boolean,
+  layout: () => void,
+  edit: (index: number) => void,
+  texture: (source: Texture) => boolean,
+): boolean {
+  const graph = bindingFor(material)?.graph;
+  if (graph === undefined || !watch(ColorManagement, 'workingColorSpace', layout)) return false;
+  for (const [index, { node, type }] of graph.inputs.entries()) {
+    let owner: object = node;
+    let key = 'value';
+    if (isValueReference(node)) {
+      const target = referenceTarget(material, node);
+      if (target === null || typeof target !== 'object') return false;
+      const selector =
+        node.constructor === MaterialReferenceNode
+          ? 'material'
+          : node.constructor === UserDataNode
+            ? 'userData'
+            : 'object';
+      if (!watch(node, selector, layout)) return false;
+      owner = target;
+      key = node.properties[0] ?? '';
+    }
+    const dirty = () => edit(index);
+    if (type === 'float') {
+      if (!watch(owner, key, dirty)) return false;
+      continue;
+    }
+    const value = ownSourceValue(owner, key);
+    const prototype = value && Object.getPrototypeOf(value);
+    const lanes =
+      prototype === Color.prototype
+        ? ['r', 'g', 'b']
+        : prototype === Vector2.prototype
+          ? ['x', 'y']
+          : prototype === Vector3.prototype
+            ? ['x', 'y', 'z']
+            : prototype === Vector4.prototype
+              ? ['x', 'y', 'z', 'w']
+              : undefined;
+    if (lanes === undefined || !watch(owner, key, layout)) return false;
+    for (const lane of lanes) if (!watch(value as object, lane, dirty)) return false;
+  }
+  for (const { node } of graph.textures) {
+    if (
+      node.referenceNode !== null ||
+      !watch(node, 'referenceNode', layout) ||
+      !watch(node, '_value', layout) ||
+      !texture(node.value)
+    )
+      return false;
+  }
+  return true;
+}
 export function threeSurfaceTextures(material: Material): readonly (readonly [string, Texture])[] {
   return (
     bindingFor(material)?.graph.textures.map(({ name, node }) => [name, node.value] as const) ?? []
   );
 }
-export function threeSurfaceRevisions(material: Material): readonly unknown[] {
+export interface SurfaceInputObservation {
+  readonly program: string;
+  readonly values: Readonly<Record<string, number | readonly number[]>>;
+}
+
+export function observeThreeSurfaceInputs(material: Material): SurfaceInputObservation | undefined {
   const binding = bindingFor(material);
   return binding === undefined
+    ? undefined
+    : { program: binding.recipe.programGuid, values: readSurfaceValues(material, binding) };
+}
+
+export function threeSurfaceRevisions(
+  material: Material,
+  observation = observeThreeSurfaceInputs(material) ?? null,
+): readonly unknown[] {
+  return observation === null
     ? []
-    : [binding.recipe.programGuid, ...Object.values(readSurfaceValues(material, binding)).flat()];
+    : [observation.program, ...Object.values(observation.values).flat()];
 }
 export function projectThreeSurface(
   material: Material,
   projected: MaterialAsset,
   textures: Readonly<Record<string, unknown>> = {},
+  observation?: SurfaceInputObservation,
 ): MaterialAsset {
   const binding = bindingFor(material);
   if (binding === undefined) return projected;
@@ -877,7 +969,9 @@ export function projectThreeSurface(
     values: {
       ...projected.values,
       ...Object.fromEntries(binding.graph.textures.map(({ name }) => [name, textures[name]])),
-      ...readSurfaceValues(material, binding),
+      ...(observation?.program === binding.recipe.programGuid
+        ? observation.values
+        : readSurfaceValues(material, binding)),
     },
   } as SurfaceProjection;
   return output;

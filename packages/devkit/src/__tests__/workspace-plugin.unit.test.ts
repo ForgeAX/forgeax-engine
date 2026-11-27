@@ -5,9 +5,9 @@ import { join } from 'node:path';
 import { EngineWorkspaceError, type EngineWorkspaceProvider } from '@forgeax/engine-app';
 import { createBackendHost } from '@forgeax/engine-host/backend';
 import { describe, expect, it, vi } from 'vitest';
+import { createWorkspaceSelection } from '../backend-lifetime.js';
 import { createOperationHistoryStore } from '../operation-history.js';
 import { devKitWorkspacePlugin } from '../workspace-plugin.js';
-import { createWorkspaceSelection } from '../workspace-selection.js';
 
 const opened = (
   root: string,

@@ -137,6 +137,7 @@ describe('ShadowParticipation extraction', () => {
     expect(meshSurfaceFlags({})).toBe(1);
     expect(meshSurfaceFlags({ temporal: { motionValid: false } })).toBe(0);
     expect(meshSurfaceFlags({ shadowReceiver: false })).toBe(3);
+    expect(meshSurfaceFlags({ shadowCaster: false, capsuleShadowRequested: true })).toBe(13);
     expect(meshSurfaceFlags({ temporal: { motionValid: false }, shadowReceiver: false })).toBe(2);
   });
 });

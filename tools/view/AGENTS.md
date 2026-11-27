@@ -1,5 +1,7 @@
 # ForgeaX View
 
+[Simplified Chinese](AGENTS.zh-CN.md)
+
 View is an optional asset viewer, Pack authoring client and read-only observer of Engine AI runs.
 AI is the primary user. Engine owns execution in a separate browser, normally
 headless, with fixed project inputs. View owns its browser resources, workspace
@@ -12,6 +14,10 @@ process manager. View resolves its matching Engine and own Host Pack; default H 
 shared system temporary workspace per installation. `--new-instance` allocates
 a unique temporary H; explicit `--root H` selects a caller-managed instance.
 Backend termination leaves the Shell available to start it again.
+The Engine authoring package bundles its matching View as a private tool.
+Use `forgeax project view --json` from a game project. Source startup resolves the
+prepared contributor installation. Earlier SDK releases resolve their matching
+Engine and View through their own `.forgeax/cli-runtime`.
 Startup calls the public `ensureDevKitView` API directly. Use returned H explicitly
 for instance controls. Low-level `backend start` and `view start` remain usable
 separately. Normal file startup with omitted G never selects H as a

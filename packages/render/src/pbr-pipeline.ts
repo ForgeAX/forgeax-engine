@@ -1,4 +1,12 @@
-import { atmosphereViewLayoutEntries } from './environment/bindings';
+import { findMaterialShaderEntry } from '@forgeax/engine-shader';
+import {
+  atmosphereViewLayoutEntries,
+  FORWARD_HIZ_VIEW_SLOT,
+  FORWARD_SSR_COLOR_VIEW_SLOT,
+  retainViewLayout,
+} from './environment/bindings';
+import { retainRasterWindowFamily } from './gpu-driven/raster-window-layout';
+import { SKY_SH_BYTES } from './ibl/sky-sh';
 import type { SkinTaskBinding } from './record/skin-tasks';
 // pbr-pipeline.ts -- PBR / unlit pipeline-layout factories (M4 round-4 D-5).
 //
@@ -34,8 +42,10 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import {
+  isRuntimeMaterialVariantFamily,
   isShaderTemplateManifestRow,
   materialShaderAxes,
+  PARTICLE_MESH_SURFACE_PARAM_SCHEMA,
   type ShaderCatalog,
   STANDARD_DIRECT_DFG_LUT_BINDING,
   STANDARD_PARALLAX_DISPLACEMENT_BIT,
@@ -48,13 +58,10 @@ import {
   standardTextureMask,
 } from '@forgeax/engine-shader';
 import { derive, type ParamSchemaEntry, STANDARD_DISPLACEMENT_MODES } from '@forgeax/engine-types';
-import {
-  materialUsesPlanarReflection,
-  PLANAR_REFLECTION_MATERIAL_LAYOUT_ENTRIES,
-} from './capture/planar-material';
 import { materialUsesDirectDfgLut } from './device/direct-dfg-lut';
 import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from './gpu-stage';
 import type { PipelineSpec } from './pipeline-spec-types';
+import { PLANAR_REFLECTION_UNIFORM_SIZE } from './record/view-ubo';
 
 // Boot layouts use the canonical Standard identity so material resource-budget
 // omissions match the record path. Other BGL kinds depend only on caps.
@@ -64,6 +71,161 @@ const BGL_ONLY_SPEC_STUB: PipelineSpec = Object.freeze({
   geometry: { topology: 'triangle-list', vertexLayout: {} },
   renderState: undefined,
 }) as PipelineSpec;
+
+// Built-in Forward projects the boot layout from the selected entries' reads.
+// The full layout also serves passes that require additional lighting slots.
+const standardUserRegion = derive(STANDARD_PIPELINE_PARAM_SCHEMA);
+const standardForwardOmittedBindings = omittedStandardMaterialBindings(
+  [...standardUserRegion.textureFieldNames],
+  false,
+  true,
+  true,
+);
+
+export function projectOpaqueStandardMaterialEntries<T extends { readonly binding: number }>(
+  entries: readonly T[],
+): T[] {
+  return entries.filter((entry) => !standardForwardOmittedBindings.has(entry.binding));
+}
+
+interface ProjectedStandardLayout {
+  readonly index: number;
+  readonly material: BindGroupLayout;
+  readonly pipelines: WeakMap<
+    PipelineLayout,
+    WeakMap<BindGroupLayout, WeakMap<BindGroupLayout, WeakMap<BindGroupLayout, PipelineLayout>>>
+  >;
+}
+const standardMaterialLayoutFamilies = new WeakMap<
+  BindGroupLayout,
+  {
+    readonly entries: readonly GPUBindGroupLayoutEntry[];
+    readonly variants: Map<string, ProjectedStandardLayout>;
+    readonly materials: BindGroupLayout[];
+  }
+>();
+const standardPipelineMaterialLayouts = new WeakMap<
+  import('@forgeax/engine-rhi').RenderPipeline,
+  number
+>();
+
+// Material slots are u32 GPU Scene indices. Keep the projected layout next
+// to the material slot in recording and retained bundle caches.
+const MATERIAL_SLOT_RANGE = 2 ** 32;
+
+export function materialLayoutSlotKey(slot: number, layout: number): number {
+  return layout * MATERIAL_SLOT_RANGE + slot;
+}
+
+export function materialSlotFromLayoutKey(key: number): number {
+  return key % MATERIAL_SLOT_RANGE;
+}
+
+export function materialLayoutIndexFromKey(key: number): number {
+  return Math.floor(key / MATERIAL_SLOT_RANGE);
+}
+
+export function projectedStandardMaterialLayout(
+  full: BindGroupLayout,
+  index: number,
+): BindGroupLayout | undefined {
+  return standardMaterialLayoutFamilies.get(full)?.materials[index - 1];
+}
+
+export function standardPipelineMaterialLayoutIndex(
+  pipeline: import('@forgeax/engine-rhi').RenderPipeline,
+): number {
+  return standardPipelineMaterialLayouts.get(pipeline) ?? 0;
+}
+
+export function retainStandardPipelineMaterialLayout(
+  pipeline: import('@forgeax/engine-rhi').RenderPipeline,
+  index: number,
+) {
+  if (index !== 0) standardPipelineMaterialLayouts.set(pipeline, index);
+}
+
+export function buildOpaqueStandardPipelineLayout(
+  device: PbrPipelineDevice,
+  full: PipelineLayout,
+  view: BindGroupLayout,
+  material: BindGroupLayout,
+  mesh: BindGroupLayout,
+  instances: BindGroupLayout,
+  reads?: ReadonlySet<number>,
+):
+  | { readonly layout: PipelineLayout; readonly index: number; readonly material: BindGroupLayout }
+  | undefined {
+  const owner = standardMaterialLayoutFamilies.get(material);
+  if (owner === undefined) return undefined;
+  const entries =
+    reads === undefined
+      ? owner.entries
+      : owner.entries.filter((entry) => entry.binding === 0 || reads.has(entry.binding));
+  const key = entries.map(({ binding }) => binding).join(',');
+  let variant = owner.variants.get(key);
+  if (variant === undefined) {
+    const projected = device.createBindGroupLayout({
+      label: 'pbr-opaque-material-bgl',
+      entries: [...entries],
+    });
+    if (!projected.ok) return undefined;
+    const index = owner.materials.push(projected.value);
+    variant = { index, material: projected.value, pipelines: new WeakMap() };
+    owner.variants.set(key, variant);
+    retainProjectedMaterialSlots(projected.value, entries);
+  }
+  let pipelines = variant.pipelines.get(full);
+  if (pipelines === undefined) {
+    pipelines = new WeakMap();
+    variant.pipelines.set(full, pipelines);
+  }
+  let byPrimitive = pipelines.get(view);
+  if (byPrimitive === undefined) {
+    byPrimitive = new WeakMap();
+    pipelines.set(view, byPrimitive);
+  }
+  let byInstances = byPrimitive.get(mesh);
+  if (byInstances === undefined) {
+    byInstances = new WeakMap();
+    byPrimitive.set(mesh, byInstances);
+  }
+  const cached = byInstances.get(instances);
+  if (cached !== undefined)
+    return { layout: cached, index: variant.index, material: variant.material };
+  const pipeline = device.createPipelineLayout({
+    label: 'pbr-opaque-pipeline-layout',
+    bindGroupLayouts: [view, variant.material, mesh, instances],
+  });
+  if (!pipeline.ok) return undefined;
+  byInstances.set(instances, pipeline.value);
+  return { layout: pipeline.value, index: variant.index, material: variant.material };
+}
+
+export function canProjectOpaqueStandardMaterial(
+  entries: readonly import('@forgeax/engine-types').ShaderEntryPointReads[] | undefined,
+  vertexEntry: string | undefined,
+  fragmentEntry: string | null | undefined,
+): boolean {
+  if (
+    fragmentEntry !== 'fs_opaque' &&
+    fragmentEntry !== 'fs_forward_screen' &&
+    fragmentEntry !== 'fs_forward_sun_shadow' &&
+    fragmentEntry !== 'fs_coverage' &&
+    !isStandardGBufferEntry(fragmentEntry)
+  )
+    return false;
+  const vertex = findMaterialShaderEntry(entries, vertexEntry ?? 'vs_main', 'vertex');
+  const fragment = findMaterialShaderEntry(entries, fragmentEntry, 'fragment');
+  const readsOmittedSlot = ({ group, binding }: { group: number; binding: number }) =>
+    group === 1 && standardForwardOmittedBindings.has(binding);
+  return (
+    vertex !== undefined &&
+    fragment !== undefined &&
+    !vertex.bindings.some(readsOmittedSlot) &&
+    !fragment.bindings.some(readsOmittedSlot)
+  );
+}
 
 // ─── Device owner ───────────────────────────────────────────────────────────
 
@@ -144,9 +306,11 @@ export function buildPbrMaterialUserRegionEntries(
   paramSchema: readonly ParamSchemaEntry[] = STANDARD_PIPELINE_PARAM_SCHEMA,
   excludedTextureFields: readonly string[] = [],
   vertexOnlyTextureFields: readonly string[] = [],
+  preserveAuthorFields = false,
 ): GPUBindGroupLayoutEntry[] {
   const excluded = new Set(excludedTextureFields);
-  for (const field of standardPhysicalTextureFields(paramSchema)) excluded.add(field);
+  if (!preserveAuthorFields)
+    for (const field of standardPhysicalTextureFields(paramSchema)) excluded.add(field);
   const derived = derive(
     excluded.size === 0
       ? paramSchema
@@ -253,7 +417,7 @@ export function materialUsesSurfaceSceneInputs(
   return lookup.value.program.materialBindings?.includes(userRegionEnd + 9) === true;
 }
 
-/** Cooked families share their complete read union; capability templates stay conservative. */
+/** Cooked families share their read union. Runtime coverage uses the admitted base contract. */
 export function sharedMaterialBindingDeclarations(
   registry: ShaderCatalog | undefined,
   materialShaderId: string | undefined,
@@ -275,7 +439,13 @@ export function sharedMaterialBindingDeclarations(
   if (materialUsesSurfaceSceneInputs(registry, materialShaderId)) return undefined;
   if (!lookup.ok) return undefined;
   const primary = lookup.value.program.materialBindings;
-  if (family === undefined || family.variants.length === 0 || primary === undefined) return primary;
+  if (
+    family === undefined ||
+    isRuntimeMaterialVariantFamily(family) ||
+    family.variants.length === 0 ||
+    primary === undefined
+  )
+    return primary;
   const bindings = new Set(primary);
   for (const variant of family.variants) {
     const entries = variant.entryPoints ?? variant.receipt?.entryPoints;
@@ -286,7 +456,21 @@ export function sharedMaterialBindingDeclarations(
   return [...bindings].sort((a, b) => a - b);
 }
 
-/** Shared Surface layouts and bind groups consume the same complete entry-read union. */
+const particleMeshMaterialLayoutIdentity = derive(
+  PARTICLE_MESH_SURFACE_PARAM_SCHEMA,
+).layoutIdentity;
+
+function collectMaterialBindingReads(
+  reads: Set<number>,
+  entryPoints: readonly import('@forgeax/engine-types').ShaderEntryPointReads[] | undefined,
+): boolean {
+  if (entryPoints === undefined || entryPoints.length === 0) return false;
+  for (const entry of entryPoints)
+    for (const binding of entry.bindings) if (binding.group === 1) reads.add(binding.binding);
+  return true;
+}
+
+/** Project supported material interfaces from the complete compiled-family read union. */
 export function projectSurfaceMaterialBindings<T extends { readonly binding: number }>(
   entries: readonly T[],
   registry: ShaderCatalog | undefined,
@@ -294,24 +478,46 @@ export function projectSurfaceMaterialBindings<T extends { readonly binding: num
 ): T[] {
   if (registry === undefined || materialShaderId === undefined) return [...entries];
   const lookup = registry.findMaterialArtifact(materialShaderId);
-  const model = lookup.ok ? lookup.value.receipt?.surface?.model : undefined;
-  if (!lookup.ok || (model !== 'single-layer-medium' && model !== 'single-layer-water'))
+  if (!lookup.ok) return [...entries];
+  const { receipt, paramSchema } = lookup.value;
+  if (
+    receipt?.surface === undefined &&
+    receipt?.bindings !== 'render-standard-material-and-scene-depth' &&
+    (receipt?.reflection?.layoutIdentity !== particleMeshMaterialLayoutIdentity ||
+      paramSchema === undefined)
+  )
     return [...entries];
-  const entryPoints = lookup.value.program.entryPoints ?? lookup.value.receipt?.entryPoints;
-  if (entryPoints === undefined) return [...entries];
-  const reads = new Set(
-    entryPoints.flatMap((entry) =>
-      entry.bindings.filter((binding) => binding.group === 1).map((binding) => binding.binding),
-    ),
-  );
-  for (const variant of registry.materialShaderManifestEntry(materialShaderId)?.variants ?? []) {
-    const variantEntries = variant.entryPoints ?? variant.receipt?.entryPoints;
-    if (variantEntries === undefined) return [...entries];
-    for (const entry of variantEntries)
-      for (const binding of entry.bindings) if (binding.group === 1) reads.add(binding.binding);
+  const reads = new Set<number>();
+  if (!collectMaterialBindingReads(reads, lookup.value.program.entryPoints ?? receipt?.entryPoints))
+    return [...entries];
+  const family = registry.materialShaderManifestEntry(materialShaderId);
+  if (family !== undefined && isRuntimeMaterialVariantFamily(family)) return [...entries];
+  for (const variant of family?.variants ?? []) {
+    if (!collectMaterialBindingReads(reads, variant.entryPoints ?? variant.receipt?.entryPoints))
+      return [...entries];
   }
   // The material uniform keeps its fixed dynamic-offset ABI even in a depth-only module.
   return entries.filter((entry) => entry.binding === 0 || reads.has(entry.binding));
+}
+
+// Keep the resource projection with the native layout that was admitted. A
+// fallback pipeline can use the full layout for the same material shader ID.
+const projectedMaterialSlots = new WeakMap<BindGroupLayout, ReadonlySet<number>>();
+
+export function retainProjectedMaterialSlots(
+  layout: BindGroupLayout,
+  entries: readonly { readonly binding: number }[],
+): void {
+  projectedMaterialSlots.set(layout, new Set(entries.map(({ binding }) => binding)));
+}
+
+export function projectMaterialLayoutEntries<T extends number | { readonly binding: number }>(
+  layout: BindGroupLayout,
+  entries: T[],
+): T[] {
+  const slots = projectedMaterialSlots.get(layout);
+  if (slots === undefined) return entries;
+  return entries.filter((entry) => slots.has(typeof entry === 'number' ? entry : entry.binding));
 }
 
 /**
@@ -347,6 +553,9 @@ export function omittedStandardMaterialBindings(
       }
     });
   }
+  if (standard)
+    for (let binding = userRegionEnd; binding < userRegionEnd + 6; binding += 1)
+      if (canonical || materialBindings?.includes(binding) === false) omitted.add(binding);
   if (canonical) {
     const index = textureFields.indexOf('bumpTexture');
     if (index >= 0 && textureFields.includes('normalTexture')) {
@@ -357,6 +566,8 @@ export function omittedStandardMaterialBindings(
   // Standard backdrop sampling uses the existing clamp/linear IBL prefilter
   // sampler, keeping the complete clustered layout within 16 sampler slots.
   const backdropSampler = userRegionEnd + 6;
+  if (canonical || (standard && materialBindings?.includes(backdropSampler + 1) === false))
+    omitted.add(backdropSampler + 1);
   if (materialBindings === undefined ? standard : !materialBindings.includes(backdropSampler)) {
     omitted.add(backdropSampler);
   }
@@ -420,11 +631,11 @@ export function appendInjection(
   switch (kind) {
     case 'ibl':
       return [
-        // binding start+0: irradianceMap (texture_cube)
+        // binding start+0: diffuse sky polynomial
         {
           binding: start,
           visibility: GPU_SHADER_STAGE_FRAGMENT,
-          texture: { sampleType: 'float', viewDimension: 'cube' },
+          buffer: { type: 'uniform', minBindingSize: SKY_SH_BYTES },
         },
         // binding start+1: irradianceSampler
         {
@@ -536,7 +747,7 @@ export function appendSingleLayerMediumInjection(
     {
       binding: start + 7,
       visibility: GPU_SHADER_STAGE_FRAGMENT,
-      buffer: { type: 'uniform', minBindingSize: 96 },
+      buffer: { type: 'uniform', minBindingSize: PLANAR_REFLECTION_UNIFORM_SIZE },
     },
   ];
 }
@@ -670,8 +881,6 @@ export interface PbrCaps {
  * (bindings 5/6 follow the storage-capable `POINT_SHADOW_AVAILABLE` profile
  * registered in vite-plugin-shader) +
  * feat-20260613-csm-cascaded-shadow-maps M5 / w28 (binding 7 cascade UBO).
- *   binding 10 (Points/Lines viewport UBO; always bound for the shared view
- *   layout and consumed only by the dedicated points-lines shader).
  * Isolated here so M4 round-4 tests can recreate the layout.
  *
  * Local lights are not part of the view group. Standard material variants
@@ -760,9 +969,14 @@ export function buildPbrViewBglEntries(caps: PbrCaps): GPUBindGroupLayoutEntry[]
   if (extendedLighting) {
     entries.push(
       {
-        binding: 24,
+        binding: FORWARD_HIZ_VIEW_SLOT,
         visibility: GPU_SHADER_STAGE_FRAGMENT,
-        texture: { sampleType: 'float', viewDimension: '2d-array' },
+        texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+      },
+      {
+        binding: FORWARD_SSR_COLOR_VIEW_SLOT,
+        visibility: GPU_SHADER_STAGE_FRAGMENT,
+        texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
       },
       {
         binding: 9,
@@ -809,11 +1023,6 @@ export function buildPbrViewBglEntries(caps: PbrCaps): GPUBindGroupLayoutEntry[]
       },
     );
   }
-  entries.push({
-    binding: 10,
-    visibility: GPU_SHADER_STAGE_VERTEX,
-    buffer: { type: 'uniform', hasDynamicOffset: true },
-  });
   // Cloud direct-solar transport is a renderer-owned view resource. The
   // minimum 16-texture profile has no spare sampled texture lane; its shader
   // variant omits the cloud map; atmosphere shares the filtering sampler.
@@ -851,20 +1060,25 @@ export function buildPbrPipelineLayouts(
   caps: PbrCaps,
 ): PbrPipelineLayoutBundle {
   // All four boot BGLs share the Standard descriptor builder and capability policy.
-  const viewBglRes = device.createBindGroupLayout(
-    buildBindGroupLayoutDescriptor(BGL_ONLY_SPEC_STUB, { kind: 'pbr-view', caps }),
-  );
+  const viewEntries = buildPbrViewBglEntries(caps);
+  const viewBglRes = device.createBindGroupLayout({ label: 'pbr-view-bgl', entries: viewEntries });
   if (!viewBglRes.ok) throw viewBglRes.error;
+  retainViewLayout(viewBglRes.value, viewEntries, caps.storageBuffer);
 
-  // Material slots and the following Skylight/transmission injections derive
-  // from the same canonical schema as the shader and bind-group record path.
-  const materialBglRes = device.createBindGroupLayout(
-    buildBindGroupLayoutDescriptor(BGL_ONLY_SPEC_STUB, {
-      kind: 'pbr-material-merged',
-      caps,
-    }),
-  );
+  // The boot material layout owns the authored schema and the indexed material table.
+  // View and Primitive inputs are projected separately from the selected entries.
+  const materialDescriptor = buildBindGroupLayoutDescriptor(BGL_ONLY_SPEC_STUB, {
+    kind: 'pbr-material-merged',
+    caps,
+  });
+  const materialBglRes = device.createBindGroupLayout(materialDescriptor);
   if (!materialBglRes.ok) throw materialBglRes.error;
+  const opaqueEntries = projectOpaqueStandardMaterialEntries(materialDescriptor.entries);
+  standardMaterialLayoutFamilies.set(materialBglRes.value, {
+    entries: opaqueEntries,
+    variants: new Map(),
+    materials: [],
+  });
 
   // mesh-array BGL.
   const meshArrayBglRes = device.createBindGroupLayout(
@@ -951,6 +1165,14 @@ export const SKIN_MATERIAL_SHADER_ID = 'forgeax::pbr-skin' as const;
 /** Skinned G-buffer entry for visible-surface passes: writes the uncovered row 0. */
 export const SKIN_UNCOVERED_GBUFFER_ENTRY = 'fs_gbuffer_uncovered' as const;
 export const SHADOW_CASTER_SHADER_ID = 'forgeax::default-shadow-caster' as const;
+
+export function isStandardGBufferEntry(entry: string | null | undefined): boolean {
+  return (
+    entry === 'fs_gbuffer' ||
+    entry === 'fs_gbuffer_compact' ||
+    entry === SKIN_UNCOVERED_GBUFFER_ENTRY
+  );
+}
 
 // Authored Standard templates are published under a unique module id for each
 // root contract.  Keep the family marker in the id so every downstream render
@@ -1123,13 +1345,13 @@ export function buildGpuDrivenPbrInstancesBindGroupLayout(
   if (!caps.storageBuffer) {
     throw new Error('GPU-driven PBR instances layout requires storage-buffer capability');
   }
-  const result = device.createBindGroupLayout(
-    buildBindGroupLayoutDescriptor(BGL_ONLY_SPEC_STUB, {
-      kind: 'pbr-gpu-driven-instances',
-      caps,
-    }),
-  );
+  const descriptor = buildBindGroupLayoutDescriptor(BGL_ONLY_SPEC_STUB, {
+    kind: 'pbr-gpu-driven-instances',
+    caps,
+  });
+  const result = device.createBindGroupLayout(descriptor);
   if (!result.ok) throw result.error;
+  retainRasterWindowFamily(result.value, descriptor.entries);
   return result.value;
 }
 
@@ -1164,6 +1386,7 @@ export function buildSurfaceDirectInstancesBindGroupLayout(
  * primitive table at binding(6), the scene-index slots, so both lanes share
  * one shader-side declaration. Without vertex storage the instance, primitive
  * and transform (7) tables are rgba32uint textures read by textureLoad.
+ * Storage transports the transform table at binding 9.
  */
 function sceneDirectInstancesLayoutDescriptor(
   caps: PbrCaps | undefined,
@@ -1184,7 +1407,7 @@ function sceneDirectInstancesLayoutDescriptor(
     visibility: GPU_SHADER_STAGE_VERTEX,
     buffer: { type: 'read-only-storage' as const, hasDynamicOffset: false },
   });
-  return { label: 'pbr-scene-direct-instances-bgl', entries: [table(0), table(6)] };
+  return { label: 'pbr-scene-direct-instances-bgl', entries: [table(0), table(6), table(9)] };
 }
 
 /** Build the slot-3 layout used by direct draws that read GPU Scene rows. */
@@ -1214,6 +1437,23 @@ export function buildSceneDirectPipelineLayout(
   });
   if (!result.ok) throw result.error;
   return result.value;
+}
+
+/** Scene-index draws address resident transforms through group 3. */
+export function gpuDrivenPrimitiveLayoutEntries(skin: boolean): GPUBindGroupLayoutEntry[] {
+  return skin ? skinMeshArrayLayoutDescriptor({ storageBuffer: true }).entries.slice(1) : [];
+}
+
+export function buildGpuDrivenPrimitiveBindGroupLayout(
+  device: PbrPipelineDevice,
+  skin: boolean,
+): BindGroupLayout {
+  const layout = device.createBindGroupLayout({
+    label: skin ? 'gpu-scene-skin-primitive' : 'gpu-scene-primitive',
+    entries: gpuDrivenPrimitiveLayoutEntries(skin),
+  });
+  if (!layout.ok) throw layout.error;
+  return layout.value;
 }
 
 /** Build the four-slot rigid scene-index pipeline layout. */
@@ -1279,10 +1519,18 @@ export function pbrSkinMeshDynamicOffsets(
   meshOffset: number,
   task: SkinTaskBinding,
   storageBuffer: boolean,
+  output: number[] = [],
 ): readonly number[] {
-  return storageBuffer
-    ? [meshOffset, task.auxiliaryOffset]
-    : [meshOffset, task.dataOffset, task.auxiliaryOffset];
+  output[0] = meshOffset;
+  if (storageBuffer) {
+    output[1] = task.auxiliaryOffset;
+    output.length = 2;
+  } else {
+    output[1] = task.dataOffset;
+    output[2] = task.auxiliaryOffset;
+    output.length = 3;
+  }
+  return output;
 }
 
 // ─── Unlit material BGL factory ─────────────────────────────────────────────
@@ -1413,11 +1661,11 @@ export const SPRITE_PASS_PER_INSTANCE_REGION_VARIANT_SET = '';
  * 1. Shader-derived (paramSchema reflection + injection chain):
  *    - `'pbr-material-merged'` — derived user region + Skylight 6 + transmission 2
  *    - `'unlit-material'` — 7 entries: base PBR material only (no inject)
- *    - `'hdrp-7-slot'` — 7 entries (binding 0 + 3..8): HDRP cluster + SSAO group(2) BGL
+ *    - `'hdrp-7-slot'` — Standard rigid mesh window
  * 2. Caps-driven literal shapes (no shader):
- *    - `'pbr-view'` — camera/shadow bindings, optional projector
- *      texture/sampler (11/12), and the Points/Lines UBO (10). Local lights
- *      are carried exclusively by the Standard Cluster group(2).
+ *    - `'pbr-view'` — camera/shadow bindings and optional projector
+ *      texture/sampler (11/12). Local lights are carried exclusively by the
+ *      Standard Cluster group(2); Points/Lines use their own view inputs.
  *      (directional 3/4, point 5/6, cascade 7, spot atlas 8; the former
  *      spot lightViewProj matrices moved into the View UBO)
  *    - `'pbr-mesh-array'` — 1 entry: per-entity mesh SSBO (dynamic-offset)
@@ -1476,7 +1724,6 @@ export function createHdrpBindGroupLayoutDescriptor(
   storageBuffer = true,
 ): BindGroupLayoutDescriptorOutput {
   const meshBufType: GPUBufferBindingType = storageBuffer ? 'read-only-storage' : 'uniform';
-  const clusterBufType: GPUBufferBindingType = 'read-only-storage';
   return {
     label: 'hdrp-unified-bgl-group2',
     entries: [
@@ -1490,59 +1737,6 @@ export function createHdrpBindGroupLayoutDescriptor(
         visibility: GPU_SHADER_STAGE_VERTEX | GPU_SHADER_STAGE_FRAGMENT,
         buffer: { type: meshBufType, hasDynamicOffset: true },
       },
-      // Bindings 1 and 2 stay absent for the URP physical isolation gap.
-      ...(storageBuffer
-        ? [
-            {
-              binding: 3,
-              visibility: GPU_SHADER_STAGE_FRAGMENT,
-              buffer: { type: clusterBufType, hasDynamicOffset: false },
-            },
-            {
-              binding: 4,
-              visibility: GPU_SHADER_STAGE_FRAGMENT,
-              buffer: { type: clusterBufType, hasDynamicOffset: false },
-            },
-            {
-              binding: 5,
-              visibility: GPU_SHADER_STAGE_FRAGMENT,
-              buffer: { type: clusterBufType, hasDynamicOffset: false },
-            },
-          ]
-        : [
-            {
-              binding: 3,
-              visibility: GPU_SHADER_STAGE_FRAGMENT,
-              texture: {
-                sampleType: 'uint' as const,
-                viewDimension: '2d' as const,
-                multisampled: false,
-              },
-            },
-          ]),
-      {
-        binding: 6,
-        visibility: GPU_SHADER_STAGE_FRAGMENT,
-        buffer: { type: 'uniform', hasDynamicOffset: false },
-      },
-      ...(storageBuffer
-        ? [
-            {
-              binding: 7,
-              visibility: GPU_SHADER_STAGE_FRAGMENT,
-              texture: {
-                sampleType: 'float' as const,
-                viewDimension: '2d' as const,
-                multisampled: false,
-              },
-            },
-            {
-              binding: 8,
-              visibility: GPU_SHADER_STAGE_FRAGMENT,
-              sampler: { type: 'filtering' as const },
-            },
-          ]
-        : []),
     ],
   };
 }
@@ -1623,7 +1817,7 @@ function resolveMaterialParamSchema(
 }
 
 /** Skinned mesh-array slot: entity rows, joint matrices and the skin header. */
-function skinMeshArrayLayoutDescriptor(
+export function skinMeshArrayLayoutDescriptor(
   optionCaps: PbrCaps | undefined,
 ): BindGroupLayoutDescriptorOutput {
   const caps = optionCaps ?? { storageBuffer: true };
@@ -1812,6 +2006,11 @@ export function buildBindGroupLayoutDescriptor(
             visibility: GPU_SHADER_STAGE_VERTEX,
             buffer: { type: meshBufType, hasDynamicOffset: false },
           },
+          {
+            binding: 9,
+            visibility: GPU_SHADER_STAGE_VERTEX,
+            buffer: { type: meshBufType, hasDynamicOffset: false },
+          },
         ],
       };
     }
@@ -1860,110 +2059,8 @@ export function buildBindGroupLayoutDescriptor(
       return sceneDirectInstancesLayoutDescriptor(options.caps);
     case 'pbr-skin-mesh-array':
       return skinMeshArrayLayoutDescriptor(options.caps);
-    case 'pbr-material-merged': {
-      // Material BGL: per-shader user-region (derive(paramSchema).bglEntries)
-      // + IBL injection (6) + transmission injection (up to 2). The user-region
-      // size is the only variable; injection start = userRegion.length so a
-      // custom schema shifts IBL/transmission by its sampler/texture pairs.
-      // The built-in standard-PBR user region has 25 entries;
-      // scene rows follow injection, and physical texture pairs follow the effective root schema.
-      //
-      // Schema source priority (D-1): explicit materialParamSchema option >
-      // registry lookup of spec.shader.id > built-in standard-PBR fallback.
-      const resolvedSchema = resolveMaterialParamSchema(spec, options);
-      const singleLayerMedium = materialUsesSurfaceSceneInputs(options.registry, spec.shader.id);
-      const effectiveSchema = resolvedSchema ?? STANDARD_PIPELINE_PARAM_SCHEMA;
-      const physicalFields = physicalTextureFields(effectiveSchema);
-      // Standard's built-in shader keeps the transmission user-region slots
-      // reserved even when a particular root omits those values.  Physical
-      // maps extend that canonical region; they must not compact the IBL
-      // bindings to the smaller authored subset.  A compact user region is
-      // still correct for authored (non-engine) material shaders.
-      const userRegionSchema = isCanonicalStandardPbrMaterialShader(spec.shader.id)
-        ? STANDARD_PIPELINE_PARAM_SCHEMA.map(
-            (field) =>
-              effectiveSchema.find(
-                (entry) =>
-                  entry.name === field.name &&
-                  entry.type === field.type &&
-                  entry.type.startsWith('texture'),
-              ) ?? field,
-          )
-        : effectiveSchema;
-      // Standard height never samples in fragment. Keep that stage policy out
-      // of custom shaders, where the same parameter name may be fragment input.
-      const userRegion = buildPbrMaterialUserRegionEntries(
-        userRegionSchema,
-        [],
-        isStandardPbrMaterialShader(spec.shader.id) || spec.shader.id === SHADOW_CASTER_SHADER_ID
-          ? ['displacementTexture']
-          : [],
-      );
-      const afterIbl = [...userRegion, ...appendInjection(userRegion, 'ibl')];
-      const afterTransmission = [...afterIbl, ...appendInjection(afterIbl, 'transmission')];
-      const engineRegion =
-        options.caps?.transmissionBackdrop === false &&
-        !singleLayerMedium &&
-        !programDeclaresTransmissionBackdrop(
-          sharedMaterialBindingDeclarations(options.registry, spec.shader.id),
-          userRegion.length,
-        )
-          ? afterIbl
-          : afterTransmission;
-      const afterSurfaceMedium = singleLayerMedium
-        ? [...engineRegion, ...appendSingleLayerMediumInjection(engineRegion)]
-        : engineRegion;
-      const merged = [...afterSurfaceMedium, ...appendTextureInjection(effectiveSchema)];
-      // Scene-index Standard variants reserve binding 46 for the producer-owned
-      // material row. Physical texture pairs start after this reserved region,
-      // so no authored physical subset can alias the row.
-      if (options.caps?.storageBuffer ?? true) {
-        merged.push({
-          binding: 46,
-          visibility: GPU_SHADER_STAGE_VERTEX | GPU_SHADER_STAGE_FRAGMENT,
-          buffer: { type: 'read-only-storage', hasDynamicOffset: false },
-        });
-      }
-      const entries = [
-        ...merged,
-        ...(materialUsesDirectDfgLut(effectiveSchema)
-          ? [
-              {
-                binding: STANDARD_DIRECT_DFG_LUT_BINDING,
-                visibility: GPU_SHADER_STAGE_FRAGMENT,
-                texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
-              },
-            ]
-          : []),
-        ...(materialUsesPlanarReflection(effectiveSchema)
-          ? PLANAR_REFLECTION_MATERIAL_LAYOUT_ENTRIES
-          : []),
-        {
-          binding: 47,
-          visibility: GPU_SHADER_STAGE_FRAGMENT,
-          texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
-        },
-      ];
-      const excluded = omittedStandardMaterialBindings(
-        [
-          ...derive(userRegionSchema.filter((field) => !physicalFields.includes(field.name)))
-            .textureFieldNames,
-        ],
-        options.caps?.transmissionBackdrop !== false || singleLayerMedium,
-        isStandardPbrMaterialShader(spec.shader.id),
-        isCanonicalStandardPbrMaterialShader(spec.shader.id),
-        sharedMaterialBindingDeclarations(options.registry, spec.shader.id),
-        userRegion.length,
-      );
-      return {
-        label: 'pbr-material-skylight-bgl',
-        entries: projectSurfaceMaterialBindings(
-          entries.filter((entry) => !excluded.has(entry.binding)),
-          options.registry,
-          spec.shader.id,
-        ),
-      };
-    }
+    case 'pbr-material-merged':
+      return materialMergedLayoutDescriptor(spec, options);
     case 'unlit-material': {
       // Unlit material BGL: per-shader user-region only. No IBL/transmission
       // injection (D-5 round-4: unlit demos do not pay for IBL state).
@@ -1974,8 +2071,7 @@ export function buildBindGroupLayoutDescriptor(
       };
     }
     case 'hdrp-7-slot': {
-      // The device selects storage resources or the complete integer texture;
-      // both layouts retain the existing mesh and Cluster uniform bindings.
+      // The rigid mesh window uses the device storage or uniform transport.
       const desc = createHdrpBindGroupLayoutDescriptor(options.caps?.storageBuffer ?? true);
       return {
         label: desc.label ?? 'hdrp-unified-bgl-group2',
@@ -2064,3 +2160,128 @@ function buildFullscreenPostInputEntries(
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+
+/** Custom author parameters with native full-view lighting and depth. */
+export function materialUsesLitSceneInputs(
+  registry: ShaderCatalog | undefined,
+  id: string | undefined,
+): boolean {
+  if (registry === undefined || id === undefined) return false;
+  const artifact = registry.findMaterialArtifact(id);
+  return artifact.ok && artifact.value.receipt?.bindings === 'render-lit-material-and-scene-depth';
+}
+
+/** Material layouts own the author region and native scene injections together. */
+function materialMergedLayoutDescriptor(
+  spec: PipelineSpec,
+  options: Parameters<typeof buildBindGroupLayoutDescriptor>[1],
+): BindGroupLayoutDescriptorOutput {
+  if (materialUsesLitSceneInputs(options.registry, spec.shader.id)) {
+    const schema = resolveMaterialParamSchema(spec, options);
+    const user =
+      (schema?.length ?? 0) === 0 ? [] : buildPbrMaterialUserRegionEntries(schema, [], [], true);
+    return {
+      label: 'lit-material-skylight-bgl',
+      entries: [
+        ...user,
+        ...appendInjection(user, 'ibl').map((entry) => ({
+          ...entry,
+          visibility: GPU_SHADER_STAGE_VERTEX | GPU_SHADER_STAGE_FRAGMENT,
+        })),
+      ],
+    };
+  }
+  // Material BGL: per-shader user-region (derive(paramSchema).bglEntries)
+  // + IBL injection (6) + transmission injection (up to 2). The user-region
+  // size is the only variable; injection start = userRegion.length so a
+  // custom schema shifts IBL/transmission by its sampler/texture pairs.
+  // The built-in standard-PBR user region has 25 entries;
+  // scene rows follow injection, and physical texture pairs follow the effective root schema.
+  //
+  // Schema source priority (D-1): explicit materialParamSchema option >
+  // registry lookup of spec.shader.id > built-in standard-PBR fallback.
+  const resolvedSchema = resolveMaterialParamSchema(spec, options);
+  const singleLayerMedium = materialUsesSurfaceSceneInputs(options.registry, spec.shader.id);
+  const effectiveSchema = resolvedSchema ?? STANDARD_PIPELINE_PARAM_SCHEMA;
+  const physicalFields = physicalTextureFields(effectiveSchema);
+  // Standard's built-in shader keeps the transmission user-region slots
+  // reserved even when a particular root omits those values.  Physical
+  // maps extend that canonical region; they must not compact the IBL
+  // bindings to the smaller authored subset.  A compact user region is
+  // still correct for authored (non-engine) material shaders.
+  const userRegionSchema = isCanonicalStandardPbrMaterialShader(spec.shader.id)
+    ? STANDARD_PIPELINE_PARAM_SCHEMA.map(
+        (field) =>
+          effectiveSchema.find(
+            (entry) =>
+              entry.name === field.name &&
+              entry.type === field.type &&
+              entry.type.startsWith('texture'),
+          ) ?? field,
+      )
+    : effectiveSchema;
+  // Standard height never samples in fragment. Keep that stage policy out
+  // of custom shaders, where the same parameter name may be fragment input.
+  const userRegion = buildPbrMaterialUserRegionEntries(
+    userRegionSchema,
+    [],
+    isStandardPbrMaterialShader(spec.shader.id) || spec.shader.id === SHADOW_CASTER_SHADER_ID
+      ? ['displacementTexture']
+      : [],
+  );
+  const afterIbl = [...userRegion, ...appendInjection(userRegion, 'ibl')];
+  const afterTransmission = [...afterIbl, ...appendInjection(afterIbl, 'transmission')];
+  const engineRegion =
+    options.caps?.transmissionBackdrop === false &&
+    !singleLayerMedium &&
+    !programDeclaresTransmissionBackdrop(
+      sharedMaterialBindingDeclarations(options.registry, spec.shader.id),
+      userRegion.length,
+    )
+      ? afterIbl
+      : afterTransmission;
+  const afterSurfaceMedium = singleLayerMedium
+    ? [...engineRegion, ...appendSingleLayerMediumInjection(engineRegion)]
+    : engineRegion;
+  const merged = [...afterSurfaceMedium, ...appendTextureInjection(effectiveSchema)];
+  // Scene-index Standard variants reserve binding 46 for the producer-owned
+  // material row. Physical texture pairs start after this reserved region,
+  // so no authored physical subset can alias the row.
+  if (options.caps?.storageBuffer ?? true) {
+    merged.push({
+      binding: 46,
+      visibility: GPU_SHADER_STAGE_VERTEX | GPU_SHADER_STAGE_FRAGMENT,
+      buffer: { type: 'read-only-storage', hasDynamicOffset: false },
+    });
+  }
+  const materialBindings = sharedMaterialBindingDeclarations(options.registry, spec.shader.id);
+  const entries = [
+    ...merged,
+    ...(materialUsesDirectDfgLut(effectiveSchema) &&
+    !isCanonicalStandardPbrMaterialShader(spec.shader.id) &&
+    materialBindings?.includes(STANDARD_DIRECT_DFG_LUT_BINDING) !== false
+      ? [
+          {
+            binding: STANDARD_DIRECT_DFG_LUT_BINDING,
+            visibility: GPU_SHADER_STAGE_FRAGMENT,
+            texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
+          },
+        ]
+      : []),
+  ];
+  const excluded = omittedStandardMaterialBindings(
+    [
+      ...derive(userRegionSchema.filter((field) => !physicalFields.includes(field.name)))
+        .textureFieldNames,
+    ],
+    options.caps?.transmissionBackdrop !== false || singleLayerMedium,
+    isStandardPbrMaterialShader(spec.shader.id),
+    isCanonicalStandardPbrMaterialShader(spec.shader.id),
+    materialBindings,
+    userRegion.length,
+  );
+  return {
+    label: 'pbr-material-skylight-bgl',
+    entries: entries.filter((entry) => !excluded.has(entry.binding)),
+  };
+}

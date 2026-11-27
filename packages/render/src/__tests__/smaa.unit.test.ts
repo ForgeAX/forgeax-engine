@@ -27,7 +27,7 @@ describe('SMAA authoring and production programs', () => {
     expect(extractCameraSnapshots(world)[0]?.antialias).toBe('smaa');
     expect(() => antialiasFromF32(7)).toThrow();
   });
-  it('places SMAA after spatial effects and before the single output encoding', () => {
+  it('blends after tone and before barrel distortion and output encoding', () => {
     const plan = createStandardOutputPlan({
       temporal: false,
       meter: false,
@@ -45,11 +45,11 @@ describe('SMAA authoring and production programs', () => {
       'tone',
       'lut',
       'outline',
-      'barrel-distortion',
       'smaa',
+      'barrel-distortion',
       'output-encoding',
     ]);
-    expect(plan.stageDomains.at(-2)).toEqual({
+    expect(plan.stageDomains.find(({ name }) => name === 'smaa')).toEqual({
       name: 'smaa',
       input: 'linear-ldr',
       output: 'linear-ldr',

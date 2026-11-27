@@ -14,14 +14,7 @@ import {
   worldInstantiateSceneFlat,
 } from '@forgeax/engine-scene';
 import type { SkinError } from '@forgeax/engine-skinning';
-import type {
-  Asset,
-  AssetError,
-  AssetHandle,
-  CatalogEntry,
-  SceneAsset,
-  SkinAsset,
-} from '@forgeax/engine-types';
+import type { Asset, AssetError, AssetHandle, SceneAsset, SkinAsset } from '@forgeax/engine-types';
 import type { AssetRegistry } from '../asset-registry';
 import {
   runtimeAssetReference,
@@ -30,10 +23,11 @@ import {
 } from '../internal/runtime-assets';
 import { extractSceneEntityHandleGuids, type SceneHandleFieldEntry } from '../scene-handle-fields';
 import {
+  compareNestedScenePublication,
   compareScenePublicationFences,
   type ScenePublicationFence,
   type ScenePublicationFenceError,
-  scenePublicationFenceFromCatalog,
+  scenePublicationFenceForRow,
 } from './scene-publication-fence';
 
 /**
@@ -43,11 +37,6 @@ import {
  */
 export interface SkinJointResolver {
   resolveSkinAsset(skeletonHandleRaw: number): SkinAsset | undefined;
-}
-
-/** Publication fences read the single accepted source Catalog. */
-function catalogEntriesForFence(registry: AssetRegistry): readonly CatalogEntry[] {
-  return registry.catalogSnapshot()?.entries ?? [];
 }
 
 function sceneSourceKeyForGuid(
@@ -62,7 +51,10 @@ export function scenePublicationFenceFromRegistry(
   registry: AssetRegistry,
   outputGuid: string,
 ): Result<ScenePublicationFence, ScenePublicationFenceError> {
-  return scenePublicationFenceFromCatalog(catalogEntriesForFence(registry), outputGuid);
+  const checked = scenePublicationFenceForRow(registry.catalogEntry(outputGuid), (guid) =>
+    registry.catalogEntry(guid),
+  );
+  return checked.ok ? ok(checked.value.fence) : checked;
 }
 
 /**
@@ -79,9 +71,7 @@ export function validateKeyedScenePublication(
   rootGuid: string | undefined,
 ): Result<void, ScenePublicationFenceError> {
   if (rootGuid === undefined) return ok(undefined);
-  const entries = catalogEntriesForFence(registry);
-  const byGuid = new Map(entries.map((entry) => [entry.guid.toLowerCase(), entry]));
-  const rootEntry = byGuid.get(rootGuid.toLowerCase());
+  const rootEntry = registry.catalogEntry(rootGuid);
   const rootPublication = rootEntry?.publication;
   if (rootPublication === undefined) return ok(undefined);
   const visited = new Set<string>();
@@ -98,7 +88,7 @@ export function validateKeyedScenePublication(
         typeof source === 'string' ? source.toLowerCase() : runtimeAssetSource(registry, source);
       // A runtime-created nested scene has no producer publication fence.
       if (childGuid === undefined) continue;
-      const childEntry = byGuid.get(childGuid);
+      const childEntry = registry.catalogEntry(childGuid);
       const childPublication = childEntry?.publication;
       const address = [...path, entityKey].join('/');
       if (childPublication === undefined) {
@@ -111,34 +101,13 @@ export function validateKeyedScenePublication(
           recoveryActions: ['continue-last-known-good', 'retry-rebuild', 'fresh-reopen'],
         });
       }
-      const evidence = parentPublication.externalEvidence.find(
-        (item) => item.guid.toLowerCase() === childGuid,
+      const compatible = compareNestedScenePublication(
+        parentPublication,
+        childPublication,
+        childGuid,
+        address,
       );
-      const childOutput = childPublication.outputs.find(
-        (output) => output.guid.toLowerCase() === childGuid,
-      );
-      if (
-        evidence !== undefined &&
-        (evidence.generation !== undefined || evidence.digest !== undefined)
-      ) {
-        if (
-          (evidence.generation !== undefined &&
-            evidence.generation !== childPublication.generation) ||
-          (evidence.digest !== undefined &&
-            (childOutput === undefined || evidence.digest !== childOutput.digest))
-        ) {
-          return err({
-            code: 'asset-generation-fence-mismatch',
-            phase: 'instantiate',
-            hint: `nested SceneAsset publication changed at ${address}`,
-            sourcePath: childPublication.sourcePath,
-            sourceRevision: childPublication.sourceRevision,
-            currentGeneration: childPublication.generation,
-            retryable: true,
-            recoveryActions: ['continue-last-known-good', 'retry-rebuild', 'fresh-reopen'],
-          });
-        }
-      }
+      if (!compatible.ok) return compatible;
       if (visited.has(childGuid)) continue;
       visited.add(childGuid);
       const reference =
@@ -164,9 +133,8 @@ function skinJointResolver(
 ): SkinJointResolver {
   const bySkeleton = new Map<string, SkinAsset>();
   const records = runtimeAssets(registry);
-  for (const asset of records.borrowClosure<Asset>([scene]).unwrap().values()) {
-    if (asset.kind === 'skin' && asset.skeletonGuid !== undefined)
-      bySkeleton.set(asset.skeletonGuid.toLowerCase(), asset);
+  for (const asset of records.borrowClosure<SkinAsset>([scene], 'skin').unwrap().values()) {
+    if (asset.skeletonGuid !== undefined) bySkeleton.set(asset.skeletonGuid.toLowerCase(), asset);
   }
   return {
     resolveSkinAsset(handle) {
@@ -221,7 +189,7 @@ function prepareSceneInstantiation(
         retryable: true,
         recoveryActions: ['continue-last-known-good', 'retry-rebuild', 'fresh-reopen'],
       });
-    const current = scenePublicationFenceFromCatalog(catalogEntriesForFence(registry), guid);
+    const current = scenePublicationFenceFromRegistry(registry, guid);
     if (!current.ok) return current;
     const matches = compareScenePublicationFences(expectedPublication, current.value);
     if (!matches.ok) return matches;

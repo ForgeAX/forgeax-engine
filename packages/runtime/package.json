@@ -15,6 +15,14 @@
       "types": "./dist/renderer-host.d.ts",
       "import": "./dist/renderer-host.mjs"
     },
+    "./internal/shader-publication": {
+      "types": "./dist/shader-publication.d.ts",
+      "import": "./dist/shader-publication.mjs"
+    },
+    "./internal/tasks": {
+      "types": "./dist/tasks.d.ts",
+      "import": "./dist/tasks.mjs"
+    },
     "./package.json": "./package.json"
   },
   "main": "./dist/index.mjs",

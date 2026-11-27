@@ -71,7 +71,6 @@ async function fixture(textured = false, reuseAdjacentShadow = true) {
   entries.push(
     { binding: 0, visibility: 4, buffer: { type: 'uniform', minBindingSize: 256 } },
     { binding: 46, visibility: 4, buffer: { type: 'read-only-storage' } },
-    { binding: 47, visibility: 4, texture: { viewDimension: '2d', sampleType: 'float' } },
   );
   if (textured)
     entries.push(
@@ -141,7 +140,6 @@ async function fixture(textured = false, reuseAdjacentShadow = true) {
     materialBgAssemblyCache: new MaterialBgAssemblyCache(),
     gpuDrivenStandardPbrFrameResources: { sceneMaterialBuffer: buffer },
   });
-  Object.assign(f.context.frameState, { materialBgShared: new Map() });
   const projections = f.projections as unknown as Map<number, GpuDrivenShadowBatchProjection>;
   for (const [id, projection] of projections)
     projections.set(id, {
@@ -249,7 +247,7 @@ it('resolves shared shadow material bindings once per invocation while recording
       vi.mocked(materialBuilder.buildPerSubmeshMaterialBg).mock.calls.length,
       f.queries.schema.mock.calls.length,
       f.queries.layout.mock.calls.length,
-    ]).toEqual([60, 61, 60]);
+    ]).toEqual([60, 60, 60]);
   } finally {
     f.dispose();
   }
@@ -300,6 +298,7 @@ it.each([
 
 it('rebuilds opaque shadow bundles after scene material table growth and reuses stable frames', async () => {
   const f = await fixture();
+  Object.assign(f.context.runtime, { options: { retainIndirectBundles: true } });
   const replacement = f.device.createBuffer({ size: 8192, usage: 8 | 64 | 128 | 256 }).unwrap();
   try {
     f.batches.length = 2;
@@ -609,7 +608,7 @@ it.each([
         ? { textureSources: new Map([['surfaceMap', canvasTexture.source]]) }
         : { videoTextureFields: new Map([['surfaceMap', clip]]) }),
     });
-    const uploads = vi.spyOn(f.dynamic, 'uploadFrame');
+    const uploads = vi.spyOn(f.dynamic, kind === 'video' ? 'uploadFrame' : 'uploadCanvasFrame');
     if (kind === 'video') {
       expect(f.run).toThrow('entity-local video binding');
       expect(uploads).not.toHaveBeenCalled();
@@ -666,7 +665,7 @@ it('retains every raw material-owner query for adjacent batches', async () => {
       vi.mocked(materialBuilder.buildPerSubmeshMaterialBg).mock.calls.length,
       f.queries.schema.mock.calls.length,
       f.queries.layout.mock.calls.length,
-    ]).toEqual([64, 65, 64]);
+    ]).toEqual([64, 64, 64]);
   } finally {
     f.dispose();
   }

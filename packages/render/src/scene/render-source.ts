@@ -1,5 +1,10 @@
 import type { Component, EntityHandle, Query, World } from '@forgeax/engine-ecs';
-import { createStateProjection, type StateProjectionBatch } from '@forgeax/engine-ecs/projection';
+import {
+  createArchetypeReader,
+  createStateProjection,
+  readRenderArrayView,
+  type StateProjectionBatch,
+} from '@forgeax/engine-ecs/projection';
 import {
   ChildOf,
   Children,
@@ -13,6 +18,7 @@ import { Skin } from '@forgeax/engine-skinning';
 import { Terrain } from '@forgeax/engine-terrain';
 import { WATER_SYSTEM_RESOURCE, type WaterSystem } from '@forgeax/engine-water';
 import {
+  CapsuleShadow,
   Instances,
   Layer,
   Lines,
@@ -26,6 +32,7 @@ import {
   Visibility,
 } from '../components';
 import { GlyphText } from '../components/glyph-text';
+import { GpuMeshVertexSource } from '../components/gpu-mesh-vertex-source';
 import { Tilemap } from '../components/tilemap';
 export interface RenderSourceEntity {
   readonly entity: EntityHandle;
@@ -106,6 +113,14 @@ export class RenderSourceEntities {
   private presence = new Int8Array(64).fill(-1);
   size = 0;
 
+  entity(index: number): EntityHandle | undefined {
+    return (this.presence[index] ?? -1) < 0 ? undefined : (this.entities[index] as EntityHandle);
+  }
+
+  hierarchyPresence(index: number): number | undefined {
+    return this.presence[index];
+  }
+
   get(index: number): RenderSourceEntity | undefined {
     const presence = this.presence[index];
     return presence === undefined || presence < 0
@@ -145,17 +160,9 @@ export class RenderSourceEntities {
   }
 }
 
-function sourceEntity(
-  world: World,
-  entity: EntityHandle,
-  previous?: RenderSourceEntity,
-): RenderSourceEntity {
-  const hierarchyPresence =
-    (world.hasComponent(entity, ChildOf) ? 1 : 0) |
-    (world.hasComponent(entity, Visibility) ? 2 : 0);
-  return previous?.entity === entity && previous.hierarchyPresence === hierarchyPresence
-    ? previous
-    : { entity, hierarchyPresence };
+function sourceEntity(world: World, entity: EntityHandle): RenderSourceEntity {
+  const hierarchyPresence = renderSourceLayout(world)(entity)?.hierarchyPresence ?? 0;
+  return { entity, hierarchyPresence };
 }
 
 export type GlobalTransformChangeQuery = Query<readonly [typeof GlobalTransform]>;
@@ -201,10 +208,7 @@ export function createRenderSourceState(world: World, additional: readonly Compo
   // runtime. Resolve the World-owned Skin token so the
   // retained projection observes the exact components the consumer registered,
   // even when module identity differs across those bundles.
-  const skin = (world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
-  const renderableComponents = RENDERABLE_SOURCE_COMPONENTS.map((component) =>
-    component === Skin ? skin : component,
-  );
+  const renderableComponents = renderSourceComponents(world);
   const components = [...renderableComponents, ...additional];
   const projection = createStateProjection(world, components, [
     ...components,
@@ -228,20 +232,55 @@ export function createRenderSourceState(world: World, additional: readonly Compo
   };
 }
 
+/** The same World-owned source vocabulary used by ordinary and staged extraction. */
+export function renderSourceComponents(world: World) {
+  const skin = (world.components.resolve(Skin.name) as typeof Skin | undefined) ?? Skin;
+  return RENDERABLE_SOURCE_COMPONENTS.map((component) => (component === Skin ? skin : component));
+}
+
+function createRenderSourceLayout(world: World) {
+  return createArchetypeReader(world, (has) => {
+    const tilemap = has(Tilemap),
+      glyph = has(GlyphText),
+      terrain = has(Terrain);
+    const transform = has(Transform);
+    const water = has(WaterBodyInstance);
+    const derived = tilemap || glyph || terrain || water;
+    return {
+      member: transform && (derived || (has(MeshRenderer) && has(MeshFilter))),
+      hierarchyPresence:
+        (has(ChildOf) ? 1 : 0) | (has(Visibility) ? 2 : 0) | (has(Mobility) ? 4 : 0),
+      transform,
+      water,
+      spriteRegion: has(SpriteRegionOverride),
+      capsuleShadow: has(CapsuleShadow),
+      gpuVertex: has(GpuMeshVertexSource),
+      global: has(GlobalTransform),
+      instances: has(Instances),
+      spriteInstances: has(SpriteInstances),
+      skin: has(world.components.resolve(Skin.name) ?? Skin),
+      morph: has(MorphWeights),
+      points: has(Points),
+      lines: has(Lines),
+      tilemap,
+      glyph,
+      terrain,
+    };
+  });
+}
+
+const sourceLayouts = new WeakMap<World, ReturnType<typeof createRenderSourceLayout>>();
+export function renderSourceLayout(world: World) {
+  let read = sourceLayouts.get(world);
+  if (read === undefined) {
+    read = createRenderSourceLayout(world);
+    sourceLayouts.set(world, read);
+  }
+  return read;
+}
+
 export function isRenderableMember(world: World, entity: number): boolean {
-  return (
-    (world.hasComponent(entity as EntityHandle, Tilemap) ||
-      world.hasComponent(entity as EntityHandle, GlyphText) ||
-      world.hasComponent(entity as EntityHandle, Terrain) ||
-      world.hasComponent(entity as EntityHandle, WaterBodyInstance) ||
-      world.hasComponent(entity as EntityHandle, MeshRenderer)) &&
-    world.hasComponent(entity as EntityHandle, Transform) &&
-    (world.hasComponent(entity as EntityHandle, Tilemap) ||
-      world.hasComponent(entity as EntityHandle, GlyphText) ||
-      world.hasComponent(entity as EntityHandle, Terrain) ||
-      world.hasComponent(entity as EntityHandle, WaterBodyInstance) ||
-      world.hasComponent(entity as EntityHandle, MeshFilter))
-  );
+  return renderSourceLayout(world)(entity as EntityHandle)?.member === true;
 }
 
 /** Capture only the known source changes, before producer callbacks or acceptance. */
@@ -254,9 +293,7 @@ export function captureRenderSourceEntities(
   const rows: (RenderSourceEntity | undefined)[] = [];
   for (const index of batch.indices) {
     const entity = source.projection.entity(index);
-    rows.push(
-      entity === undefined ? undefined : sourceEntity(world, entity, source.entities.get(index)),
-    );
+    rows.push(entity === undefined ? undefined : sourceEntity(world, entity));
   }
   return rows;
 }
@@ -266,10 +303,9 @@ export function renderSourceHierarchyChanged(
   index: number,
   current: RenderSourceEntity,
 ): boolean {
-  const previous = source.entities.get(index);
   return (
-    previous?.entity !== current.entity ||
-    previous.hierarchyPresence !== current.hierarchyPresence ||
+    source.entities.entity(index) !== current.entity ||
+    source.entities.hierarchyPresence(index) !== current.hierarchyPresence ||
     source.projection.changed(current.entity, ChildOf) ||
     source.projection.changed(current.entity, Visibility) ||
     // Descendants without their own Mobility inherit this one.
@@ -302,28 +338,33 @@ interface RenderSourceChangeBuffers {
   ) => void;
 }
 
+interface HierarchyWalk {
+  readonly visited: Set<number>;
+  readonly pending: EntityHandle[];
+}
+
 function markSourceHierarchyChanges(
   world: World,
   current: EntityHandle,
-  visited: Set<number> | undefined,
+  hierarchy: HierarchyWalk,
   content: Set<number> | false,
   markChanged: (entity: number, reason: 'hierarchy') => void,
-): Set<number> {
-  const hierarchy = visited ?? new Set<number>();
-  const pending: EntityHandle[] = [current];
+): void {
+  const { visited, pending } = hierarchy;
+  pending.push(current);
   while (pending.length > 0) {
     const entity = pending.pop();
-    if (entity === undefined || hierarchy.has(entity)) continue;
-    hierarchy.add(entity);
+    if (entity === undefined || visited.has(entity)) continue;
+    visited.add(entity);
     if (isRenderableMember(world, entity)) {
       markChanged(entity, 'hierarchy');
       if (content !== false) content.add(entity);
     }
-    const children = world.get(entity, Children);
-    if (children.ok)
-      for (const child of children.value.entities) pending.push(child as EntityHandle);
+    const children = readRenderArrayView(world, entity, Children, 'entities');
+    if (children !== undefined)
+      for (let index = 0; index < children.length; index++)
+        pending.push(children[index] as EntityHandle);
   }
-  return hierarchy;
 }
 
 /** Observed facts only: the caller advances the source batch after its own admission succeeds. */
@@ -346,7 +387,7 @@ function observeRenderSourceChanges(
       meshFilterWrites: 0,
     };
   let retiredTransforms: Set<number> | undefined;
-  let hierarchy: Set<number> | undefined;
+  let hierarchy: HierarchyWalk | undefined;
   const markChanged = (entity: number, reason: 'hierarchy' | 'renderable-component-or-new') => {
     const size = changed.size;
     changed.add(entity);
@@ -387,7 +428,7 @@ function observeRenderSourceChanges(
   for (const index of batch.indices) {
     const row = rows[cursor++];
     const current = row?.entity;
-    const previous = source.entities.get(index)?.entity;
+    const previous = source.entities.entity(index);
     retirePrevious(previous, current);
     if (current === undefined) continue;
     const dirty = contentChanged(index, current);
@@ -397,7 +438,8 @@ function observeRenderSourceChanges(
         markChanged(current, 'renderable-component-or-new');
     }
     if (row === undefined || !renderSourceHierarchyChanged(source, index, row)) continue;
-    hierarchy = markSourceHierarchyChanges(world, current, hierarchy, content, markChanged);
+    hierarchy ??= { visited: new Set(), pending: [] };
+    markSourceHierarchyChanges(world, current, hierarchy, content, markChanged);
   }
   return {
     changed,

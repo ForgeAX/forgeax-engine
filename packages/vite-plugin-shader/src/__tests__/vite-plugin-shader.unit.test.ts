@@ -25,7 +25,11 @@ import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_STANDARD_PBR_PARAM_SCHEMA,
   DEFAULT_UNLIT_PARAM_SCHEMA,
+  findVariantByDefines,
+  findVariantByKey,
+  type MaterialShaderManifestEntry,
   PARTICLE_MESH_SURFACE_PARAM_SCHEMA,
+  ShaderRegistry,
   STANDARD_PIPELINE_PARAM_SCHEMA,
 } from '@forgeax/engine-shader';
 import {
@@ -34,11 +38,12 @@ import {
   generateParameterModule,
   type CompileResult as ShaderCompileResult,
 } from '@forgeax/engine-shader-compiler';
+import { prepareShaderProgramCompiler } from '@forgeax/engine-shader-compiler/program';
 import {
   type ManifestEntry,
-  type MaterialProgramAbi,
   projectMaterialParameterSchema,
   TERRAIN_MATERIAL_PARAMETERS,
+  TERRAIN_WEIGHT_DETAIL_PARAMETERS,
 } from '@forgeax/engine-types';
 import { type Plugin, build as viteBuild } from 'vite';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -82,15 +87,15 @@ const ENGINE_SHADER_DEFAULT_DEFINES: Record<string, boolean> = {
 };
 
 const STANDARD_NON_CLUSTER_VARIANT_KEY =
-  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STANDARD_LEAN_INPUTS=false+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false+WATER_INFO_RGBA16=false+WATER_WAVES_AVAILABLE=false';
+  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=true+FORWARD_INLINE_SSR=false+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STANDARD_LEAN_INPUTS=false+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false+WATER_INFO_RGBA16=false+WATER_WAVES_AVAILABLE=false';
 const STANDARD_EXTENDED_LIGHTING_OFF_VARIANT_KEY =
-  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=false+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=false+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=false+REFLECTION_FALLBACK_AVAILABLE=false+STANDARD_LEAN_INPUTS=false+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=false+VISIBLE_SURFACE_AVAILABLE=false+WATER_INFO_RGBA16=false+WATER_WAVES_AVAILABLE=false';
+  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=false+FORWARD_INLINE_SSR=false+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=false+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=false+REFLECTION_FALLBACK_AVAILABLE=false+STANDARD_LEAN_INPUTS=false+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=false+VISIBLE_SURFACE_AVAILABLE=false+WATER_INFO_RGBA16=false+WATER_WAVES_AVAILABLE=false';
 const STANDARD_SHARED_TRANSMISSION_VARIANT_KEY = STANDARD_EXTENDED_LIGHTING_OFF_VARIANT_KEY.replace(
   'TRANSMISSION_AVAILABLE=false',
   'TRANSMISSION_AVAILABLE=true',
 );
 const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
-  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=true+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=true+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STANDARD_LEAN_INPUTS=false+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false+WATER_INFO_RGBA16=false+WATER_WAVES_AVAILABLE=false';
+  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=true+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=true+FORWARD_INLINE_SSR=false+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=true+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STANDARD_LEAN_INPUTS=false+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false+WATER_INFO_RGBA16=false+WATER_WAVES_AVAILABLE=false';
 
 {
   describe('shared-engine-inputs.test.ts', () => {
@@ -204,7 +209,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           const previous = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
           process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST = sharedManifest;
           try {
-            const plugin = forgeaxShader();
+            const plugin = forgeaxShader({ publication: 'compiled' });
             plugin.configResolved({ root });
             const emitted: Array<{ type: 'asset'; fileName: string; source: string }> = [];
             const context = {
@@ -579,7 +584,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     });
 
     it('plugin exposes a configureServer hook (5th hook beyond the existing 4)', () => {
-      const plugin = forgeaxShader() as unknown as PluginShape;
+      const plugin = forgeaxShader({ publication: 'compiled' }) as unknown as PluginShape;
       expect(plugin).toHaveProperty('configureServer');
       expect(typeof plugin.configureServer).toBe('function');
     });
@@ -587,8 +592,8 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     it('case 1: dev path manifest schema equals prod path schema (II-4)', async () => {
       // Drive both paths from the same fixture and assert the parsed JSON equals
       // the JSON produced by generateBundle on the same fixture.
-      const pluginA = forgeaxShader() as unknown as PluginShape;
-      const pluginB = forgeaxShader() as unknown as PluginShape;
+      const pluginA = forgeaxShader({ publication: 'compiled' }) as unknown as PluginShape;
+      const pluginB = forgeaxShader({ publication: 'compiled' }) as unknown as PluginShape;
       const fixtureId = '/abs/repo-root/apps/hello/triangle/src/shaders/pbr.wgsl';
 
       // === Prod path: feed transform → generateBundle → capture manifest source.
@@ -647,7 +652,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     });
 
     it('case 2: lazy first request triggers transformRequest; second request reuses cache', async () => {
-      const plugin = forgeaxShader() as unknown as PluginShape;
+      const plugin = forgeaxShader({ publication: 'compiled' }) as unknown as PluginShape;
       if (typeof plugin.configureServer !== 'function') {
         throw new Error('configureServer hook missing — w2 not yet implemented');
       }
@@ -681,7 +686,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     });
 
     it('serves the manifest beneath the configured Vite base', async () => {
-      const plugin = forgeaxShader() as unknown as PluginShape;
+      const plugin = forgeaxShader({ publication: 'compiled' }) as unknown as PluginShape;
       const fixtureId = '/abs/repo-root/apps/hello/triangle/src/shaders/pbr.wgsl';
       const server = createMockServer({
         inputEntries: { pbr: fixtureId },
@@ -706,7 +711,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     });
 
     it('case 3: middleware skips non-target URLs by calling next() (no header / body mutation)', async () => {
-      const plugin = forgeaxShader() as unknown as PluginShape;
+      const plugin = forgeaxShader({ publication: 'compiled' }) as unknown as PluginShape;
       if (typeof plugin.configureServer !== 'function') {
         throw new Error('configureServer hook missing — w2 not yet implemented');
       }
@@ -733,7 +738,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     });
 
     it('case 4: transform error propagates — no silent try/catch (II-5 fail-fast)', async () => {
-      const plugin = forgeaxShader() as unknown as PluginShape;
+      const plugin = forgeaxShader({ publication: 'compiled' }) as unknown as PluginShape;
       if (typeof plugin.configureServer !== 'function') {
         throw new Error('configureServer hook missing — w2 not yet implemented');
       }
@@ -958,7 +963,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
 
   describe('handleHotUpdate: cross-file HMR propagation (D-10 / AC-09 / AC-18.b)', () => {
     it('fixture 1: editing common.wgsl invalidates pbr.wgsl + unlit.wgsl downstream (length >= 2)', async () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       const ctx = createMockContext();
 
       const pbrId = '/abs/shaders/pbr.wgsl';
@@ -1000,7 +1005,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     });
 
     it('fixture 2: editing brdf.wgsl invalidates pbr.wgsl only (brdf consumed solely by pbr)', async () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       const ctx = createMockContext();
 
       const pbrId = '/abs/shaders/pbr.wgsl';
@@ -1034,7 +1039,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     });
 
     it('fixture 3: editing an orphan .wgsl with no importers returns only ctx.modules (null-safe)', async () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
 
       const orphanFile = '/abs/shaders/orphan.wgsl';
       const orphanNode: ModuleNode = { file: orphanFile, id: orphanFile };
@@ -1060,7 +1065,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     });
 
     it('fixture 4: nested chain a->b->c — editing c invalidates a + b', async () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       const ctx = createMockContext();
 
       const aId = '/abs/shaders/a.wgsl';
@@ -1105,7 +1110,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     });
 
     it('handleHotUpdate logs downstream invalidated file names (not the empty "1 module updated")', async () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       const ctx = createMockContext();
 
       const pbrId = '/abs/shaders/pbr.wgsl';
@@ -1156,7 +1161,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     // reverseDeps keys land at `.../forgeax_view.wgsl` while HMR ctx.file
     // is `.../common.wgsl` — AC-09 silent fail.
     it('fixture 5 (F-2 regression): multi-segment moduleId resolves to tail-segment basename', async () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       const ctx = createMockContext();
 
       const pbrId = '/abs/shaders/pbr.wgsl';
@@ -1210,7 +1215,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
   // (plan-strategy §S-6 / requirements AC-02).
   //
   // Acceptance dimensions:
-  // - The forgeaxShader() factory returns a Plugin object that must contain the 4
+  // - The forgeaxShader({ publication: 'compiled' }) factory returns a Plugin object that must contain the 4
   //   hook fields: load / transform / generateBundle / handleHotUpdate.
   // - The factory does not throw (construction does not depend on the vite runtime).
   // - The plugin.name field is a string (Vite Plugin spec).
@@ -1221,37 +1226,37 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
 
   describe('forgeaxShader: 4-hook mount completeness (AC-02 / §S-6)', () => {
     it('factory invocation does not throw + returns a plugin object', () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       expect(plugin).toBeTruthy();
       expect(typeof plugin).toBe('object');
     });
 
     it('plugin.name is a string (Vite Plugin spec)', () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       expect(typeof plugin.name).toBe('string');
       expect(plugin.name.length).toBeGreaterThan(0);
     });
 
     it('load hook is mounted', () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       expect(plugin).toHaveProperty('load');
       expect(typeof plugin.load).toBe('function');
     });
 
     it('transform hook is mounted', () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       expect(plugin).toHaveProperty('transform');
       expect(typeof plugin.transform).toBe('function');
     });
 
     it('generateBundle hook is mounted', () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       expect(plugin).toHaveProperty('generateBundle');
       expect(typeof plugin.generateBundle).toBe('function');
     });
 
     it('handleHotUpdate hook is mounted', () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       expect(plugin).toHaveProperty('handleHotUpdate');
       expect(typeof plugin.handleHotUpdate).toBe('function');
     });
@@ -1260,7 +1265,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       const previous = process.env.FORGEAX_VITE_REPORT_COMPRESSED_SIZE;
       try {
         delete process.env.FORGEAX_VITE_REPORT_COMPRESSED_SIZE;
-        const defaultConfig = forgeaxShader().config;
+        const defaultConfig = forgeaxShader({ publication: 'compiled' }).config;
         expect(typeof defaultConfig).toBe('function');
         if (typeof defaultConfig !== 'function') return;
         expect(
@@ -1268,7 +1273,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         ).toEqual({ worker: { format: 'es' } });
 
         process.env.FORGEAX_VITE_REPORT_COMPRESSED_SIZE = '0';
-        const plugin = forgeaxShader();
+        const plugin = forgeaxShader({ publication: 'compiled' });
         const config = plugin.config;
         expect(typeof config).toBe('function');
         if (typeof config !== 'function') return;
@@ -1320,7 +1325,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         );
         process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST = manifestPath;
         process.env.FORGEAX_APP_SHARD_SHADER_DELTA = '1';
-        const plugin = forgeaxShader();
+        const plugin = forgeaxShader({ publication: 'compiled' });
         const emitted: Array<{ type: 'asset'; fileName: string; source: string }> = [];
         const context = {
           error(message: unknown): never {
@@ -1348,7 +1353,10 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     });
 
     it('all 4 hooks mounted simultaneously (grep gate: a single construction lists the 4 fields)', () => {
-      const plugin = forgeaxShader() as unknown as Record<string, unknown>;
+      const plugin = forgeaxShader({ publication: 'compiled' }) as unknown as Record<
+        string,
+        unknown
+      >;
       const hooks = ['load', 'transform', 'generateBundle', 'handleHotUpdate'] as const;
       for (const h of hooks) {
         expect(plugin[h], `hook ${h} must be mounted`).toBeDefined();
@@ -1399,44 +1407,45 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     };
   }
 
-  interface MaterialShaderEntry {
-    identifier: string;
-    sourcePath: string;
-    paramSchema: string;
-    composedWgsl: string;
-    variants?: Array<{ definesKey: string; composedWgsl: string }>;
-    receipt?: MaterialProgramAbi;
-  }
-
   const particleMeshSurfaceSchema = PARTICLE_MESH_SURFACE_PARAM_SCHEMA;
 
   type ViteEngineManifest = {
-    entries: Array<Pick<ManifestEntry, 'identifier' | 'wgsl'>>;
-    materialShaders: MaterialShaderEntry[];
+    entries: ManifestEntry[];
+    materialShaders: MaterialShaderManifestEntry[];
   };
 
-  // Inspect the real Vite publication of the admitted producer's complete fleet.
-  // Cold production already belongs to core/shared inputs and the focused
-  // compiler regressions; schema/variant assertions need no second full compile.
-  let viteEngineManifestPromise: Promise<ViteEngineManifest> | undefined;
-
-  function viteEngineManifest(): Promise<ViteEngineManifest> {
-    viteEngineManifestPromise ??= (async () => {
-      const plugin = forgeaxShader({
-        engineEntries: { pointShadows: true, hdrpSsao: true },
-      });
-      const ctx = createMockContext();
+  // Admit the emitted source manifest through the runtime consumer.
+  async function manifestForPlugin(
+    plugin: ReturnType<typeof forgeaxShader>,
+  ): Promise<ViteEngineManifest> {
+    const ctx = createMockContext();
+    try {
       await plugin.buildStart?.call(ctx as never);
       await plugin.generateBundle?.call(ctx as never);
-
       const manifestAsset = ctx.emitted.find((a) => a.fileName === 'shaders/manifest.json');
       if (manifestAsset === undefined) {
         throw new Error('Vite shader fixture did not emit shaders/manifest.json');
       }
-      return (await readShaderManifestPublication(
-        JSON.parse(manifestAsset.source),
-      )) as ViteEngineManifest;
-    })();
+      const registry = new ShaderRegistry({
+        manifestUrl: 'memory://vite-engine/shaders/manifest.json',
+        readText: async () => manifestAsset.source,
+        prepareProgramCompiler: prepareShaderProgramCompiler,
+      });
+      (await registry.loadManifest()).unwrap();
+      return {
+        entries: [...registry.entries()],
+        materialShaders: [...registry.materialShaderManifestEntries()],
+      };
+    } finally {
+      await plugin.closeBundle?.();
+    }
+  }
+
+  let viteEngineManifestPromise: Promise<ViteEngineManifest> | undefined;
+  function viteEngineManifest(): Promise<ViteEngineManifest> {
+    viteEngineManifestPromise ??= manifestForPlugin(
+      forgeaxShader({ engineEntries: { pointShadows: true, hdrpSsao: true } }),
+    );
     return viteEngineManifestPromise;
   }
 
@@ -1466,6 +1475,64 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     return ids;
   }
 
+  function expectEngineMaterialParameterSchemas(
+    materialShaders: readonly MaterialShaderManifestEntry[],
+  ): void {
+    // Each entry must have a paramSchema array; shadow-caster shares Standard
+    for (const ms of materialShaders) {
+      const parsed = JSON.parse(ms.paramSchema) as unknown;
+      expect(Array.isArray(parsed), `paramSchema for '${ms.identifier}' must be array`).toBe(true);
+    }
+
+    // Standard PBR, skinned PBR, and mesh particles share the engine
+    // Standard Surface contract; MSDF has its own WGSL UBO shape and must
+    // be reflected into the runtime BGL. Billboard/topology particle
+    // shaders remain zero-binding material entries because they do not
+    // import the Standard Surface.
+    for (const ms of materialShaders) {
+      const parsed = JSON.parse(ms.paramSchema) as Array<{ name: string; type: string }>;
+      if (
+        ms.identifier === 'forgeax::default-standard-pbr' ||
+        ms.identifier === 'forgeax::pbr-skin' ||
+        ms.identifier === 'forgeax::default-shadow-caster'
+      ) {
+        expect(parsed).toEqual(STANDARD_PIPELINE_PARAM_SCHEMA);
+      } else if (
+        ms.identifier === 'forgeax::vfx-render.particles.mesh' ||
+        ms.identifier === 'forgeax::vfx-render.particles.mesh-inputs' ||
+        ms.identifier === 'forgeax::vfx-render.particles.mesh-unlit' ||
+        ms.identifier === 'forgeax::vfx-render.particles.mesh-inputs-unlit'
+      ) {
+        expect(parsed).toEqual(particleMeshSurfaceSchema);
+      } else if (ms.identifier.startsWith('forgeax::standard-terrain')) {
+        expect(parsed).toEqual(
+          projectMaterialParameterSchema(
+            ms.identifier.startsWith('forgeax::standard-terrain-detail')
+              ? TERRAIN_WEIGHT_DETAIL_PARAMETERS
+              : TERRAIN_MATERIAL_PARAMETERS,
+            ms.identifier,
+            'runtime',
+          ).unwrap(),
+        );
+      } else if (ms.identifier === 'forgeax::msdf-text') {
+        expect(parsed).toEqual([
+          { name: 'tintColor', type: 'color', default: [1, 1, 1, 1] },
+          { name: 'distanceRange', type: 'vec4', default: [4, 512, 512, 0] },
+          { name: 'baseColorTexture', type: 'texture2d' },
+          { name: 'metallicRoughnessTexture', type: 'texture2d' },
+          { name: 'normalTexture', type: 'texture2d' },
+        ]);
+      } else if (
+        ms.identifier === 'forgeax::default-unlit' ||
+        ms.identifier === 'forgeax::points-lines'
+      ) {
+        expect(parsed).toEqual(DEFAULT_UNLIT_PARAM_SCHEMA);
+      } else {
+        expect(parsed.length, `paramSchema must stay empty for '${ms.identifier}'`).toBe(0);
+      }
+    }
+  }
+
   // These standalone marker assertions inspect one immutable default manifest.
   // Keep its public builder route separate from the Vite hook fixture.
   let standaloneManifest: ReturnType<typeof buildEngineShaderManifest> | undefined;
@@ -1489,7 +1556,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           for (const variant of portable) {
             expect(variant.composedWgsl).toContain('texture_2d<u32>');
             expect(variant.composedWgsl).not.toContain('texture_depth_cube_array');
-            expect(variant.composedWgsl).not.toContain('ssaoBlurredTexture');
+            expect(variant.composedWgsl).toMatch(/forwardScreenSurface\w*\s*:\s*texture_2d<f32>/);
             expect(variant.composedWgsl).not.toContain('var<storage');
           }
         }
@@ -1532,103 +1599,62 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         (entry) => entry.identifier === 'forgeax::points-lines',
       );
       expect(pointsLines).toBeDefined();
-      expect(pointsLines?.sourcePath).toMatch(/points-lines\.wgsl$/);
+      expect(pointsLines?.sourcePath).toBe('forgeax::points-lines');
+      const engineSources = await loadEngineShaderEntries();
+      expect(engineSources.pointsLines.id).toMatch(/points-lines\.wgsl$/);
       expect(JSON.parse(pointsLines?.paramSchema ?? 'null')).toEqual(DEFAULT_UNLIT_PARAM_SCHEMA);
-      for (const [identifier, filename] of [
-        ['forgeax::water-info-raster-water', 'water-info-raster-water.wgsl'],
-        ['forgeax::water-info-raster-ground', 'water-info-raster-ground.wgsl'],
-        ['forgeax::water-info-raster-dilation', 'water-info-raster-dilation.wgsl'],
+      for (const [identifier, source, filename] of [
+        ['forgeax::water-info-raster-water', engineSources.waterInfoRasterWater, 'water-info-raster-water.wgsl'],
+        ['forgeax::water-info-raster-ground', engineSources.waterInfoRasterGround, 'water-info-raster-ground.wgsl'],
+        ['forgeax::water-info-raster-dilation', engineSources.waterInfoRasterDilation, 'water-info-raster-dilation.wgsl'],
       ] as const) {
         const shader = manifest.materialShaders.find((entry) => entry.identifier === identifier);
-        expect(shader?.sourcePath.endsWith(filename)).toBe(true);
+        expect(shader?.sourcePath).toBe(identifier);
+        expect(source.id.endsWith(filename)).toBe(true);
       }
-      expect(
-        standardPbr?.variants?.find(
-          (variant) =>
-            variant.definesKey ===
-            STANDARD_NON_CLUSTER_VARIANT_KEY,
-        ),
-        'the URP standard-PBR variant must be present',
-      ).toBeDefined();
-      const defaultPbrWgsl = standardPbr?.variants?.find(
-        (variant) => variant.definesKey === STANDARD_NON_CLUSTER_VARIANT_KEY,
-      )?.composedWgsl ?? '';
+      const nonCluster = standardPbr && findVariantByKey(standardPbr, STANDARD_NON_CLUSTER_VARIANT_KEY);
+      expect(nonCluster, 'the URP Standard PBR variant must be present').toBeDefined();
+      const defaultPbrWgsl = nonCluster?.composedWgsl ?? '';
       expect(defaultPbrWgsl).not.toContain('waterBodyData');
       expect(defaultPbrWgsl).not.toContain('waterMeshTileWords');
-      expect(
-        standardPbr?.variants?.find(
-          (variant) =>
-            variant.definesKey ===
-            STANDARD_NON_CLUSTER_VARIANT_KEY,
-        )?.composedWgsl,
-        'the non-cluster Standard variant must stay valid on software WebGPU profiles without cube-array shader support',
-      ).not.toContain('evalPointShadowed');
-      expect(
-        standardPbr?.variants?.find(
-          (variant) =>
-            variant.definesKey ===
-            STANDARD_NON_CLUSTER_VARIANT_KEY,
-        )?.composedWgsl,
-        'the non-cluster Standard variant must omit the cube-array binding on software WebGPU profiles',
-      ).not.toContain('texture_depth_cube_array');
-      const extendedLightingOffWgsl = standardPbr?.variants?.find(
-        (variant) =>
-          variant.definesKey ===
-          STANDARD_EXTENDED_LIGHTING_OFF_VARIANT_KEY,
-      )?.composedWgsl;
-      expect(
-        extendedLightingOffWgsl,
-        'an extended-lighting-off variant must not retain optional view resources from imported common.wgsl',
-      ).not.toContain('@group(0) @binding(9)');
+      expect(defaultPbrWgsl, 'the non-cluster variant must omit point shadow evaluation').not.toContain('evalPointShadowed');
+      expect(defaultPbrWgsl, 'the non-cluster variant must omit the cube-array binding').not.toContain('texture_depth_cube_array');
+      const extendedLightingOffWgsl = standardPbr &&
+        findVariantByKey(standardPbr, STANDARD_EXTENDED_LIGHTING_OFF_VARIANT_KEY)?.composedWgsl;
+      expect(extendedLightingOffWgsl).not.toContain('@group(0) @binding(9)');
       expect(extendedLightingOffWgsl).not.toContain('@group(0) @binding(11)');
       expect(extendedLightingOffWgsl).not.toContain('@group(0) @binding(15)');
 
-const assertSharedTransmissionVariantBindings = () => {
-      // The low-limit transmission variant reuses the fixed 16-texture layout:
-      // transmission, thickness and the backdrop take the split scalar-map pairs.
-      const sharedTransmissionWgsl =
-        standardPbr?.variants?.find(
-          (variant) => variant.definesKey === STANDARD_SHARED_TRANSMISSION_VARIANT_KEY,
-        )?.composedWgsl ?? '';
-      const group1 = new Map(
-        [
-          ...sharedTransmissionWgsl.matchAll(
-            /@group\(1\)\s*@binding\((\d+)\)\s*var(?:<[^>]+>)?\s+([A-Za-z_]\w*)/g,
-          ),
-        ].map((match) => [match[2], Number(match[1])]),
-      );
-      expect(group1.get('transmissionSampler')).toBe(17);
-      expect(group1.get('transmissionTexture')).toBe(18);
-      expect(group1.get('thicknessSampler')).toBe(19);
-      expect(group1.get('thicknessTexture')).toBe(20);
-      expect(group1.get('transmissionBackdropTexture')).toBe(22);
-      expect(group1.has('metallicTexture')).toBe(false);
-      expect(group1.has('roughnessTexture')).toBe(false);
-      expect(group1.has('alphaTexture')).toBe(false);
-      expect([...group1.values()].filter((binding) => [12, 14, 32].includes(binding))).toEqual([]);
-
-};
-assertSharedTransmissionVariantBindings();
-      expect(
-        manifest.materialShaders
-          .find((entry) => entry.identifier === 'forgeax::default-standard-pbr')
-          ?.variants?.find(
-            (variant) =>
-              variant.definesKey ===
-              STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY,
-          )?.composedWgsl,
-        'the clustered point-shadow variant must opt into point-shadow evaluation',
-      ).toContain('evalPointShadowed');
-      expect(
-        manifest.materialShaders
-          .find((entry) => entry.identifier === 'forgeax::default-standard-pbr')
-          ?.variants?.find(
-            (variant) =>
-              variant.definesKey ===
-              STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY,
-          )?.composedWgsl,
-        'the clustered point-shadow variant must expose the cube-array binding',
-      ).toContain('texture_depth_cube_array');
+      const assertSharedTransmissionVariantBindings = () => {
+        // The scalar maps use Material slots and the camera backdrop uses View.
+        const sharedTransmissionWgsl =
+          (standardPbr && findVariantByKey(standardPbr, STANDARD_SHARED_TRANSMISSION_VARIANT_KEY)?.composedWgsl) ?? '';
+        const group1 = new Map(
+          [
+            ...sharedTransmissionWgsl.matchAll(
+              /@group\(1\)\s*@binding\((\d+)\)\s*var(?:<[^>]+>)?\s+([A-Za-z_]\w*)/g,
+            ),
+          ].map((match) => [match[2], Number(match[1])]),
+        );
+        expect(group1.get('transmissionTexture_sampler')).toBe(17);
+        expect(group1.get('transmissionTexture')).toBe(18);
+        expect(group1.get('thicknessTexture_sampler')).toBe(19);
+        expect(group1.get('thicknessTexture')).toBe(20);
+        expect(group1.get('alphaTexture_sampler')).toBe(21);
+        expect(group1.get('alphaTexture')).toBe(22);
+        expect(sharedTransmissionWgsl).toMatch(
+          /@group\(0\)\s*@binding\(38\)\s*var\s+transmissionBackdropTexture\s*:\s*texture_2d<f32>/,
+        );
+        expect(group1.has('transmissionBackdropTexture')).toBe(false);
+        expect(group1.has('metallicTexture')).toBe(false);
+        expect(group1.has('roughnessTexture')).toBe(false);
+        expect([...group1.values()].filter((binding) => [12, 14, 32].includes(binding))).toEqual([]);
+      };
+      assertSharedTransmissionVariantBindings();
+      const pointShadowWgsl = standardPbr &&
+        findVariantByKey(standardPbr, STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY)?.composedWgsl;
+      expect(pointShadowWgsl).toContain('evalPointShadowed');
+      expect(pointShadowWgsl).toContain('texture_depth_cube_array');
 
       // Package-owned VFX material entries use the same clustered forward
       // topology. Regressing the package loop to the built-in call shape would
@@ -1637,9 +1663,11 @@ assertSharedTransmissionVariantBindings();
       const pointVfxMesh = manifest.materialShaders.find(
         (entry) => entry.identifier === 'forgeax::vfx-render.particles.mesh',
       );
-      expect(pointVfxMesh?.variants?.some((variant) => variant.composedWgsl.includes('evalPointShadowed'))).toBe(
-        true,
-      );
+      const pointParticle = pointVfxMesh && findVariantByDefines(pointVfxMesh, {
+        CLUSTER_FORWARD_AVAILABLE: true,
+        STORAGE_BUFFER_AVAILABLE: true,
+      });
+      expect(pointParticle?.composedWgsl).toContain('evalPointShadowed');
 
       const ids = manifest.materialShaders.map((ms) => ms.identifier).sort();
       const cloudIds = await expectCloudShaderRoster(manifest);
@@ -1654,12 +1682,11 @@ assertSharedTransmissionVariantBindings();
         'forgeax::engine-decal-apply',
         'forgeax::engine-decal-project',
         'forgeax::engine-forward-contact-shadow',
+        'forgeax::engine-forward-directional-shadow',
         'forgeax::engine-forward-screen-compose',
-        'forgeax::engine-forward-screen-pack',
         'forgeax::engine-light-texture-resample-compute',
         'forgeax::engine-light-texture-resample-fragment',
         'forgeax::engine-ray-path-tracer',
-        'forgeax::engine-shadow-variance',
         'forgeax::engine-standard-deferred-lighting',
         'forgeax::engine-subsurface-diffusion',
         'forgeax::msdf-text',
@@ -1668,10 +1695,11 @@ assertSharedTransmissionVariantBindings();
         'forgeax::sprite',
         'forgeax::sprite-lit',
         'forgeax::ssr-compose-fragment',
-        'forgeax::ssr-temporal-fragment',
         'forgeax::ssr-trace-fragment',
         'forgeax::standard-output-v2',
         'forgeax::standard-terrain',
+        'forgeax::standard-terrain-detail',
+        'forgeax::standard-terrain-detail-shadow',
         'forgeax::standard-terrain-ids',
         'forgeax::standard-terrain-ids-shadow',
         'forgeax::standard-terrain-shadow',
@@ -1697,64 +1725,13 @@ assertSharedTransmissionVariantBindings();
         'forgeax::water-mesh-raster',
       ]);
 
-      // Each entry must have a paramSchema array; shadow-caster shares Standard
-      for (const ms of manifest.materialShaders) {
-        const parsed = JSON.parse(ms.paramSchema) as unknown;
-        expect(Array.isArray(parsed), `paramSchema for '${ms.identifier}' must be array`).toBe(
-          true,
-        );
-      }
-
-      // Standard PBR, skinned PBR, and mesh particles share the engine
-      // Standard Surface contract; MSDF has its own WGSL UBO shape and must
-      // be reflected into the runtime BGL. Billboard/topology particle
-      // shaders remain zero-binding material entries because they do not
-      // import the Standard Surface.
-      for (const ms of manifest.materialShaders) {
-        const parsed = JSON.parse(ms.paramSchema) as Array<{ name: string; type: string }>;
-        if (
-          ms.identifier === 'forgeax::default-standard-pbr' ||
-          ms.identifier === 'forgeax::pbr-skin' ||
-          ms.identifier === 'forgeax::default-shadow-caster'
-        ) {
-          expect(parsed).toEqual(STANDARD_PIPELINE_PARAM_SCHEMA);
-        } else if (
-          ms.identifier === 'forgeax::vfx-render.particles.mesh' ||
-          ms.identifier === 'forgeax::vfx-render.particles.mesh-inputs' ||
-          ms.identifier === 'forgeax::vfx-render.particles.mesh-unlit' ||
-          ms.identifier === 'forgeax::vfx-render.particles.mesh-inputs-unlit'
-        ) {
-          expect(parsed).toEqual(particleMeshSurfaceSchema);
-        } else if (
-          ms.identifier === 'forgeax::standard-terrain' ||
-          ms.identifier === 'forgeax::standard-terrain-ids' ||
-          ms.identifier === 'forgeax::standard-terrain-shadow' ||
-          ms.identifier === 'forgeax::standard-terrain-ids-shadow'
-        ) {
-          expect(parsed).toEqual(projectMaterialParameterSchema(TERRAIN_MATERIAL_PARAMETERS, ms.identifier, 'runtime').unwrap());
-        } else if (ms.identifier === 'forgeax::msdf-text') {
-          expect(parsed).toEqual([
-            { name: 'tintColor', type: 'color', default: [1, 1, 1, 1] },
-            { name: 'distanceRange', type: 'vec4', default: [4, 512, 512, 0] },
-            { name: 'baseColorTexture', type: 'texture2d' },
-            { name: 'metallicRoughnessTexture', type: 'texture2d' },
-            { name: 'normalTexture', type: 'texture2d' },
-          ]);
-        } else if (
-          ms.identifier === 'forgeax::default-unlit' ||
-          ms.identifier === 'forgeax::points-lines'
-        ) {
-          expect(parsed).toEqual(DEFAULT_UNLIT_PARAM_SCHEMA);
-        } else {
-          expect(parsed.length, `paramSchema must stay empty for '${ms.identifier}'`).toBe(0);
-        }
-      }
+      expectEngineMaterialParameterSchemas(manifest.materialShaders);
     }, SHADER_MANIFEST_TEST_TIMEOUT_MS);
 
     it(
       '(b) engine entry missing sidecar causes buildStart fail-fast with file path',
       async () => {
-        const plugin = forgeaxShader({ engineEntries: true });
+        const plugin = forgeaxShader({ publication: 'compiled', engineEntries: true });
         // forgeaxShader with a custom engineShaderRoots pointing to a temp dir
         // that has a .wgsl but no .material.json sidecar. However, the engine
         // entries are loaded from the built-in @forgeax/engine-shader package
@@ -1823,12 +1800,11 @@ assertSharedTransmissionVariantBindings();
           'forgeax::engine-decal-apply',
           'forgeax::engine-decal-project',
           'forgeax::engine-forward-contact-shadow',
+          'forgeax::engine-forward-directional-shadow',
           'forgeax::engine-forward-screen-compose',
-          'forgeax::engine-forward-screen-pack',
           'forgeax::engine-light-texture-resample-compute',
           'forgeax::engine-light-texture-resample-fragment',
           'forgeax::engine-ray-path-tracer',
-          'forgeax::engine-shadow-variance',
           'forgeax::engine-standard-deferred-lighting',
           'forgeax::engine-subsurface-diffusion',
           'forgeax::msdf-text',
@@ -1837,10 +1813,11 @@ assertSharedTransmissionVariantBindings();
           'forgeax::sprite',
           'forgeax::sprite-lit',
           'forgeax::ssr-compose-fragment',
-          'forgeax::ssr-temporal-fragment',
           'forgeax::ssr-trace-fragment',
           'forgeax::standard-output-v2',
           'forgeax::standard-terrain',
+          'forgeax::standard-terrain-detail',
+          'forgeax::standard-terrain-detail-shadow',
           'forgeax::standard-terrain-ids',
           'forgeax::standard-terrain-ids-shadow',
           'forgeax::standard-terrain-shadow',
@@ -1978,39 +1955,29 @@ assertSharedTransmissionVariantBindings();
       'forgeaxShader buildStart publishes temporal fullscreen entries',
       async () => {
         const manifest = await viteEngineManifest();
-        expect(
-          manifest.entries.filter((entry) => entry.wgsl.includes('MotionBlurParams')),
-        ).toHaveLength(1);
-        expect(
-          manifest.entries.filter((entry) => entry.wgsl.includes('TaaResolveParams')),
-        ).toHaveLength(1);
+        for (const [role, marker] of [
+          ['motionBlur', 'MotionBlurParams'],
+          ['taaResolve', 'TaaResolveParams'],
+        ] as const) {
+          const entries = manifest.entries.filter((entry) => entry.role === role);
+          expect(entries).toHaveLength(1);
+          expect(entries[0]?.wgsl).toContain(marker);
+        }
       },
       SHADER_MANIFEST_TEST_TIMEOUT_MS,
     );
 
-    async function manifestForPlugin(
-      plugin: ReturnType<typeof forgeaxShader>,
-    ): Promise<{ entries: Array<{ wgsl: string }> }> {
-      const ctx = createMockContext();
-      await plugin.buildStart?.call(ctx as never);
-      plugin.generateBundle?.call(ctx as never);
-
-      const manifestAsset = ctx.emitted.find((a) => a.fileName === 'shaders/manifest.json');
-      expect(manifestAsset).toBeDefined();
-      if (!manifestAsset) return { entries: [] };
-      return (await readShaderManifestPublication(JSON.parse(manifestAsset.source))) as {
-        entries: Array<{ wgsl: string }>;
-      };
+    function expectSsao(manifest: ViteEngineManifest): void {
+      const entries = manifest.entries.filter((entry) => entry.role === 'ssao');
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.wgsl).toContain('fs_ssao_calc');
+      expect(entries[0]?.wgsl).toContain('fs_ssao_blur');
     }
 
     it(
       'forgeaxShader default supports runtime Standard SSAO configuration',
       async () => {
-        const manifest = await manifestForPlugin(forgeaxShader());
-        const ssao = manifest.entries.filter(
-          (entry) => entry.wgsl.includes('fs_ssao_calc') && entry.wgsl.includes('fs_ssao_blur'),
-        );
-        expect(ssao, 'generic Vite manifests must support the public SSAO profile').toHaveLength(1);
+        expectSsao(await manifestForPlugin(forgeaxShader()));
       },
       SHADER_MANIFEST_TEST_TIMEOUT_MS,
     );
@@ -2018,11 +1985,7 @@ assertSharedTransmissionVariantBindings();
     it(
       'forgeaxShader opt-in includes the SSAO fullscreen entry',
       async () => {
-        const manifest = await viteEngineManifest();
-        const ssao = manifest.entries.filter(
-          (entry) => entry.wgsl.includes('fs_ssao_calc') && entry.wgsl.includes('fs_ssao_blur'),
-        );
-        expect(ssao, 'Vite manifest must carry both SSAO fragment entry points').toHaveLength(1);
+        expectSsao(await viteEngineManifest());
       },
       SHADER_MANIFEST_TEST_TIMEOUT_MS,
     );
@@ -2110,7 +2073,7 @@ assertSharedTransmissionVariantBindings();
 
   describe('generateBundle: manifest.json schema shape (F3-fix / SSOT @forgeax/engine-types.ManifestEntry)', () => {
     it('manifest.json top level is the {entries: ManifestEntry[]} array (not a Record<absPath, ...>)', async () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       const ctx = createMockContext();
 
       // Feed 1 .wgsl through transform so the plugin internal state accumulates an entry.
@@ -2135,7 +2098,7 @@ assertSharedTransmissionVariantBindings();
     });
 
     it('decoded entries match @forgeax/engine-types.ManifestEntry: {hash, wgsl, glsl, bindings}', async () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       const ctx = createMockContext();
 
       await plugin.transform.call(ctx as never, VALID_WGSL, '/abs/path/to/bar.wgsl');
@@ -2162,7 +2125,7 @@ assertSharedTransmissionVariantBindings();
     });
 
     it('decoded entry.wgsl is literal WGSL source (not a shaders/<hash>.wgsl path)', async () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       const ctx = createMockContext();
 
       await plugin.transform.call(ctx as never, VALID_WGSL, '/abs/path/to/baz.wgsl');
@@ -2186,7 +2149,7 @@ assertSharedTransmissionVariantBindings();
     });
 
     it('manifest.json contains no absolute path prefix (cross-machine reproducibility)', async () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       const ctx = createMockContext();
 
       // A worktree-style absolute path id
@@ -2210,7 +2173,7 @@ assertSharedTransmissionVariantBindings();
     });
 
     it('multiple .wgsl inputs → entries accumulate in order with one independent hash each', async () => {
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       const ctx = createMockContext();
 
       const WGSL_A = /* wgsl */ `@fragment fn fs() -> @location(0) vec4<f32> { return vec4<f32>(0.1); }`;
@@ -2265,7 +2228,7 @@ assertSharedTransmissionVariantBindings();
     it('(c) empty defines (undefined/default) is treated as no-defines', () => {
       // The default ForgeAXShaderOptions omits defines entirely — this is
       // the normal path for regular .wgsl files.
-      const plugin = forgeaxShader();
+      const plugin = forgeaxShader({ publication: 'compiled' });
       expect(plugin.name).toBe('forgeax:shader');
     });
   });
@@ -2597,7 +2560,7 @@ ${MINIMAL_WGSL.trim()}
   describe('AC-06 -- manifest variants[] via buildStart', () => {
     it('forgeaxShader plugin exposes buildStart + generateBundle hooks', async () => {
       const { forgeaxShader } = await import('../index.js');
-      const plugin = forgeaxShader({ engineEntries: true });
+      const plugin = forgeaxShader({ publication: 'compiled', engineEntries: true });
       expect(typeof plugin.buildStart).toBe('function');
       expect(typeof plugin.generateBundle).toBe('function');
       expect(typeof plugin.configureServer).toBe('function');
@@ -2610,12 +2573,12 @@ ${MINIMAL_WGSL.trim()}
   // ============================================================================
 
   describe('feat-20260609 M1 -- CLUSTER_FORWARD_AVAILABLE variant compile', () => {
-    function group2Bindings(
+    function viewBindings(
       bindings: readonly { entries: readonly { binding: number }[] }[],
     ): number[] {
-      const g2 = bindings[2];
-      if (g2 === undefined) return [];
-      return g2.entries.map((e) => e.binding).sort((a, b) => a - b);
+      const view = bindings[0];
+      if (view === undefined) return [];
+      return view.entries.map((e) => e.binding).sort((a, b) => a - b);
     }
 
     it('(a) CLUSTER_FORWARD_AVAILABLE=true compiles without error', async () => {
@@ -2627,7 +2590,7 @@ ${MINIMAL_WGSL.trim()}
       if (!r.ok) return;
       expect(r.value.wgsl.length).toBeGreaterThan(0);
       const lightData = r.value.reflection.boundGlobals.find(
-        (global) => global.group === 2 && global.binding === 3,
+        (global) => global.group === 0 && global.binding === 30,
       );
       expect(lightData).toMatchObject({
         resourceKind: 'storage-buffer',
@@ -2646,7 +2609,7 @@ ${MINIMAL_WGSL.trim()}
         ],
       );
       const clusterUniform = r.value.reflection.boundGlobals.find(
-        (global) => global.group === 2 && global.binding === 6,
+        (global) => global.group === 0 && global.binding === 33,
       );
       expect(clusterUniform).toMatchObject({
         resourceKind: 'buffer',
@@ -2706,11 +2669,11 @@ ${MINIMAL_WGSL.trim()}
       if (!r.ok) return;
       expect(r.value.wgsl).not.toContain('var<storage');
       expect(r.value.wgsl).toContain('texture_2d<u32>');
-      const bindings = group2Bindings(r.value.bindings ?? []);
-      expect(bindings).toContain(3);
-      expect(bindings).toContain(6);
-      expect(bindings).not.toContain(4);
-      expect(bindings).not.toContain(5);
+      const bindings = viewBindings(r.value.bindings ?? []);
+      expect(bindings).toContain(30);
+      expect(bindings).toContain(33);
+      expect(bindings).not.toContain(31);
+      expect(bindings).not.toContain(32);
     });
 
     it('(b) CLUSTER_FORWARD_AVAILABLE=false compiles without error', async () => {
@@ -2722,18 +2685,18 @@ ${MINIMAL_WGSL.trim()}
       if (r.ok) expect(r.value.wgsl.length).toBeGreaterThan(0);
     });
 
-    it('(c) true variant compiled bindingLayout has @group(2) @binding(3,4,5,6) cluster entries', async () => {
+    it('(c) true variant compiled bindingLayout has @group(0) @binding(30,31,32,33) cluster entries', async () => {
       const r = await compileEntry('default-standard-pbr.wgsl', 'pbr#cfw-true-binding', {
         STORAGE_BUFFER_AVAILABLE: true,
         CLUSTER_FORWARD_AVAILABLE: true,
       });
       expect(r.ok, r.ok ? '' : r.error.message).toBe(true);
       if (!r.ok) return;
-      const bindings = group2Bindings(r.value.bindings ?? []);
-      expect(bindings).toContain(3);
-      expect(bindings).toContain(4);
-      expect(bindings).toContain(5);
-      expect(bindings).toContain(6);
+      const bindings = viewBindings(r.value.bindings ?? []);
+      expect(bindings).toContain(30);
+      expect(bindings).toContain(31);
+      expect(bindings).toContain(32);
+      expect(bindings).toContain(33);
     });
 
     it('(d) false variant: imported conditional bindings are projected before reflection', async () => {
@@ -2748,8 +2711,8 @@ ${MINIMAL_WGSL.trim()}
       });
       expect(r.ok, r.ok ? '' : r.error.message).toBe(true);
       if (!r.ok) return;
-      const bindings = group2Bindings(r.value.bindings ?? []);
-      expect(bindings).not.toEqual(expect.arrayContaining([3, 4, 5, 6]));
+      const bindings = viewBindings(r.value.bindings ?? []);
+      expect(bindings).not.toEqual(expect.arrayContaining([30, 31, 32, 33]));
     });
   });
 }
@@ -2814,7 +2777,9 @@ ${MINIMAL_WGSL.trim()}
 
   describe('virtual:forgeax/bundler module resolution (AC-10 / D-4 q7-A)', () => {
     it('resolveId hook claims the virtual module id', () => {
-      const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
+      const plugin = forgeaxShader({
+        publication: 'compiled',
+      }) as unknown as PluginWithVirtualHooks;
       expect(typeof plugin.resolveId).toBe('function');
       const resolved = plugin.resolveId?.call(undefined, VIRTUAL_ID);
       expect(typeof resolved).toBe('string');
@@ -2825,13 +2790,17 @@ ${MINIMAL_WGSL.trim()}
     });
 
     it('resolveId hook does not claim other module ids', () => {
-      const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
+      const plugin = forgeaxShader({
+        publication: 'compiled',
+      }) as unknown as PluginWithVirtualHooks;
       const result = plugin.resolveId?.call(undefined, './some-other-module');
       expect(result == null).toBe(true);
     });
 
     it('load hook returns adapter source for the virtual id', () => {
-      const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
+      const plugin = forgeaxShader({
+        publication: 'compiled',
+      }) as unknown as PluginWithVirtualHooks;
       expect(typeof plugin.load).toBe('function');
       // Use whichever shape resolveId picked.
       const resolved = plugin.resolveId?.call(undefined, VIRTUAL_ID) as string;
@@ -2843,13 +2812,17 @@ ${MINIMAL_WGSL.trim()}
     });
 
     it('load hook does not claim non-virtual ids', () => {
-      const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
+      const plugin = forgeaxShader({
+        publication: 'compiled',
+      }) as unknown as PluginWithVirtualHooks;
       const result = plugin.load?.call(undefined, '/abs/path/to/main.ts');
       expect(result == null).toBe(true);
     });
 
     it('emitted adapter source contains SHADER_MANIFEST_PATH + BASE_URL composition', () => {
-      const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
+      const plugin = forgeaxShader({
+        publication: 'compiled',
+      }) as unknown as PluginWithVirtualHooks;
       const resolved = plugin.resolveId?.call(undefined, VIRTUAL_ID) as string;
       const source = plugin.load?.call(undefined, resolved) as string;
       expect(typeof source).toBe('string');
@@ -2863,7 +2836,9 @@ ${MINIMAL_WGSL.trim()}
     });
 
     it('keeps optional host capabilities behind tool-owned environment checks', () => {
-      const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
+      const plugin = forgeaxShader({
+        publication: 'compiled',
+      }) as unknown as PluginWithVirtualHooks;
       const resolved = plugin.resolveId?.call(undefined, VIRTUAL_ID) as string;
       const source = plugin.load?.call(undefined, resolved) as string;
       expect(source).toContain('attachRhiRecorder');
@@ -2875,7 +2850,9 @@ ${MINIMAL_WGSL.trim()}
     });
 
     it('provides recorder and relay capabilities in development and registers bridge teardown with the host lifecycle', () => {
-      const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
+      const plugin = forgeaxShader({
+        publication: 'compiled',
+      }) as unknown as PluginWithVirtualHooks;
       const resolved = plugin.resolveId?.call(undefined, VIRTUAL_ID) as string;
       const source = plugin.load?.call(undefined, resolved) as string;
       const evaluate = new Function(
@@ -2900,7 +2877,9 @@ ${MINIMAL_WGSL.trim()}
       const previous = process.env.FORGEAX_ENGINE_REMOTE_SERVE;
       process.env.FORGEAX_ENGINE_REMOTE_SERVE = '1';
       try {
-        const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
+        const plugin = forgeaxShader({
+          publication: 'compiled',
+        }) as unknown as PluginWithVirtualHooks;
         const resolved = plugin.resolveId?.call(undefined, VIRTUAL_ID) as string;
         const source = plugin.load?.call(undefined, resolved) as string;
         const evaluate = new Function(
@@ -3008,7 +2987,9 @@ export async function installBrowserExecutionBridge() { return () => {}; }
         'https://game.test/game/shaders/manifest.json',
       ],
     ])('resolves %s against the page before sending the adapter into a Worker', (base, page, expected) => {
-      const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
+      const plugin = forgeaxShader({
+        publication: 'compiled',
+      }) as unknown as PluginWithVirtualHooks;
       const resolved = plugin.resolveId?.call(undefined, VIRTUAL_ID) as string;
       const source = plugin.load?.call(undefined, resolved) as string;
       const evaluate = new Function(
@@ -3026,7 +3007,9 @@ export async function installBrowserExecutionBridge() { return () => {}; }
 
   describe('forgeaxBundlerAdapter return type (TASK-018 / AC-10 structural typing)', () => {
     it('keeps native callers without a DOM or location available for explicit URL override', () => {
-      const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
+      const plugin = forgeaxShader({
+        publication: 'compiled',
+      }) as unknown as PluginWithVirtualHooks;
       const resolved = plugin.resolveId?.call(undefined, VIRTUAL_ID) as string;
       const source = plugin.load?.call(undefined, resolved) as string;
       const evaluate = new Function(
@@ -3038,7 +3021,9 @@ export async function installBrowserExecutionBridge() { return () => {}; }
     });
 
     it('return value source declares forgeaxBundlerAdapter returning BundlerOptions shape', () => {
-      const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
+      const plugin = forgeaxShader({
+        publication: 'compiled',
+      }) as unknown as PluginWithVirtualHooks;
       const resolved = plugin.resolveId?.call(undefined, VIRTUAL_ID) as string;
       const source = plugin.load?.call(undefined, resolved) as string;
       // The generated adapter carries the stable renderer build fields and

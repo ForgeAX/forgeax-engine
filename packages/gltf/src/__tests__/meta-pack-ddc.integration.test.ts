@@ -1,3 +1,4 @@
+import { deepStrictEqual, notDeepStrictEqual } from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -105,11 +106,11 @@ it('restores a real GLB material from Pack DDC without repeating its importer or
     };
     const first = await produce();
     const warm = await produce();
-    expect(warm).toEqual(first);
+    deepStrictEqual(warm, first);
     expect(counts).toEqual({ imports: 1, cooks: 1 });
     await writeFile(source, materialGlb([0.2, 0.4, 0.8, 1]));
     const changed = await produce();
-    expect(changed.product).not.toEqual(first.product);
+    notDeepStrictEqual(changed.product, first.product);
     expect(counts).toEqual({ imports: 2, cooks: 2 });
   } finally {
     await rm(root, { recursive: true, force: true });

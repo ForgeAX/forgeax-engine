@@ -27,8 +27,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestPublication } from '@forgeax/engine-shader';
-import { readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
+import { readCookedShaderManifestPublication, readShaderManifestText } from '../../../../scripts/lib/shader-manifest.mjs';
 
 const requestedSmokeFrames = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
 const SMOKE_MIN_FRAMES =
@@ -158,7 +157,7 @@ if (!existsSync(MANIFEST_PATH)) {
   process.exit(1);
 }
 const manifestRaw = readShaderManifestText(MANIFEST_PATH);
-const manifestParsed = await readShaderManifestPublication(JSON.parse(manifestRaw));
+const manifestParsed = await readCookedShaderManifestPublication(JSON.parse(manifestRaw));
 const MANIFEST_URL = URL.createObjectURL(new Blob([manifestRaw], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 

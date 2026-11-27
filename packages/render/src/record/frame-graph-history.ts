@@ -1,4 +1,10 @@
-import type { RenderGraphBuilder, RenderGraphError } from '@forgeax/engine-render-graph';
+import type {
+  GraphAccess,
+  GraphBuffer,
+  GraphTextureView,
+  RenderGraphBuilder,
+  RenderGraphError,
+} from '@forgeax/engine-render-graph';
 import type {
   BindGroup,
   RenderPipeline,
@@ -7,7 +13,6 @@ import type {
   TextureFormat,
   TextureView,
 } from '@forgeax/engine-rhi';
-import { RhiError } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
 import type { CloudTransportFormat } from '../cloud/reconstruction/history';
 import { isTemporalAntialias } from '../components/camera';
@@ -21,17 +26,23 @@ import {
   GPU_TEXTURE_USAGE_STORAGE_BINDING,
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
 } from '../gpu-texture-usage';
-import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
+import { GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import { pmremExtent } from '../ibl/pmrem';
-import type { RenderExtent } from '../pipeline/render-extent';
+import { SKY_SH_BYTES } from '../ibl/sky-sh';
 import { type ProbeBackgroundResources, recordProbeBackground } from '../reflection/background';
 import { addPmremArrayMigrations, type PmremArrayMigration } from '../reflection/pmrem-array';
 import type { CameraSnapshot } from '../render-contract';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
-import { WATER_SSR_PARAMS_BYTES } from '../ssr/history';
+import {
+  fullSsrColorViewport,
+  ssrColorExtent,
+  writeSsrColorViewport,
+} from '../ssr/scene-color-input';
+import { WATER_SSR_DEFAULT_PROFILE, WATER_SSR_PARAMS_BYTES } from '../ssr/water-profile';
 import {
   CLOUD_HISTORY_FORMATS,
   getTemporalGpuState,
+  stageTemporalGpuWrite,
   TEMPORAL_HISTORY_FORMATS,
   temporalReadIndex,
   temporalWriteIndex,
@@ -39,8 +50,8 @@ import {
 import { recordContext } from '../world/view-record-context';
 import { buildPerFrameBindGroups } from './frame-lighting';
 import type { RenderFrameState } from './frame-snapshot';
-import { encodeMainPass } from './main-pass';
 import { resolveReflectionProbeAtmosphereBindings } from './reflection-probe-atmosphere-bindings';
+import { encodeProbeFaceDraws } from './reflection-probe-face';
 import { addReflectionProbePmremPasses } from './reflection-probe-pmrem';
 
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
@@ -201,6 +212,28 @@ function cloudHistorySurface(
   }
 }
 
+function cloudHistoryState(frame: _InternalRenderPipelineContext) {
+  return getTemporalGpuState(
+    frame.frameState,
+    frame.runtime.device,
+    recordContext(frame.runtime).deviceScope,
+    frame.targetW,
+    frame.targetH,
+    true,
+    frame.camera,
+    isTemporalAntialias(frame.camera.antialias)
+      ? frame.camera.antialias === 'tsr'
+        ? 'tsr'
+        : 'taa'
+      : 'scene-color',
+  );
+}
+
+/** Stage the same ping-pong state that backs the imported cloud attachments. */
+export function stageCloudHistoryWrite(frame: _InternalRenderPipelineContext): void {
+  stageTemporalGpuWrite(frame.frameState, cloudHistoryState(frame));
+}
+
 /** Import one renderer-owned cloud history attachment into the typed graph. */
 function importCloudHistoryTarget(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
@@ -211,21 +244,7 @@ function importCloudHistoryTarget(
 ): import('../render-pipeline').RenderPipelineTarget {
   const format = kind === 'depth' ? CLOUD_HISTORY_FORMATS.depth : transportFormat;
   const resolveSurface = (frame: RenderPipelineFrame) => {
-    const internal = frame as _InternalRenderPipelineContext;
-    const state = getTemporalGpuState(
-      internal.frameState,
-      internal.runtime.device,
-      recordContext(internal.runtime).deviceScope,
-      frame.targetW,
-      frame.targetH,
-      true,
-      frame.camera,
-      isTemporalAntialias(internal.camera.antialias)
-        ? internal.camera.antialias === 'tsr'
-          ? 'tsr'
-          : 'taa'
-        : 'scene-color',
-    );
+    const state = cloudHistoryState(frame as _InternalRenderPipelineContext);
     const index = role === 'read' ? temporalReadIndex(state) : temporalWriteIndex(state);
     return cloudHistorySurface(state, kind, index);
   };
@@ -308,218 +327,39 @@ export function importCloudHistoryTargets(
   };
 }
 
-function importSsrHistoryTarget(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  label: string,
-  role: 'read' | 'write',
-  extent: RenderExtent | undefined,
-  surface = false,
-  storage = true,
-  water = false,
-  previousExtent?: { readonly width: number; readonly height: number },
-): import('../render-pipeline').RenderPipelineTarget {
-  const resolveSurface = (frame: RenderPipelineFrame) => {
-    const internal = frame as import('./render-context')._InternalRenderPipelineContext;
-    const owner = water
-      ? internal.frameState.waterSsrHistoryOwner
-      : internal.frameState.ssrHistoryOwner;
-    const candidate = owner?.candidate;
-    if (owner === undefined || candidate === undefined) {
-      throw new RhiError({
-        code: 'rhi-not-available',
-        expected: 'SSR history candidate to be staged before graph execution',
-        hint: 'begin the SSR history candidate before executing the admitted graph',
-      });
-    }
-    const slot =
-      role === 'read'
-        ? (candidate.readSlot ?? (candidate.writeSlot === 0 ? 1 : 0))
-        : candidate.writeSlot;
-    const resolved = (role === 'read' ? candidate.previousResources : owner.resources).slots[slot];
-    if (resolved === undefined)
-      throw new Error('SSR history slot is outside the admitted resource cohort');
-    return resolved;
-  };
-  const texture = graph.importTexture(
-    label,
-    {
-      format: surface ? 'rgba8unorm' : 'rgba16float',
-      size:
-        role === 'read' && previousExtent !== undefined
-          ? { width: previousExtent.width, height: previousExtent.height }
-          : extent === undefined
-            ? 'surface'
-            : {
-                width: extent.internalWidth,
-                height: extent.internalHeight,
-              },
-      usage:
-        GPU_TEXTURE_USAGE_COPY_SRC |
-        GPU_TEXTURE_USAGE_COPY_DST |
-        GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
-        (storage ? GPU_TEXTURE_USAGE_STORAGE_BINDING : 0) |
-        GPU_TEXTURE_USAGE_TEXTURE_BINDING,
-      domain: 'linear-hdr',
-    },
-    (frame) => {
-      const slot = resolveSurface(frame);
-      if (!surface) return slot.texture;
-      if (slot.profile === 'opaque') return slot.surfaceTexture;
-      throw new RhiError({
-        code: 'rhi-not-available',
-        expected: 'opaque SSR surface history',
-        hint: 'Water history stores only reflected RGBA',
-      });
-    },
-  );
-  if (!texture.ok) throw texture.error;
-  const view = graph.importView(
-    texture.value,
-    { label: `${label}.view`, dimension: '2d' },
-    (frame) => {
-      const slot = resolveSurface(frame);
-      if (!surface) return slot.view;
-      if (slot.profile === 'opaque') return slot.surfaceView;
-      throw new RhiError({
-        code: 'rhi-not-available',
-        expected: 'opaque SSR surface history',
-        hint: 'Water history stores only reflected RGBA',
-      });
-    },
-  );
-  if (!view.ok) throw view.error;
-  return {
-    texture: texture.value,
-    view: view.value,
-    format: surface ? 'rgba8unorm' : 'rgba16float',
-    sampleCount: 1,
-    domain: 'linear-hdr',
-  };
-}
-
-export function importSsrHistoryTargets(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  extent: RenderExtent | undefined,
-  storage: boolean,
-  water: true,
-  previousExtent?: { readonly width: number; readonly height: number },
-): NonNullable<
-  NonNullable<
-    import('../render-pipeline').RenderPipelineBuildContext<RenderPipelineFrame>['waterSsr']
-  >['temporal']
->;
-
-export function importSsrHistoryTargets(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  extent: RenderExtent | undefined,
-  storage: boolean,
-  water?: false,
-  previousExtent?: { readonly width: number; readonly height: number },
-): NonNullable<
-  import('../render-pipeline').RenderPipelineBuildContext<RenderPipelineFrame>['ssrHistory']
->;
-
-export function importSsrHistoryTargets(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  extent: RenderExtent | undefined,
-  storage: boolean,
-  water = false,
-  previousExtent?: { readonly width: number; readonly height: number },
-): NonNullable<
-  | import('../render-pipeline').RenderPipelineBuildContext<RenderPipelineFrame>['ssrHistory']
-  | NonNullable<
-      import('../render-pipeline').RenderPipelineBuildContext<RenderPipelineFrame>['waterSsr']
-    >['temporal']
-> {
-  const prefix = water ? 'water-' : '';
-  const shared = {
-    previous: importSsrHistoryTarget(
-      graph,
-      `${prefix}ssr-history-previous`,
-      'read',
-      extent,
-      false,
-      storage,
-      water,
-      previousExtent,
-    ),
-    output: importSsrHistoryTarget(
-      graph,
-      `${prefix}ssr-history-output`,
-      'write',
-      extent,
-      false,
-      storage,
-      water,
-    ),
-    params: (() => {
-      const imported = graph.importBuffer(
-        `${prefix}ssr-history-params`,
-        { size: 32, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST },
-        (frame) => {
-          const internal = frame as import('./render-context')._InternalRenderPipelineContext;
-          const owner = water
-            ? internal.frameState.waterSsrHistoryOwner
-            : internal.frameState.ssrHistoryOwner;
-          if (owner === undefined) {
-            throw new RhiError({
-              code: 'rhi-not-available',
-              expected: 'SSR history owner to be staged before graph execution',
-              hint: 'create the renderer-owned SSR history before executing the admitted graph',
-            });
-          }
-          return owner.resources.paramsBuffer;
-        },
-      );
-      if (!imported.ok) throw imported.error;
-      return imported.value;
-    })(),
-  };
-  if (!water) {
-    return {
-      ...shared,
-      previousSurface: importSsrHistoryTarget(
-        graph,
-        'ssr-history-previous-surface',
-        'read',
-        extent,
-        true,
-        storage,
-      ),
-      outputSurface: importSsrHistoryTarget(
-        graph,
-        'ssr-history-output-surface',
-        'write',
-        extent,
-        true,
-        storage,
-      ),
-    };
-  }
-  return shared;
-}
-
 export function importWaterSsrInputParams(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
-): import('@forgeax/engine-render-graph').GraphBuffer {
-  const inputParams = graph.importBuffer(
-    'water-ssr-input-params',
-    { size: WATER_SSR_PARAMS_BYTES, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST },
-    (frame) => {
-      const buffer = (frame as _InternalRenderPipelineContext).frameState.ssrHistoryOwner?.resources
-        .waterParamsBuffer;
-      if (buffer === undefined) {
-        throw new RhiError({
-          code: 'rhi-not-available',
-          expected: 'Water SSR input parameters staged before execution',
-          hint: 'begin the Water SSR history candidate before executing its trace',
-        });
-      }
-      return buffer;
-    },
-  );
-  if (!inputParams.ok) throw inputParams.error;
-  return inputParams.value;
+): GraphBuffer {
+  const params = graph
+    .createBuffer('water-ssr-input-params', { size: WATER_SSR_PARAMS_BYTES })
+    .unwrap();
+  const payload = new Float32Array(WATER_SSR_PARAMS_BYTES / 4);
+  const values = new DataView(payload.buffer);
+  graph
+    .addCopyPass('water-ssr-input-params-upload', {
+      accesses: [{ resource: params, usage: 'copy-dst' }],
+      encodeDirect: (_encoder, frame, resources) => {
+        const internal = frame as _InternalRenderPipelineContext;
+        const { activeTemporalGpuState: history, temporalView } = internal.frameState;
+        const temporal = isTemporalAntialias(internal.camera.antialias);
+        const valid =
+          temporal &&
+          history?.valid === true &&
+          history.device === frame.runtime.device &&
+          history.mode === internal.camera.antialias &&
+          history.width === frame.targetW &&
+          history.height === frame.targetH &&
+          temporalView.accepted?.input.historyVersion === internal.camera.historyVersion;
+        const colorSize = ssrColorExtent({ width: frame.targetW, height: frame.targetH });
+        writeSsrColorViewport(values, 32, fullSsrColorViewport(colorSize.width, colorSize.height));
+        payload.set([Number(valid), 1, WATER_SSR_DEFAULT_PROFILE.intensity, 0], 16);
+        frame.runtime.device.queue
+          .writeBuffer(resources.buffer(params).unwrap(), 0, payload)
+          .unwrap();
+      },
+    })
+    .unwrap();
+  return params;
 }
 
 /** Borrow accepted scene color; both producer shapes use the same submission owner. */
@@ -528,13 +368,27 @@ export function importSsrSceneColorHistoryTarget(
   frameState: RenderFrameState,
   width: number,
   height: number,
-): RenderPipelineTarget {
+  sceneColorOnly = false,
+): Result<RenderPipelineTarget, RenderGraphError> {
   const accepted = frameState.activeTemporalGpuState;
+  const size = sceneColorOnly
+    ? { width, height }
+    : { width: accepted?.width ?? width, height: accepted?.height ?? height };
+  const halfSize = ssrColorExtent(size);
+  const mipLevelCount = 1;
   const resolve = (frame: RenderPipelineFrame) => {
     const internal = frame as _InternalRenderPipelineContext;
     const active = internal.frameState.activeTemporalGpuState;
+    const mode = sceneColorOnly
+      ? 'scene-color'
+      : internal.camera.antialias === 'tsr'
+        ? 'tsr'
+        : 'taa';
     const state =
-      active?.device === internal.runtime.device
+      active?.device === internal.runtime.device &&
+      active.mode === mode &&
+      active.width === size.width &&
+      active.height === size.height
         ? active
         : getTemporalGpuState(
             internal.frameState,
@@ -544,19 +398,16 @@ export function importSsrSceneColorHistoryTarget(
             frame.targetH,
             false,
             internal.camera,
-            isTemporalAntialias(internal.camera.antialias)
-              ? internal.camera.antialias === 'tsr'
-                ? 'tsr'
-                : 'taa'
-              : 'scene-color',
+            mode,
           );
     return state.color[temporalReadIndex(state)];
   };
   const texture = graph.importTexture(
-    'ssr-hit-color-history',
+    sceneColorOnly ? 'ssr-hit-color-history' : 'ssr-temporal-color-history',
     {
       format: 'rgba16float',
-      size: { width: accepted?.width ?? width, height: accepted?.height ?? height },
+      size: sceneColorOnly ? halfSize : size,
+      mipLevelCount,
       usage:
         GPU_TEXTURE_USAGE_COPY_SRC |
         GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
@@ -565,24 +416,28 @@ export function importSsrSceneColorHistoryTarget(
     },
     (frame) => resolve(frame).texture,
   );
-  if (!texture.ok) throw texture.error;
-  const view = graph.importView(
-    texture.value,
-    { dimension: '2d', label: 'ssr-hit-color-history.view' },
-    (frame) => resolve(frame).view,
-  );
-  if (!view.ok) throw view.error;
-  return {
+  if (!texture.ok) return texture;
+  const viewDescriptor = {
+    dimension: '2d',
+    label: sceneColorOnly ? 'ssr-hit-color-history.view' : 'ssr-temporal-color-history.view',
+    mipLevelCount,
+  } as const;
+  const view = graph.importView(texture.value, viewDescriptor, (frame) => resolve(frame).view);
+  if (!view.ok) return view;
+  const history = {
     texture: texture.value,
     view: view.value,
     format: 'rgba16float',
     sampleCount: 1,
     domain: 'linear-hdr',
-  };
+  } as const;
+  return ok(history);
 }
 
 export function importSsrSceneColorOutput(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
+  width: number,
+  height: number,
 ): RenderPipelineTarget {
   const resolve = (frame: RenderPipelineFrame) => {
     const internal = frame as _InternalRenderPipelineContext;
@@ -598,12 +453,14 @@ export function importSsrSceneColorOutput(
     );
     return state.color[temporalWriteIndex(state)];
   };
+  const size = ssrColorExtent({ width, height });
   const texture = graph
     .importTexture(
       'ssr-scene-color-output',
       {
         format: 'rgba16float',
-        size: 'surface',
+        size,
+        mipLevelCount: 1,
         usage:
           GPU_TEXTURE_USAGE_COPY_SRC |
           GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
@@ -616,7 +473,7 @@ export function importSsrSceneColorOutput(
   const view = graph
     .importView(
       texture,
-      { label: 'ssr-scene-color-output.view', dimension: '2d' },
+      { label: 'ssr-scene-color-output.view', dimension: '2d', mipLevelCount: 1 },
       (frame) => resolve(frame).view,
     )
     .unwrap();
@@ -705,37 +562,55 @@ function importProbeAtmosphereTables(
     | null
     | undefined,
 ): Result<
-  Record<string, import('@forgeax/engine-render-graph').GraphTextureView>,
+  { readonly views: Record<string, GraphTextureView>; readonly skySh?: GraphBuffer },
   RenderGraphError
 > {
   const frozen = work.atmosphere;
   const frozenViews: Record<string, import('@forgeax/engine-render-graph').GraphTextureView> = {};
-  if (frozen !== undefined) {
-    for (const [name, width, height, layers, mips, usage] of [
-      ['sky', 128, 128, 6, 1, 0x14],
-      ['irradiance', 16, 16, 6, 1, 0x14],
-      ['prefilter', 336, 256, 1, 1, 0x17],
-      ['distantSkyLight', 1, 1, 1, 1, 0x0c],
-      ['transmittance', 256, 64, 1, 1, 0x0c],
-      ['multipleScattering', 32, 32, 1, 1, 0x0c],
-    ] as const) {
-      const texture = builder.importTexture(
-        `reflection-probe.${work.probeIndex}.atmosphere.${name}`,
-        {
-          format: 'rgba16float',
-          size: { width, height, depthOrArrayLayers: layers },
-          mipLevelCount: mips,
-          usage: clusters?.kind === 'texture' ? (usage & ~0x08) | 0x10 : usage,
-        },
-        () => frozen[name],
-      );
-      if (!texture.ok) return texture;
-      const view = builder.view(texture.value, { dimension: layers === 6 ? 'cube' : '2d' });
-      if (!view.ok) return view;
-      frozenViews[name] = view.value;
-    }
+  if (frozen === undefined) return ok({ views: frozenViews });
+  for (const [name, width, height, layers, mips, usage] of [
+    ['sky', 128, 128, 6, 1, 0x14],
+    ['prefilter', 336, 256, 1, 1, 0x17],
+    ['distantSkyLight', 1, 1, 1, 1, 0x0c],
+    ['transmittance', 256, 64, 1, 1, 0x0c],
+    ['multipleScattering', 32, 32, 1, 1, 0x0c],
+  ] as const) {
+    const texture = builder.importTexture(
+      `reflection-probe.${work.probeIndex}.atmosphere.${name}`,
+      {
+        format: 'rgba16float',
+        size: { width, height, depthOrArrayLayers: layers },
+        mipLevelCount: mips,
+        usage: clusters?.kind === 'texture' ? (usage & ~0x08) | 0x10 : usage,
+      },
+      () => frozen[name],
+    );
+    if (!texture.ok) return texture;
+    const view = builder.view(texture.value, { dimension: layers === 6 ? 'cube' : '2d' });
+    if (!view.ok) return view;
+    frozenViews[name] = view.value;
   }
-  return ok(frozenViews);
+  const skySh = builder.importBuffer(
+    `reflection-probe.${work.probeIndex}.sky-sh`,
+    { size: SKY_SH_BYTES, usage: GPU_BUFFER_USAGE_UNIFORM },
+    () => frozen.skySh,
+  );
+  return skySh.ok ? ok({ views: frozenViews, skySh: skySh.value }) : skySh;
+}
+
+function probeEnvironmentAccesses(
+  skySh: GraphBuffer | undefined,
+  environment: import('../environment/ibl').GraphEnvironment | undefined,
+): GraphAccess[] {
+  const reads: GraphAccess[] = [];
+  const uniform = skySh ?? environment?.skySh;
+  if (uniform !== undefined) reads.push({ resource: uniform, usage: 'uniform-read' });
+  if (environment !== undefined)
+    reads.push(
+      { resource: environment.sky, usage: 'sampled-read' },
+      { resource: environment.prefilter, usage: 'sampled-read' },
+    );
+  return reads;
 }
 
 function importReflectionProbeTargets(
@@ -815,7 +690,7 @@ export function addReflectionProbeGraphPasses(
     const frozen = work.atmosphere;
     const tables = importProbeAtmosphereTables(builder, work, clusters);
     if (!tables.ok) return tables;
-    const frozenViews = tables.value;
+    const { views: frozenViews, skySh: frozenSkySh } = tables.value;
     const targets = importReflectionProbeTargets(builder, work);
     if (!targets.ok) return targets;
     const { raw, rawCube, filtered, filteredAtlas } = targets.value;
@@ -881,7 +756,7 @@ export function addReflectionProbeGraphPasses(
             ? []
             : [
                 captureShadows.directional?.view,
-                captureShadows.spot.view,
+                captureShadows.spot?.view,
                 captureShadows.point?.view,
               ]
                 .filter(
@@ -893,11 +768,7 @@ export function addReflectionProbeGraphPasses(
             resource,
             usage: 'sampled-read' as const,
           })),
-          ...(environmentCube === undefined
-            ? []
-            : [environmentCube.sky, environmentCube.irradiance, environmentCube.prefilter].map(
-                (resource) => ({ resource, usage: 'sampled-read' as const }),
-              )),
+          ...probeEnvironmentAccesses(frozenSkySh, environmentCube),
           { resource: view.value, usage: 'color-attachment' },
           { resource: depth.value, usage: 'depth-stencil-write' },
         ],
@@ -977,7 +848,9 @@ export function addReflectionProbeGraphPasses(
               spotShadow:
                 captureShadows === undefined
                   ? (internal.frameState.frameOutputs.spotShadowView ?? undefined)
-                  : resources.textureView(captureShadows.spot.view).unwrap(),
+                  : captureShadows.spot === undefined
+                    ? undefined
+                    : resources.textureView(captureShadows.spot.view).unwrap(),
             },
             true,
             internal.standardLighting,
@@ -986,45 +859,24 @@ export function addReflectionProbeGraphPasses(
             if (environmentCube === undefined) throw new Error('Missing capture environment cube');
             return environmentCube;
           };
-          const captureContext = {
-            ...internal,
-            viewBindGroup: capturedGroups.viewBindGroup,
-            ...(environmentCube === undefined && frozen === undefined
-              ? {}
+          const environmentIbl =
+            environmentCube === undefined && frozen === undefined
+              ? internal.environmentIbl
               : {
-                  environmentIbl: {
-                    irradiance:
-                      frozen === undefined
-                        ? resources.textureView(requireEnvironmentCube().irradiance).unwrap()
-                        : captured('irradiance'),
-                    prefilter:
-                      frozen === undefined
-                        ? resources.textureView(requireEnvironmentCube().prefilter).unwrap()
-                        : captured('prefilter'),
-                  },
-                }),
-          };
-          delete captureContext.reflectionProbes;
-          delete captureContext.hdrpSsaoBlurredView;
-          delete captureContext.gpuDrivenSelection;
-          delete captureContext.gpuDrivenStandardPbrFrameResources;
-          encodeMainPass(
-            {
-              ...captureContext,
-              dispatch: internal.dispatch,
-              foldDispatchPlan: null,
-              camera: work.faceCamera,
-              viewBindGroupDynamicOffset: work.viewBindGroupDynamicOffset,
-              transparentColorFormat: work.outputFormat as GPUTextureFormat,
-              msaaActive: false,
-              splitLdrSprite: false,
-            },
+                  skySh: resources.buffer(frozenSkySh ?? requireEnvironmentCube().skySh).unwrap(),
+                  prefilter:
+                    frozen === undefined
+                      ? resources.textureView(requireEnvironmentCube().prefilter).unwrap()
+                      : captured('prefilter'),
+                };
+          encodeProbeFaceDraws(
+            internal,
             pass,
-            undefined,
-            {
-              colorFormats: [work.outputFormat as GPUTextureFormat],
-              passKind: 'forward',
-            },
+            work.faceCamera,
+            work.viewBindGroupDynamicOffset,
+            work.outputFormat,
+            capturedGroups.viewBindGroup,
+            environmentIbl,
           );
         },
       });

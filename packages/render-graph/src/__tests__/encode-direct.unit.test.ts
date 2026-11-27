@@ -6,6 +6,7 @@ import type { CompiledRenderGraph, ComputeGraphPass } from '../types';
 
 type Frame = {
   readonly encoder: RhiCommandEncoder;
+  readonly nativePassNames?: string[];
   readonly value: number;
   readonly fail?: boolean;
 };
@@ -55,11 +56,72 @@ it('encodes all direct pass kinds with current arguments, receiver binding, erro
   compiled = builder.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
   for (let value = 0; value < 3; value++) {
     const encoder = device.createCommandEncoder().unwrap();
-    expect(compiled.execute({ encoder, value, fail: value === 1 }).ok).toBe(value !== 1);
+    const nativePassNames = ['prior-view'];
+    expect(compiled.execute({ encoder, value, fail: value === 1, nativePassNames }).ok).toBe(
+      value !== 1,
+    );
+    expect(nativePassNames).toEqual(
+      value === 1 ? ['prior-view'] : ['prior-view', 'copy', 'compute', 'raster'],
+    );
     encoder.finish().unwrap();
   }
   expect(seen).toEqual([0, 0, 0, 1, 1, 2, 2, 2]);
   expect(frames.map((frame) => frame.value)).toEqual([0, 1, 2]);
+  await compiled.retire();
+});
+
+it('transfers owned compute and copy declarations without cloning each access', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const graph = new RenderGraphBuilder<Frame>();
+  const texture = graph.createTexture('source', { format: 'rgba8unorm', size: 'surface' }).unwrap();
+  const view = graph.view(texture).unwrap();
+  graph
+    .addRasterPass('seed', {
+      accesses: [{ resource: view, usage: 'color-attachment' }],
+      colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store' }],
+      encodeDirect() {},
+    })
+    .unwrap();
+  let copies = 0;
+  const access = <T extends object>(row: T): T =>
+    new Proxy(row, {
+      ownKeys(target) {
+        copies++;
+        return Reflect.ownKeys(target);
+      },
+    });
+  graph
+    .addComputePass(
+      'sample',
+      {
+        accesses: [access({ resource: view, usage: 'sampled-read' as const })],
+        encodeDirect() {},
+      },
+      'transfer',
+    )
+    .unwrap();
+  graph
+    .addCopyPass(
+      'copy',
+      {
+        accesses: [access({ resource: view, usage: 'copy-src' as const })],
+        encodeDirect() {},
+      },
+      'transfer',
+    )
+    .unwrap();
+  expect(copies).toBe(0);
+  graph
+    .addCopyPass('borrowed', {
+      accesses: [access({ resource: view, usage: 'copy-src' as const })],
+      encodeDirect() {},
+    })
+    .unwrap();
+  expect(copies).toBe(1);
+  const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+  const encoder = device.createCommandEncoder().unwrap();
+  compiled.execute({ encoder, value: 1 }).unwrap();
+  encoder.finish().unwrap();
   await compiled.retire();
 });
 

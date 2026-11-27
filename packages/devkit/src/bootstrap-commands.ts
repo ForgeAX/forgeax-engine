@@ -6,31 +6,39 @@ import {
   readdir,
   readFile,
   realpath,
-  rename,
   rm,
   writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
 import { UI_AUTHORING_PROFILE, type UiAuthoringProfile } from '@forgeax/engine-ui/authoring';
 import { parseDocument } from 'yaml';
-import { type AssetCheckReport, checkProjectAssets } from './asset-check.js';
 import { execFileCommand } from './child-process.js';
 import { engineDoctorCommand, readEngineBinding } from './engine-binding.js';
-import { isFilesystemPathWithin } from './filesystem-path.js';
+import {
+  directoryOccupancy,
+  isFilesystemPathWithin,
+  isMissingPathError,
+  publishPreparedDirectory,
+} from './filesystem-path.js';
 import { applyInitPlan, createInitPlan } from './init.js';
 import { registerKnownProject } from './known-projects.js';
 import { commandError, readProjectFacts } from './project.js';
-import { hasLocalEngineDependencyOverride, inspectRunDependencyClosure } from './run-snapshot.js';
-import { findSdkContext } from './sdk.js';
+import {
+  hasLocalEngineDependencyOverride,
+  inspectRunDependencyClosure,
+  localDependencyProtocol,
+} from './run-snapshot.js';
+import { checkSdkUpdate, configureSdkBuildCache, findSdkContext, type SdkContext } from './sdk.js';
 import {
   agentOnboarding,
   MINIMUM_SUPPORTED_PNPM,
   pnpmVersionAtLeast,
+  readPnpmVersion,
   requireSdkInitialization,
   sdkInitCommand,
+  sdkPnpmRequirement,
   sdkProjectInstallArgs,
 } from './sdk-bootstrap.js';
-import { checkSdkUpdate } from './sdk-update.js';
 import { copySdkSkills, installProjectSkills, PROJECT_SKILL_MOUNT_ROOTS } from './skill-install.js';
 import {
   readTemplateDescriptor,
@@ -38,10 +46,7 @@ import {
   writeProjectIdentity,
 } from './templates/materialize.js';
 import type { CommandResult, InitOptions, NewOptions, ProjectCommandOptions } from './types.js';
-
-function isMissingPathError(cause: unknown): boolean {
-  return cause !== null && typeof cause === 'object' && 'code' in cause && cause.code === 'ENOENT';
-}
+import { completeCommand, failCommand } from './types.js';
 
 async function canonicalProspectivePath(path: string): Promise<string> {
   let cursor = resolve(path);
@@ -78,7 +83,7 @@ export interface DoctorReport {
   readonly packSources: number;
   readonly uiAuthoringProfile: UiAuthoringProfile;
   /** Offline dry cook of authored material and particle-effect rows. */
-  readonly assets: Pick<AssetCheckReport, 'checked' | 'skipped'>;
+  readonly assets: { readonly checked: number; readonly skipped: readonly string[] };
 }
 
 function nodeSupported(): boolean {
@@ -86,60 +91,22 @@ function nodeSupported(): boolean {
   return major > 22 || (major === 22 && minor >= 13);
 }
 
-async function readPnpmVersion(
-  root: string,
-  packageJson: Record<string, unknown>,
-): Promise<string> {
-  const packageManager = packageJson.packageManager;
-  if (typeof packageManager === 'string' && packageManager.startsWith('pnpm@')) {
-    try {
-      return (
-        await execFileCommand('corepack', ['pnpm', '--version'], { cwd: root })
-      ).stdout.trim();
-    } catch {
-      // Corepack is optional on some installations. Preserve the plain pnpm
-      // fallback while allowing the doctor result to report its actual version.
-    }
-  }
-  return (await execFileCommand('pnpm', ['--version'], { cwd: root })).stdout.trim();
-}
-
-function assetCheckFailure(assets: AssetCheckReport): CommandResult<never> | undefined {
-  if (assets.failures.length === 0) return undefined;
-  return {
-    ok: false,
-    error: {
-      code: 'project-assets-invalid',
-      expected: 'every authored material and particle-effect to cook offline',
-      hint: 'Fix the listed assets (see detail.failures) and rerun project check; dev start would fail on the same rows.',
-      detail: { checked: assets.checked, failures: assets.failures },
-    },
-  };
-}
-
 async function finishDoctor(
   facts: Extract<Awaited<ReturnType<typeof readProjectFacts>>, { ok: true }>['value'],
   pnpm: string,
   workspaceDependencies: DoctorReport['workspaceDependencies'],
 ): Promise<CommandResult<DoctorReport>> {
-  const assets = await checkProjectAssets(facts.root, facts.assetRoots);
-  const failure = assetCheckFailure(assets);
-  if (failure !== undefined) return failure;
   const sources = await (await import('./assets.js')).checkProjectSources(facts);
   if (!sources.ok) return sources;
-  return {
-    ok: true,
-    value: {
-      root: facts.root,
-      projectId: facts.id,
-      node: process.versions.node,
-      pnpm,
-      workspaceDependencies,
-      packSources: sources.value,
-      uiAuthoringProfile: UI_AUTHORING_PROFILE,
-      assets: { checked: assets.checked, skipped: assets.skipped },
-    },
-  };
+  return completeCommand({
+    root: facts.root,
+    projectId: facts.id,
+    node: process.versions.node,
+    pnpm,
+    workspaceDependencies,
+    ...sources.value,
+    uiAuthoringProfile: UI_AUTHORING_PROFILE,
+  });
 }
 
 function projectLocalDependencies(packageJson: Record<string, unknown>): string[] {
@@ -153,7 +120,7 @@ function projectLocalDependencies(packageJson: Record<string, unknown>): string[
     const entries = packageJson[section];
     if (entries === null || typeof entries !== 'object') continue;
     for (const [name, specifier] of Object.entries(entries)) {
-      if (typeof specifier === 'string' && /^(workspace|file|link):/.test(specifier)) {
+      if (typeof specifier === 'string' && localDependencyProtocol(specifier) !== undefined) {
         dependencies.add(name);
       }
     }
@@ -168,39 +135,30 @@ export async function doctorCommand(
   if (!facts.ok) return facts;
   let pnpm: string;
   try {
-    pnpm = await readPnpmVersion(facts.value.root, facts.value.packageJson);
+    pnpm = await readPnpmVersion(facts.value.root, facts.value.packageJson.packageManager);
   } catch (cause) {
-    return {
-      ok: false,
-      error: {
-        code: 'pnpm-unavailable',
-        expected: 'pnpm to be available on PATH',
-        hint: 'Install the SDK-supported pnpm version and retry.',
-        detail: { reason: cause instanceof Error ? cause.message : String(cause) },
-      },
-    };
+    return failCommand(
+      'pnpm-unavailable',
+      'pnpm to be available on PATH',
+      'Install the SDK-supported pnpm version and retry.',
+      { reason: cause instanceof Error ? cause.message : String(cause) },
+    );
   }
   if (!nodeSupported()) {
-    return {
-      ok: false,
-      error: {
-        code: 'node-version-unsupported',
-        expected: 'Node.js >=22.13.0',
-        hint: 'Select a supported Node.js installation and retry.',
-        detail: { actual: process.versions.node },
-      },
-    };
+    return failCommand(
+      'node-version-unsupported',
+      'Node.js >=22.13.0',
+      'Select a supported Node.js installation and retry.',
+      { actual: process.versions.node },
+    );
   }
   if (!pnpmVersionAtLeast(pnpm, MINIMUM_SUPPORTED_PNPM)) {
-    return {
-      ok: false,
-      error: {
-        code: 'pnpm-version-unsupported',
-        expected: `pnpm >=${MINIMUM_SUPPORTED_PNPM} <13`,
-        hint: 'Enable the packageManager-declared pnpm version with Corepack and retry.',
-        detail: { actual: pnpm },
-      },
-    };
+    return failCommand(
+      'pnpm-version-unsupported',
+      `pnpm ${sdkPnpmRequirement(MINIMUM_SUPPORTED_PNPM)}`,
+      'Enable the packageManager-declared pnpm version with Corepack and retry.',
+      { actual: pnpm },
+    );
   }
   const localDependencies = projectLocalDependencies(facts.value.packageJson);
   const binding = await readEngineBinding(facts.value.root);
@@ -215,15 +173,12 @@ export async function doctorCommand(
       resolve(engine.value.binding.path) !== resolve(binding.value.path) ||
       engine.value.workspace === null
     )
-      return {
-        ok: false,
-        error: {
-          code: 'project-engine-binding-changed',
-          expected: 'the same healthy local Engine binding to remain selected during doctor',
-          hint: 'Recheck the project Engine binding and retry doctor.',
-          detail: { binding: binding.value.path, mode: engine.value.mode },
-        },
-      };
+      return failCommand(
+        'project-engine-binding-changed',
+        'the same healthy local Engine binding to remain selected during doctor',
+        'Recheck the project Engine binding and retry doctor.',
+        { binding: binding.value.path, mode: engine.value.mode },
+      );
     engineDigest = engine.value.workspace.digest;
   }
   try {
@@ -247,51 +202,49 @@ async function registerInitializedProject(
   return registered.ok ? result : registered;
 }
 
+async function prepareInitializedProject(sdk: SdkContext, root: string): Promise<void> {
+  const template = sdk.templates.get('empty');
+  if (template === undefined) throw new Error('sdk-bootstrap-template-missing');
+  if (!sdk.embedded)
+    await copyFile(resolve(template, 'pnpm-lock.yaml'), resolve(root, 'pnpm-lock.yaml'));
+  await copyFile(resolve(template, 'pnpm-workspace.yaml'), resolve(root, 'pnpm-workspace.yaml'));
+  try {
+    await readFile(resolve(root, '.npmrc'), 'utf8');
+  } catch (cause) {
+    if (!isMissingPathError(cause)) throw cause;
+    try {
+      await copyFile(resolve(template, '.npmrc'), resolve(root, '.npmrc'));
+    } catch (templateCause) {
+      if (!isMissingPathError(templateCause)) throw templateCause;
+    }
+  }
+  await copySdkSkills(sdk, root);
+  await configureSdkBuildCache(sdk.root, root);
+  await installProjectSkills(root, sdk.manifest);
+  await configureSdkStore(
+    root,
+    sdk.store === undefined ? undefined : await canonicalProspectivePath(sdk.store),
+  );
+}
+
 export async function initCommand(options: InitOptions = {}): Promise<CommandResult<unknown>> {
   try {
     const sdk = await findSdkContext();
     const root = await canonicalProspectivePath(options.root ?? process.cwd());
-    if (sdk !== undefined && root === (await canonicalProspectivePath(sdk.root))) {
+    if (sdk !== undefined && !sdk.embedded && root === (await canonicalProspectivePath(sdk.root))) {
       return sdkInitCommand(sdk, options);
     }
     const facts = await readProjectFacts(root);
     if (!facts.ok) return facts;
-    const plan = createInitPlan(facts.value, sdk?.manifest);
+    const plan = createInitPlan(facts.value, sdk?.manifest, sdk?.embedded);
     if (!plan.ok) return plan;
-    if (sdk !== undefined && options.dryRun !== true) {
+    if (sdk !== undefined && !sdk.embedded && options.dryRun !== true) {
       const initialized = await requireSdkInitialization(sdk);
       if (!initialized.ok) return initialized;
     }
     const applied = await applyInitPlan(facts.value, plan.value, options);
     if (!applied.ok || options.dryRun === true) return applied;
-    if (sdk !== undefined) {
-      const template = sdk.templates.get('empty');
-      if (template === undefined) throw new Error('sdk-bootstrap-template-missing');
-      await copyFile(
-        resolve(template, 'pnpm-lock.yaml'),
-        resolve(facts.value.root, 'pnpm-lock.yaml'),
-      );
-      await copyFile(
-        resolve(template, 'pnpm-workspace.yaml'),
-        resolve(facts.value.root, 'pnpm-workspace.yaml'),
-      );
-      try {
-        await readFile(resolve(facts.value.root, '.npmrc'), 'utf8');
-      } catch (cause) {
-        if (!isMissingPathError(cause)) throw cause;
-        try {
-          await copyFile(resolve(template, '.npmrc'), resolve(facts.value.root, '.npmrc'));
-        } catch (templateCause) {
-          if (!isMissingPathError(templateCause)) throw templateCause;
-        }
-      }
-      await copySdkSkills(sdk, facts.value.root);
-      await installProjectSkills(facts.value.root, sdk.manifest);
-      await configureSdkStore(
-        facts.value.root,
-        sdk.store === undefined ? undefined : await canonicalProspectivePath(sdk.store),
-      );
-    }
+    if (sdk !== undefined) await prepareInitializedProject(sdk, facts.value.root);
     if (options.install === false) {
       return await registerInitializedProject(facts.value.root, applied);
     }
@@ -300,7 +253,9 @@ export async function initCommand(options: InitOptions = {}): Promise<CommandRes
         ? undefined
         : await canonicalProspectivePath(sdk.store);
     const installArgs =
-      sdk === undefined ? ['install', '--frozen-lockfile=false'] : sdkProjectInstallArgs(store);
+      sdk === undefined
+        ? ['install', '--no-frozen-lockfile']
+        : sdkProjectInstallArgs(store, sdk.embedded === true);
     await execFileCommand('pnpm', installArgs, {
       cwd: facts.value.root,
       env: { ...process.env, CI: 'true' },
@@ -312,103 +267,79 @@ export async function initCommand(options: InitOptions = {}): Promise<CommandRes
   }
 }
 
+async function selectInstalledTemplate(sdk: SdkContext, requested: NewOptions['template']) {
+  if (requested === undefined) {
+    const available = [...sdk.templates.keys()].sort();
+    return failCommand(
+      'sdk-template-required',
+      'forgeax project new to select exactly one template with --template',
+      `Choose one of: ${available.join(', ')}.`,
+      { templates: available },
+    );
+  }
+  const templateId = requested;
+  const template = sdk.templates.get(templateId);
+  if (template === undefined) {
+    return failCommand(
+      'sdk-template-not-found',
+      'a template ID provided by the installed Engine',
+      `Choose one of: ${[...sdk.templates.keys()].sort().join(', ')}.`,
+      { template: templateId },
+    );
+  }
+  const descriptor = await readTemplateDescriptor(template);
+  if (!descriptor.ok) return descriptor;
+  if (descriptor.value.id !== templateId) {
+    return failCommand(
+      'template-invalid',
+      `template.json#id to match the selected template ${templateId}`,
+      'Repair the descriptor identity or refresh the Engine before creating a project.',
+      { id: descriptor.value.id },
+    );
+  }
+  return completeCommand({ templateId, template, descriptor: descriptor.value });
+}
+
 export async function newCommand(options: NewOptions = {}): Promise<CommandResult<unknown>> {
   try {
     const sdk = await findSdkContext();
     if (sdk === undefined) {
-      return {
-        ok: false,
-        error: {
-          code: 'sdk-context-missing',
-          expected: 'forgeax project new to run from an unpacked ForgeAX SDK',
-          hint:
-            'Install the matching SDK outside the game: forgeax sdk install --root <sdk-root>; ' +
-            'then run node <sdk-root>/bin/forgeax.mjs project init --root <sdk-root> and ' +
-            `node <sdk-root>/bin/forgeax.mjs project new <game-root> --template ${options.template ?? 'empty'}. ` +
-            'For an existing SDK, run its bin/forgeax.mjs entry ' +
-            'or set FORGEAX_SDK_ROOT to its root.',
-          detail: {},
-        },
-      };
+      return failCommand(
+        'sdk-context-missing',
+        'a packaged ForgeAX Engine with project templates',
+        'Install @forgeax/engine globally and rerun forgeax project new. For a previous offline release use its bin/forgeax.mjs entry.',
+        {},
+      );
     }
     const root = resolve(options.root ?? process.cwd());
     if (
       isFilesystemPathWithin(
-        await canonicalProspectivePath(sdk.root),
+        await canonicalProspectivePath(sdk.embedded ? dirname(sdk.root) : sdk.root),
         await canonicalProspectivePath(root),
       )
     ) {
-      return {
-        ok: false,
-        error: {
-          code: 'project-target-inside-sdk',
-          expected: 'forgeax project new target to be outside the unpacked SDK root',
-          hint: 'Choose a sibling directory or an absolute path outside the SDK.',
-          detail: { root, sdkRoot: sdk.root },
-        },
-      };
+      return failCommand(
+        'project-target-inside-sdk',
+        'forgeax project new target to be outside the Engine installation',
+        'Choose a sibling directory or an absolute path outside the Engine installation.',
+        { root, sdkRoot: sdk.root },
+      );
     }
-    if (options.template === undefined) {
-      const available = [...sdk.templates.keys()].sort();
-      return {
-        ok: false,
-        error: {
-          code: 'sdk-template-required',
-          expected: 'forgeax project new to select exactly one template with --template',
-          hint: `Choose one of: ${available.join(', ')}.`,
-          detail: { templates: available },
-        },
-      };
-    }
-    const templateId = options.template;
-    const template = sdk.templates.get(templateId);
-    if (template === undefined) {
-      return {
-        ok: false,
-        error: {
-          code: 'sdk-template-not-found',
-          expected: 'a template id declared by sdk-manifest.json',
-          hint: `Choose one of: ${[...sdk.templates.keys()].sort().join(', ')}.`,
-          detail: { template: templateId },
-        },
-      };
-    }
-    const descriptor = await readTemplateDescriptor(template);
-    if (!descriptor.ok) return descriptor;
-    if (descriptor.value.id !== templateId) {
-      return {
-        ok: false,
-        error: {
-          code: 'template-invalid',
-          expected: `template.json#id to match the selected template ${templateId}`,
-          hint: 'Repair the descriptor identity or refresh the SDK before creating a project.',
-          detail: { id: descriptor.value.id },
-        },
-      };
-    }
-    let targetExists = true;
-    let entries: string[];
-    try {
-      entries = await readdir(root);
-    } catch (cause) {
-      if (!isMissingPathError(cause)) throw cause;
-      targetExists = false;
-      entries = [];
-    }
-    if (entries.length > 0) {
-      return {
-        ok: false,
-        error: {
-          code: 'project-target-not-empty',
-          expected: 'forgeax project new target to be absent or empty',
-          hint: 'Choose an empty directory so existing files cannot be overwritten.',
-          detail: { root },
-        },
-      };
+    const selected = await selectInstalledTemplate(sdk, options.template);
+    if (!selected.ok) return selected;
+    const { templateId, template, descriptor } = selected.value;
+    const occupancy = await directoryOccupancy(root);
+    if (occupancy === 'occupied') {
+      return failCommand(
+        'project-target-not-empty',
+        'forgeax project new target to be absent or empty',
+        'Choose an empty directory so existing files cannot be overwritten.',
+        { root },
+      );
     }
     const identity = resolveProjectIdentity({
       targetBasename: basename(root),
-      descriptor: descriptor.value,
+      descriptor,
       overrides: {
         ...(options.id === undefined ? {} : { id: options.id }),
         ...(options.name === undefined ? {} : { name: options.name }),
@@ -417,25 +348,22 @@ export async function newCommand(options: NewOptions = {}): Promise<CommandResul
     });
     if (!identity.ok) return identity;
     if (options.dryRun === true) {
-      return {
-        ok: true,
-        value: {
-          root,
-          template: templateId,
-          identity: identity.value,
-          sdkVersion: sdk.manifest.sdkVersion,
-        },
-      };
+      return completeCommand({
+        root,
+        template: templateId,
+        identity: identity.value,
+        ...(sdk.embedded
+          ? { engineVersion: sdk.manifest.sdkVersion }
+          : { sdkVersion: sdk.manifest.sdkVersion }),
+      });
     }
-    const initialized = await requireSdkInitialization(sdk);
-    if (!initialized.ok) return initialized;
+    if (!sdk.embedded) {
+      const initialized = await requireSdkInitialization(sdk);
+      if (!initialized.ok) return initialized;
+    }
     const parent = dirname(root);
     await mkdir(parent, { recursive: true });
-    let staging: string | undefined = await mkdtemp(
-      resolve(parent, `.${basename(root)}.forgeax-staging-`),
-    );
-    const committedNames: string[] = [];
-    let committed = false;
+    const staging = await mkdtemp(resolve(parent, `.${basename(root)}.forgeax-staging-`));
     try {
       for (const name of await readdir(template)) {
         await cp(resolve(template, name), resolve(staging, name), {
@@ -446,67 +374,40 @@ export async function newCommand(options: NewOptions = {}): Promise<CommandResul
       }
       await writeProjectIdentity(staging, identity.value);
       await copySdkSkills(sdk, staging);
+      await configureSdkBuildCache(sdk.root, staging);
       const store = sdk.store === undefined ? undefined : await canonicalProspectivePath(sdk.store);
       await configureSdkStore(staging, store);
-      if (!targetExists) {
-        await rename(staging, root);
-        staging = undefined;
-        committedNames.push(...(await readdir(root)));
-      } else {
-        for (const name of await readdir(staging)) {
-          await rename(resolve(staging, name), resolve(root, name));
-          committedNames.push(name);
-        }
-        await rm(staging, { recursive: true, force: true });
-        staging = undefined;
-      }
-      committed = true;
-      // Create Windows junctions after the final rename. A junction made in
-      // staging would keep pointing at the temporary path after commit.
-      await installProjectSkills(root, sdk.manifest);
-      // Install after the final rename so pnpm's virtual-store metadata keeps
-      // the real project path. Installing inside staging would force a second
-      // registry resolution when `pnpm exec` runs from the committed project.
-      await execFileCommand('pnpm', sdkProjectInstallArgs(store), {
-        cwd: root,
-        env: { ...process.env, CI: 'true' },
-        maxBuffer: 16 * 1024 * 1024,
-      });
-      const sdkUpdate = await checkSdkUpdate(sdk.manifest.sdkVersion);
-      return await registerInitializedProject(root, {
-        ok: true,
-        value: {
-          root,
-          template: templateId,
-          identity: identity.value,
-          sdkVersion: sdk.manifest.sdkVersion,
-          onboarding: agentOnboarding(sdk, root),
-          sdkUpdate,
+      return await publishPreparedDirectory(
+        staging,
+        root,
+        occupancy,
+        async () => {
+          // Create junctions and install packages only at the final project path.
+          await installProjectSkills(root, sdk.manifest);
+          await execFileCommand('pnpm', sdkProjectInstallArgs(store, sdk.embedded === true), {
+            cwd: root,
+            env: { ...process.env, CI: 'true' },
+            maxBuffer: 16 * 1024 * 1024,
+          });
+          const update = await checkSdkUpdate(sdk.manifest.sdkVersion, sdk.embedded === true);
+          return registerInitializedProject(
+            root,
+            completeCommand({
+              root,
+              template: templateId,
+              identity: identity.value,
+              ...(sdk.embedded
+                ? { engineVersion: sdk.manifest.sdkVersion, engineUpdate: update }
+                : { sdkVersion: sdk.manifest.sdkVersion, sdkUpdate: update }),
+              onboarding: agentOnboarding(sdk, root),
+            }),
+          );
         },
-      });
+        [...PROJECT_SKILL_MOUNT_ROOTS.map((path) => path.split('/')[0] ?? path), 'node_modules'],
+      );
     } catch (cause) {
-      if (staging !== undefined) await rm(staging, { recursive: true, force: true });
-      if (committed) {
-        if (!targetExists) {
-          await rm(root, { recursive: true, force: true });
-          return { ok: false, error: commandError(cause, 'project-create-failed') };
-        }
-        const cleanupNames = new Set([
-          ...committedNames,
-          ...PROJECT_SKILL_MOUNT_ROOTS.map((mountRoot) => mountRoot.split('/')[0] ?? mountRoot),
-          'node_modules',
-        ]);
-        await Promise.all(
-          [...cleanupNames].map((name) =>
-            rm(resolve(root, name), { recursive: true, force: true }),
-          ),
-        );
-      } else {
-        await Promise.all(
-          committedNames.map((name) => rm(resolve(root, name), { recursive: true, force: true })),
-        );
-      }
-      return { ok: false, error: commandError(cause, 'project-create-failed') };
+      await rm(staging, { recursive: true, force: true });
+      throw cause;
     }
   } catch (cause) {
     return { ok: false, error: commandError(cause, 'project-create-failed') };

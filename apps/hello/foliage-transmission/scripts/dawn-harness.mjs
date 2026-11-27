@@ -68,9 +68,9 @@ export async function runFoliage({ appRoot, scene = 'foliage', mode, furnaceMode
   globalThis.requestAnimationFrame = (callback) => { rafQueue.push(callback); return rafQueue.length; };
   globalThis.cancelAnimationFrame = () => {};
 
-  const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
+  const { buildProjectShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
   const { FOLIAGE_MATERIAL_PACKAGES } = await import(pathToFileURL(resolve(appRoot, 'src', 'material-contract.ts')).href);
-  const manifest = await buildEngineShaderManifest({
+  const manifest = await buildProjectShaderTemplateManifest({
     materialPackages: FOLIAGE_MATERIAL_PACKAGES.map((file) => resolve(appRoot, 'src', file)),
   });
   const manifestUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/json' }));

@@ -4,10 +4,12 @@ import {
   createStandardPbrArtifactReceipt,
   ShaderRegistry,
 } from '@forgeax/engine-shader';
+import { ok, sha256 } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
   assembleStandardPbrArtifact,
   type MaterialShaderArtifactRequest,
+  materialRasterSourceFacts,
   resolveMaterialShaderArtifact,
 } from '../assembly/material/assembly';
 
@@ -21,6 +23,37 @@ function manifestLookup<T extends { identifier: string }>(entries: readonly T[])
 }
 
 describe('Standard PBR artifact assembly', () => {
+  it('projects geometry from a cold Pack ABI and requests its source only at raster preparation', async () => {
+    const registry = new ShaderRegistry({ manifestUrl: undefined });
+    const key = 'sha256:source-material';
+    const receipt = createStandardPbrArtifactReceipt();
+    const bytes = new TextEncoder().encode(source);
+    const prepare = vi.fn(async () => ok(bytes));
+    registry.installMaterialArtifactSource(key, {
+      paramSchema: [],
+      digest: `sha256:${sha256(bytes)}`,
+      receipt,
+      prepare,
+    });
+
+    const options = { address: 'scene-index', pass: 'forward' } as const;
+    expect(materialRasterSourceFacts(registry, key, options)).toMatchObject({
+      material: key,
+      layoutIdentity: receipt.reflection.layoutIdentity,
+      receipt,
+    });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(resolveMaterialShaderArtifact(key, registry, options)).toBeUndefined();
+    const raster = () =>
+      resolveMaterialShaderArtifact(key, registry, options, (id) =>
+        registry.prepareMaterialArtifact(id).unwrap(),
+      );
+    expect(raster()).toBeUndefined();
+    (await registry.pendingMaterialPreparations())?.unwrap();
+    expect(raster()?.program.source).toBe(source);
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps every closed request combination isolated while reusing its own artifact', () => {
     const registry = new ShaderRegistry({ manifestUrl: undefined });
     const receipt = createStandardPbrArtifactReceipt();

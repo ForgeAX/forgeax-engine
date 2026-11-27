@@ -6,8 +6,10 @@ import { definePackageId } from '@forgeax/engine-pack/source';
 import { type MaterialAsset, ok } from '@forgeax/engine-types';
 import type { Plugin } from 'vite';
 import { projectImportProductForBuild } from '../../packages/import/src/pack-projection';
-import { buildScriptablePack } from '../../packages/import/src/scriptable-pack-build';
-import { createStandardAssetOutputProducerRegistry } from '../../packages/import/src/standard-output-producers';
+import {
+  buildScriptablePack,
+  createStandardAssetOutputProducerRegistry,
+} from '../../packages/import/src/scriptable-pack-build';
 import { createMaterialPackCooker } from '../../packages/shader-compiler/src/material/pack-cooker';
 
 const rootGuid = '4846fa5b-8f80-57c0-9cdc-e345102fdb6b';

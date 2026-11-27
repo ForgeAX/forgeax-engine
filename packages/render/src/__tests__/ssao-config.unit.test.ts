@@ -8,14 +8,9 @@ import {
   ambientOcclusionParameters,
 } from '../components/ambient-occlusion';
 import {
-  AMBIENT_OCCLUSION_ALGORITHMS,
-  AMBIENT_OCCLUSION_GTAO,
-  AMBIENT_OCCLUSION_SPIRAL_SSAO,
-  AMBIENT_OCCLUSION_SSAO,
-} from '../index';
-import {
   getSsaoParameters,
   resolveSsaoParameters,
+  resolveSsaoQuality,
   SSAO_DEFAULT_BIAS,
   SSAO_DEFAULT_INTENSITY,
   SSAO_DEFAULT_RADIUS,
@@ -23,38 +18,29 @@ import {
 
 describe('SSAO parameter authority', () => {
   it('keeps the documented defaults in one resolver', () => {
-    expect(getSsaoParameters(undefined)).toEqual({
+    expect(getSsaoParameters(undefined)).toMatchObject({
       radius: SSAO_DEFAULT_RADIUS,
       bias: SSAO_DEFAULT_BIAS,
       intensity: SSAO_DEFAULT_INTENSITY,
-      quality: 'high',
-      algorithm: 'gtao',
-      application: 'lighting',
-      sceneColorStrength: 0.95,
-      sampleCount: 16,
-      directLightingStrength: 0,
-      thickness: 1,
-      distanceExponent: 1,
-      distanceFallOff: 1,
-      resolutionScale: 1,
+      method: 'ssao',
+      quality: 50,
+      power: 2,
+      fadeDistance: 80,
+      fadeRadius: 50,
+      radiusInWorldSpace: false,
+      mipBlend: 0.6,
+      mipScale: 1.7,
+      mipThreshold: 0.01,
+      gtao: { downsample: false, temporalFilter: true, numAngles: 2, temporalBlendWeight: 0.1 },
     });
+    expect(resolveSsaoQuality(undefined)).toEqual({ levels: 2, permutation: 2 });
   });
 
   it('preserves configured radius, bias, and intensity', () => {
-    expect(getSsaoParameters({ radius: 0.65, bias: 0.025, intensity: 1.4 })).toEqual({
+    expect(getSsaoParameters({ radius: 0.65, bias: 3.5, intensity: 0.4 })).toMatchObject({
       radius: 0.65,
-      bias: 0.025,
-      intensity: 1.4,
-      quality: 'high',
-      algorithm: 'gtao',
-      application: 'lighting',
-      sceneColorStrength: 0.95,
-      sampleCount: 16,
-      directLightingStrength: 0,
-      thickness: 1,
-      distanceExponent: 1,
-      distanceFallOff: 1,
-      resolutionScale: 1,
+      bias: 3.5,
+      intensity: 0.4,
     });
   });
 
@@ -75,35 +61,19 @@ describe('SSAO parameter authority', () => {
 });
 
 it('selects GTAO and rejects unknown AO algorithms', () => {
-  expect(resolveSsaoParameters({ algorithm: 'gtao' })).toMatchObject({
+  expect(resolveSsaoParameters({ method: 'gtao' })).toMatchObject({
     ok: true,
-    value: { algorithm: 'gtao' },
+    value: { method: 'gtao' },
   });
-  const invalid = resolveSsaoParameters({ algorithm: 'unknown' as 'gtao' });
+  const invalid = resolveSsaoParameters({ method: 'unknown' as 'gtao' });
   expect(invalid).toMatchObject({
     ok: false,
-    error: { code: 'ssao-parameter-invalid', detail: { paramName: 'algorithm' } },
+    error: { code: 'ssao-parameter-invalid', detail: { paramName: 'method' } },
   });
 });
 
-it.each([
-  -0.01,
-  1.01,
-  NaN,
-  Infinity,
-  -Infinity,
-])('rejects direct AO strength outside [0, 1] (%s)', (value) => {
-  expect(resolveSsaoParameters({ directLightingStrength: value })).toMatchObject({
-    ok: false,
-    error: { code: 'ssao-parameter-invalid', detail: { paramName: 'directLightingStrength' } },
-  });
-});
-
-it.each([0, 0.5, 1])('preserves valid direct AO strength (%s)', (directLightingStrength) => {
-  expect(resolveSsaoParameters({ directLightingStrength })).toMatchObject({
-    ok: true,
-    value: { directLightingStrength },
-  });
+it.each([0, 1, 2, 3])('preserves explicit SSAO level count %s', (levels) => {
+  expect(resolveSsaoQuality({ levels: levels as 0 | 1 | 2 | 3 }).levels).toBe(levels);
 });
 
 it('resolves component and profile authoring to the same AO defaults', () => {
@@ -111,9 +81,10 @@ it('resolves component and profile authoring to the same AO defaults', () => {
   const entity = world.spawn({ component: AmbientOcclusion, data: {} }).unwrap();
   const data = world.get(entity, AmbientOcclusion).unwrap();
   expect(getSsaoParameters(ambientOcclusionParameters(data).unwrap())).toEqual(
-    getSsaoParameters({ sceneColorStrength: Math.fround(0.95) }),
+    getSsaoParameters(undefined),
   );
-  expect(getSsaoParameters({ algorithm: 'ssao' }).algorithm).toBe('ssao');
+  expect(data.enabled).toBe(true);
+  expect(ambientOcclusionParameters(data).unwrap()).not.toHaveProperty('method');
 });
 
 it.each([
@@ -128,29 +99,12 @@ it.each([
   });
 });
 
-describe('AmbientOcclusion public algorithm encodings', () => {
-  it('names every closed algorithm from the package entry', () => {
-    const named = {
-      ssao: AMBIENT_OCCLUSION_SSAO,
-      gtao: AMBIENT_OCCLUSION_GTAO,
-      'spiral-ssao': AMBIENT_OCCLUSION_SPIRAL_SSAO,
-    };
-    expect(Object.keys(named).sort()).toEqual([...AMBIENT_OCCLUSION_ALGORITHMS].sort());
-    const world = new World();
-    for (const [algorithm, encoded] of Object.entries(named)) {
-      const entity = world
-        .spawn({ component: AmbientOcclusion, data: { algorithm: encoded } })
-        .unwrap();
-      const data = world.get(entity, AmbientOcclusion).unwrap();
-      expect(ambientOcclusionParameters(data).unwrap().algorithm).toBe(algorithm);
-    }
-  });
-
+describe('AmbientOcclusion public encodings', () => {
   it('names each closed quality encoding used by the f32 component field', () => {
     expect({
       low: AMBIENT_OCCLUSION_QUALITY_LOW,
       medium: AMBIENT_OCCLUSION_QUALITY_MEDIUM,
       high: AMBIENT_OCCLUSION_QUALITY_HIGH,
-    }).toEqual({ low: 0, medium: 1, high: 2 });
+    }).toEqual({ low: 25, medium: 50, high: 100 });
   });
 });

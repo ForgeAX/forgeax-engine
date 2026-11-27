@@ -11,6 +11,7 @@ import {
   createMaterialError,
   derive,
   err,
+  isStandardRootModule,
   type MaterialDeformationDeclaration,
   type MaterialError,
   type MaterialProgram,
@@ -21,12 +22,17 @@ import {
   projectMaterialParameterSchema,
   type Result,
   TERRAIN_MATERIAL_PARAMETERS,
+  TERRAIN_WEIGHT_DETAIL_PARAMETERS,
 } from '@forgeax/engine-types';
 import { type CompileResult, shaderImportClosure } from './compile.js';
 import { projectShaderConditionals } from './conditionals.js';
 import { ShaderError } from './errors.js';
 import { prepareStandardSource } from './material/compose.js';
-import { generateParameterModule, materialVertexInputs } from './material/cook.js';
+import {
+  generateParameterModule,
+  materialVertexInputs,
+  templateResourceNames,
+} from './material/cook.js';
 import { engineMaterialGBuffer } from './material/gbuffer-contract.js';
 import {
   lowerStandardPhysicalBindings,
@@ -69,6 +75,13 @@ const MSDF_TEXT_PARAM_SCHEMA: readonly ParamSchemaEntry[] = [
 
 export function engineMaterialParamSchema(identifier: string): readonly ParamSchemaEntry[] {
   switch (identifier) {
+    case 'forgeax::standard-terrain-detail':
+    case 'forgeax::standard-terrain-detail-shadow':
+      return projectMaterialParameterSchema(
+        TERRAIN_WEIGHT_DETAIL_PARAMETERS,
+        identifier,
+        'runtime',
+      ).unwrap();
     case 'forgeax::standard-terrain':
     case 'forgeax::standard-terrain-ids':
     case 'forgeax::standard-terrain-shadow':
@@ -140,30 +153,49 @@ export function engineShaderSourceImports(
   return shaderImportClosure(roots.join('\n'), imports);
 }
 
+function engineSurfaceImports(
+  file: EngineShaderSource,
+  imports: Readonly<Record<string, string>>,
+  fallbackImports: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const surfaceImports = { ...imports };
+  for (const moduleId of engineSurfaceImportIds(file)) {
+    const source = fallbackImports[moduleId];
+    if (surfaceImports[moduleId] === undefined && source !== undefined) {
+      surfaceImports[moduleId] = source;
+    }
+  }
+  // Slot lowering adds imports that the template's lexical closure cannot see.
+  const surfaceSource =
+    file.surfaceModule === undefined ? undefined : surfaceImports[file.surfaceModule];
+  if (surfaceSource !== undefined && imports !== fallbackImports) {
+    for (const [moduleId, source] of Object.entries(
+      shaderImportClosure(surfaceSource, fallbackImports),
+    )) {
+      surfaceImports[moduleId] ??= source;
+    }
+  }
+  return surfaceImports;
+}
+
 function engineParameterSource(
   file: EngineShaderSource,
   templateModule: string,
   defines: Readonly<Record<string, boolean>>,
 ) {
-  return generateParameterModule(
-    file.paramSchema ?? engineMaterialParamSchema(file.reservedIdentifier ?? templateModule),
-    {
-      includeResources:
-        file.surfaceModule !== undefined ||
-        (file.reservedIdentifier ?? templateModule) === 'forgeax::default-shadow-caster',
-      excludeResources: new Set(
-        Array.from(
-          file.source.matchAll(
-            /@group\(1\)\s*@binding\(\d+\)\s+var(?:<[^>]+>)?\s+([A-Za-z_]\w*)\s*:/g,
-          ),
-          (match) => match[1] as string,
-        ),
-      ),
-      sceneIndex: defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true,
-      sceneIndexDeclarations: false,
-      sceneMaterialPrivate: defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true,
-    },
-  );
+  const identifier = file.reservedIdentifier ?? templateModule;
+  const standard = isStandardRootModule(identifier);
+  return generateParameterModule(file.paramSchema ?? engineMaterialParamSchema(identifier), {
+    includeResources:
+      standard ||
+      file.surfaceModule !== undefined ||
+      identifier === 'forgeax::default-shadow-caster',
+    standardTextureDefines: standard,
+    excludeResources: templateResourceNames(file.source),
+    sceneIndex: defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true,
+    sceneIndexDeclarations: false,
+    sceneMaterialPrivate: defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true,
+  });
 }
 
 /**
@@ -177,6 +209,7 @@ export function prepareEngineShaderSource(
   imports: Readonly<Record<string, string>>,
   fallbackImports: Readonly<Record<string, string>> = imports,
   defines: Readonly<Record<string, boolean>> = {},
+  readImports = activeImportModuleIds,
 ): Result<PreparedEngineShaderSource, MaterialError> {
   if (!file.source.includes('#pragma material_slot surface')) {
     return ok(lowerEngineSceneAddresses(file, { source: file.source, imports }, defines));
@@ -194,13 +227,7 @@ export function prepareEngineShaderSource(
       ),
     );
   }
-  const surfaceImports = { ...imports };
-  for (const moduleId of engineSurfaceImportIds(file)) {
-    const source = fallbackImports[moduleId];
-    if (surfaceImports[moduleId] === undefined && source !== undefined) {
-      surfaceImports[moduleId] = source;
-    }
-  }
+  const surfaceImports = engineSurfaceImports(file, imports, fallbackImports);
   const composed = prepareStandardSource({
     material: file.reservedIdentifier ?? templateModule,
     pass: 'Forward',
@@ -232,6 +259,7 @@ export function prepareEngineShaderSource(
     composed.value.source,
     defines,
     Object.keys(defines),
+    readImports,
   );
   return ok(
     lowerEngineSceneAddresses(file, { source: loweredSource, imports: loweredImports }, defines),
@@ -276,12 +304,13 @@ export function resolveImportModuleId(
   return undefined;
 }
 
-function activeImportModuleIds(source: string, defines: Record<string, boolean>): Set<string> {
-  // Only directives affect reachability. Keep body-sized allocations out of
-  // variant closure traversal, but let the compiler own conditional nesting.
-  const directives = [...source.matchAll(/^[^\S\r\n]*(?:#|\/\/[^\S\r\n]*#import)[^\r\n]*/gm)]
+function importDirectives(source: string): string {
+  return [...source.matchAll(/^[^\S\r\n]*(?:#|\/\/[^\S\r\n]*#import)[^\r\n]*/gm)]
     .map((match) => match[0])
     .join('\n');
+}
+
+function projectedImportModuleIds(directives: string, defines: Readonly<Record<string, boolean>>) {
   const activeModules = new Set<string>();
   for (const line of projectShaderConditionals(directives, defines, 'all').split('\n')) {
     const importMatch = /^\s*(?:\/\/\s*)?#import\s+([A-Za-z0-9_:]+)/.exec(line);
@@ -290,15 +319,50 @@ function activeImportModuleIds(source: string, defines: Record<string, boolean>)
   return activeModules;
 }
 
+function activeImportModuleIds(source: string, defines: Readonly<Record<string, boolean>>) {
+  return projectedImportModuleIds(importDirectives(source), defines);
+}
+
+// One cache per template owner. Only raw source strings already owned by
+// the template enter this cache. Transformed variant sources remain transient.
+export function prepareEngineShaderImportScanner(imports: Readonly<Record<string, string>>) {
+  const sources = new Map(
+    Object.values(imports).map((source) => {
+      const directives = importDirectives(source);
+      // Include every directive token. Conditional projection can only read
+      // defines whose names appear here, including opaque nested conditions.
+      const tokens = [...new Set(directives.match(/\w+/g) ?? [])];
+      return [source, { directives, tokens, projections: new Map<string, Set<string>>() }];
+    }),
+  );
+  return (source: string, defines: Readonly<Record<string, boolean>>) => {
+    const entry = sources.get(source);
+    if (entry === undefined) return activeImportModuleIds(source, defines);
+    const key = entry.tokens
+      .map((token) => {
+        const value = defines[token];
+        return value === undefined ? '-' : value ? '1' : '0';
+      })
+      .join('');
+    const hit = entry.projections.get(key);
+    if (hit !== undefined) return hit;
+    const selected = projectedImportModuleIds(entry.directives, defines);
+    if (entry.projections.size === 8) entry.projections.clear();
+    entry.projections.set(key, selected);
+    return selected;
+  };
+}
+
 export function filterImportsByDefines(
   allImports: Record<string, string>,
   source: string,
   defines: Record<string, boolean>,
   axes: readonly string[],
+  readImports = activeImportModuleIds,
 ): Record<string, string> {
   if (axes.length === 0) return allImports;
   // Step A: scan source for active direct #import lines (respecting #if/#ifdef state).
-  const activeDirectModules = activeImportModuleIds(source, defines);
+  const activeDirectModules = readImports(source, defines);
   // Step B: BFS from active direct imports through allImports to collect
   // the full transitive closure. A module like ibl_sampling may be active
   // directly but its own #import of ibl_shared only appears inside
@@ -311,7 +375,7 @@ export function filterImportsByDefines(
     if (cur === undefined) break;
     const modSource = allImports[cur];
     if (modSource === undefined) continue;
-    const childIds = activeImportModuleIds(modSource, defines);
+    const childIds = readImports(modSource, defines);
     for (const childRawId of childIds) {
       const childId = resolveImportModuleId(childRawId, allImports);
       if (childId !== undefined && !activeModules.has(childId)) {
@@ -336,10 +400,13 @@ export function engineMaterialArtifactReceipt(
   if (!result.ok || result.value === undefined) return result;
   const gbuffer = engineMaterialGBuffer(file);
   if (gbuffer === undefined) return result;
+  const compact =
+    compiled.reflection.entryPoints?.some(({ name }) => name === 'fs_gbuffer_compact') === true;
   return ok({
     ...result.value,
     gbuffer,
-    receiptIdentity: `${result.value.receiptIdentity}/${gbuffer}`,
+    ...(compact ? { compactGbuffer: 'standard-gbuffer/4' as const } : {}),
+    receiptIdentity: `${result.value.receiptIdentity}/${gbuffer}${compact ? '/standard-gbuffer/4' : ''}`,
     generation: result.value.generation + 1,
   });
 }
@@ -445,9 +512,16 @@ export function engineShaderDefines(
     ...standardMaterialDefines(schema),
     ...authored,
     ...selection,
+    STANDARD_POSITION_ONLY_AVAILABLE: identifier === 'forgeax::default-standard-pbr',
     ...(selection.STORAGE_BUFFER_AVAILABLE === false ||
     (selection.PROJECTOR_AVAILABLE === false && selection.EXTENDED_LIGHTING_AVAILABLE === false)
       ? { CLOUD_SHADOW_LOW_LIMIT: true }
+      : {}),
+    ...(selection.COVERAGE_ONLY === true &&
+    (identifier === 'forgeax::default-standard-pbr' ||
+      identifier === 'forgeax::default-standard-pbr-skin' ||
+      identifier === 'forgeax::pbr-skin')
+      ? { STANDARD_BINARY_COVERAGE: true }
       : {}),
     ...standardSharedTransmissionDefines(selection),
     ...standardLeanInputDefines(

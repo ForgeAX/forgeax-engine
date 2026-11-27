@@ -3,6 +3,7 @@ import { RhiError, type RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { expect, it } from 'vitest';
 import { MaterialResource } from '../material-resource';
 import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
+import { MESH_UBO_FULL_ARRAY_BYTES } from '../record/mesh-ssbo';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import {
   encodeDirectionalShadowPass,
@@ -100,12 +101,12 @@ function frontDoors(paged = false, orderedSlots?: readonly number[]) {
         sampler: resource,
         intensityBuffer: resource,
         irradianceView: resource,
+        skySh: resource,
         prefilterView: resource,
         brdfLutView: resource,
       },
     },
     frameState: {
-      materialBgShared: new Map(),
       instancesBgShared: new WeakMap(),
       meshBindGroupCache: new WeakMap(),
       viewBindGroupCache: new WeakMap(),
@@ -125,7 +126,7 @@ function frontDoors(paged = false, orderedSlots?: readonly number[]) {
     });
   }
   if (orderedSlots !== undefined) {
-    const first = c.validatedOrdered[0];
+    const first = c.validatedOrdered.at(0);
     if (first === undefined) throw new Error('expected the fixture caster');
     Object.assign(c, {
       validatedOrdered: orderedSlots.map((meshSlot, index) => ({
@@ -140,7 +141,9 @@ function frontDoors(paged = false, orderedSlots?: readonly number[]) {
   const meshGroups: unknown[] = [];
   const pass = {
     setBindGroup: (...args: unknown[]) => {
-      trace.push(['bg', args[0], args[2]]);
+      // The encoder consumes dynamic offsets synchronously; the next draw may reuse their array.
+      const offsets = args[2] as ArrayLike<number> | undefined;
+      trace.push(['bg', args[0], offsets === undefined ? undefined : Array.from(offsets)]);
       if (args[0] === 2) meshGroups.push(args[1]);
     },
     setPipeline: () => trace.push(['pipeline']),
@@ -189,7 +192,10 @@ it('keeps directional, point and spot residuals on the same physical mesh page',
       entries: [
         {
           binding: 0,
-          resource: { kind: 'buffer', value: { buffer: f.secondPage, offset: 0, size: 12288 } },
+          resource: {
+            kind: 'buffer',
+            value: { buffer: f.secondPage, offset: 0, size: MESH_UBO_FULL_ARRAY_BYTES },
+          },
         },
       ],
     });

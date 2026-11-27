@@ -2,27 +2,32 @@ import type { Result, RhiError } from '@forgeax/engine-rhi';
 import type { SubmissionPlan } from '../../gpu-driven/batch-topology';
 import type { ShadowViewStatePool, ShadowViewUpdateInput } from '../../gpu-driven/shadow-views';
 import type { GpuDrivenView } from '../../gpu-driven/view-gpu';
-import type { GpuScene } from '../../gpu-scene';
+import type { GpuScene, GpuSceneResourceFrame } from '../../gpu-scene';
 import type { GpuInputReadFrame } from '../../gpu-scene-inputs';
 
 // Low-level selector fixtures own no Renderer submission transaction. Retain
-// their exact numeric inputs through fixture disposal; native fixtures already
-// await their actual queue completion before that disposal. Shadow graph
+// their exact numeric inputs and native table roots until the fixture observes
+// completion of its submitted work or disposes. Shadow graph
 // projection can declare a forced compute demand after update, so its low-level
 // scope remains open through projection. ResourceFrame integration tests own
 // and exercise the explicit pre-submit seal. Production uses
 // GpuSceneResourceFrame and its submitted-completion lease instead.
-const held = new WeakMap<GpuScene, Set<GpuInputReadFrame>>();
-function retain(scene: GpuScene, reads: GpuInputReadFrame): void {
+const held = new WeakMap<GpuScene, Set<GpuSceneResourceFrame>>();
+export function releaseGpuFixtureReads(scene: GpuScene): void {
+  const frames = held.get(scene);
+  if (frames === undefined) return;
+  for (const frame of frames) frame.release();
+  frames.clear();
+}
+
+function retain(scene: GpuScene, reads: GpuSceneResourceFrame): void {
   let frames = held.get(scene);
   if (frames === undefined) {
     frames = new Set();
     held.set(scene, frames);
     const dispose = scene.dispose.bind(scene);
-    const retained = frames;
     scene.dispose = () => {
-      for (const frame of retained) frame.release();
-      retained.clear();
+      releaseGpuFixtureReads(scene);
       dispose();
     };
   }
@@ -35,24 +40,25 @@ function withReads<T>(
   seal = true,
 ): Result<T, RhiError> {
   if (plan.sourceGroups !== undefined) scene.inputs.adoptSources(plan.sourceGroups);
-  const reads = scene.inputs.capture();
+  const frame = scene.captureResources().unwrap();
+  const reads = frame.inputReads();
   try {
     const result = action(reads);
     if (!result.ok) {
-      reads.release();
+      frame.release();
       return result;
     }
     if (seal) {
-      const sealed = reads.seal();
+      const sealed = frame.seal();
       if (!sealed.ok) {
-        reads.release();
+        frame.release();
         return sealed;
       }
     }
-    retain(scene, reads);
+    retain(scene, frame);
     return result;
   } catch (cause) {
-    reads.release();
+    frame.release();
     throw cause;
   }
 }

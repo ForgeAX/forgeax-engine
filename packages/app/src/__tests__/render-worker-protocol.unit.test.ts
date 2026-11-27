@@ -130,8 +130,8 @@ async function start(
   vi.stubGlobal('postMessage', post);
   vi.stubGlobal('close', vi.fn());
   vi.stubGlobal('onmessage', undefined);
-  await import('../execution/render-worker-runtime');
-  const receive = globalThis.onmessage as unknown as (event: { data: unknown }) => void;
+  const { receiveRenderWorkerInput } = await import('../execution/render-worker-runtime');
+  const receive = receiveRenderWorkerInput as unknown as (event: { data: unknown }) => void;
   const initMessage = {
     kind: 'init',
     canvas: {} as OffscreenCanvas,
@@ -989,6 +989,7 @@ it('forwards the pending cause captured on the completed receipt, without inspec
 it.each([
   'completion',
   'features',
+  'level-selection',
 ] as const)('retires a real predecessor during one controlled %s task turn before drawing its successor', async (mode) => {
   const first = deferred<{ ok: true; value: undefined }>();
   const second = deferred<{ ok: true; value: undefined }>();
@@ -1008,7 +1009,8 @@ it.each([
     await schedule.checkpoint();
     return mocks.draw(input);
   });
-  const { post, receive } = await start({ renderTaskYield: mode });
+  const levelSelection = mode === 'level-selection';
+  const { post, receive } = await start(levelSelection ? {} : { renderTaskYield: mode });
   post.mockImplementation((message) => {
     if (message.kind === 'submitted' || message.kind === 'completed')
       events.push(`${message.kind}:${message.revision}`);
@@ -1017,7 +1019,23 @@ it.each([
     receive({ data: drawMessage(1) });
     await vi.waitFor(() => expect(events).toEqual(['draw:1', 'submitted:1']));
     expect(mocks.turn).not.toHaveBeenCalled();
-    receive({ data: drawMessage(2) });
+    const successor = drawMessage(2);
+    receive({
+      data: levelSelection
+        ? {
+            ...successor,
+            groupSelection: {
+              id: {
+                publication: { source: 'test', epoch: 1 },
+                worldIdentity: 'test-world',
+                stream: 1,
+                level: { instance: 1, generation: 1, request: 1, attempt: 1 },
+              },
+              active: true,
+            },
+          }
+        : successor,
+    });
     await vi.waitFor(() => expect(mocks.turn).toHaveBeenCalledOnce());
     expect(events).toEqual(['draw:1', 'submitted:1']);
     expect(mocks.draw).toHaveBeenCalledOnce();
@@ -2461,8 +2479,8 @@ it('responds before initialization with an explicit failed read', async () => {
   const post = vi.fn();
   vi.stubGlobal('postMessage', post);
   vi.stubGlobal('close', vi.fn());
-  await import('../execution/render-worker-runtime');
-  const receive = globalThis.onmessage as unknown as (event: { data: unknown }) => void;
+  const { receiveRenderWorkerInput } = await import('../execution/render-worker-runtime');
+  const receive = receiveRenderWorkerInput as unknown as (event: { data: unknown }) => void;
   receive({
     data: {
       kind: 'inspect',
@@ -2629,6 +2647,74 @@ it.each([
     credit.resolve({ ok: true, value: undefined });
     completed.resolve({ ok: true, value: undefined });
     receive({ data: { kind: 'dispose' } });
+  }
+});
+
+it('waits for ordinary frame credit before admitting another closed Level block', async () => {
+  const first = deferred<{ ok: true; value: undefined }>();
+  const second = deferred<{ ok: true; value: undefined }>();
+  mocks.draw
+    .mockReturnValueOnce({
+      ok: true,
+      value: { frameId: 1, deviceGeneration: 7, completed: first.promise },
+    })
+    .mockReturnValueOnce({
+      ok: true,
+      value: { frameId: 2, deviceGeneration: 7, completed: second.promise },
+    });
+  const { post, receive } = await start({ renderPipelineCapacity: 2 });
+  const id = {
+    publication: { source: 'test', epoch: 1 },
+    worldIdentity: 'test-world',
+    stream: 2,
+    level: { instance: 2, generation: 1, request: 1, attempt: 1 },
+  };
+  const result = (serial: number) =>
+    expect.objectContaining({
+      kind: 'closed-level-rows-result',
+      serial,
+      result: { ok: true },
+    });
+  try {
+    receive({ data: drawMessage(1) });
+    receive({ data: drawMessage(2) });
+    await vi.waitFor(() => expect(mocks.draw).toHaveBeenCalledTimes(2));
+    receive({
+      data: {
+        kind: 'closed-level-rows',
+        id,
+        serial: 1,
+        operation: { kind: 'seal', chunks: 0, rows: 0, assets: 0 },
+      },
+    });
+    receive({
+      data: {
+        kind: 'closed-level-rows',
+        id: { ...id, stream: 1 },
+        serial: 2,
+        operation: { kind: 'retire' },
+      },
+    });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith(result(2)));
+    expect(mocks.turn).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalledWith(result(1));
+
+    first.resolve({ ok: true, value: undefined });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith(result(1)));
+    expect(mocks.turn).toHaveBeenCalledOnce();
+    const credit = post.mock.calls.findIndex(
+      ([message]) => message.kind === 'completed' && message.revision === 1,
+    );
+    const admitted = post.mock.calls.findIndex(
+      ([message]) => message.kind === 'closed-level-rows-result' && message.serial === 1,
+    );
+    expect(credit).toBeGreaterThanOrEqual(0);
+    expect(admitted).toBeGreaterThan(credit);
+  } finally {
+    first.resolve({ ok: true, value: undefined });
+    second.resolve({ ok: true, value: undefined });
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
   }
 });
 
@@ -3002,7 +3088,7 @@ it('applies the explicit startup order after project configuration before ready,
     pipelineId: 'forgeax::standard',
     renderPath: 'deferred',
     lightCount: 256,
-    ssao: true,
+    ambientOcclusion: { enabled: true },
   };
   const gbufferBatchOrderDiagnostic = {
     order: 'far' as const,
@@ -3025,7 +3111,7 @@ it.each([
     pipelineId: 'forgeax::standard',
     renderPath: 'deferred',
     lightCount: 256,
-    ssao: true,
+    ambientOcclusion: { enabled: true },
   };
   mocks.inspect.mockReturnValue({ ...mocks.inspect(), profile });
   mocks.setProfile.mockReturnValue({ ok: true, value: undefined });

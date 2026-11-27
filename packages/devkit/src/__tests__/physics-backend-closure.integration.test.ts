@@ -35,7 +35,7 @@ it.each([
           },
         },
       ],
-      build: { target: 'esnext', write: false, rollupOptions: { input: entry } },
+      build: { target: 'esnext', minify: false, write: false, rollupOptions: { input: entry } },
     });
     for (const dimension of ['3d', '2d']) {
       expect([...modules].some((id) => id.includes(`/physics-rapier${dimension}/`))).toBe(

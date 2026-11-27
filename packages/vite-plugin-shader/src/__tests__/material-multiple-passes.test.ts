@@ -44,14 +44,11 @@ async function runMultiPassScenario(): Promise<MultiPassScenario> {
     await writeFile(
       packPath,
       JSON.stringify({
-        schemaVersion: '1.0.0',
-        kind: 'internal-text-package',
-        assets: [
-          {
-            guid: 'b28aa8f3-af10-44b4-8c8b-526b6c17cd76',
+        schemaVersion: '3.0.0',
+        packageId: 'b28aa8f3-af10-44b4-8c8b-526b6c17cd76',
+        assets: {
+          'first.wgsl': {
             kind: 'material',
-            execution: 'cooked',
-            sourceKey: 'first.wgsl',
             refs: [],
             payload: {
               kind: 'material',
@@ -69,7 +66,7 @@ async function runMultiPassScenario(): Promise<MultiPassScenario> {
               ],
             },
           },
-        ],
+        },
       }),
     );
     const emitted: Array<{ fileName: string; source: string }> = [];

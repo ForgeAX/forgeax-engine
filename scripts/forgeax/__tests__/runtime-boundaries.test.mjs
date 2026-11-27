@@ -276,6 +276,7 @@ test('source asset transforms require an owned producer and may not survive into
   for (const file of [
     'packages/shader/src/auto-exposure-source.ts',
     'packages/shader/src/tsr-source.ts',
+    'packages/shader/src/screen-probe-candidate-source.ts',
     'packages/render/src/terrain/layer-bake.ts',
   ]) {
     assert.deepEqual(codes(source, { file }), []);
@@ -543,6 +544,23 @@ test('Node-only Mesh IO workers resolve ESM dependencies while runtime imports s
       }).includes('runtime-tool-import'),
     );
   }
+});
+
+test('keeps the offline image encoder pool exact and rejects runtime edges to it', () => {
+  const environment = 'export const childEnvironment = {...process.env};';
+  assert.deepEqual(codes(environment, { file: 'packages/image/src/node-encode-pool.ts' }), []);
+  for (const file of ['packages/image/src/index.ts', 'packages/image/src/texture/runtime.ts'])
+    assert.ok(codes(environment, { file }).includes('runtime-host-environment'));
+  for (const specifier of [
+    '@forgeax/engine-image/encode-pool',
+    '@forgeax/engine/image/encode-pool',
+  ])
+    assert.ok(
+      codes(`import {createNodeImageEncoderPool} from "${specifier}";`).includes(
+        'runtime-tool-import',
+      ),
+    );
+  assert.deepEqual(codes('import {parseKtx2} from "@forgeax/engine-image";'), []);
 });
 
 test('admits the portable shader program entry while retaining Node cooker boundaries', () => {

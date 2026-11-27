@@ -12,14 +12,14 @@
 #ifdef ATMOSPHERE_AVAILABLE
 #import forgeax_view::common::{view, shadowMap, shadowSampler}
 #ifndef CLOUD_SHADOW_LOW_LIMIT
-#import forgeax_cloud::layer::{cloudShadowMap, cloudShadowSampler}
+#import forgeax_cloud::layer::{cloudShadowMap, viewLinearSampler}
 #endif
 #endif
 #ifndef STORAGE_BUFFER_AVAILABLE
 #ifdef CLUSTER_FORWARD_AVAILABLE
 #import forgeax_view::common::{view, shadowMap, shadowSampler}
 #ifndef CLOUD_SHADOW_LOW_LIMIT
-#import forgeax_cloud::layer::{cloudShadowMap, cloudShadowSampler}
+#import forgeax_cloud::layer::{cloudShadowMap, viewLinearSampler}
 #endif
 #endif
 #endif
@@ -80,7 +80,7 @@ fn atmosphere_scene_visibility(m:AtmosphereMedium, p:vec3<f32>)->f32 {
 #ifdef CLOUD_SHADOW_LOW_LIMIT
   return atmosphere_directional_visibility(view,m,p,shadowMap,shadowSampler);
 #else
-  return atmosphere_visibility_sample(view,m,p,shadowMap,shadowSampler,cloudShadowMap,cloudShadowSampler);
+  return atmosphere_visibility_sample(view,m,p,shadowMap,shadowSampler,cloudShadowMap,viewLinearSampler);
 #endif
 #else
 #ifndef STORAGE_BUFFER_AVAILABLE
@@ -88,7 +88,7 @@ fn atmosphere_scene_visibility(m:AtmosphereMedium, p:vec3<f32>)->f32 {
 #ifdef CLOUD_SHADOW_LOW_LIMIT
   return atmosphere_directional_visibility(view,m,p,shadowMap,shadowSampler);
 #else
-  return atmosphere_visibility_sample(view,m,p,shadowMap,shadowSampler,cloudShadowMap,cloudShadowSampler);
+  return atmosphere_visibility_sample(view,m,p,shadowMap,shadowSampler,cloudShadowMap,viewLinearSampler);
 #endif
 #endif
 #endif

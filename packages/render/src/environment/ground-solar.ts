@@ -4,11 +4,47 @@ import type { AtmosphereParameters } from '../extract/environment';
 export function groundSolarTransmittance(
   atmosphere: AtmosphereParameters,
   directionToLight: ArrayLike<number>,
+  outgoing = false,
 ): readonly [number, number, number] {
   const x = directionToLight[0] ?? 0;
   const y = directionToLight[1] ?? 0;
   const z = directionToLight[2] ?? 0;
-  const mu = y / Math.hypot(x, y, z);
+  const length = Math.hypot(x, y, z);
+  if (length === 0 || !Number.isFinite(length)) return [1, 1, 1];
+  const minElevation = atmosphere.transmittanceMinLightElevationDegrees ?? -90;
+  const mu = Math.max((outgoing ? -y : y) / length, Math.sin((minElevation * Math.PI) / 180));
+  const inputs = [
+    mu,
+    atmosphere.planetRadius,
+    atmosphere.atmosphereHeight,
+    atmosphere.mieScattering,
+    atmosphere.mieAbsorption,
+    atmosphere.mieScaleHeight,
+    atmosphere.rayleighScaleHeight,
+    ...atmosphere.rayleighScattering,
+    ...atmosphere.absorption,
+    atmosphere.absorptionPeakHeight,
+    atmosphere.absorptionHalfWidth,
+  ];
+  if (last?.inputs.every((value, index) => value === inputs[index])) return last.value;
+  const value = integrateGroundSolar(atmosphere, mu);
+  last = { inputs, value };
+  return value;
+}
+
+// Ordinary display and capture views share identical optical inputs. Cache the
+// last integral by value because extraction can republish immutable parameters.
+let last:
+  | {
+      readonly inputs: readonly number[];
+      readonly value: readonly [number, number, number];
+    }
+  | undefined;
+
+function integrateGroundSolar(
+  atmosphere: AtmosphereParameters,
+  mu: number,
+): readonly [number, number, number] {
   const radius = atmosphere.planetRadius + 500;
   const top = atmosphere.planetRadius + atmosphere.atmosphereHeight;
   const b = radius * mu;

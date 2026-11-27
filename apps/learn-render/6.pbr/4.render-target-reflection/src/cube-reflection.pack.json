@@ -1,11 +1,9 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "6bab6a0e-7684-5556-8eb6-b12b6da6b2a1",
+  "schemaVersion": "3.0.0",
+  "packageId": "201c334a-42d7-5ea9-a2aa-fef9bb0f1731",
+  "assets": {
+    "cube-reflection.wgsl": {
       "kind": "material",
-      "sourceKey": "cube-reflection.wgsl",
       "payload": {
         "kind": "material",
         "passes": [
@@ -37,5 +35,5 @@
       },
       "refs": []
     }
-  ]
+  }
 }

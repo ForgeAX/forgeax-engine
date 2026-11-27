@@ -10,7 +10,6 @@ expectTypeOf<ScreenSpaceReflectionData>().toEqualTypeOf<{
   readonly maxDistance: number;
   readonly thickness: number;
   readonly maxRoughness: number;
-  readonly waterTemporal: number;
 }>();
 expectTypeOf(ScreenSpaceReflection).toHaveProperty('fields');
 expectTypeOf<SsrSpatialUnavailableReason>().toEqualTypeOf<
@@ -26,9 +25,7 @@ expectTypeOf<SsrSpatialUnavailableReason>().toEqualTypeOf<
 expectTypeOf<SsrSpatialInspection['status']>().toEqualTypeOf<
   'not-requested' | 'requested' | 'admitted' | 'fallback-only' | 'structural-only'
 >();
-expectTypeOf<SsrSpatialInspection['history']['state']>().toEqualTypeOf<
-  'not-owned' | 'first-frame' | 'stable' | 'reset' | 'aborted' | 'retiring' | 'retired' | 'disposed'
->();
+expectTypeOf<SsrSpatialInspection['history']['state']>().toEqualTypeOf<'not-owned'>();
 
 type PublicInspectionKeys = keyof SsrSpatialInspection;
 type ForbiddenKey = Extract<

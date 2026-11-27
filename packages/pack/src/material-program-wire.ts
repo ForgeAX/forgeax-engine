@@ -9,6 +9,10 @@ function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function materialCookSchema(value: unknown): boolean {
+  return value === 'material-cook/5' || value === 'material-cook/6';
+}
+
 function mapPrograms(
   pack: Record<string, unknown>,
   map: (programs: unknown[]) => unknown[],
@@ -19,16 +23,15 @@ function mapPrograms(
     assets: pack.assets.map((asset: unknown) => {
       if (!record(asset) || asset.kind !== 'material' || !record(asset.payload)) return asset;
       const payload = asset.payload;
-      const field =
-        payload.schemaVersion === 'material-cook/5'
-          ? undefined
-          : payload.cooked !== undefined
-            ? 'cooked'
-            : 'record';
+      const field = materialCookSchema(payload.schemaVersion)
+        ? undefined
+        : payload.cooked !== undefined
+          ? 'cooked'
+          : 'record';
       const cooked = field === undefined ? payload : payload[field];
       if (
         !record(cooked) ||
-        cooked.schemaVersion !== 'material-cook/5' ||
+        !materialCookSchema(cooked.schemaVersion) ||
         !Array.isArray(cooked.programs)
       )
         return asset;

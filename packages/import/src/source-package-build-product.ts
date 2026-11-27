@@ -98,7 +98,7 @@ export async function prepareSourcePackageBuildProduct(
   const packageId = anchor === undefined ? undefined : PackageId.parse(anchor);
   if (packageId === undefined || !packageId.ok) return undefined;
   const discoverySourceClosure = [...reads.values()];
-  const { buildPack: _buildPack, ...authorMeta } = structuredClone(meta);
+  const authorMeta = structuredClone(meta);
   const subject: PackBuildCacheSubject = {
     definition: { packageId: packageId.value },
     sourcePath: pathOf(meta.source),

@@ -1,7 +1,7 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it } from 'vitest';
-import { addPlanarMipPasses } from '../record/planar-mip-passes';
+import { addGraphColorMipPasses } from '../graph-color-mips';
 import type { RenderPipelineFrame } from '../render-pipeline';
 
 it.each([
@@ -42,8 +42,16 @@ it.each([
     )
     .unwrap();
   expect(
-    addPlanarMipPasses(builder, 'mirror', texture, descriptor, 5, () => {}, undefined, backendKind)
-      .ok,
+    addGraphColorMipPasses(
+      builder,
+      'mirror',
+      texture,
+      descriptor,
+      5,
+      () => {},
+      undefined,
+      backendKind,
+    ).ok,
   ).toBe(true);
   const graph = builder.compile({ device, surfaceSize: { width: 17, height: 5 } }).unwrap();
   try {

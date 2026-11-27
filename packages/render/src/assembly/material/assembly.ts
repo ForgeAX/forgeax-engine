@@ -5,11 +5,14 @@ import {
   type MaterialShaderEntry,
   type MaterialShaderManifestEntry,
   type MaterialShaderProgram,
-  materialShaderAxes,
+  materialShaderHasVariants,
   materialShaderSource,
+  projectStandardCoverageDefines,
   type ShaderRegistry,
 } from '@forgeax/engine-shader';
 import type { MaterialProgramAbi, MaterialProgramAddress } from '@forgeax/engine-types';
+import type { BatchArtifactFacts } from '../../gpu-driven/batch-execution';
+import { variantSetForSurfaceDiscards } from '../../material-stage-constants';
 import {
   isCanonicalStandardPbrMaterialShader,
   isStandardPbrSkinMaterialShader,
@@ -118,6 +121,7 @@ export interface MaterialShaderArtifactRequest {
   readonly alphaMask?: boolean;
   /** GPU-driven batch admission for the compile-time STANDARD_LEAN_INPUTS axis. */
   readonly leanInputs?: boolean;
+  readonly surfaceDiscards?: number;
   readonly variantSet?: string;
   /** Submission address requested by the consumer; GPU-driven uses scene-index. */
   readonly address?: MaterialProgramAddress;
@@ -140,29 +144,37 @@ function receiptUvSetCount(receipt: MaterialProgramAbi): number {
   return count;
 }
 
+function materialReceiptForGeometry(
+  receipt: MaterialProgramAbi | undefined,
+  options: MaterialShaderArtifactRequest,
+): MaterialProgramAbi | undefined {
+  if (receipt === undefined) return undefined;
+  if (options.tangentFrame32) {
+    const packed = receipt.tangentFrame32;
+    if (packed === undefined) return undefined;
+    receipt = Object.freeze({
+      ...receipt,
+      directEntry: packed.directEntry,
+      ...(packed.sceneIndexEntry === undefined ? {} : { sceneIndexEntry: packed.sceneIndexEntry }),
+      vertexInputs: packed.vertexInputs,
+      receiptIdentity: `${receipt.receiptIdentity}/tangent-frame32`,
+      reflection: Object.freeze({ ...receipt.reflection, vertexInputs: packed.vertexInputs }),
+    });
+  }
+  if (options.vertexColorAvailable === false && receiptHasVertexColor(receipt)) {
+    return undefined;
+  }
+  return receipt;
+}
+
 function assemblePublishedArtifact(
   materialShaderId: string,
   shaderEntry: ProgramEntry,
   options: MaterialShaderArtifactRequest,
   reflectedUvSetCount?: number,
 ): MaterialShaderArtifact | undefined {
-  let receipt = shaderEntry.receipt;
+  const receipt = materialReceiptForGeometry(shaderEntry.receipt, options);
   if (receipt === undefined) return undefined;
-  if (options.tangentFrame32) {
-    const packed = receipt.tangentFrame32;
-    if (packed === undefined) return undefined;
-    receipt = {
-      ...receipt,
-      directEntry: packed.directEntry,
-      ...(packed.sceneIndexEntry === undefined ? {} : { sceneIndexEntry: packed.sceneIndexEntry }),
-      vertexInputs: packed.vertexInputs,
-      receiptIdentity: `${receipt.receiptIdentity}/tangent-frame32`,
-      reflection: { ...receipt.reflection, vertexInputs: packed.vertexInputs },
-    };
-  }
-  if (options.vertexColorAvailable === false && receiptHasVertexColor(receipt)) {
-    return undefined;
-  }
   return {
     material: materialShaderId,
     pass: options.pass ?? 'forward',
@@ -237,6 +249,64 @@ function materialArtifactRequestFlags(options: MaterialShaderArtifactRequest): n
   );
 }
 
+type PublishedVariant = MaterialShaderManifestEntry['variants'][number];
+
+/** Undefined selects the primary program. Null means the family cannot supply the request. */
+function selectedFamilyVariant(
+  manifest: MaterialShaderManifestEntry | undefined,
+  options: MaterialShaderArtifactRequest,
+): PublishedVariant | null | undefined {
+  if (manifest === undefined || !materialShaderHasVariants(manifest)) return undefined;
+  return selectPublishedVariant(manifest, materialVariantRequest(manifest, options)) ?? null;
+}
+
+function sourceArtifactIdentifier(
+  materialShaderId: string,
+  variant: PublishedVariant | undefined,
+  shader: SourceArtifactRegistry,
+): string {
+  return variant === undefined
+    ? materialShaderId
+    : (shader.materialVariantArtifactIdentifier?.(materialShaderId, variant.definesKey) ??
+        materialShaderId);
+}
+
+type SourceArtifactRegistry = Partial<
+  Pick<ShaderRegistry, 'isSourceBackedMaterialArtifact' | 'materialVariantArtifactIdentifier'>
+>;
+
+/** Geometry projection consumes the Pack's ABI without constructing a program. */
+export function materialRasterSourceFacts(
+  shader: ShaderRegistry,
+  materialShaderId: string,
+  options: MaterialShaderArtifactRequest,
+): BatchArtifactFacts | undefined {
+  options = resolvedRasterArtifactRequest(options);
+  const variant = selectedFamilyVariant(
+    shader.materialShaderManifestEntry(materialShaderId),
+    options,
+  );
+  if (variant === null) return undefined;
+  const declaration = shader.materialArtifactDeclaration(
+    sourceArtifactIdentifier(materialShaderId, variant, shader),
+  );
+  const receipt = materialReceiptForGeometry(
+    declaration?.kind === 'ready'
+      ? declaration.entry.receipt
+      : declaration?.kind === 'source' || declaration?.kind === 'bytes'
+        ? declaration.receipt
+        : undefined,
+    options,
+  );
+  if (receipt === undefined) return undefined;
+  return {
+    material: materialShaderId,
+    receipt,
+    layoutIdentity: receipt.reflection.layoutIdentity,
+    uvSetCount: receiptUvSetCount(receipt),
+  };
+}
+
 /**
  * Resolve any producer-published material artifact through its manifest
  * variant relation. It never fabricates a receipt: a custom shader without producer ABI remains
@@ -247,9 +317,12 @@ export function resolveMaterialShaderArtifact(
   shader: Pick<
     ShaderRegistry,
     'findMaterialArtifact' | 'materialProgram' | 'materialShaderManifestEntry'
-  >,
+  > &
+    SourceArtifactRegistry,
   options: MaterialShaderArtifactRequest = {},
+  prepare?: (identifier: string) => boolean,
 ): MaterialShaderArtifact | undefined {
+  options = resolvedRasterArtifactRequest(options);
   const shadowLookup =
     options.pass === 'shadow' && isCanonicalStandardPbrMaterialShader(materialShaderId);
   const firstLookupId = shadowLookup ? SHADOW_CASTER_SHADER_ID : materialShaderId;
@@ -265,9 +338,19 @@ export function resolveMaterialShaderArtifact(
   // Keep alias/failure order without allocating and iterating an array per draw.
   for (let index = 0; index < lookupCount; index++) {
     const lookupId = index === 0 ? firstLookupId : (fallbackLookupId ?? firstLookupId);
-    const lookup = shader.findMaterialArtifact(lookupId);
-    if (!lookup.ok) continue;
     const manifestEntry = shader.materialShaderManifestEntry(lookupId);
+    const sourceBacked = shader.isSourceBackedMaterialArtifact?.(lookupId) === true;
+    let sourceVariant: PublishedVariant | undefined;
+    let preparedId = lookupId;
+    if (sourceBacked) {
+      const selected = selectedFamilyVariant(manifestEntry, options);
+      if (selected === null) continue;
+      sourceVariant = selected;
+      preparedId = sourceArtifactIdentifier(lookupId, sourceVariant, shader);
+      if (prepare?.(preparedId) === false) continue;
+    }
+    const lookup = shader.findMaterialArtifact(preparedId, 'optional');
+    if (!lookup?.ok) continue;
     let cache = publishedArtifacts.get(lookup.value);
     if (cache === undefined || cache.manifest !== manifestEntry) {
       cache = { manifest: manifestEntry, requests: new Map() };
@@ -302,6 +385,7 @@ export function resolveMaterialShaderArtifact(
       shader,
       manifestEntry,
       options,
+      sourceBacked ? sourceVariant : selectedFamilyVariant(manifestEntry, options),
     );
     const shaders = shaderRequests ?? new Map();
     const variants = variantRequests ?? new Map();
@@ -313,12 +397,41 @@ export function resolveMaterialShaderArtifact(
   return undefined;
 }
 
+function resolvedRasterArtifactRequest(
+  options: MaterialShaderArtifactRequest,
+): MaterialShaderArtifactRequest {
+  if (options.surfaceDiscards === undefined) return options;
+  return {
+    ...options,
+    variantSet: variantSetForSurfaceDiscards(options.variantSet, options.surfaceDiscards),
+  };
+}
+
 /** Source lookup and PSO construction consume the same declared-axis key. */
 function materialVariantRequest(
   manifest: MaterialShaderManifestEntry,
   options: MaterialShaderArtifactRequest,
 ): MaterialShaderArtifactRequest {
   if (options.variantSet === undefined) return options;
+  if (
+    options.variantSet.includes('COVERAGE_ONLY=true') &&
+    isCanonicalStandardPbrMaterialShader(manifest.identifier)
+  ) {
+    const defines = Object.fromEntries(
+      options.variantSet.split('+').map((part) => {
+        const [axis, value] = part.split('=');
+        return [axis, value === 'true'];
+      }),
+    );
+    projectStandardCoverageDefines(defines);
+    options = {
+      ...options,
+      variantSet: Object.entries(defines)
+        .map(([axis, value]) => `${axis}=${value}`)
+        .join('+'),
+      visibleSurface: false,
+    };
+  }
   const variantSet = declaredMaterialVariantKey(options.variantSet, manifest);
   if (variantSet === options.variantSet) return options;
   const { variantSet: _requested, ...rest } = options;
@@ -333,22 +446,9 @@ function assembleRequestedArtifact(
   shader: Pick<ShaderRegistry, 'materialProgram'>,
   manifestEntry: MaterialShaderManifestEntry | undefined,
   options: MaterialShaderArtifactRequest,
+  selected: PublishedVariant | null | undefined,
 ): MaterialShaderArtifact | typeof ABSENT {
-  const hasVariants =
-    manifestEntry !== undefined &&
-    (isShaderTemplateManifestRow(manifestEntry)
-      ? materialShaderAxes(manifestEntry).length > 0
-      : manifestEntry.variants.length > 0);
-  const selected =
-    manifestEntry === undefined || !hasVariants
-      ? undefined
-      : selectPublishedVariant(manifestEntry, materialVariantRequest(manifestEntry, options));
-  // A published variant set is an explicit producer contract. Falling back
-  // to the primary entry when the requested axes have no variant would pair
-  // one source with another artifact's receipt.
-  if (hasVariants && selected === undefined) {
-    return ABSENT;
-  }
+  if (selected === null) return ABSENT;
   const selectedEntry =
     selected === undefined
       ? entry

@@ -14,17 +14,21 @@ it.each([
   const source = (name: string) =>
     readFileSync(resolve('packages/shader/src', `${name}.wgsl`), 'utf8');
   const imports = Object.fromEntries(
-    ['common', 'standard-gbuffer', 'depth-pyramid-sample', 'scene-temporal'].map((name) => {
-      const text = source(name);
-      return [text.match(/#define_import_path (\S+)/)?.[1] ?? '', text];
-    }),
+    ['common', 'standard-gbuffer', 'depth-pyramid-sample', 'scene-temporal', 'ssr-ray'].map(
+      (name) => {
+        const text = source(name);
+        return [text.match(/#define_import_path (\S+)/)?.[1] ?? '', text];
+      },
+    ),
   );
-  const shaders = {} as Record<Exclude<keyof SsrProbeShaderSources, 'gbuffer'>, string>;
+  const shaders = {} as Record<
+    Exclude<keyof SsrProbeShaderSources, 'gbuffer' | 'compactGbuffer'>,
+    string
+  >;
   for (const [key, name] of Object.entries({
     seed: 'depth-pyramid-seed',
     reduce: 'depth-pyramid-reduce',
     trace: 'ssr-trace',
-    temporal: 'ssr-temporal',
     compose: 'ssr-compose',
   })) {
     const text = source(name);
@@ -33,7 +37,7 @@ it.each([
       imports,
     });
     if (!compiled.ok) throw compiled.error;
-    shaders[key as Exclude<keyof SsrProbeShaderSources, 'gbuffer'>] = compiled.value.wgsl;
+    shaders[key as keyof typeof shaders] = compiled.value.wgsl;
   }
   const recorder = attachRecorder(webgpu).unwrap();
   const device = (

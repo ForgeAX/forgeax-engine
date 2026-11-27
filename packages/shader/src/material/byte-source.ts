@@ -1,14 +1,19 @@
 import { copyRetainedZstdBytes, retainedZstdBytes } from '@forgeax/engine-codec';
-import { ShaderSource } from '@forgeax/engine-types';
+import { type MaterialRasterSourceRecipe, ShaderSource } from '@forgeax/engine-types';
+import type { Result, ShaderError } from '../errors.js';
 import type { MaterialShaderProgram } from './program.js';
 
 /**
- * A program's bytes with the content digest its container check already
- * established. The digest is the identity; the registry never rehashes.
+ * A program's byte owner and content identity. Pack bytes have already passed
+ * the container check. A source owner verifies rebuilt bytes before publishing.
  */
 export interface MaterialByteSource {
-  readonly bytes: Uint8Array;
   readonly digest: string;
+  readonly recipe?: MaterialRasterSourceRecipe;
+  bytes?: Uint8Array;
+  readonly prepare?: () => Promise<Result<Uint8Array, ShaderError>>;
+  pending?: Promise<Result<void, ShaderError>>;
+  failure?: ShaderError;
   source?: ShaderSource;
   program?: MaterialShaderProgram;
 }
@@ -29,7 +34,10 @@ export function ownMaterialByteSource(bytes: Uint8Array, digest: string): Materi
 }
 
 export function readMaterialByteSource(owner: MaterialByteSource): ShaderSource {
-  owner.source ??= decodedSource(owner.bytes, owner.digest);
+  if (owner.source !== undefined) return owner.source;
+  const bytes = owner.bytes;
+  if (bytes === undefined) throw new TypeError('Cannot read an unprepared material program');
+  owner.source = decodedSource(bytes, owner.digest);
   return owner.source;
 }
 

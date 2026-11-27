@@ -143,9 +143,7 @@ describe('Motion Blur feature plan', () => {
     expect(MOTION_BLUR_COMPUTE_WGSL).toContain('if (!inBounds) {');
     expect(MOTION_BLUR_COMPUTE_WGSL).toContain('depthReject');
     expect(MOTION_BLUR_COMPUTE_WGSL).toContain('sourceVelocitySegmentCovers');
-    expect(MOTION_BLUR_COMPUTE_WGSL).toContain('TILE_NEIGHBORHOOD_COUNT');
     expect(MOTION_BLUR_COMPUTE_WGSL).toContain('tileIntersectsWorkgroupSupport');
-    expect(MOTION_BLUR_COMPUTE_WGSL).toContain('tileNeighborhoodOffset');
     expect(MOTION_BLUR_COMPUTE_WGSL).toContain('const EDGE_FILL_FACTOR : f32 = 0.99;');
     expect(MOTION_BLUR_COMPUTE_WGSL).toContain('let acceptedColor');
     expect(MOTION_BLUR_COMPUTE_WGSL).toContain('let acceptedAlpha');

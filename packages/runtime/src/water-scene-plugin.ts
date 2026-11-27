@@ -199,6 +199,10 @@ function hasOtherLiveBodyAssetOwner(
   return false;
 }
 
+function impulseNoiseKind(assets: WaterSceneAssetAccess, guid: string): 'texture' | 'gpu-texture' {
+  return assets.referenceKind?.(guid) === 'gpu-texture' ? 'gpu-texture' : 'texture';
+}
+
 function waterDependencyVersion(
   dependency: WaterDependencySnapshot | undefined,
 ): string | undefined {
@@ -2735,7 +2739,7 @@ export function reconcileWaterScene(
       ),
     ].sort(),
   );
-  const fluidRecipeDependencies: { guid: string; kind: 'texture' }[] = [];
+  const fluidRecipeDependencies: { guid: string; kind: 'texture' | 'gpu-texture' }[] = [];
   for (const span of world
     .query({ read: [WaterFluidSimulation] })
     .unwrap()
@@ -2745,7 +2749,10 @@ export function reconcileWaterScene(
     for (let index = 0; index < span.length; index++) {
       const recipe = assets.read(recipes.get(index) as AssetHandle<'water-simulation-recipe'>);
       if (recipe?.kind === 'water-simulation-recipe' && recipe.system === 'fluid-simulation')
-        fluidRecipeDependencies.push({ guid: recipe.impulseNoiseGuid, kind: 'texture' });
+        fluidRecipeDependencies.push({
+          guid: recipe.impulseNoiseGuid,
+          kind: impulseNoiseKind(assets, recipe.impulseNoiseGuid),
+        });
     }
   }
   assets.syncBodyDependencies?.(
@@ -3318,10 +3325,11 @@ export function reconcileWaterScene(
           });
           continue;
         }
+        const noiseKind = impulseNoiseKind(assets, recipe.impulseNoiseGuid);
         const { payload: _noisePayload, ...impulseNoiseDependency } = assets.dependency?.(
           recipe.impulseNoiseGuid,
-          'texture',
-        ) ?? { guid: recipe.impulseNoiseGuid, kind: 'texture', status: 'unavailable' as const };
+          noiseKind,
+        ) ?? { guid: recipe.impulseNoiseGuid, kind: noiseKind, status: 'unavailable' as const };
         fluidInputs.push({
           instanceId,
           recipeGuid,

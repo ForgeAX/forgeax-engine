@@ -105,9 +105,6 @@ function contribution<K extends WaterKind>(kind: K): AssetDecoderContribution<Wa
                             )
                           : []),
                         ...admittedAsset.textureGuids.map((guid) => [guid, 'texture'] as const),
-                        ...(admittedAsset.system === 'fluid-simulation'
-                          ? [[admittedAsset.impulseNoiseGuid, 'texture'] as const]
-                          : []),
                         ...(admittedAsset.system === 'water-advanced' &&
                         admittedAsset.riverBakeConfig
                           ? [[admittedAsset.riverBakeConfig.sourceBodyGuid, 'water-body'] as const]
@@ -124,6 +121,17 @@ function contribution<K extends WaterKind>(kind: K): AssetDecoderContribution<Wa
         for (const [guid, targetKind] of references) {
           const resolved = reference(guid, targetKind);
           if (!resolved.ok) return resolved;
+        }
+        if (
+          admittedAsset.kind === 'water-simulation-recipe' &&
+          admittedAsset.system === 'fluid-simulation'
+        ) {
+          const guid = admittedAsset.impulseNoiseGuid;
+          const texture = reference(guid, 'texture');
+          if (!texture.ok) {
+            const generated = reference(guid, 'gpu-texture');
+            if (!generated.ok) return generated;
+          }
         }
         return ok(value.value as WaterPayload<K>);
       },

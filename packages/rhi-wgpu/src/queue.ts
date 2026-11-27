@@ -22,7 +22,6 @@
 
 import {
   type Buffer,
-  bufferWriteRange,
   type CommandBuffer,
   createQueueCompletionHold,
   type ExternalImageTextureDestination,
@@ -33,6 +32,7 @@ import {
   type Result,
   type RhiError,
   type RhiQueue,
+  readBufferWriteRange,
   type TexelCopyTextureInfo,
   textureCopyOrigin,
 } from '@forgeax/engine-rhi';
@@ -152,6 +152,7 @@ export interface RawQueueLike {
 
 class RhiWgpuQueueImpl implements RhiQueue {
   private readonly raw: RawQueueLike;
+  private readonly sourceRange = { byteOffset: 0, byteLength: 0 };
   private readonly completions = createQueueCompletionHold();
   constructor(raw: RawQueueLike) {
     this.raw = raw;
@@ -179,19 +180,21 @@ class RhiWgpuQueueImpl implements RhiQueue {
     if (this.raw.writeBuffer === undefined) {
       return webgpuRuntimeError(new Error('underlying queue handle does not expose writeBuffer'));
     }
-    const range = bufferWriteRange(data, dataOffset, size);
+    const range = readBufferWriteRange(this.sourceRange, data, dataOffset, size);
     if (!range.ok) return range;
+    // A native handle getter can issue a nested write through this queue.
+    const { byteOffset, byteLength } = this.sourceRange;
     const bufferSize = bufferByteLength(buffer) ?? Number.MAX_SAFE_INTEGER;
     if (
       !Number.isSafeInteger(bufferOffset) ||
       bufferOffset < 0 ||
       bufferOffset % 4 !== 0 ||
-      bufferOffset + range.value.byteLength > bufferSize
+      bufferOffset + byteLength > bufferSize
     ) {
       return err(
         queueWriteBufferOutOfBounds({
           offset: bufferOffset,
-          byteLength: range.value.byteLength,
+          byteLength,
           bufferSize,
         }),
       );
@@ -222,8 +225,8 @@ class RhiWgpuQueueImpl implements RhiQueue {
         rawBuffer,
         BigInt(bufferOffset),
         bytes,
-        BigInt(range.value.byteOffset),
-        BigInt(range.value.byteLength),
+        BigInt(byteOffset),
+        BigInt(byteLength),
       );
       return ok(undefined);
     } catch (e) {

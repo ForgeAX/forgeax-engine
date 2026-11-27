@@ -22,7 +22,11 @@ import {
 import { Materials } from '../../materials';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
-import { encodeRenderPublication, renderPublicationTransfers } from '../record';
+import {
+  encodeRenderPublication,
+  renderPublicationAssetTransfers,
+  renderPublicationTransfers,
+} from '../record';
 import { worldRenderResources } from '../resource-scope';
 
 const BUILTIN_CUBE = createPrimitiveMesh('cube').unwrap();
@@ -664,6 +668,7 @@ it('preserves fixed mesh numeric views independently of the current version and 
   const fixedPosition = fixed.value.attributes.position;
   if (!(fixedPosition instanceof Float32Array)) throw new Error('The fixed positions are required');
   const expected = Array.from(fixedPosition);
+  const expectedVertex = fixed.value.vertices[0];
   assets
     .replace(handle, {
       ...structuredClone(geometry),
@@ -684,10 +689,23 @@ it('preserves fixed mesh numeric views independently of the current version and 
   const receiver = new RenderPublicationReceiver(identity);
   try {
     const candidate = publisher.prepare(0).unwrap();
-    const packet = structuredClone(candidate.packet);
+    const outgoing = candidate.message.side?.assetVersions?.[0]?.value;
+    if (outgoing?.kind !== 'mesh') throw new Error('The fixed mesh must be published');
+    const fixedBuffer = outgoing.vertices.buffer as ArrayBuffer;
+    const assetBuffers = renderPublicationAssetTransfers(candidate.message);
+    expect(assetBuffers).toContain(fixedBuffer);
+    expect(fixedBuffer).not.toBe(fixed.value.vertices.buffer);
+    const message = structuredClone(candidate.message, {
+      transfer: [...renderPublicationTransfers(candidate.message), ...assetBuffers],
+    });
+    expect(fixedBuffer.byteLength).toBe(0);
+    expect(fixed.value.vertices.byteLength).toBeGreaterThan(0);
+    const received = message.side?.assetVersions?.[0]?.value;
+    if (received?.kind !== 'mesh') throw new Error('The receiver must get the fixed mesh');
     candidate.accept();
-    const accepted = receiver.accept(encodeRenderPublication(packet)).unwrap();
+    const accepted = receiver.accept(message).unwrap();
     const mesh = accepted.resources.resolveAsset<MeshAsset>(handle, fixed.revision).unwrap();
+    expect(mesh.vertices.buffer).toBe(received.vertices.buffer);
     expect(mesh.attributes.position).toBeInstanceOf(Float32Array);
     expect(mesh.vertices).toBeInstanceOf(Float32Array);
     expect(mesh.indices?.constructor).toBe(geometry.indices?.constructor);
@@ -696,11 +714,120 @@ it('preserves fixed mesh numeric views independently of the current version and 
     expect(accepted.resources.resolveAsset<MeshAsset>(handle).unwrap().aabb).toEqual(
       new Float32Array([-2, -2, -2, 2, 2, 2]),
     );
-    fixedPosition[0] = 123;
-    expect((mesh.attributes.position as Float32Array)[0]).toBe(expected[0]);
+    fixed.value.vertices[0] = 123;
+    expect(mesh.vertices[0]).toBe(expectedVertex);
   } finally {
     fixed.dispose();
     publisher.dispose();
+    assets.dispose();
+  }
+});
+
+it('keeps a prepared Mesh for fixed consumers without sending its payload again', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const handle = assets.create(BUILTIN_CUBE).unwrap();
+  const contentRevision = assets.revision(handle).unwrap();
+  assets.create(Materials.unlit([1, 1, 1, 1])).unwrap();
+  const fixed = runtimeAssets(assets).pin<MeshAsset>(handle).unwrap();
+  expect(fixed.revision).toBeGreaterThan(contentRevision);
+  let showFixed = true;
+  const identity = { source: 'fixed-prepared-mesh', epoch: 1 };
+  const receiver = new RenderPublicationReceiver(identity);
+  const prepared = receiver
+    .prepareMesh({ ...identity, meshHandle: handle, revision: contentRevision, mesh: fixed.value })
+    .unwrap();
+  const feature: RenderFeature<unknown> = {
+    identity: 'fixed-prepared-mesh',
+    extract(context) {
+      if (showFixed) context.referenceAssetVersion?.(fixed);
+      return ok(undefined);
+    },
+    assetDependencies: () => [handle],
+    plan: () => ok({ work: [] }),
+  };
+  const publisher = createRenderPublisher(
+    world,
+    assets,
+    identity,
+    undefined,
+    [feature],
+    undefined,
+    undefined,
+    2,
+    (candidate, revision) =>
+      candidate === handle && revision === contentRevision && prepared.isCurrent(),
+  );
+  const publish = (candidate = publisher.prepare(0).unwrap()) => {
+    const outgoing = candidate.message;
+    const packet = structuredClone(outgoing, {
+      transfer: [
+        ...renderPublicationTransfers(outgoing),
+        ...renderPublicationAssetTransfers(outgoing),
+      ],
+    });
+    candidate.accept();
+    const accepted = receiver.accept(packet).unwrap();
+    publisher.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+    return accepted.resources;
+  };
+  try {
+    const admitted = publisher.prepare(0).unwrap();
+    expect(admitted.message.side?.assetVersions).toEqual([
+      { handle, revision: fixed.revision, preparedRevision: contentRevision },
+    ]);
+    expect(renderPublicationAssetTransfers(admitted.message)).toEqual([]);
+    expect(
+      receiver.accept(
+        encodeRenderPublication({
+          ...admitted.packet,
+          assetVersions: [{ handle, revision: fixed.revision, preparedRevision: fixed.revision }],
+        }),
+      ),
+    ).toMatchObject({ ok: false, error: { detail: { reason: 'revision' } } });
+    const resources = publish(admitted);
+    expect(resources.resolveAsset(handle).unwrap()).toBe(prepared.mesh);
+    const original = resources.resolveAsset<MeshAsset>(handle, fixed.revision).unwrap();
+    expect(original.vertices.buffer).toBe(prepared.mesh.vertices.buffer);
+    const before = receiver.inspectMeshStorage().preparedBytes;
+    expect(before).toBeGreaterThan(0);
+
+    prepared.release();
+    const originalVertices = original.vertices.slice();
+    const changedPosition = originalVertices.slice(0, 3);
+    changedPosition[0] += 0.125;
+    assets
+      .writeRange(handle, { attribute: 'position', first: 0, values: changedPosition })
+      .unwrap();
+    const patch = publisher.prepare(0).unwrap();
+    expect(patch.packet.assetPatches).toHaveLength(1);
+    publish(patch);
+    expect(original.vertices).toEqual(originalVertices);
+    expect(resources.resolveAsset<MeshAsset>(handle).unwrap().vertices).not.toEqual(
+      originalVertices,
+    );
+    assets
+      .replace(handle, { ...BUILTIN_CUBE, aabb: new Float32Array([-2, -2, -2, 2, 2, 2]) })
+      .unwrap();
+    for (let frame = 0; frame < 12; frame++) publish();
+    expect(resources.resolveAsset(handle, fixed.revision).unwrap()).toBe(original);
+    expect(resources.resolveAsset<MeshAsset>(handle).unwrap().aabb).toEqual(
+      assets.read(handle).unwrap().aabb,
+    );
+    expect(original.aabb).toEqual(BUILTIN_CUBE.aabb);
+    expect(receiver.inspectMeshStorage().preparedBytes).toBe(before);
+
+    showFixed = false;
+    publish();
+    expect(resources.resolveAsset(handle, fixed.revision).ok).toBe(false);
+    expect(receiver.inspectMeshStorage().preparedBytes).toBe(0);
+  } finally {
+    prepared.release();
+    fixed.dispose();
+    publisher.dispose();
+    receiver.dispose();
     assets.dispose();
   }
 });

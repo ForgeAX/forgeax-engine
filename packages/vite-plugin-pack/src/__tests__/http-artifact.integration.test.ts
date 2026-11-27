@@ -99,14 +99,14 @@ async function serve(
     state: {
       artifactCompression: compression,
       catalogProjection: {
-        schemaVersion: 'catalog-legacy-v1',
         entries: [],
         authority: 'authoritative',
         diagnostics: [],
         declarations: new Map(),
         sourceDeclarations: new Map(),
+        packInstances: new Map(),
       },
-      importedGuids: new Set(),
+      authoredPublications: new Map(),
       metaPackBodies: new Map(),
       devArtifactBodies: new Map([[artifactPath, artifact]]),
     },
@@ -116,7 +116,7 @@ async function serve(
       ensureMetaPackBody: async () => undefined,
     },
     devSession,
-    scopedPackageUrl: (_binding, url) => url,
+    scopedCatalogEntry: (_scope, entry) => entry,
     scopedCatalogBody: () => '',
   });
   const server = createServer((req, res) => {

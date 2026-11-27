@@ -1,11 +1,13 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { temporaryDirectories } from '../../../../scripts/test/temporary-directories.mjs';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import * as canonical from '../canonical-json.js';
 import { DdcEntryStore, ddcOutputDigest } from '../entry-store.js';
 import { DdcStoreError } from '../errors.js';
 import { DdcLifecycle } from '../lifecycle.js';
+import { ddcEntryFixture } from './entry-fixture.js';
 
 const GUID = '019e3969-1d48-7c3b-ac24-6d68f457065f';
 const KEY_A = 'a'.repeat(64);
@@ -59,38 +61,33 @@ async function expectHeadConflict(
 }
 
 async function writeEntry(root: string, key: string): Promise<void> {
-  const base = {
-    key,
-    guid: GUID,
-    payload: { key },
-    refs: [],
-    artifacts: {},
-    receipt: {
-      guid: GUID,
+  await new DdcEntryStore(root).write(
+    ddcEntryFixture(
+      {
+        key,
+        guid: GUID,
+        payload: { key },
+        refs: [],
+        artifacts: {},
+      },
+      'test',
       key,
-      producer: 'test',
-      inputFingerprint: key,
-      outputDigest: '',
-    },
-  } as const;
-  await new DdcEntryStore(root).write({
-    ...base,
-    receipt: { ...base.receipt, outputDigest: ddcOutputDigest(base) },
-  });
+    ),
+  );
 }
 
 describe('DDC lifecycle head', () => {
-  const roots: string[] = [];
+  const scratch = temporaryDirectories();
 
-  afterEach(async () => {
-    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  let root: string;
+  let lifecycle: DdcLifecycle;
+  beforeEach(async () => {
+    root = await scratch.make('forgeax-ddc-lifecycle-');
+    lifecycle = new DdcLifecycle(root);
   });
+  afterEach(scratch.clear);
 
   it('moves missing to cooking and current only after validated commit', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
-    const lifecycle = new DdcLifecycle(root);
-
     await expect(lifecycle.inspect(GUID, KEY_A)).resolves.toMatchObject({ state: 'missing' });
     const lease = await lifecycle.begin(GUID, KEY_A);
     await expect(lifecycle.inspect(GUID, KEY_A)).resolves.toMatchObject({ state: 'cooking' });
@@ -106,9 +103,6 @@ describe('DDC lifecycle head', () => {
   });
 
   it('returns the exact accepted head and LKG after one commit validation', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
-    const lifecycle = new DdcLifecycle(root);
     const first = await lifecycle.begin(GUID, KEY_A);
     await writeEntry(root, KEY_A);
     await lifecycle.commit(first, KEY_A);
@@ -149,9 +143,6 @@ describe('DDC lifecycle head', () => {
   });
 
   it('reads the accepted entry together with its projected current head', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
-    const lifecycle = new DdcLifecycle(root);
     const lease = await lifecycle.begin(GUID, KEY_A);
     await writeEntry(root, KEY_A);
     await lifecycle.commit(lease, KEY_A);
@@ -173,9 +164,6 @@ describe('DDC lifecycle head', () => {
   });
 
   it('rejects a current-entry read superseded during integrity validation', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-read-fence-'));
-    roots.push(root);
-    const lifecycle = new DdcLifecycle(root);
     const first = await lifecycle.begin(GUID, KEY_A);
     await writeEntry(root, KEY_A);
     await lifecycle.commit(first, KEY_A);
@@ -200,52 +188,44 @@ describe('DDC lifecycle head', () => {
     }
   });
 
-  it('retains last-known-good when recook fails', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
-    const lifecycle = new DdcLifecycle(root);
-    const first = await lifecycle.begin(GUID, KEY_A);
-    await writeEntry(root, KEY_A);
-    await lifecycle.commit(first, KEY_A);
-    const second = await lifecycle.begin(GUID, KEY_B);
-    await lifecycle.fail(second, { code: 'producer-failed', detail: 'invalid source' });
-
-    await expect(lifecycle.inspect(GUID, KEY_B)).resolves.toMatchObject({
-      state: 'failed',
-      lastKnownGoodKey: KEY_A,
-      currentKey: KEY_A,
-      failure: { code: 'producer-failed' },
-    });
-  });
-
-  it('does not promote an old result after the desired key changes', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
-    const lifecycle = new DdcLifecycle(root);
-    const first = await lifecycle.begin(GUID, KEY_A);
-    await writeEntry(root, KEY_A);
-    await lifecycle.commit(first, KEY_A);
-    const second = await lifecycle.begin(GUID, KEY_B);
-
-    await expect(lifecycle.inspect(GUID, KEY_B)).resolves.toMatchObject({
-      state: 'cooking',
-      lastKnownGoodKey: KEY_A,
-    });
-    await expect(lifecycle.commit(second, KEY_A)).resolves.toEqual({
-      result: 'stale',
-      key: KEY_A,
-      revision: 1,
-    });
-    await expect(lifecycle.inspect(GUID, KEY_B)).resolves.toMatchObject({
-      state: 'stale',
-      lastKnownGoodKey: KEY_A,
-      currentKey: KEY_A,
+  it.each([
+    'first failure',
+    'recook failure',
+    'stale completion',
+  ] as const)('projects the accepted DDC head after %s', async (outcome) => {
+    const accepted = outcome !== 'first failure';
+    if (accepted) {
+      const first = await lifecycle.begin(GUID, KEY_A);
+      await writeEntry(root, KEY_A);
+      await lifecycle.commit(first, KEY_A);
+    }
+    const desired = accepted ? KEY_B : KEY_A;
+    const attempt = await lifecycle.begin(GUID, desired);
+    if (outcome === 'stale completion') {
+      await expect(lifecycle.inspect(GUID, desired)).resolves.toMatchObject({
+        state: 'cooking',
+        lastKnownGoodKey: KEY_A,
+      });
+      await expect(lifecycle.commit(attempt, KEY_A)).resolves.toEqual({
+        result: 'stale',
+        key: KEY_A,
+        revision: 1,
+      });
+    } else {
+      await lifecycle.fail(attempt, {
+        code: 'producer-failed',
+        detail: accepted ? 'invalid source' : 'missing input',
+      });
+    }
+    await expect(lifecycle.inspect(GUID, desired)).resolves.toMatchObject({
+      state: outcome === 'stale completion' ? 'stale' : 'failed',
+      lastKnownGoodKey: accepted ? KEY_A : undefined,
+      currentKey: accepted ? KEY_A : undefined,
+      ...(outcome === 'recook failure' ? { failure: { code: 'producer-failed' } } : {}),
     });
   });
 
   it('uses a persisted heartbeat expiry with an older lease token', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
     const lifecycle = new DdcLifecycle(root, { leaseTtlMs: 100 });
     let now = 1_000;
     const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
@@ -263,15 +243,13 @@ describe('DDC lifecycle head', () => {
 
       const newer = await lifecycle.begin(GUID, KEY_B);
       await expect(lifecycle.commit(lease, KEY_A)).resolves.toMatchObject({ result: 'lease-lost' });
-      await lifecycle.close(newer);
+      await lifecycle.discard(newer);
     } finally {
       clock.mockRestore();
     }
   });
 
   it('fences expiry after immutable entry validation finishes', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
     await writeEntry(root, KEY_A);
     const lifecycle = new DdcLifecycle(root, { leaseTtlMs: 100 });
     let now = 1_000;
@@ -302,8 +280,6 @@ describe('DDC lifecycle head', () => {
   });
 
   it('cannot revive an expired persisted lease with a heartbeat', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
     const lifecycle = new DdcLifecycle(root, { leaseTtlMs: 100 });
     let now = 1_000;
     const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
@@ -319,9 +295,6 @@ describe('DDC lifecycle head', () => {
   });
 
   it('rejects heartbeat tokens with a different expected revision or desired key', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
-    const lifecycle = new DdcLifecycle(root);
     const lease = await lifecycle.begin(GUID, KEY_A);
     const before = await snapshotFiles(root);
     for (const token of [
@@ -335,19 +308,10 @@ describe('DDC lifecycle head', () => {
   });
 
   it('permits an owner heartbeat while immutable entry validation is pending', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
     await writeEntry(root, KEY_A);
-    const lifecycle = new DdcLifecycle(root);
     const lease = await lifecycle.begin(GUID, KEY_A);
-    let entered!: () => void;
-    const reading = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    let release!: () => void;
-    const barrier = new Promise<void>((resolve) => {
-      release = resolve;
-    });
+    const { promise: reading, resolve: entered } = testGate();
+    const { promise: barrier, resolve: release } = testGate();
     const read = DdcEntryStore.prototype.read;
     const validation = vi.spyOn(DdcEntryStore.prototype, 'read').mockImplementation(async function (
       this: DdcEntryStore,
@@ -379,8 +343,6 @@ describe('DDC lifecycle head', () => {
   });
 
   it('starts an owner heartbeat during numeric-payload integrity hashing', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
     const value = {
       key: KEY_A,
       guid: GUID,
@@ -398,7 +360,6 @@ describe('DDC lifecycle head', () => {
         outputDigest: ddcOutputDigest(value),
       },
     });
-    const lifecycle = new DdcLifecycle(root);
     const lease = await lifecycle.begin(GUID, KEY_A);
     const digest = canonical.canonicalDdcReadbackDigests;
     let hashing = false;
@@ -437,10 +398,7 @@ describe('DDC lifecycle head', () => {
   });
 
   it('rejects a lease superseded while its immutable entry was being validated', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
     await writeEntry(root, KEY_A);
-    const lifecycle = new DdcLifecycle(root);
     const lease = await lifecycle.begin(GUID, KEY_A);
     const read = DdcEntryStore.prototype.read;
     let successor: Awaited<ReturnType<DdcLifecycle['begin']>> | undefined;
@@ -453,9 +411,11 @@ describe('DDC lifecycle head', () => {
       return result;
     });
     try {
-      await expect(lifecycle.commit(lease, KEY_A)).resolves.toMatchObject({ result: 'stale' });
+      await expect(lifecycle.commit(lease, KEY_A)).resolves.toMatchObject({ result: 'lease-lost' });
       const head = JSON.parse(await readFile(join(root, 'heads', `${GUID}.json`), 'utf8'));
       expect(head.active.attempt).toBe(successor?.attempt);
+      expect(head.stale).toBeUndefined();
+      expect(head.supersededAttempts).toBeUndefined();
       expect(head.desiredKey).toBe(KEY_B);
       expect(head.currentKey).toBeUndefined();
     } finally {
@@ -463,24 +423,7 @@ describe('DDC lifecycle head', () => {
     }
   });
 
-  it('keeps a first cook failure failed without inventing a current or LKG', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
-    const lifecycle = new DdcLifecycle(root);
-    const lease = await lifecycle.begin(GUID, KEY_A);
-    await lifecycle.fail(lease, { code: 'producer-failed', detail: 'missing input' });
-
-    await expect(lifecycle.inspect(GUID, KEY_A)).resolves.toMatchObject({
-      state: 'failed',
-      currentKey: undefined,
-      lastKnownGoodKey: undefined,
-    });
-  });
-
   it('reports a corrupt current entry as failed with its identity preserved', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
-    const lifecycle = new DdcLifecycle(root);
     const store = new DdcEntryStore(root);
     const firstLease = await lifecycle.begin(GUID, KEY_A);
     await writeEntry(root, KEY_A);
@@ -495,12 +438,10 @@ describe('DDC lifecycle head', () => {
       head: { currentKey: KEY_B },
     });
 
-    const receiptPath = join(root, 'entries', KEY_B, 'receipt.json');
-    const receipt = JSON.parse(await readFile(receiptPath, 'utf8')) as { outputDigest: string };
-    await writeFile(
-      receiptPath,
-      JSON.stringify({ ...receipt, outputDigest: `sha256:${'0'.repeat(64)}` }),
-    );
+    const metadataPath = join(root, 'entries', KEY_B, 'entry.json');
+    const metadata = JSON.parse(await readFile(metadataPath, 'utf8'));
+    metadata.receipt.outputDigest = `sha256:${'0'.repeat(64)}`;
+    await writeFile(metadataPath, JSON.stringify(metadata));
 
     await expect(store.readChecked(KEY_B)).resolves.toMatchObject({
       ok: false,
@@ -525,9 +466,6 @@ describe('DDC lifecycle head', () => {
     bytes,
     actual,
   }) => {
-    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-lifecycle-'));
-    roots.push(root);
-    const lifecycle = new DdcLifecycle(root);
     const store = new DdcEntryStore(root);
     const firstLease = await lifecycle.begin(GUID, KEY_A);
     await writeEntry(root, KEY_A);
@@ -570,6 +508,6 @@ describe('DDC lifecycle head', () => {
     const nextLease = await lifecycle.begin(GUID, KEY_C);
     expect(nextLease.expectedRevision).toBe(prior.revision);
     expect(nextLease.generation).toBe((prior.generation ?? 0) + 1);
-    await lifecycle.close(nextLease);
+    await lifecycle.discard(nextLease);
   });
 });

@@ -6,6 +6,7 @@ import {
   type MaterialShaderManifestEntry,
   type MaterialShaderManifestVariant,
   materialShaderAxes,
+  preferredMaterialShaderTemplateVariant,
 } from '@forgeax/engine-shader';
 import type { MaterialShaderArtifactRequest } from './assembly';
 
@@ -30,35 +31,34 @@ function hasExplicitVariantAxis(options: MaterialShaderArtifactRequest, axis: st
   return options.variantSet === '' || options.variantSet?.includes(`${axis}=`) === true;
 }
 
-function requestAxes(
-  options: MaterialShaderArtifactRequest,
-): readonly (readonly [string, boolean | undefined])[] {
-  return [
-    ['VERTEX_COLOR_AVAILABLE', options.vertexColorAvailable],
-    [
-      'SKINNING_DISABLED',
-      options.deformation === undefined ? undefined : options.deformation !== 'skin',
-    ],
-    ['CLUSTER_FORWARD_AVAILABLE', options.clustered],
-    ['PROBE_BLEND_AVAILABLE', options.probeBlend],
-    ['REFLECTION_FALLBACK_AVAILABLE', options.reflectionFallback],
-    ['VISIBLE_SURFACE_AVAILABLE', options.visibleSurface ?? false],
-    [
-      'WATER_WAVES_AVAILABLE',
-      hasExplicitVariantAxis(options, 'WATER_WAVES_AVAILABLE') ? undefined : false,
-    ],
-    ['WATER_INFO_RGBA16', hasExplicitVariantAxis(options, 'WATER_INFO_RGBA16') ? undefined : false],
-    [
-      'ALPHA_MASK',
-      options.alphaMask ?? (hasExplicitVariantAxis(options, 'ALPHA_MASK') ? undefined : false),
-    ],
-    [
-      'GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
-      options.address === undefined ? undefined : options.address === 'scene-index',
-    ],
-    ['GPU_DRIVEN_SCENE_INDEX_EXPLICIT', options.address === undefined ? undefined : false],
-    ['GPU_SCENE_DIRECT', hasExplicitVariantAxis(options, 'GPU_SCENE_DIRECT') ? undefined : false],
-  ];
+/** Project only axes declared by the program. Unrelated material features need no per-draw rows. */
+function requestedAxis(options: MaterialShaderArtifactRequest, axis: string): boolean | undefined {
+  switch (axis) {
+    case 'VERTEX_COLOR_AVAILABLE':
+      return options.vertexColorAvailable;
+    case 'SKINNING_DISABLED':
+      return options.deformation === undefined ? undefined : options.deformation !== 'skin';
+    case 'CLUSTER_FORWARD_AVAILABLE':
+      return options.clustered;
+    case 'PROBE_BLEND_AVAILABLE':
+      return options.probeBlend;
+    case 'REFLECTION_FALLBACK_AVAILABLE':
+      return options.reflectionFallback;
+    case 'VISIBLE_SURFACE_AVAILABLE':
+      return options.visibleSurface ?? false;
+    case 'WATER_WAVES_AVAILABLE':
+    case 'WATER_INFO_RGBA16':
+    case 'GPU_SCENE_DIRECT':
+      return hasExplicitVariantAxis(options, axis) ? undefined : false;
+    case 'ALPHA_MASK':
+      return options.alphaMask ?? (hasExplicitVariantAxis(options, axis) ? undefined : false);
+    case 'GPU_DRIVEN_SCENE_INDEX_AVAILABLE':
+      return options.address === undefined ? undefined : options.address === 'scene-index';
+    case 'GPU_DRIVEN_SCENE_INDEX_EXPLICIT':
+      return options.address === undefined ? undefined : false;
+    default:
+      return undefined;
+  }
 }
 
 function nativeMatch(
@@ -72,61 +72,6 @@ function nativeMatch(
     : undefined;
 }
 
-/** Lowest publication key among legal completions of this exact preference score. */
-function firstNativeKey(
-  entry: MaterialShaderManifestEntry,
-  constraints: Record<string, boolean>,
-  axes: readonly string[],
-) {
-  let selected = nativeMatch(entry, constraints);
-  if (selected === undefined || selected.definesKey === '') return selected;
-  for (const axis of [...axes].sort()) {
-    if (Object.hasOwn(constraints, axis)) continue;
-    if (selected.defines[axis] === false) {
-      constraints[axis] = false;
-      continue;
-    }
-    const lower = nativeMatch(entry, { ...constraints, [axis]: false });
-    constraints[axis] = lower === undefined;
-    if (lower !== undefined) selected = lower;
-  }
-  return selected;
-}
-
-function preferredNativeVariant(
-  entry: MaterialShaderManifestEntry,
-  constraints: Record<string, boolean>,
-  axes: readonly string[],
-) {
-  // Only seven scoring fields branch (at most 128 small constraint records).
-  // Unscored feature axes are queried lazily; no family variant table is read.
-  let choices = [constraints];
-  for (const [axis] of VARIANT_PREFERENCES) {
-    if (!axes.includes(axis) || Object.hasOwn(constraints, axis)) continue;
-    choices = choices.flatMap((choice) => [
-      { ...choice, [axis]: false },
-      { ...choice, [axis]: true },
-    ]);
-  }
-  const ranked = choices
-    .map((defines) => ({ defines, score: variantScore(defines) }))
-    .sort((a, b) => b.score - a.score);
-  let selected: MaterialShaderManifestVariant | undefined;
-  let score = -1;
-  for (const choice of ranked) {
-    if (choice.score < score) break;
-    const candidate = firstNativeKey(entry, { ...choice.defines }, axes);
-    if (
-      candidate !== undefined &&
-      (selected === undefined || candidate.definesKey.localeCompare(selected.definesKey) < 0)
-    ) {
-      selected = candidate;
-      score = choice.score;
-    }
-  }
-  return selected;
-}
-
 function selectNativeVariant(
   entry: MaterialShaderManifestEntry,
   options: MaterialShaderArtifactRequest,
@@ -135,8 +80,9 @@ function selectNativeVariant(
   const axes = materialShaderAxes(entry);
   if (axes.length === 0) return undefined;
   const constraints: Record<string, boolean> = { ...explicit };
-  for (const [axis, value] of requestAxes(options)) {
-    if (value !== undefined && axes.includes(axis)) {
+  for (const axis of axes) {
+    const value = requestedAxis(options, axis);
+    if (value !== undefined) {
       if (Object.hasOwn(constraints, axis) && constraints[axis] !== value) return undefined;
       constraints[axis] = value;
     }
@@ -148,30 +94,7 @@ function selectNativeVariant(
   }
   if (axes.includes('COVERAGE_ONLY') && !Object.hasOwn(constraints, 'COVERAGE_ONLY'))
     constraints.COVERAGE_ONLY = false;
-  return preferredNativeVariant(entry, constraints, axes);
-}
-
-// General inputs are the default lane; only a lean GPU-driven batch narrows
-// them. Lean is a preference: a lane whose rules force the general inputs
-// (visible surface, LOD cross-fade) keeps the general row.
-function withLeanInputs<Variant extends MaterialShaderManifestEntry['variants'][number]>(
-  entry: Pick<MaterialShaderManifestEntry, 'variants'>,
-  candidates: Variant[],
-  options: MaterialShaderArtifactRequest,
-): Variant[] {
-  const leanInputs =
-    options.leanInputs ??
-    (hasExplicitVariantAxis(options, 'STANDARD_LEAN_INPUTS') ? undefined : false);
-  if (
-    leanInputs === undefined ||
-    !entry.variants.some((variant) => Object.hasOwn(variant.defines, 'STANDARD_LEAN_INPUTS'))
-  ) {
-    return candidates;
-  }
-  const lean = candidates.filter((variant) => variant.defines.STANDARD_LEAN_INPUTS === leanInputs);
-  return lean.length > 0 || !leanInputs
-    ? lean
-    : candidates.filter((variant) => variant.defines.STANDARD_LEAN_INPUTS === false);
+  return preferredMaterialShaderTemplateVariant(entry, constraints, VARIANT_PREFERENCES);
 }
 
 export function selectPublishedVariant(
@@ -181,7 +104,25 @@ export function selectPublishedVariant(
   if (isShaderTemplateManifestRow(entry)) {
     if (options.variantSet === undefined) return selectNativeVariant(entry, options);
     const selected = findVariantByKey(entry, options.variantSet);
-    if (selected !== undefined) return selectPublishedCandidates({ variants: [selected] }, options);
+    if (selected !== undefined && selected.definesKey === options.variantSet) {
+      // The canonical key already proves every explicit define. Only draw constraints remain.
+      for (const axis of materialShaderAxes(entry)) {
+        const expected = requestedAxis(options, axis);
+        if (expected !== undefined && selected.defines[axis] !== expected) return undefined;
+      }
+      const lean =
+        options.leanInputs ??
+        (hasExplicitVariantAxis(options, 'STANDARD_LEAN_INPUTS') ? undefined : false);
+      return lean === false && selected.defines.STANDARD_LEAN_INPUTS === true
+        ? undefined
+        : selected;
+    }
+    if (selected !== undefined)
+      return selectPublishedCandidates(
+        [selected],
+        Object.getOwnPropertyNames(selected.defines),
+        options,
+      );
     if (options.variantSet === '') return undefined;
     // Record-time discard requests constrain only their declared axes. Complete
     // the remaining geometry/capability axes without materializing their matrix.
@@ -197,58 +138,77 @@ export function selectPublishedVariant(
     }
     return selectNativeVariant(entry, options, explicit);
   }
-  return selectPublishedCandidates(entry, options);
+  return selectPublishedCandidates(entry.variants, materialShaderAxes(entry), options);
+}
+
+function matchesPublishedAxes(
+  defines: MaterialShaderManifestVariant['defines'],
+  axes: Iterable<readonly [string, boolean | undefined]>,
+): boolean {
+  for (const [axis, value] of axes) if (defines[axis] !== value) return false;
+  return true;
+}
+
+function parsePublishedVariantAxes(variantSet: string | undefined): ReadonlyMap<string, boolean> {
+  const axes = new Map<string, boolean>();
+  if (variantSet === undefined || variantSet === '') return axes;
+  for (const part of variantSet.split('+')) {
+    const [axis, value] = part.split('=');
+    axes.set(axis ?? '', value === 'true');
+  }
+  return axes;
 }
 
 function selectPublishedCandidates(
-  entry: Pick<MaterialShaderManifestEntry, 'variants'>,
+  variants: readonly MaterialShaderManifestVariant[],
+  axes: readonly string[],
   options: MaterialShaderArtifactRequest,
-): (typeof entry.variants)[number] | undefined {
-  // Empty is an explicit all-true key, not an unconstrained preference.
-  let withColor =
-    options.variantSet === ''
-      ? entry.variants.filter((variant) => variant.definesKey === '')
-      : [...entry.variants];
-  for (const [axis, requested] of requestAxes(options)) {
+): MaterialShaderManifestVariant | undefined {
+  const requested: [string, boolean][] = [];
+  for (const axis of axes) {
+    const expected = requestedAxis(options, axis);
+    if (expected !== undefined) requested.push([axis, expected]);
+  }
+  const { variantSet } = options;
+  const explicit = parsePublishedVariantAxes(variantSet);
+  const lean = axes.includes('STANDARD_LEAN_INPUTS')
+    ? (options.leanInputs ??
+      (hasExplicitVariantAxis(options, 'STANDARD_LEAN_INPUTS') ? undefined : false))
+    : undefined;
+  let foundLean = false;
+  let selected: MaterialShaderManifestVariant | undefined;
+  let highestScore = -1;
+  for (const variant of variants) {
+    const { defines, definesKey } = variant;
+    // Empty is the canonical all-true key, distinct from an unconstrained request.
+    if ((variantSet === '' && definesKey !== '') || !matchesPublishedAxes(defines, requested))
+      continue;
+    if (lean === true && defines.STANDARD_LEAN_INPUTS === true) {
+      // A lean row suppresses the fallback before coverage and explicit keys are checked.
+      if (!foundLean) {
+        foundLean = true;
+        selected = undefined;
+        highestScore = -1;
+      }
+    } else if (lean !== undefined && (foundLean || defines.STANDARD_LEAN_INPUTS !== false))
+      continue;
     if (
-      requested !== undefined &&
-      entry.variants.some((variant) => Object.hasOwn(variant.defines, axis))
+      variantSet === undefined
+        ? defines.COVERAGE_ONLY === true
+        : !matchesPublishedAxes(defines, explicit)
+    )
+      continue;
+    const score = variantScore(defines);
+    if (
+      selected === undefined ||
+      score > highestScore ||
+      (score === highestScore && definesKey.localeCompare(selected.definesKey) < 0)
     ) {
-      withColor = withColor.filter((variant) => variant.defines[axis] === requested);
+      selected = variant;
+      highestScore = score;
     }
   }
-  withColor = withLeanInputs(entry, withColor, options);
-  if (options.variantSet === undefined) {
-    // Coverage-only is an explicit temporal producer variant. Ordinary
-    // material publication must stay on the color-producing shader.
-    withColor = withColor.filter((variant) => variant.defines.COVERAGE_ONLY !== true);
-  }
-  if (options.variantSet !== undefined) {
-    const requestedAxes = new Map(
-      options.variantSet.length === 0
-        ? []
-        : options.variantSet.split('+').map((entry) => {
-            const [name, value] = entry.split('=');
-            return [name ?? '', value === 'true'] as const;
-          }),
-    );
-    withColor = withColor.filter((variant) =>
-      [...requestedAxes].every(([name, value]) => variant.defines[name] === value),
-    );
-  }
-  // GPU-driven Standard owns the storage-backed scene-index variant. Prefer that exact family, then fall back to the closest variant
-  // carrying the requested COLOR_0 fact. This keeps the selection deterministic
-  // without making capability names an admission whitelist.
-  const ranked = withColor
-    .map((variant) => ({
-      variant,
-      score: variantScore(variant.defines),
-    }))
-    .sort(
-      (left, right) =>
-        right.score - left.score || left.variant.definesKey.localeCompare(right.variant.definesKey),
-    );
-  return ranked[0]?.variant;
+  return selected;
 }
 
 export function declaredMaterialVariantKey(

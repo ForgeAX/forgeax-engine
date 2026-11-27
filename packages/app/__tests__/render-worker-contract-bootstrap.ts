@@ -97,6 +97,10 @@ const entry: ExecutionBootstrapEntry = async (data) => {
         const systemToken1 = defineSystem({ name: 'contract-tick', queries: [], fn: () => { marker = ++tick; } });
 ctx.world.addSystem(Update, systemToken1).unwrap();
         const receive = (event: MessageEvent) => {
+          if (event.data === 'observe-sealed-source') {
+            port?.postMessage({ kind: 'observed-sealed-source' });
+            return;
+          }
           if (event.data === 'mutate-sealed-source') {
             // Cross an await exactly like an admitted asynchronous inspection.
             void Promise.resolve().then(() => { marker = frameData.marker = 999; port?.postMessage({ kind: 'mutated', tick, marker }); });

@@ -31,10 +31,11 @@ function topology(spotCount: number, water = false): RenderPipelineTopology {
 describe('typed shadow Water context admission', () => {
   it.each([
     0, 1,
-  ])('clears a non-Water spot target without a material context (spotCount=%s)', async (spotCount) => {
+  ])('owns only requested non-Water spot targets without a material context (spotCount=%s)', async (spotCount) => {
     const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
-    addTypedShadowPasses(graph, topology(spotCount)).unwrap();
+    const outputs = addTypedShadowPasses(graph, topology(spotCount)).unwrap();
+    expect(outputs.spot !== undefined).toBe(spotCount > 0);
     const compiled = graph.compile({ device, surfaceSize: { width: 64, height: 64 } }).unwrap();
     const ledger = new ShadowRasterLedger();
     let rasters = 0;
@@ -49,12 +50,15 @@ describe('typed shadow Water context admission', () => {
             frameState: { spotShadowSnapshots: [], shadowRaster: ledger },
           } as unknown as RenderPipelineFrame)
           .unwrap();
+        expect(begin.mock.calls.map(([descriptor]) => descriptor.label)).toEqual(
+          spotCount === 0 ? [] : ['spot-shadow-0'],
+        );
         rasters += begin.mock.calls.length;
         device.queue.submit([encoder.finish().unwrap()]).unwrap();
         compiled.commitExecution();
         ledger.commit();
       }
-      expect(rasters).toBe(spotCount === 0 ? 1 : 3);
+      expect(rasters).toBe(spotCount * 3);
     } finally {
       (await compiled.retire()).unwrap();
     }

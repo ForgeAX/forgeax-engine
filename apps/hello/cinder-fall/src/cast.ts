@@ -1,9 +1,9 @@
 import type { ParticleEffectSourceV3 } from '@forgeax/engine-vfx';
 
-export const CINDER_STANDARD_MATERIAL = 'c1de0000-0000-7000-8000-000000000001';
-export const CINDER_ADDITIVE_MATERIAL = 'c1de0000-0000-7000-8000-000000000002';
-export const CINDER_ALPHA_MATERIAL = 'c1de0000-0000-7000-8000-000000000003';
-const CINDER_SPHERE_MESH = '2cce5d80-5960-4e4e-82f7-feaf5608eb60';
+export const CINDER_STANDARD_MATERIAL = '33824ebe-2258-5b46-9ed0-93240d60957d';
+export const CINDER_ADDITIVE_MATERIAL = '2dad36f7-99bb-5aad-8dbe-321db767a727';
+export const CINDER_ALPHA_MATERIAL = '36594983-f28c-5bbc-a95a-3f1a66238c0c';
+const CINDER_SPHERE_MESH = '8c4c2432-fe9e-5502-ae74-20d583a2296d';
 
 export type CinderFallPhase = 'release' | 'mid-travel' | 'impact' | 'burn' | 'fade' | 'complete';
 

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -40,6 +40,16 @@ export function collectSurface(directory) {
     ],
     { cwd: directory, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
   ).split('\0');
+  const links = new Set(
+    execFileSync('git', ['ls-files', '--stage', '-z', '--', 'packages', 'apps', 'templates'], {
+      cwd: directory,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    })
+      .split('\0')
+      .filter((entry) => /^120000 [a-f\d]+ 0\t/.test(entry))
+      .map((entry) => entry.slice(entry.indexOf('\t') + 1)),
+  );
   for (const name of paths) {
     if (
       !/\.(?:[cm]?[jt]sx?|wgsl|rs)$/.test(name) ||
@@ -48,8 +58,17 @@ export function collectSurface(directory) {
       name.split('/').some((part) => ignored.has(part))
     )
       continue;
-    const full = join(directory, name);
+    let full = join(directory, name);
     if (!existsSync(full)) continue;
+    // Git without native symlinks checks out the link payload as a small file.
+    // Review the linked shader bytes on both checkout types.
+    if (links.has(name) && !lstatSync(full).isSymbolicLink()) {
+      full = resolve(dirname(full), readFileSync(full, 'utf8'));
+      const target = relative(directory, full);
+      if (isAbsolute(target) || target === '..' || target.startsWith(`..${sep}`))
+        throw new Error(`Compatibility input link escapes checkout: ${name}`);
+      if (!existsSync(full)) continue;
+    }
     const bytes = readFileSync(full);
     if (owners.test(name) || name.endsWith('.wgsl') || nativeToken.test(bytes.toString('utf8')))
       files[name] = hash(bytes);

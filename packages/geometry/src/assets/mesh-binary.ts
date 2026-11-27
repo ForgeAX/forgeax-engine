@@ -13,7 +13,7 @@ import { validateMeshCollisionAttachment } from '../mesh-collision';
 import { prepareMeshData } from '../mesh-data';
 import { deriveVertexLayoutProjection } from '../vertex-attribute-layout';
 
-import { type UnpackedMeshBin, unpackMeshBin } from './unpack-mesh-bin';
+import { type UnpackedMeshBin, unpackMeshBinForAsset } from './unpack-mesh-bin';
 
 type PackedMaterialSlots = readonly (UnpackedMeshBin['materialSlots'][number] & {
   /** Direct Pack JSON keeps the authoring GUID until the producer boundary. */
@@ -182,7 +182,7 @@ function deriveAabb(vertices: Float32Array, stride: number): Float32Array | unde
 }
 
 interface MeshParts {
-  readonly attributeStorage?: 'interleaved';
+  readonly attributeStorage?: 'interleaved' | 'static-streams';
   readonly vertices: unknown;
   readonly indices?: unknown;
   readonly attributes?: unknown;
@@ -232,7 +232,10 @@ function vertexAttributesFor(raw: unknown): VertexAttributeMap | undefined {
     if (value !== undefined) attributes[key] = value;
   }
   const skinIndex = integerArray(source.skinIndex);
-  const skinWeight = floatArray(source.skinWeight);
+  const skinWeight =
+    source.skinWeight instanceof Uint8Array || source.skinWeight instanceof Uint16Array
+      ? source.skinWeight
+      : floatArray(source.skinWeight);
   if (
     (source.skinIndex !== undefined && skinIndex === undefined) ||
     (source.skinWeight !== undefined && skinWeight === undefined)
@@ -303,7 +306,7 @@ function unpackExtraUvSets(
 }
 
 interface MeshStreams {
-  readonly attributeStorage?: 'interleaved';
+  readonly attributeStorage?: 'interleaved' | 'static-streams';
   readonly vertices: Float32Array;
   readonly indices: Uint16Array | Uint32Array | undefined;
   readonly attributes: VertexAttributeMap;
@@ -378,6 +381,16 @@ function collisionFor(
   );
 }
 
+function meshBoundsFor(parts: MeshParts, streams: MeshStreams): Float32Array | undefined {
+  const { vertices, stride } = streams;
+  return (
+    floatArray(parts.aabb) ??
+    (parts.attributeStorage === 'static-streams'
+      ? deriveAabb(vertices.subarray(0, (vertices.length / stride) * 3), 3)
+      : deriveAabb(vertices, stride))
+  );
+}
+
 function meshFromParts(parts: MeshParts, refs: readonly string[]): MeshAsset | undefined {
   const streams = meshStreamsFor(parts);
   if (streams === undefined) return undefined;
@@ -385,7 +398,7 @@ function meshFromParts(parts: MeshParts, refs: readonly string[]): MeshAsset | u
   if (!admitsCardLayoutFor(parts, submeshes, attributes)) return undefined;
   const materialSlots = materialSlotsFor(parts.materialSlots, submeshes, refs);
   if (materialSlots === undefined) return undefined;
-  const aabb = floatArray(parts.aabb) ?? deriveAabb(vertices, streams.stride);
+  const aabb = meshBoundsFor(parts, streams);
   if (aabb === undefined) return undefined;
   const morph = morphStreamsFor(parts);
   if (morph === undefined) return undefined;
@@ -416,9 +429,9 @@ function meshFromParts(parts: MeshParts, refs: readonly string[]): MeshAsset | u
 export function decodeMeshBinary(
   bytes: Uint8Array,
   refs: readonly string[],
-  storage: 'channels' | 'interleaved' = 'channels',
+  storage: 'channels' | 'interleaved' | 'native' = 'channels',
 ): MeshAsset | undefined {
-  const decoded = unpackMeshBin(bytes, '<mesh binary>', storage);
+  const decoded = unpackMeshBinForAsset(bytes, '<mesh binary>', storage);
   if (!decoded.ok) return undefined;
   return meshFromParts(
     {

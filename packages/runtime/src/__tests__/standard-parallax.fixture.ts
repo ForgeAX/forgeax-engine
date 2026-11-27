@@ -290,7 +290,9 @@ export async function verifyStandardParallax(
   );
   try {
     for (const renderPath of options.paths ?? (['forward', 'deferred'] as const)) {
-      renderValue(renderer.setProfile({ ...profile, renderPath, ssao: false }));
+      renderValue(
+        renderer.setProfile({ ...profile, renderPath, ambientOcclusion: { enabled: false } }),
+      );
       const pixels = new Map<string, number[]>();
       const bytes = new Map<string, Uint8Array>();
       for (const entry of cases) {

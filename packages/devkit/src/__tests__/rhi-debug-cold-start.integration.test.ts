@@ -6,7 +6,7 @@ import {
   createCliRhiDebugOperationContext,
   discoverRhiDebugOperations,
   runRhiDebugOperation,
-} from '../commands';
+} from '../index.js';
 import type { RhiDebugOperationContext } from '../rhi-debug/operations';
 
 const emptyTape: V7Tape = {

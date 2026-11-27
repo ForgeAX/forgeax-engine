@@ -20,11 +20,13 @@ import {
   isDeepFrozenJson,
   ok,
   type Result,
+  type ShaderEntryPointReads,
   ShaderSource,
   shaderSourceDescriptor,
 } from '@forgeax/engine-types';
 import { DeviceScope } from '../device/device-scope';
 import { type RenderError, RenderFeaturePreparationFailedError } from '../errors/render';
+import { GPU_SHADER_STAGE_COMPUTE } from '../gpu-stage';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import { sameValue } from '../same-value';
 import {
@@ -42,6 +44,7 @@ import {
   isRenderFeatureTextureSource,
   type RenderFeatureTextureSource,
 } from './feature-texture-source';
+import { featureResourceKey } from './frame-plan';
 import type {
   RenderFeaturePassDeclaration,
   RenderFeaturePlan,
@@ -111,6 +114,8 @@ export interface RenderFeatureGpuProgramDescriptor {
   readonly wgsl: string | ShaderSource;
   readonly entryPoints: readonly string[];
   readonly bindings?: readonly BindGroupLayoutDescriptor[];
+  /** Cooked reads for the selected entry points. Entries sharing a recipe must share a layout. */
+  readonly entryPointReads?: readonly ShaderEntryPointReads[];
 }
 
 export interface RenderFeatureGpuBufferDescriptor {
@@ -1095,6 +1100,7 @@ function createRenderFeatureGpuWorkSession(input: {
   let disposed = false;
   interface PreparingProgram {
     readonly module: ShaderModule;
+    readonly reflected: BindGroupLayoutDescriptor | undefined;
     readonly bindGroupLayout?: BindGroupLayout;
     readonly pipelines: Map<string, ComputePipeline>;
     pending: number;
@@ -1397,6 +1403,34 @@ function createRenderFeatureGpuWorkSession(input: {
     item.reference.generation === input.generation &&
     (bindings.get(item.name) ?? parkedBindings.get(item.name)?.item) === item;
 
+  function reuseActiveProgram(
+    name: string,
+    descriptor: RenderFeatureGpuProgramDescriptor,
+    complete: (item: ProgramItem) => boolean,
+  ): RenderFeatureGpuProgramRef | undefined {
+    const prior = programs.get(name) ?? parkedPrograms.get(name)?.item;
+    if (
+      prior === undefined ||
+      !complete(prior) ||
+      !sameProgramDescriptor(prior.descriptor, descriptor)
+    )
+      return undefined;
+    activateProgram(prior);
+    touchProgram(prior);
+    return prior.reference;
+  }
+
+  function hasPendingProgramCapacity(): boolean {
+    if (preparingPrograms.size < COMPILED_PROGRAM_CACHE_LIMIT) return true;
+    // Reclaim settled work left by a previous plan while retaining in-flight compiles.
+    for (const [key, state] of preparingPrograms) {
+      if (state.pending !== 0) continue;
+      preparingPrograms.delete(key);
+      break;
+    }
+    return preparingPrograms.size < COMPILED_PROGRAM_CACHE_LIMIT;
+  }
+
   const prepareProgram: RenderFeatureGpuPrepare['prepareProgram'] = (
     name,
     descriptor,
@@ -1405,16 +1439,8 @@ function createRenderFeatureGpuWorkSession(input: {
     const source = ownedProgramSources.get(descriptor);
     const createAsync = waitForCompletion ? input.device.createComputePipelineAsync : undefined;
     const complete = (item: ProgramItem) => createAsync === undefined || item.completionQualified;
-    const prior = programs.get(name) ?? parkedPrograms.get(name)?.item;
-    if (
-      prior !== undefined &&
-      complete(prior) &&
-      sameProgramDescriptor(prior.descriptor, descriptor)
-    ) {
-      activateProgram(prior);
-      touchProgram(prior);
-      return ok(prior.reference);
-    }
+    const active = reuseActiveProgram(name, descriptor, complete);
+    if (active !== undefined) return ok(active);
     const validatePreparedProgramDescriptor = () => {
       if (
         name.length === 0 ||
@@ -1471,6 +1497,8 @@ function createRenderFeatureGpuWorkSession(input: {
     if (preparing?.error !== undefined) return err(preparing.error);
     if (preparing !== undefined && preparing.pending > 0)
       return err(preparationFailure('rhi-not-available:pipeline-pending', 'next-frame'));
+    if (preparing === undefined && createAsync !== undefined && !hasPendingProgramCapacity())
+      return err(preparationFailure('rhi-not-available:pipeline-pending', 'next-frame'));
     const module =
       preparing === undefined
         ? input.shaderModuleFactory.createShaderModule(
@@ -1491,33 +1519,15 @@ function createRenderFeatureGpuWorkSession(input: {
         ),
       );
     }
-    let bindGroupLayout: BindGroupLayout | undefined = preparing?.bindGroupLayout;
+    let reflected = preparing?.reflected;
+    let bindGroupLayout = preparing?.bindGroupLayout;
     let pipelineLayout: 'auto' | PipelineLayout = 'auto';
     const prepareProgramExplicitBindingLayout = () => {
-      if (preparing === undefined && descriptor.bindings !== undefined) {
-        if (descriptor.bindings.length !== 1) {
-          return err(
-            failure(
-              input.featureIdentity,
-              'prepare-gpu-program',
-              'pipeline',
-              name,
-              'one-bind-group-required',
-            ),
-          );
-        }
-        const reflected = descriptor.bindings[0];
-        if (reflected === undefined) {
-          return err(
-            failure(
-              input.featureIdentity,
-              'prepare-gpu-program',
-              'pipeline',
-              name,
-              'one-bind-group-required',
-            ),
-          );
-        }
+      if (preparing !== undefined) return undefined;
+      const selectedLayout = preparedComputeLayout(descriptor);
+      if (!selectedLayout.ok) return err(preparationFailure(selectedLayout.error));
+      reflected = selectedLayout.value;
+      if (reflected !== undefined) {
         const storageCount = reflected.entries.filter(
           (entry) =>
             (entry.visibility & 4) !== 0 &&
@@ -1582,10 +1592,9 @@ function createRenderFeatureGpuWorkSession(input: {
     const pipelineMap = preparing?.pipelines ?? new Map<string, ComputePipeline>();
     const startPreparedProgramAsyncPipelines = () => {
       if (preparing === undefined && createAsync !== undefined) {
-        if (preparingPrograms.size >= COMPILED_PROGRAM_CACHE_LIMIT)
-          return err(preparationFailure('preparation-budget-exceeded'));
         const state: PreparingProgram = {
           module: module.value,
+          reflected,
           ...(bindGroupLayout === undefined ? {} : { bindGroupLayout }),
           pipelines: pipelineMap,
           pending: descriptor.entryPoints.length,
@@ -1665,7 +1674,7 @@ function createRenderFeatureGpuWorkSession(input: {
         number,
         'sampled' | 'storage-write' | 'storage-read' | 'storage-read-write'
       >();
-      for (const entry of descriptor.bindings?.[0]?.entries ?? []) {
+      for (const entry of reflected?.entries ?? []) {
         if (entry.texture !== undefined) {
           textureBindings.set(entry.binding, 'sampled');
         } else if (entry.storageTexture !== undefined) {
@@ -1691,7 +1700,7 @@ function createRenderFeatureGpuWorkSession(input: {
         module: module.value,
         pipelines: pipelineMap,
         bindingLayouts: new Map(
-          (descriptor.bindings?.[0]?.entries ?? []).flatMap((entry) =>
+          (reflected?.entries ?? []).flatMap((entry) =>
             entry.buffer === undefined
               ? []
               : [
@@ -3114,6 +3123,7 @@ function createRenderFeatureGpuWorkSession(input: {
  * retains the per-feature prepared GPU state and recreates it after recovery.
  */
 export interface RenderFeatureGpuWorkOwner {
+  /** Resolve declared names from a producer's frame work. */
   resolveTextureCube(featureIdentity: string, name: string): TextureView | undefined;
   resolveTexture(featureIdentity: string, name: string): TextureView | undefined;
   resolveNamedBuffer(
@@ -3149,11 +3159,11 @@ export function createRenderFeatureGpuWorkOwner(input: {
 
   const owner: RenderFeatureGpuWorkOwner = {
     resolveTextureCube: (featureIdentity, name) =>
-      sessions.get(featureIdentity)?.session.resolveTextureCube(name),
+      sessions.get(featureIdentity)?.session.resolveTextureCube(featureResourceKey('frame', name)),
     resolveTexture: (featureIdentity, name) =>
-      sessions.get(featureIdentity)?.session.resolveTexture(name),
+      sessions.get(featureIdentity)?.session.resolveTexture(featureResourceKey('frame', name)),
     resolveNamedBuffer: (featureIdentity, name) =>
-      sessions.get(featureIdentity)?.session.resolveNamedBuffer(name),
+      sessions.get(featureIdentity)?.session.resolveNamedBuffer(featureResourceKey('frame', name)),
     beginFeature: (featureIdentity, generation, requestedShaderModuleMode = 'validated') => {
       if (disposed) {
         throw new Error('Render feature GPU work owner is disposed.');
@@ -3177,7 +3187,7 @@ export function createRenderFeatureGpuWorkOwner(input: {
         resolveFeatureTexture: (source) => {
           const producer = sessions.get(source.owner);
           return producer?.generation === generation
-            ? producer.session.resolveOwnedTexture(source.name)
+            ? producer.session.resolveOwnedTexture(featureResourceKey('frame', source.name))
             : undefined;
         },
       });
@@ -3200,6 +3210,46 @@ export function createRenderFeatureGpuWorkOwner(input: {
     },
   };
   return owner;
+}
+
+/**
+ * Project a cooked program onto its dispatch ABI. The prepared feature API
+ * shares a bind group across compatible entries. A different ABI is prepared
+ * as a separate program recipe against the same shader module.
+ */
+function preparedComputeLayout(
+  descriptor: RenderFeatureGpuProgramDescriptor,
+): Result<BindGroupLayoutDescriptor | undefined, string> {
+  const abi = descriptor.bindings?.[0];
+  if (descriptor.bindings !== undefined && descriptor.bindings.length !== 1)
+    return err('one-bind-group-required');
+  const metadata = descriptor.entryPointReads;
+  if (metadata === undefined) return ok(abi);
+  if (abi === undefined) return err('entry-reads-require-explicit-bindings');
+  let slots: ReadonlySet<number> | undefined;
+  for (const compute of descriptor.entryPoints) {
+    const entry = metadata.find((item) => item.stage === 'compute' && item.name === compute);
+    if (entry === undefined) return err('entry-reads-unavailable');
+    const selected = new Set<number>();
+    for (const { group, binding } of entry.bindings) {
+      if (group !== 0) return err('entry-reads-unavailable');
+      selected.add(binding);
+    }
+    if (slots !== undefined && !sameComputeSlots(slots, selected))
+      return err('entry-points-require-separate-binding-layouts');
+    slots = selected;
+  }
+  const entries = abi.entries.flatMap((entry) =>
+    slots?.has(entry.binding) ? [{ ...entry, visibility: GPU_SHADER_STAGE_COMPUTE }] : [],
+  );
+  if (entries.length !== slots?.size) return err('entry-bindings-incomplete');
+  return ok({ ...abi, entries });
+}
+
+function sameComputeSlots(left: ReadonlySet<number>, right: ReadonlySet<number>): boolean {
+  if (left.size !== right.size) return false;
+  for (const binding of left) if (!right.has(binding)) return false;
+  return true;
 }
 
 function programDescriptorKey(descriptor: RenderFeatureGpuProgramDescriptor): string {

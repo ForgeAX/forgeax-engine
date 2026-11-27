@@ -149,6 +149,12 @@ it('transfers only mesh channel and texture region bytes without publishing thei
     const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
     const mesh = accepted.resources.resolveAsset<MeshAsset>(f.mesh).unwrap();
     const texture = accepted.resources.resolveAsset<TextureAsset>(f.texture).unwrap();
+    expect(accepted.assetChanges.find((change) => change.handle === f.mesh)?.stableKind).toBe(
+      'mesh',
+    );
+    expect(accepted.assetChanges.find((change) => change.handle === f.texture)?.stableKind).toBe(
+      'texture',
+    );
     expect(mesh.vertices.buffer).toBe(beforeMesh.vertices.buffer);
     expect(texture.data.buffer).toBe(beforeTexture.data.buffer);
     expect([...mesh.vertices.subarray(0, 3)]).toEqual([0.125, 0.25, 0.375]);
@@ -292,14 +298,11 @@ it('prepares a future mesh revision without changing the drawn allocation, then 
     assert(next);
     expect(next).not.toBe(old);
     expect(old.vertexBuffer.isDestroyed).toBe(false);
-    for (const change of accepted.assetChanges)
-      store
-        .adoptMeshChange(
-          change,
-          accepted.resources.resolveAsset<MeshAsset>(f.mesh).unwrap(),
-          accepted.resources,
-        )
-        .unwrap();
+    for (const change of accepted.assetChanges) {
+      store.adoptAssetChange(accepted.resources, change, (error) => {
+        throw error;
+      });
+    }
     expect(store.getMeshGpuHandles(f.mesh, accepted.resources)).toBe(next);
     expect(candidate.isCurrent()).toBe(true);
     await candidate.release(false);
@@ -310,6 +313,118 @@ it('prepares a future mesh revision without changing the drawn allocation, then 
   } finally {
     await oldLease.release(false);
     store.destroyAll();
+    f.close();
+  }
+});
+
+it('retains a cold Level Mesh once and adopts the exact payload into the ordinary namespace', () => {
+  const f = fixture();
+  try {
+    const mesh = f.assets.create(createPrimitiveMesh('sphere').unwrap()).unwrap();
+    const revision = runtimeAssets(f.assets).version(mesh).unwrap();
+    const received = structuredClone(f.assets.read(mesh).unwrap());
+    const transferred = structuredClone(received, {
+      transfer: [received.vertices.buffer as ArrayBuffer],
+    });
+    expect(received.vertices.byteLength).toBe(0);
+    const asset = { handle: mesh, revision, value: transferred };
+    expect(f.receiver.retainClosedLevelAsset({ ...f.identity, epoch: 2 }, asset).ok).toBe(false);
+    const level = f.receiver.retainClosedLevelAsset(f.identity, asset).unwrap();
+    const shared = f.receiver.retainClosedLevelAsset(f.identity, structuredClone(asset)).unwrap();
+    const conflicting = structuredClone(asset);
+    conflicting.value.vertices[0] = 42;
+    const invalid = f.receiver.retainClosedLevelAsset(f.identity, conflicting);
+    expect(invalid).toMatchObject({ ok: false, error: { detail: { reason: 'shape' } } });
+    expect(shared.value).toBe(level.value);
+    const prepared = f.receiver
+      .prepareMesh({
+        ...f.identity,
+        meshHandle: mesh,
+        revision,
+        mesh: structuredClone(transferred),
+      })
+      .unwrap();
+    expect(prepared.mesh).toBe(level.value);
+    prepared.release();
+    expect(f.accepted.resources.resolveAsset(mesh, revision).unwrap()).toBe(level.value);
+    expect(f.accepted.resources.resolveAsset(mesh).unwrap()).toBe(level.value);
+    expect(f.receiver.acceptedRevision).toBe(f.accepted.packet.revision);
+    expect(f.accepted.frame.renderables.some((row) => row.assetHandle === mesh)).toBe(false);
+    level.release();
+    expect(level.isCurrent()).toBe(false);
+    expect(shared.isCurrent()).toBe(true);
+    const consumer = f.world
+      .spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: mesh } },
+        { component: MeshRenderer, data: {} },
+      )
+      .unwrap();
+    f.world.update(0).unwrap();
+    const packet = f.transfer().packet;
+    expect(packet.assets.some((row) => row.handle === mesh)).toBe(true);
+    const accepted = f.receiver.accept(encodeRenderPublication(packet)).unwrap();
+    expect(accepted.scene.rows.lookup(consumer)?.snapshot.assetHandle).toBe(mesh);
+    expect(accepted.resources.resolveAsset(mesh).unwrap()).toBe(shared.value);
+    shared.release();
+    expect(accepted.resources.resolveAsset(mesh).unwrap()).toBe(shared.value);
+  } finally {
+    f.close();
+  }
+});
+
+it('resolves cold Level GPU generation dependencies by GUID until the last hold retires', () => {
+  const f = fixture();
+  try {
+    const guid = '38490823-ce4b-5d26-83f6-cde7e9c5f676';
+    const row = { handle: 1000, revision: 1, guid, value: { kind: 'sampler' } as const };
+    const first = f.receiver.retainClosedLevelAsset(f.identity, row).unwrap();
+    const second = f.receiver
+      .retainClosedLevelAsset(f.identity, { handle: row.handle, revision: 1 })
+      .unwrap();
+    expect(f.accepted.resources.handleForGuid(guid)).toBe(row.handle);
+    expect(f.accepted.resources.lookupAsset(guid)).toBe(first.value);
+    expect(f.receiver.referencesAcceptedAsset(row.handle)).toBe(false);
+    expect(f.receiver.retainClosedLevelAsset(f.identity, { ...row, handle: 1001 }).ok).toBe(false);
+    first.release();
+    expect(f.accepted.resources.lookupAsset(guid)).toBe(second.value);
+    second.release();
+    expect(f.accepted.resources.lookupAsset(guid)).toBeUndefined();
+  } finally {
+    f.close();
+  }
+});
+
+it('keeps held Level texels fixed while an ordinary frame installs a newer region', () => {
+  const f = fixture();
+  try {
+    const revision = runtimeAssets(f.assets).version(f.texture).unwrap();
+    const asset = {
+      handle: f.texture,
+      revision,
+      value: structuredClone(f.assets.read(f.texture).unwrap()),
+    };
+    const held = f.receiver.retainClosedLevelAsset(f.identity, asset).unwrap();
+    const old = f.accepted.resources.resolveAsset<TextureAsset>(f.texture).unwrap();
+    expect(old).toBe(held.value);
+    expect(held.isCurrent()).toBe(true);
+    f.assets
+      .writeRange(f.texture, {
+        origin: { x: 0, y: 0 },
+        size: { width: 1, height: 1 },
+        data: Uint8Array.of(21, 23, 25, 27),
+      })
+      .unwrap();
+    const frame = f.receiver.accept(encodeRenderPublication(f.transfer().packet)).unwrap();
+    const latest = frame.resources.resolveAsset<TextureAsset>(f.texture).unwrap();
+    expect([...latest.data.subarray(0, 4)]).toEqual([21, 23, 25, 27]);
+    expect([...old.data.subarray(0, 4)]).toEqual([0, 0, 0, 0]);
+    expect(frame.resources.resolveAsset(f.texture, revision).unwrap()).toBe(old);
+    expect(held.isCurrent()).toBe(false);
+    held.release();
+    expect(frame.resources.resolveAsset(f.texture, revision).ok).toBe(false);
+    expect(frame.resources.resolveAsset(f.texture).unwrap()).toBe(latest);
+  } finally {
     f.close();
   }
 });

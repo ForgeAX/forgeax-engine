@@ -1,3 +1,4 @@
+import { vertexLayoutHasColor } from '@forgeax/engine-geometry';
 import { isStripTopology } from '@forgeax/engine-types';
 import { pipelineVertexConstants } from './material-stage-constants';
 // PipelineSpec 4-axis SSOT — single-file type + derive-fn + entrypoint + error model.
@@ -199,6 +200,14 @@ export function renderStateHash(renderState: MaterialRenderState | undefined): s
 // 6 pure derive functions (M1-T2)
 // ══════════════════════════════════════════════════════════════════════════════
 
+/** Only strip restart makes the index-buffer width a pipeline input. */
+export function pipelineStripIndexFormat(
+  topology: PrimitiveTopology | undefined,
+  indexFormat: GPUIndexFormat | undefined,
+): GPUIndexFormat | undefined {
+  return topology !== undefined && isStripTopology(topology) ? indexFormat : undefined;
+}
+
 function constantsKey(
   stage: 'constants' | 'vertex-constants',
   values: Readonly<Record<string, number>> | undefined,
@@ -223,10 +232,8 @@ function constantsKey(
 export function cacheKeyOf(spec: PipelineSpec): string {
   const { shader, attachments, geometry, renderState } = spec;
   const topoSegment = geometry.topology;
-  const stripSegment =
-    isStripTopology(topoSegment) && geometry.stripIndexFormat !== undefined
-      ? `:${geometry.stripIndexFormat}`
-      : '';
+  const stripFormat = pipelineStripIndexFormat(topoSegment, geometry.stripIndexFormat);
+  const stripSegment = stripFormat === undefined ? '' : `:${stripFormat}`;
 
   // The geometry owner publishes one immutable projection. Legacy callers may
   // still provide only the map; derive the same projection at this boundary.
@@ -296,32 +303,51 @@ export function variantSetFromVertexLayoutProjection(
   projection: VertexLayoutProjection,
   authoredVariantSet: string | undefined,
 ): Result<string, VertexColorVariantConflictError> {
-  const projected = projection.attributes.some((attribute) => attribute.key === 'color');
-  const axis = `VERTEX_COLOR_AVAILABLE=${projected ? 'true' : 'false'}`;
-  if (authoredVariantSet === undefined) return ok(axis);
-  if (projected && authoredVariantSet === '') return ok(authoredVariantSet);
+  const projected = vertexLayoutHasColor(projection);
+  const axis = projected ? 'VERTEX_COLOR_AVAILABLE=true' : 'VERTEX_COLOR_AVAILABLE=false';
+  if (!authoredVariantSet) return ok(projected && authoredVariantSet === '' ? '' : axis);
 
-  const authoredParts = authoredVariantSet.split('+');
-  const authoredColorPart = authoredParts.find((part) =>
-    part.startsWith('VERTEX_COLOR_AVAILABLE='),
-  );
-  if (authoredColorPart === undefined) {
-    const parts = authoredParts.filter((part) => part.length > 0);
-    parts.push(axis);
-    return ok(parts.join('+'));
+  // Keep other axes in their published order. Copy a run of the original key only
+  // where removing an empty field or a geometry axis actually separates that run.
+  const key = authoredVariantSet;
+  let retained = '';
+  let runStart = 0;
+  let hasColor = false;
+  for (let start = 0; start <= key.length; ) {
+    const separator = key.indexOf('+', start);
+    const end = separator < 0 ? key.length : separator;
+    const color = key.startsWith('VERTEX_COLOR_AVAILABLE=', start);
+    if (color && !hasColor) {
+      if (end - start !== axis.length || !key.startsWith(axis, start)) {
+        const value = key.slice(start + 'VERTEX_COLOR_AVAILABLE='.length, end);
+        return err(new VertexColorVariantConflictError(value, projected));
+      }
+      if (end === key.length && runStart === 0) return ok(key);
+      hasColor = true;
+    }
+    if (color || start === end) {
+      if (start > runStart) {
+        const run = key.slice(runStart, start - 1);
+        retained = retained ? `${retained}+${run}` : run;
+      }
+      runStart = end + 1;
+    }
+    if (separator < 0) break;
+    start = separator + 1;
   }
-
-  const authoredValue = authoredColorPart.slice('VERTEX_COLOR_AVAILABLE='.length);
-  const authored = authoredValue === 'true';
-  if ((authoredValue !== 'true' && authoredValue !== 'false') || authored !== projected) {
-    return err(new VertexColorVariantConflictError(authoredValue, projected));
+  if (runStart < key.length) {
+    const tail = key.slice(runStart);
+    retained = retained ? `${retained}+${tail}` : tail;
   }
-  const parts = authoredParts.filter(
-    (part) => part.length > 0 && !part.startsWith('VERTEX_COLOR_AVAILABLE='),
-  );
-  parts.push(axis);
-  return ok(parts.join('+'));
+  return ok(retained ? `${retained}+${axis}` : axis);
 }
+
+// The complete Standard capability domain is fixed by these three independent booleans.
+const standardCapabilities = Array.from(
+  { length: 8 },
+  (_, flags) =>
+    `CLUSTER_FORWARD_AVAILABLE=${(flags & 4) !== 0}+STORAGE_BUFFER_AVAILABLE=${(flags & 2) !== 0}+VERTEX_COLOR_AVAILABLE=${(flags & 1) !== 0}`,
+);
 
 /** Explicit geometry and lighting facts survive composition before manifest key canonicalization. */
 export function standardCapabilityVariantSet(
@@ -329,7 +355,9 @@ export function standardCapabilityVariantSet(
   storageBuffer: boolean,
   vertexColorAvailable: boolean,
 ): string {
-  return `CLUSTER_FORWARD_AVAILABLE=${clustered}+STORAGE_BUFFER_AVAILABLE=${storageBuffer}+VERTEX_COLOR_AVAILABLE=${vertexColorAvailable}`;
+  const flags =
+    (Number(clustered) << 2) | (Number(storageBuffer) << 1) | Number(vertexColorAvailable);
+  return standardCapabilities[flags] as string;
 }
 
 /**
@@ -357,18 +385,12 @@ export function standardTopologyVariantSet(
   return `${capabilityVariantSet}+PROBE_BLEND_AVAILABLE=true`;
 }
 
-/**
- * Keep a clustered frame fail-closed when its unified group(2) resource is
- * unavailable. A missing group is not evidence that the frame is direct; it
- * is an invalid prepared resource state.
- */
+/** The chosen Cluster path needs its current View resources. */
 export function standardTopologyBindGroupReady(
   topology: { readonly kind: 'no-local-lights' | 'clustered' } | undefined,
-  clusterBindGroup: unknown,
+  clusterViewReady: boolean,
 ): boolean {
-  return (
-    topology?.kind !== 'clustered' || (clusterBindGroup !== null && clusterBindGroup !== undefined)
-  );
+  return topology?.kind !== 'clustered' || clusterViewReady;
 }
 
 /** Derive the storage axis for Standard-compatible unlit material draws. */
@@ -466,9 +488,8 @@ export function buildPipelineDescriptor(
     cullMode: renderState?.cullMode ?? 'back',
     frontFace: renderState?.frontFace ?? 'ccw',
   };
-  if (geometry.topology.endsWith('strip') && geometry.stripIndexFormat !== undefined) {
-    primitive.stripIndexFormat = geometry.stripIndexFormat;
-  }
+  const stripFormat = pipelineStripIndexFormat(geometry.topology, geometry.stripIndexFormat);
+  if (stripFormat !== undefined) primitive.stripIndexFormat = stripFormat;
   descriptor.primitive = primitive;
 
   // Depth-stencil state.
@@ -842,6 +863,11 @@ export interface PipelineDeviceProvider {
   createRenderPipeline(
     descriptor: Record<string, unknown>,
   ): { ok: true; value: unknown } | { ok: false; error: unknown };
+  createRenderPipelineAsync?(
+    descriptor: Record<string, unknown>,
+  ):
+    | ReturnType<PipelineDeviceProvider['createRenderPipeline']>
+    | Promise<ReturnType<PipelineDeviceProvider['createRenderPipeline']>>;
 }
 
 /**
@@ -881,7 +907,15 @@ export function getOrBuildPipeline(
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
 
-  // Cache miss — validate, build, cache, return.
+  const descriptor = validatedPipelineDescriptor(spec, modules);
+  const result = deviceProvider.createRenderPipeline(descriptor);
+  return completePipelineBuild(key, result, cache);
+}
+
+function validatedPipelineDescriptor(
+  spec: PipelineSpec,
+  modules: Parameters<typeof buildPipelineDescriptor>[1] | undefined,
+): Record<string, unknown> {
   const validation = validateSpec(spec);
   if (!validation.ok) {
     throw new PipelineSpecError({
@@ -891,12 +925,14 @@ export function getOrBuildPipeline(
     });
   }
 
-  const descriptor = buildPipelineDescriptor(
-    spec,
-    modules ?? { vertex: undefined, fragment: undefined },
-  );
-  const result = deviceProvider.createRenderPipeline(descriptor);
+  return buildPipelineDescriptor(spec, modules ?? { vertex: undefined, fragment: undefined });
+}
 
+function completePipelineBuild(
+  key: string,
+  result: ReturnType<PipelineDeviceProvider['createRenderPipeline']>,
+  cache: PipelineCache,
+): unknown {
   if (!result.ok) {
     throw new PipelineSpecError({
       code: 'pipeline-build-failed',
@@ -907,6 +943,24 @@ export function getOrBuildPipeline(
 
   cache.set(key, result.value);
   return result.value;
+}
+
+/** Completion-qualified boot preparation; the cache never contains pending work. */
+export async function getOrBuildPipelineAsync(
+  spec: PipelineSpec,
+  provider: PipelineDeviceProvider,
+  cache: PipelineCache,
+  modules: Parameters<typeof buildPipelineDescriptor>[1],
+): Promise<unknown> {
+  const key = cacheKeyOf(spec);
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+  const descriptor = validatedPipelineDescriptor(spec, modules);
+  const result =
+    provider.createRenderPipelineAsync === undefined
+      ? provider.createRenderPipeline(descriptor)
+      : await provider.createRenderPipelineAsync(descriptor);
+  return completePipelineBuild(key, result, cache);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

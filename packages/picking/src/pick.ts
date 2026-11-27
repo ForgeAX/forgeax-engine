@@ -96,7 +96,7 @@ export function pickWithScreenRay(world: World, screenRay: ScreenRay): PickHit |
   for (const entity of meshQueryEntities(world)) {
     const value = queryMesh(world, entity);
     if (value === undefined) continue;
-    const localAabb = value.mesh.aabb;
+    const localAabb = 'mesh' in value ? value.mesh.aabb : value.bounds;
     if (localAabb === undefined) continue;
     // Inverted-infinity empty box (mesh without positions): not pickable.
     if ((localAabb[0] as number) > (localAabb[3] as number)) continue;

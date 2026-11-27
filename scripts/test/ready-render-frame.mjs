@@ -37,6 +37,12 @@ export async function drawReadyFrame(renderer, request, observation, options) {
   }, options);
 }
 
+function receiptPreparation(receipt, waitForReadyPreparation) {
+  return receipt.presentation === 'ready' && !waitForReadyPreparation
+    ? undefined
+    : receipt.preparationCompleted;
+}
+
 /** The submitter owns packet admission/recycling; retries must not update World. */
 export async function completeReadyFrame(submit, options = {}) {
   const timeoutMs = options.timeoutMs ?? 90_000;
@@ -91,14 +97,15 @@ export async function completeReadyFrame(submit, options = {}) {
     pendingReason = receipt.presentationPendingReason;
     // Native pipeline preparation can occupy the browser GPU process. Its
     // Engine-owned signal precedes the pending frame's GPU fence wait.
-    if (receipt.presentation !== 'ready' && receipt.preparationCompleted !== undefined) {
+    const preparation = receiptPreparation(receipt, options.waitForReadyPreparation);
+    if (preparation !== undefined) {
       const prepared = await bounded(
         () =>
           Promise.race([
-            receipt.preparationCompleted,
+            preparation,
             receipt.completed.then((completed) => {
               if (!completed.ok) throw completed.error;
-              return receipt.preparationCompleted;
+              return preparation;
             }),
           ]),
         'preparation',

@@ -58,6 +58,8 @@ interface RenderGraphErrorDetailByCode {
   'resource-allocation-failed': ResourceAllocFailedDetail;
   'resource-resolution-failed': ResourceAccessDetail;
   'pass-encode-failed': PassFailureDetail;
+  'pass-preparation-failed': PassFailureDetail;
+  'graph-preparation-invalid': LifecycleDetail;
   'compiled-graph-retired': LifecycleDetail;
   'resource-retire-failed': LifecycleDetail;
 }
@@ -212,8 +214,11 @@ export class RenderGraphError extends Error {
   readonly hint: string;
   readonly detail: RenderGraphErrorDetail | undefined;
 
-  constructor(args: RenderGraphErrorConstructorArgs) {
-    super(`[RenderGraphError ${args.code}] expected: ${args.expected}; hint: ${args.hint}`);
+  constructor(args: RenderGraphErrorConstructorArgs, options?: ErrorOptions) {
+    super(
+      `[RenderGraphError ${args.code}] expected: ${args.expected}; hint: ${args.hint}`,
+      options,
+    );
     this.name = 'RenderGraphError';
     this.code = args.code;
     this.expected = args.expected;

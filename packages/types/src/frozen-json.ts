@@ -6,7 +6,7 @@
  * of keeping a private copy. Cycles are not JSON and are not supported.
  */
 export function isDeepFrozenJson(value: object): boolean {
-  return isDeepFrozenJsonNode(value, new Set());
+  return isDeepFrozenJsonNode(value);
 }
 
 /**
@@ -22,14 +22,14 @@ function isEnumerableDataProperty(
   return descriptor !== undefined && descriptor.enumerable === true && 'value' in descriptor;
 }
 
-function isDeepFrozenJsonNode(value: object, ancestors: Set<object>): boolean {
+function isDeepFrozenJsonNode(value: object, ancestors?: Set<object>): boolean {
   if (verifiedFrozenJson.has(value)) return true;
-  if (!Object.isFrozen(value) || ArrayBuffer.isView(value) || ancestors.has(value)) return false;
+  if (!Object.isFrozen(value) || ArrayBuffer.isView(value) || ancestors?.has(value)) return false;
   const array = Array.isArray(value);
   const prototype = Object.getPrototypeOf(value);
   if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null)
     return false;
-  ancestors.add(value);
+  ancestors?.add(value);
   try {
     for (const key of Reflect.ownKeys(value)) {
       if (typeof key !== 'string') return false;
@@ -40,13 +40,15 @@ function isDeepFrozenJsonNode(value: object, ancestors: Set<object>): boolean {
       if (child === null || child === undefined) continue;
       const type = typeof child;
       if (type === 'object') {
+        // A verified subtree or a leaf needs no traversal stack of its own.
+        ancestors ??= new Set([value]);
         if (!isDeepFrozenJsonNode(child as object, ancestors)) return false;
       } else if (type !== 'string' && type !== 'number' && type !== 'boolean') return false;
     }
     verifiedFrozenJson.add(value);
     return true;
   } finally {
-    ancestors.delete(value);
+    ancestors?.delete(value);
   }
 }
 

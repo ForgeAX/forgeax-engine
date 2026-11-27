@@ -8,8 +8,9 @@ import type {
 import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { isBufferOffsetAligned, isBufferRangeWithinLimits } from './buffer-range';
-import type { GlobalSdfComposition } from './global-sdf';
+import { GLOBAL_SDF_SETTINGS_BYTES, type GlobalSdfComposition } from './global-sdf';
 import { createGlobalSdfBuffers } from './global-sdf-buffers';
+import { prepareComputePipeline } from './prepare-pipeline';
 import {
   packReferenceRays,
   RAY_INPUT_STRIDE,
@@ -45,7 +46,7 @@ export interface GlobalSdfQuery {
 
 /** One trilinear sampling rule for traversal and post-trace origin diagnostics. */
 export const GLOBAL_SDF_SAMPLE_WGSL = `
-struct Grid { originSpacing: vec4f, dimensionsCount: vec4u, ranges: vec4f }
+struct Grid { originSpacing: vec4f, dimensionsCount: vec4u, ranges: vec4f, source:vec4u }
 struct Voxel { distance: f32, coverage: f32, status: u32, nearestInstance: u32 }
 struct Sample { distance: f32, coverage: f32, status: u32 }
 fn sampleGlobal(p: vec3f) -> Sample {
@@ -67,7 +68,16 @@ fn sampleGlobal(p: vec3f) -> Sample {
 
 /** Region traversal core. The composing kernel declares `Ray` (the shared
  * 48-byte ray ABI), `grid`, and `voxels`; it owns its bindings and entry points. */
-export const GLOBAL_SDF_TRACE_WGSL = `
+export const GLOBAL_SDF_TRACE_WGSL = globalSdfTraceWgsl(false);
+/** World-only refinement uses the already bound complete Mesh SDF roster. */
+export const GLOBAL_SDF_REFINED_TRACE_WGSL = globalSdfTraceWgsl(true);
+
+/** Shares a work bank with Mesh DF. Each trilinear sample reserves its eight
+ * possible taps, including the six samples used to estimate a hit normal. */
+export const GLOBAL_SDF_SHARED_BANK_TRACE_WGSL = globalSdfTraceWgsl(false, true);
+
+function globalSdfTraceWgsl(refine: boolean, sharedBank = false): string {
+  return `
 // state: status, unavailable voxel status, steps, reserved.
 // metrics: ray t, surface expansion, first sampled distance, geometry coverage.
 struct Hit { state: vec4u, metrics: vec4f, position: vec4f, normal: vec4f }
@@ -89,9 +99,14 @@ fn traceGlobal(ray: Ray, maxSteps: u32, minStepFactor: f32) -> Hit {
  }
  let scale=max(abs(ray.direction.x),max(abs(ray.direction.y),abs(ray.direction.z)));
  let speed=scale*length(ray.direction/scale);
- var t=ray.tMin;var maxDistance=0.0;var expansion=0.0;
+ var t=ray.tMin;var maxDistance=0.0;var expansion=0.0;${refine ? 'var refined=false;' : ''}
  for(var step=0u;step<maxSteps;step++){
-  result.state.z=step+1u;let p=ray.origin+ray.direction*t;let sample=sampleGlobal(p);
+  ${
+    sharedBank
+      ? `if(maxSteps-result.state.z<8u){result.state.x=${GlobalSdfQueryStatus.stepBudget}u;return result;}
+  result.state.z+=8u;`
+      : 'result.state.z=step+1u;'
+  }let p=ray.origin+ray.direction*t;let sample=sampleGlobal(p);
   result.metrics.x=t;result.position=vec4f(p,1);
   if(sample.status!=1u){result.state.x=${GlobalSdfQueryStatus.missingField}u;result.state.y=sample.status;return result;}
   if(step==0u){result.metrics.z=sample.distance;}
@@ -100,18 +115,45 @@ fn traceGlobal(ray: Ray, maxSteps: u32, minStepFactor: f32) -> Hit {
   maxDistance=max(maxDistance,sample.distance);
   expansion=h*clamp(maxDistance/(2.0*h),0.0,1.0);result.metrics.y=expansion;
   if(sample.distance<expansion){
-   t=clamp(t+(sample.distance-expansion)/speed,ray.tMin,far);
-   let hitPosition=ray.origin+ray.direction*t;
+   let hitT=clamp(t+(sample.distance-expansion)/speed,ray.tMin,far);
+   var hitPosition=ray.origin+ray.direction*hitT;
    var gradient=vec3f(0);
    for(var a=0u;a<3u;a++){
-    var offset=vec3f(0);offset[a]=h;
+${
+  sharedBank
+    ? `    if(maxSteps-result.state.z<16u){result.state.x=${GlobalSdfQueryStatus.stepBudget}u;return result;}
+    result.state.z+=16u;\n`
+    : ''
+}    var offset=vec3f(0);offset[a]=h;
     let positive=sampleGlobal(hitPosition+offset);let negative=sampleGlobal(hitPosition-offset);
     if(positive.status!=1u || negative.status!=1u){
      result.state.x=${GlobalSdfQueryStatus.missingField}u;result.state.y=select(negative.status,positive.status,positive.status!=1u);return result;
     }
     gradient[a]=positive.distance-negative.distance;
    }
-   result.state.x=${GlobalSdfQueryStatus.hit}u;result.metrics.x=t;result.position=vec4f(hitPosition,1);
+${
+  refine
+    ? `   let certificate=worldRayClearance(ray,t);
+   if(certificate.originalEmpty){result.state.x=${GlobalSdfQueryStatus.miss}u;result.metrics.x=ray.tMax;result.position=vec4f(ray.origin+ray.direction*ray.tMax,1);result.normal=vec4f(0);return result;}
+   if(certificate.advance>0.0){
+    let next=t+min(certificate.advance,h/speed);
+    if(next>t){
+     if(next>far){result.state.x=select(${GlobalSdfQueryStatus.outsideRegion}u,${GlobalSdfQueryStatus.miss}u,far==ray.tMax);result.metrics.x=far;result.position=vec4f(ray.origin+ray.direction*far,1);return result;}
+     t=next;refined=true;continue;
+    }
+   }
+   if(refined){
+    hitPosition=p;
+    for(var a=0u;a<3u;a++){
+     var offset=vec3f(0);offset[a]=h;
+     let positive=sampleGlobal(hitPosition+offset);let negative=sampleGlobal(hitPosition-offset);
+     if(positive.status!=1u||negative.status!=1u){result.state.x=${GlobalSdfQueryStatus.missingField}u;result.state.y=select(negative.status,positive.status,positive.status!=1u);return result;}
+     gradient[a]=positive.distance-negative.distance;
+    }
+   }
+`
+    : ''
+}   result.state.x=${GlobalSdfQueryStatus.hit}u;result.metrics.x=${refine ? 'select(hitT,t,refined)' : 'hitT'};result.position=vec4f(hitPosition,1);
    result.normal=vec4f(gradient/max(length(gradient),1e-20),0);return result;
   }
   let next=t+max(sample.distance,h*minStepFactor)/speed;
@@ -126,6 +168,7 @@ fn traceGlobal(ray: Ray, maxSteps: u32, minStepFactor: f32) -> Hit {
  result.state.x=${GlobalSdfQueryStatus.stepBudget}u;return result;
 }
 `;
+}
 
 export const GLOBAL_SDF_QUERY_WGSL = `
 ${GLOBAL_SDF_SAMPLE_WGSL}
@@ -239,14 +282,14 @@ export async function createGlobalSdfQuery(
   const rayCount = packed.value.byteLength / RAY_INPUT_STRIDE;
   const input: GlobalSdfQueryInputs = {
     voxels: { buffer: buffers.voxels, size: composition.voxelCount * 16 },
-    grid: { buffer: buffers.grid, size: 48 },
+    grid: { buffer: buffers.grid, size: GLOBAL_SDF_SETTINGS_BYTES },
     rays: { buffer: buffers.rays, size: packed.value.byteLength },
     hits: { buffer: buffers.hits, size: rayCount * GLOBAL_SDF_HIT_STRIDE },
     settings: { buffer: buffers.settings, size: 16 },
   };
   const shader = await compile(device, { code: GLOBAL_SDF_QUERY_WGSL, label: 'global-sdf.query' });
   if (!shader.ok) return fail(shader);
-  const recorder = createGlobalSdfQueryRecorder(device, shader.value);
+  const recorder = await createGlobalSdfQueryRecorder(device, shader.value);
   if (!recorder.ok) return fail(recorder);
   return ok({
     buffers,
@@ -263,7 +306,7 @@ export async function createGlobalSdfQuery(
 }
 
 /** Exact borrowed ranges; the caller owns allocation, initialization and retirement.
- * Grid is the unchanged 48-byte GlobalSdfComposition settings and voxels its complete
+ * Grid is the 64-byte private GlobalSdfComposition settings and voxels its complete
  * 16-byte record range (4..128 centers/axis). Settings is u32 maxSteps (1..1024),
  * f32 minStepFactor ((0,1], producing a normal f32 half-spacing advance), then zeroes.
  * Rays use the 48-byte ReferenceRay ABI. Their producer must ensure finite f32
@@ -279,7 +322,7 @@ export type GlobalSdfQueryInputs = Readonly<
 >;
 
 /** One query kernel for CPU-authored and GPU-produced rays. Owns no buffers or queue work. */
-export function createGlobalSdfQueryRecorder(device: RhiDevice, module: ShaderModule) {
+export async function createGlobalSdfQueryRecorder(device: RhiDevice, module: ShaderModule) {
   const failure = (expected: string, code: RhiError['code'] = 'rhi-descriptor-invalid') =>
     err(
       new RhiError({
@@ -295,14 +338,14 @@ export function createGlobalSdfQueryRecorder(device: RhiDevice, module: ShaderMo
     ['maxBindingsPerBindGroup', 5],
     ['maxStorageBuffersPerShaderStage', 3],
     ['maxUniformBuffersPerShaderStage', 2],
-    ['maxUniformBufferBindingSize', 48],
+    ['maxUniformBufferBindingSize', GLOBAL_SDF_SETTINGS_BYTES],
     ['maxComputeWorkgroupSizeX', 64],
     ['maxComputeInvocationsPerWorkgroup', 64],
   ] as const)
     if (!(device.limits[name] >= required))
       return failure(`Global SDF query requires ${name} >= ${required}`, 'limit-exceeded');
   const layout = device.createBindGroupLayout({
-    entries: [16, 48, RAY_INPUT_STRIDE, GLOBAL_SDF_HIT_STRIDE, 16].map(
+    entries: [16, GLOBAL_SDF_SETTINGS_BYTES, RAY_INPUT_STRIDE, GLOBAL_SDF_HIT_STRIDE, 16].map(
       (minBindingSize, binding) => ({
         binding,
         visibility: 4,
@@ -321,7 +364,7 @@ export function createGlobalSdfQueryRecorder(device: RhiDevice, module: ShaderMo
   if (!layout.ok) return layout;
   const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
   if (!pipelineLayout.ok) return pipelineLayout;
-  const pipeline = device.createComputePipeline({
+  const pipeline = await prepareComputePipeline(device, {
     label: 'global-sdf.query',
     layout: pipelineLayout.value,
     compute: { module, entryPoint: 'main' },
@@ -343,7 +386,7 @@ export function createGlobalSdfQueryRecorder(device: RhiDevice, module: ShaderMo
       if (
         input.rays.size !== rayCount * RAY_INPUT_STRIDE ||
         input.hits.size !== rayCount * GLOBAL_SDF_HIT_STRIDE ||
-        input.grid.size !== 48 ||
+        input.grid.size !== GLOBAL_SDF_SETTINGS_BYTES ||
         input.settings.size !== 16 ||
         !Number.isSafeInteger(input.voxels.size) ||
         input.voxels.size < 4 ** 3 * 16 ||

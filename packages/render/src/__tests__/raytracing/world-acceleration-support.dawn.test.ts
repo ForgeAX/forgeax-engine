@@ -14,6 +14,27 @@ import { prepareWorldAcceleration } from '../../raytracing/renderer-world-accele
 import { createWorldAcceleration } from '../../raytracing/world-acceleration';
 import { WORLD_TRAVERSAL_ROSTER, worldTraversalWgsl } from '../../raytracing/world-traversal';
 import { readBuffer } from './path-tracer.fixture';
+import { verifyHardwareWorldCoverage } from './world-acceleration-coverage-native.fixture';
+import { verifyHardwareOpaqueEndpoints } from './world-acceleration-endpoints-native.fixture';
+import { verifyHardwareHitMotion } from './world-acceleration-motion-native.fixture';
+
+it.skipIf(process.env.FORGEAX_WEBGPU_NODE !== 'wgpu-native')(
+  'reconstructs hardware hit motion in the previous instance transform',
+  verifyHardwareHitMotion,
+  30_000,
+);
+
+it.skipIf(process.env.FORGEAX_WEBGPU_NODE !== 'wgpu-native')(
+  'keeps all-opaque hardware endpoints closed without accepting outer auto-commits',
+  verifyHardwareOpaqueEndpoints,
+  30_000,
+);
+
+it.skipIf(process.env.FORGEAX_WEBGPU_NODE !== 'wgpu-native')(
+  'keeps real MASK candidates unknown before or tied with the closest opaque hardware hit',
+  verifyHardwareWorldCoverage,
+  30_000,
+);
 
 // Dawn has no native Ray Query extension. The native workflow runs this gate
 // explicitly; a native device without the feature is a failure, never a skip.

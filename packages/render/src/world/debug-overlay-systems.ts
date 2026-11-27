@@ -25,7 +25,7 @@ import {
 import { type DebugOverlayHost, DebugOverlayResidency } from './debug-overlay-residency';
 import { ViewRecorder, ViewSubmission } from './render-views';
 import { RenderCleanup, RenderPrepare, renderSubmission } from './render-world';
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 import { ViewFrame, type ViewFrameState } from './view-frame-systems';
 import { recordContext } from './view-record-context';
 import { ownerOf } from './view-settlement';
@@ -87,12 +87,7 @@ function reportFailure(
 }
 
 function viewStateOf(world: World, entity: EntityHandle): ViewDebugOverlayState | undefined {
-  if (!world.hasComponent(entity, ViewDebugOverlay)) return undefined;
-  return world
-    .resolveUniqueRef<ViewDebugOverlayState>(
-      requireViewField(world, entity, ViewDebugOverlay, 'state'),
-    )
-    .unwrap();
+  return readViewState<ViewDebugOverlayState>(world, entity, ViewDebugOverlay);
 }
 
 /** The view's overlay outcome prepared this Renderer frame; undefined when the prepare system did not run for it. */

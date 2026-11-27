@@ -30,26 +30,11 @@ function makeRegistry(
   const projectionOwner = new ParamSchemaProjectionOwner();
   return {
     shaderRegistry: {
-      findMaterialArtifact(id: string) {
+      materialParamSchemaProjection(id: string) {
         const paramSchema = shaders[id];
-        const paramSchemaProjection =
-          paramSchema === undefined
-            ? undefined
-            : projectionOwner.admit({ ownerId: id, revision: 1, schema: paramSchema });
-        return paramSchemaProjection !== undefined
-          ? {
-              ok: true as const,
-              value: {
-                source: '',
-                paramSchema: paramSchemaProjection.schema,
-                paramSchemaProjection,
-              },
-            }
-          : { ok: false as const, error: new Error('not found') };
-      },
-      materialArtifact(id: string) {
-        const lookup = this.findMaterialArtifact(id);
-        return lookup.ok ? lookup.value : undefined;
+        return paramSchema === undefined
+          ? undefined
+          : projectionOwner.admit({ ownerId: id, revision: 1, schema: paramSchema });
       },
     },
     metrics: opts.metrics ?? null,

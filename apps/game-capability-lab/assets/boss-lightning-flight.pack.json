@@ -1,11 +1,9 @@
 {
-  "schemaVersion": "2.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "019e9c00-0000-7000-8000-000000000101",
+  "schemaVersion": "3.0.0",
+  "packageId": "1697a4ac-268f-56e6-a344-e951c1eba78a",
+  "assets": {
+    "particle-effect/boss-lightning-flight": {
       "kind": "particle-effect",
-      "execution": "cooked",
       "payload": {
         "schemaVersion": 3,
         "emitters": [
@@ -207,8 +205,7 @@
           }
         ]
       },
-      "refs": [],
-      "artifacts": {}
+      "refs": []
     }
-  ]
+  }
 }

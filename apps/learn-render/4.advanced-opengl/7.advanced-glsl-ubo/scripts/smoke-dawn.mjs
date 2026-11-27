@@ -164,11 +164,11 @@ const { Transform } = await import('@forgeax/engine-scene');
 
 // createApp lives in @forgeax/engine-app, not @forgeax/engine-runtime.
 const { createApp } = await import('@forgeax/engine-app/browser');
-const { buildEngineShaderManifest } = await import(
+const { buildEngineShaderTemplateManifest } = await import(
   '@forgeax/engine-vite-plugin-shader'
 );
 
-const ENGINE_MANIFEST = await buildEngineShaderManifest();
+const ENGINE_MANIFEST = await buildEngineShaderTemplateManifest();
 const MANIFEST_URL = URL.createObjectURL(new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }));
 process.once('exit', () => URL.revokeObjectURL(MANIFEST_URL));
 

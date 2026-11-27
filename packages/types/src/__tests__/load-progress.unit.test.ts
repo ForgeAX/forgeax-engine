@@ -16,6 +16,7 @@ import {
   resolveLoadProgressLabels,
   subscribeLoadProgress,
 } from '../load-progress.js';
+import zhCN from '../locales/load-progress.zh-CN.json';
 
 const scope = globalThis as Record<string, unknown>;
 
@@ -264,6 +265,54 @@ describe('load progress delivery', () => {
 });
 
 describe('load progress text', () => {
+  it.each([
+    'zh',
+    'zh-CN',
+    'zh-SG',
+    'zh-Hans',
+    'zh-Hans-CN',
+  ])('uses complete Simplified Chinese labels for %s and keeps project overrides', (lang) => {
+    const labels = resolveLoadProgressLabels({ lang });
+    expect(labels.phases.assets).toBe(zhCN.phases.assets);
+    expect(labels.host.copyDiagnostics).toBe(zhCN.host.copyDiagnostics);
+    expect(labels.host.nativePackageFailureTitle).toBe(zhCN.host.nativePackageFailureTitle);
+    expect(Object.keys(labels.phases).sort()).toEqual(
+      Object.keys(DEFAULT_LOAD_PROGRESS_LABELS.phases).sort(),
+    );
+    expect(Object.keys(labels.host).sort()).toEqual(
+      Object.keys(DEFAULT_LOAD_PROGRESS_LABELS.host).sort(),
+    );
+    for (const [key, text] of Object.entries(labels.host)) {
+      expect(text.trim(), key).not.toBe('');
+    }
+    const overridden = resolveLoadProgressLabels({
+      lang,
+      host: { game: 'Custom game' },
+      phases: { scene: 'Custom scene' },
+    });
+    expect(overridden.host.game).toBe('Custom game');
+    expect(overridden.host.copyDiagnostics).toBe(labels.host.copyDiagnostics);
+    expect(overridden.phases.scene).toBe('Custom scene');
+    beginLoadSession('localized', [{ id: 'assets', weight: 1 }], { startedAt: performance.now() });
+    addLoadWork('assets', { total: 1 });
+    expect(describeLoadProgress(read(), labels).activity).toBe(labels.phases.assets);
+    expect(describeLoadProgress(read(), labels).elapsed).toMatch(
+      new RegExp(`^${zhCN.elapsed.replace('{seconds}', '\\d+')}$`),
+    );
+    expect(DEFAULT_LOAD_PROGRESS_LABELS.host.game).toBe('Game');
+  });
+
+  it.each([
+    'en',
+    'en-GB',
+    'fr-FR',
+    'zh-TW',
+    'zh-Hant',
+    'zh-Hant-CN',
+  ])('retains English fallback for %s without inferring a different locale', (lang) => {
+    expect(resolveLoadProgressLabels({ lang }).host).toEqual(DEFAULT_LOAD_PROGRESS_LABELS.host);
+  });
+
   it('describes the current phase with counts, bytes, item and elapsed time', () => {
     beginLoadSession('startup', ENGINE_STARTUP_PHASES, { startedAt: 0 });
     addLoadWork('downloads', {

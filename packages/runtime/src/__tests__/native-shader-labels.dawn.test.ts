@@ -2,7 +2,7 @@ import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import type { RenderPipelineDescriptor } from '@forgeax/engine-rhi';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import type { MaterialAsset } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { createIrradianceFieldHarness } from './renderer-irradiance-field.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
@@ -53,7 +53,7 @@ it.skipIf(process.env.FORGEAX_WEBGPU_NODE !== 'wgpu-native')(
     };
     const h = await createIrradianceFieldHarness({
       rhi,
-      manifest: shaderManifestUrl(await buildEngineShaderManifest()),
+      manifest: shaderManifestUrl(await buildEngineShaderTemplateManifest()),
     });
     try {
       expect(bootstrapStandardPipelines).toEqual([]);

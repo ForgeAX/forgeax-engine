@@ -1,18 +1,19 @@
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { textureContribution } from '@forgeax/engine-image';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
-import { AssetGuid, definePack, definePackageId } from '@forgeax/engine-pack/source';
+import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import type { Asset, AssetKind } from '@forgeax/engine-types';
 import { ok } from '@forgeax/engine-types';
 import { buildWaterPackOutputs, waterAssetDecoderContributions } from '@forgeax/engine-water';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { normaliseForPack } from '../pack-value.js';
+import { createStandardAssetOutputProducerRegistry } from '../scriptable-pack-build.js';
 import {
   buildScriptablePack,
   buildScriptablePackWorklist,
   type ScriptablePackBuildProduct,
 } from '../scriptable-pack-build-core.js';
-import { createStandardAssetOutputProducerRegistry } from '../standard-output-producers.js';
+import { packDefinition } from './fixtures/pack-definition.js';
 
 function requiredFixtureValue<T>(value: T | null | undefined): T {
   if (value === undefined || value === null) throw new Error('Required fixture value is missing');
@@ -85,12 +86,9 @@ describe('water ScriptablePack production', () => {
       savedZoneLocationWorldXZ: [0, 0],
       collision: { type: 'none', enabled: false },
     };
-    const definition = definePack({
-      schemaVersion: '2.0.0',
-      packageId,
-      build: ({ packageId, readByGuid }) =>
-        buildWaterPackOutputs({ [sourceKey.body]: ocean }, { packageId, readByGuid }),
-    });
+    const definition = packDefinition(packageId, ({ packageId, readByGuid }) =>
+      buildWaterPackOutputs({ [sourceKey.body]: ocean }, { packageId, readByGuid }),
+    );
     const built = await buildScriptablePack({
       definition,
       sourcePath: 'missing-ocean-authoring-transform.pack.ts',
@@ -111,12 +109,9 @@ describe('water ScriptablePack production', () => {
       [guid(sourceKey.material), 'material'],
       [guid(sourceKey.zone), 'water-zone'],
     ]);
-    const definition = definePack({
-      schemaVersion: '2.0.0',
-      packageId,
-      build: ({ packageId, readByGuid }) =>
-        buildWaterPackOutputs({ [sourceKey.body]: bodySource() }, { packageId, readByGuid }),
-    });
+    const definition = packDefinition(packageId, ({ packageId, readByGuid }) =>
+      buildWaterPackOutputs({ [sourceKey.body]: bodySource() }, { packageId, readByGuid }),
+    );
     const outputs = createStandardAssetOutputProducerRegistry();
     let cachedProduct: ScriptablePackBuildProduct | undefined;
     const subject = { definition, sourcePath: 'cached-water.pack.ts' };
@@ -161,30 +156,27 @@ describe('water ScriptablePack production', () => {
 
   it('rejects a local Water reference whose Pack output kind is wrong before publication', async () => {
     const wrongSurface = guid(sourceKey.zone);
-    const definition = definePack({
-      schemaVersion: '2.0.0',
-      packageId,
-      build: ({ packageId, readByGuid }) =>
-        buildWaterPackOutputs(
-          {
-            [sourceKey.zone]: {
-              kind: 'water-zone',
-              extentM: { spanXM: 10, spanZM: 10 },
-              tileSizeM: 1,
-              tessellationFactor: 2,
-              lodScale: 1,
-              waterInfo: {
-                resolution: { widthPx: 16, heightPx: 16 },
-                format: 'rgba16f',
-                blurRadius: 0,
-                localTessellation: false,
-              },
+    const definition = packDefinition(packageId, ({ packageId, readByGuid }) =>
+      buildWaterPackOutputs(
+        {
+          [sourceKey.zone]: {
+            kind: 'water-zone',
+            extentM: { spanXM: 10, spanZM: 10 },
+            tileSizeM: 1,
+            tessellationFactor: 2,
+            lodScale: 1,
+            waterInfo: {
+              resolution: { widthPx: 16, heightPx: 16 },
+              format: 'rgba16f',
+              blurRadius: 0,
+              localTessellation: false,
             },
-            [sourceKey.body]: { ...bodySource(), surfaceMaterialGuid: wrongSurface },
           },
-          { packageId, readByGuid },
-        ),
-    });
+          [sourceKey.body]: { ...bodySource(), surfaceMaterialGuid: wrongSurface },
+        },
+        { packageId, readByGuid },
+      ),
+    );
     const built = await buildScriptablePack({
       definition,
       sourcePath: 'bad-water.pack.ts',
@@ -204,12 +196,9 @@ describe('water ScriptablePack production', () => {
   });
 
   it('rejects a Water dependency missing from the complete Pack and Catalog closure', async () => {
-    const definition = definePack({
-      schemaVersion: '2.0.0',
-      packageId,
-      build: ({ packageId, readByGuid }) =>
-        buildWaterPackOutputs({ [sourceKey.body]: bodySource() }, { packageId, readByGuid }),
-    });
+    const definition = packDefinition(packageId, ({ packageId, readByGuid }) =>
+      buildWaterPackOutputs({ [sourceKey.body]: bodySource() }, { packageId, readByGuid }),
+    );
     const built = await buildWaterWorklist({
       subjects: [{ definition, sourcePath: 'missing-water-dependency.pack.ts' }],
       outputs: createStandardAssetOutputProducerRegistry(),
@@ -220,156 +209,152 @@ describe('water ScriptablePack production', () => {
   });
 
   it('publishes native ForgeAX meter sources through Pack v2 and loads the body before its Zone', async () => {
-    const definition = definePack({
-      schemaVersion: '2.0.0',
-      packageId,
-      build: async ({ packageId, readByGuid }) => {
-        const water = await buildWaterPackOutputs(
-          {
-            [sourceKey.zone]: {
-              kind: 'water-zone',
-              extentM: { spanXM: 10, spanZM: 10 },
-              tileSizeM: 1,
-              tessellationFactor: 6,
-              lodScale: 1,
-              farMaterialGuid: guid(sourceKey.material),
-              waterInfo: {
-                resolution: { widthPx: 64, heightPx: 64 },
-                format: 'rgba16f',
-                blurRadius: 0,
-                localTessellation: false,
-              },
-            },
-            [sourceKey.body]: bodySource(),
-            'wave/shared': {
-              kind: 'water-wave-set',
-              waveSource: {
-                kind: 'predefined',
-                waves: [{ directionXZ: [1, 0], wavelengthM: 2.5, amplitudeM: 1, steepness: 0.5 }],
-              },
-              depthMaskM: 1,
-              maxWaveHeightM: 1,
-              timeSource: 'scene-clock',
-            },
-            'brush/river': {
-              kind: 'water-brush-recipe',
-              baseTerrainGuid: guid('terrain/base'),
-              sourceBodyGuids: [guid(sourceKey.body)],
-              orderedActors: ['river/main'],
-              terrainCapture: {
-                worldMatrixM: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-                boundsXZ: { minM: [-0.5, -0.5], maxM: [7.5, 7.5] },
-                resolutionPx: [8, 8],
-                layerNameToIndex: { Water: 0 },
-              },
-              curves: [],
-              textures: [],
-              outputTerrainSourceKey: 'terrain/coast-after-water',
-              rules: {
-                falloff: { type: 'smooth', widthM: 2, strength: 1 },
-                blend: { type: 'alpha', alpha: 1 },
-                heightRules: { mode: 'raise', offsetM: 0, velocityMPerSec: 0 },
-                weightRules: { layer: 'Water', value: 1, blend: 'replace' },
-              },
-            },
-            'simulation/fluid': {
-              kind: 'water-simulation-recipe',
-              system: 'fluid-simulation',
-              configurationVersion: 1,
-              solverMode: 'ripple',
-              terrainMode: 'none',
-              resolution: [64, 64],
-              virtualFps: 30,
-              maxStepsPerFrame: 5,
-              gridExtentM: [20, 20],
-              waveFoam: { resolution: 64, gridExtentM: 20 },
-              maxImpulses: 64,
-              impulseNoiseGuid: guid('texture/impulse-noise'),
-              targets: Object.fromEntries(
-                Object.entries({
-                  height: 'ripple-height-m',
-                  velocity: 'velocity-xz-m/s',
-                  normalHeight: 'normal-xz-height-m',
-                  forces: 'height-foam-mask',
-                  velocityForces: 'velocity-xz-m/s',
-                  wave: 'wave-foam',
-                  foam: 'foam',
-                }).map(([key, channels]) => [
-                  key,
-                  {
-                    format: 'rgba16float',
-                    filter: 'linear',
-                    address: 'repeat',
-                    origin: 'top-left',
-                    channels,
-                    clear: [0, 0, 0, 1],
-                  },
-                ]),
-              ),
-              injectionLimits: {
-                heightDeltaM: { encodedRange: [-2, 2], unit: 'm' },
-                foamStrength: { encodedRange: [0, 4], unit: 'unitless' },
-              },
-              parameters: {
-                travelSpeed: 0.95,
-                rippleDamping: 0.01,
-                rippleFoamDamping: 0.998,
-                rippleFoamErasure: 0.1,
-                fluidDampingPerSecond: 0.1,
-                gravityMPerSecSquared: 9.8,
-                shallowEdgeLengthM: 0.001,
-                shallowFadingBackPerSecond: 0.25,
-                terrainUseWaterDepthOnly: 0,
-                shallowFoamFadePerSecond: 2,
-                shallowFoamInjection: 0.5,
-                shallowVelocityForFoamMPerSecond: 1.28,
-                shallowFoamSlopeMinimum: 0.5,
-                shallowFoamSlopeRange: 0.05,
-                shallowNormalHeightScale: 5,
-                constantWaterDepthM: 2,
-                evaporationMPerSecond: 0,
-                maskThreshold: 0.5,
-                normalHeightScale: 1,
-                normalDefaultDepthM: 0,
-                normalFoamAmount: 0.01,
-                normalFoamHeightScale: 16,
-                normalEdgeFalloff: 0.2,
-                waveNormalAmount: 10,
-                waveNormalBias: 0,
-                waveMinimumHeightM: 0.48,
-                waveHeightDivisorM: 0.48,
-                waveEdgeFalloff: 0.2,
-                waveTimeBiasSeconds: 0,
-                foamFadePerFrame: 0,
-                foamDiffusion: 0.5,
-                foamEdgeFalloff: 0.2,
-                foamWetPerMeter: 2,
-                foamWetFadePerFrame: 0.001,
-                foamToneMapDensity: 0.1,
-              },
-              shallowFoamEnabled: true,
-              foamEnabled: true,
-              materialGuids: [],
-              textureGuids: [],
+    const definition = packDefinition(packageId, async ({ packageId, readByGuid }) => {
+      const water = await buildWaterPackOutputs(
+        {
+          [sourceKey.zone]: {
+            kind: 'water-zone',
+            extentM: { spanXM: 10, spanZM: 10 },
+            tileSizeM: 1,
+            tessellationFactor: 6,
+            lodScale: 1,
+            farMaterialGuid: guid(sourceKey.material),
+            waterInfo: {
+              resolution: { widthPx: 64, heightPx: 64 },
+              format: 'rgba16f',
+              blurRadius: 0,
+              localTessellation: false,
             },
           },
-          { packageId, readByGuid },
-        );
-        return water.ok
-          ? ok({
-              ...water.value,
-              [sourceKey.material]: { kind: 'material', values: { roughness: 1 } } as const,
-              'texture/impulse-noise': {
-                kind: 'texture',
-                shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
-                format: 'rgba8unorm-srgb',
-                colorSpace: 'srgb',
-                data: new Uint8Array([127, 127, 127, 255]),
-                mips: { kind: 'none' },
-              } as const,
-            })
-          : water;
-      },
+          [sourceKey.body]: bodySource(),
+          'wave/shared': {
+            kind: 'water-wave-set',
+            waveSource: {
+              kind: 'predefined',
+              waves: [{ directionXZ: [1, 0], wavelengthM: 2.5, amplitudeM: 1, steepness: 0.5 }],
+            },
+            depthMaskM: 1,
+            maxWaveHeightM: 1,
+            timeSource: 'scene-clock',
+          },
+          'brush/river': {
+            kind: 'water-brush-recipe',
+            baseTerrainGuid: guid('terrain/base'),
+            sourceBodyGuids: [guid(sourceKey.body)],
+            orderedActors: ['river/main'],
+            terrainCapture: {
+              worldMatrixM: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+              boundsXZ: { minM: [-0.5, -0.5], maxM: [7.5, 7.5] },
+              resolutionPx: [8, 8],
+              layerNameToIndex: { Water: 0 },
+            },
+            curves: [],
+            textures: [],
+            outputTerrainSourceKey: 'terrain/coast-after-water',
+            rules: {
+              falloff: { type: 'smooth', widthM: 2, strength: 1 },
+              blend: { type: 'alpha', alpha: 1 },
+              heightRules: { mode: 'raise', offsetM: 0, velocityMPerSec: 0 },
+              weightRules: { layer: 'Water', value: 1, blend: 'replace' },
+            },
+          },
+          'simulation/fluid': {
+            kind: 'water-simulation-recipe',
+            system: 'fluid-simulation',
+            configurationVersion: 1,
+            solverMode: 'ripple',
+            terrainMode: 'none',
+            resolution: [64, 64],
+            virtualFps: 30,
+            maxStepsPerFrame: 5,
+            gridExtentM: [20, 20],
+            waveFoam: { resolution: 64, gridExtentM: 20 },
+            maxImpulses: 64,
+            impulseNoiseGuid: guid('texture/impulse-noise'),
+            targets: Object.fromEntries(
+              Object.entries({
+                height: 'ripple-height-m',
+                velocity: 'velocity-xz-m/s',
+                normalHeight: 'normal-xz-height-m',
+                forces: 'height-foam-mask',
+                velocityForces: 'velocity-xz-m/s',
+                wave: 'wave-foam',
+                foam: 'foam',
+              }).map(([key, channels]) => [
+                key,
+                {
+                  format: 'rgba16float',
+                  filter: 'linear',
+                  address: 'repeat',
+                  origin: 'top-left',
+                  channels,
+                  clear: [0, 0, 0, 1],
+                },
+              ]),
+            ),
+            injectionLimits: {
+              heightDeltaM: { encodedRange: [-2, 2], unit: 'm' },
+              foamStrength: { encodedRange: [0, 4], unit: 'unitless' },
+            },
+            parameters: {
+              travelSpeed: 0.95,
+              rippleDamping: 0.01,
+              rippleFoamDamping: 0.998,
+              rippleFoamErasure: 0.1,
+              fluidDampingPerSecond: 0.1,
+              gravityMPerSecSquared: 9.8,
+              shallowEdgeLengthM: 0.001,
+              shallowFadingBackPerSecond: 0.25,
+              terrainUseWaterDepthOnly: 0,
+              shallowFoamFadePerSecond: 2,
+              shallowFoamInjection: 0.5,
+              shallowVelocityForFoamMPerSecond: 1.28,
+              shallowFoamSlopeMinimum: 0.5,
+              shallowFoamSlopeRange: 0.05,
+              shallowNormalHeightScale: 5,
+              constantWaterDepthM: 2,
+              evaporationMPerSecond: 0,
+              maskThreshold: 0.5,
+              normalHeightScale: 1,
+              normalDefaultDepthM: 0,
+              normalFoamAmount: 0.01,
+              normalFoamHeightScale: 16,
+              normalEdgeFalloff: 0.2,
+              waveNormalAmount: 10,
+              waveNormalBias: 0,
+              waveMinimumHeightM: 0.48,
+              waveHeightDivisorM: 0.48,
+              waveEdgeFalloff: 0.2,
+              waveTimeBiasSeconds: 0,
+              foamFadePerFrame: 0,
+              foamDiffusion: 0.5,
+              foamEdgeFalloff: 0.2,
+              foamWetPerMeter: 2,
+              foamWetFadePerFrame: 0.001,
+              foamToneMapDensity: 0.1,
+            },
+            shallowFoamEnabled: true,
+            foamEnabled: true,
+            materialGuids: [],
+            textureGuids: [],
+          },
+        },
+        { packageId, readByGuid },
+      );
+      return water.ok
+        ? ok({
+            ...water.value,
+            [sourceKey.material]: { kind: 'material', values: { roughness: 1 } } as const,
+            'texture/impulse-noise': {
+              kind: 'texture',
+              shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+              format: 'rgba8unorm-srgb',
+              colorSpace: 'srgb',
+              data: new Uint8Array([127, 127, 127, 255]),
+              mips: { kind: 'none' },
+            } as const,
+          })
+        : water;
     });
     const built = await buildScriptablePack({
       definition,
@@ -519,57 +504,51 @@ describe('water ScriptablePack production', () => {
         fetch: async () => Response.json(normaliseForPack(published.pack)),
       }),
     );
-    try {
-      const loaded = await assets.load(bodyGuid, 'water-body');
-      expect(loaded.ok).toBe(true);
-      if (!loaded.ok) return;
-      const runtimeBody = assets.read(loaded.value).unwrap();
-      expect(runtimeBody.kind).toBe('water-body');
-      if (runtimeBody.kind === 'water-body')
-        expect(runtimeBody.spline.points[1]).toMatchObject({
-          positionM: [1, 2, 0],
-          depthM: 1,
-          velocityMPerSec: 1,
-          up: [0, 1, 0],
-        });
-      expect(assets.inspect().assets.some((asset) => asset.guid === zoneGuid)).toBe(false);
-      const fluidGuid = guid('simulation/fluid');
-      const fluidOutput = built.value.product.assets.find((asset) => asset.guid === fluidGuid);
-      expect(fluidOutput?.refs).toContainEqual(
-        expect.objectContaining({
-          guid: guid('texture/impulse-noise'),
-          sourceField: { fieldName: 'impulseNoiseGuid' },
-        }),
-      );
-      const fluid = assets
-        .read((await assets.load(fluidGuid, 'water-simulation-recipe')).unwrap())
-        .unwrap();
-      expect(fluid).toMatchObject({ impulseNoiseGuid: guid('texture/impulse-noise') });
-      const noise = assets
-        .read((await assets.load(guid('texture/impulse-noise'), 'texture')).unwrap())
-        .unwrap();
-      expect(noise).toMatchObject({ kind: 'texture', format: 'rgba8unorm-srgb' });
-      if (noise.kind === 'texture') expect(Array.from(noise.data)).toEqual([127, 127, 127, 255]);
-    } finally {
-      assets.dispose();
-    }
+    onTestFinished(() => assets.dispose());
+    const loaded = await assets.load(bodyGuid, 'water-body');
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    const runtimeBody = assets.read(loaded.value).unwrap();
+    expect(runtimeBody.kind).toBe('water-body');
+    if (runtimeBody.kind === 'water-body')
+      expect(runtimeBody.spline.points[1]).toMatchObject({
+        positionM: [1, 2, 0],
+        depthM: 1,
+        velocityMPerSec: 1,
+        up: [0, 1, 0],
+      });
+    expect(assets.inspect().assets.some((asset) => asset.guid === zoneGuid)).toBe(false);
+    const fluidGuid = guid('simulation/fluid');
+    const fluidOutput = built.value.product.assets.find((asset) => asset.guid === fluidGuid);
+    expect(fluidOutput?.refs).toContainEqual(
+      expect.objectContaining({
+        guid: guid('texture/impulse-noise'),
+        sourceField: { fieldName: 'impulseNoiseGuid' },
+      }),
+    );
+    const fluid = assets
+      .read((await assets.load(fluidGuid, 'water-simulation-recipe')).unwrap())
+      .unwrap();
+    expect(fluid).toMatchObject({ impulseNoiseGuid: guid('texture/impulse-noise') });
+    const noise = assets
+      .read((await assets.load(guid('texture/impulse-noise'), 'texture')).unwrap())
+      .unwrap();
+    expect(noise).toMatchObject({ kind: 'texture', format: 'rgba8unorm-srgb' });
+    if (noise.kind === 'texture') expect(Array.from(noise.data)).toEqual([127, 127, 127, 255]);
   });
 
   it('re-cooks the River segment output roster after spline point insertion or deletion', async () => {
     const source = bodySource();
     const build = async (points: typeof source.spline.points) =>
       buildScriptablePack({
-        definition: definePack({
-          schemaVersion: '2.0.0',
-          packageId,
-          build: ({ packageId, readByGuid }) =>
-            buildWaterPackOutputs(
-              {
-                [sourceKey.body]: { ...source, spline: { ...source.spline, points } },
-              },
-              { packageId, readByGuid },
-            ),
-        }),
+        definition: packDefinition(packageId, ({ packageId, readByGuid }) =>
+          buildWaterPackOutputs(
+            {
+              [sourceKey.body]: { ...source, spline: { ...source.spline, points } },
+            },
+            { packageId, readByGuid },
+          ),
+        ),
         sourcePath: 'river-roster.pack.ts',
         outputs: createStandardAssetOutputProducerRegistry(),
         availableGuids: new Set([guid(sourceKey.material), guid(sourceKey.zone)]),

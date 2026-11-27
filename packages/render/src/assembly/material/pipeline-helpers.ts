@@ -1,4 +1,5 @@
 import type { VertexLayoutProjection } from '@forgeax/engine-geometry';
+import { vertexLayoutHasColor } from '@forgeax/engine-geometry';
 import type { BindGroupLayout, RhiDevice } from '@forgeax/engine-rhi';
 import type {
   MaterialShaderArtifact,
@@ -13,24 +14,27 @@ import { isCanonicalStandardPbrMaterialShader, SHADOW_CASTER_SHADER_ID } from '.
 import { deriveExtendedLightingCapability } from '../../prepare/extended-lighting/resources';
 import { type LayoutKind, selectNoColorPbrVariant } from '../material-shader-policy';
 import { STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES } from '../shader-prewarm-policy';
-import { hasColorAttribute } from '../webgpu-vertex-layouts';
 import { type MaterialShaderArtifactRequest, resolveMaterialShaderArtifact } from './assembly';
 
 type MaterialArtifactRegistry = Pick<
   ShaderRegistry,
   'findMaterialArtifact' | 'materialProgram' | 'materialShaderManifestEntry'
->;
+> &
+  Partial<
+    Pick<ShaderRegistry, 'isSourceBackedMaterialArtifact' | 'materialVariantArtifactIdentifier'>
+  >;
 
 export function resolveRendererMaterialShaderArtifact(
   materialShaderId: string,
   shader: MaterialArtifactRegistry,
   programs: ReadonlyMap<string, GpuDrivenPbrProgram> | undefined,
   options: MaterialShaderArtifactRequest | boolean = {},
+  prepare?: (identifier: string) => boolean,
 ): MaterialShaderArtifact | undefined {
   if (typeof options === 'boolean') {
     return resolveStandardPbrProgram(programs, materialShaderId, options)?.artifact;
   }
-  const resolved = resolveMaterialShaderArtifact(materialShaderId, shader, options);
+  const resolved = resolveMaterialShaderArtifact(materialShaderId, shader, options, prepare);
   if (resolved !== undefined) return resolved;
   // Legacy callers without geometry facts may reuse a prewarmed Standard
   // program; geometry-specific requests remain fail-closed.
@@ -58,7 +62,7 @@ export function materialPipelineArtifactRequest(
     pass: passKind === 'shadow-caster' ? 'shadow' : 'forward',
   };
   if (vertexLayoutProjection !== undefined)
-    options.vertexColorAvailable = hasColorAttribute(vertexLayoutProjection);
+    options.vertexColorAvailable = vertexLayoutHasColor(vertexLayoutProjection);
   if (
     layoutKind === 'pbr-skin' ||
     layoutKind === 'gpu-driven-skin' ||
@@ -147,6 +151,21 @@ export function resolveMaterialPipelineGroup2Contract(
   }
 }
 
+export function resolveCompiledMaterialGroup2Contract(
+  declared: PipelineGroup2Contract,
+  layoutKind: LayoutKind | undefined,
+  materialShaderId: string | undefined,
+  variantSet: string | undefined,
+): PipelineGroup2Contract {
+  const contract = resolveMaterialPipelineGroup2Contract(declared, layoutKind);
+  return contract === 'mesh' &&
+    (materialShaderId === 'forgeax::vfx-render.particles.mesh' ||
+      materialShaderId === 'forgeax::vfx-render.particles.mesh-inputs') &&
+    (variantSet === '' || variantSet?.includes('CLUSTER_FORWARD_AVAILABLE=true') === true)
+    ? 'cluster'
+    : contract;
+}
+
 interface MaterialPipelineBindGroupState {
   readonly meshBindGroupLayout: BindGroupLayout;
   readonly pbrSkinMeshBindGroupLayout: BindGroupLayout | null;
@@ -154,10 +173,11 @@ interface MaterialPipelineBindGroupState {
   readonly hdrpMeshBindGroupLayout?: BindGroupLayout | null;
   readonly instancesBindGroupLayout: BindGroupLayout;
   readonly probeInstancesBindGroupLayout?: BindGroupLayout;
+  readonly gpuDrivenPrimitiveBindGroupLayout?: BindGroupLayout | null;
+  readonly gpuDrivenSkinPrimitiveBindGroupLayout?: BindGroupLayout | null;
   readonly gpuDrivenInstancesBindGroupLayout?: BindGroupLayout | null;
   readonly surfaceDirectInstancesBindGroupLayout?: BindGroupLayout | null;
   readonly sceneDirectInstancesBindGroupLayout?: BindGroupLayout | null;
-  readonly gpuDrivenClusterMeshBindGroupLayout?: BindGroupLayout | null;
 }
 
 /** Slot-3 layout: direct Surface rows, GPU Scene rows, scene-index tables or packed instances. */
@@ -183,23 +203,22 @@ function materialPipelineInstancesLayout(
 export function resolveMaterialPipelineBindGroups(
   layoutKind: LayoutKind,
   state: MaterialPipelineBindGroupState,
-  clustered = false,
   probeBlend = false,
 ): { readonly meshLayout: BindGroupLayout; readonly instancesLayout: BindGroupLayout } | null {
   const meshLayout =
-    layoutKind === 'gpu-driven-cluster-pbr' ||
-    layoutKind === 'surface-direct-cluster-pbr' ||
-    layoutKind === 'scene-direct-cluster-unlit'
-      ? state.gpuDrivenClusterMeshBindGroupLayout
-      : layoutKind === 'hdrp-pbr' || (clustered && layoutKind === 'gpu-driven-pbr')
-        ? state.hdrpMeshBindGroupLayout
-        : clustered && layoutKind === 'gpu-driven-skin'
-          ? state.hdrpSkinMeshBindGroupLayout
-          : layoutKind === 'gpu-driven-cluster-skin' || layoutKind === 'hdrp-skin'
-            ? state.hdrpSkinMeshBindGroupLayout
-            : layoutKind === 'pbr-skin' || layoutKind === 'gpu-driven-skin'
-              ? state.pbrSkinMeshBindGroupLayout
-              : state.meshBindGroupLayout;
+    layoutKind === 'gpu-driven-pbr' || layoutKind === 'gpu-driven-cluster-pbr'
+      ? state.gpuDrivenPrimitiveBindGroupLayout
+      : layoutKind === 'gpu-driven-skin' || layoutKind === 'gpu-driven-cluster-skin'
+        ? state.gpuDrivenSkinPrimitiveBindGroupLayout
+        : layoutKind === 'surface-direct-cluster-pbr' || layoutKind === 'scene-direct-cluster-unlit'
+          ? state.hdrpMeshBindGroupLayout
+          : layoutKind === 'hdrp-pbr'
+            ? state.hdrpMeshBindGroupLayout
+            : layoutKind === 'hdrp-skin'
+              ? state.hdrpSkinMeshBindGroupLayout
+              : layoutKind === 'pbr-skin'
+                ? state.pbrSkinMeshBindGroupLayout
+                : state.meshBindGroupLayout;
   if (meshLayout == null) return null;
   const instancesLayout = materialPipelineInstancesLayout(layoutKind, state, probeBlend);
   return instancesLayout === null || instancesLayout === undefined

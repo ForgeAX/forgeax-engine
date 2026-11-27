@@ -58,6 +58,13 @@ interface HostLossSignal {
   readonly retiredIndices: Set<Buffer>;
 }
 
+function hostLossSignal(signals: readonly HostLossSignal[], generation: number): HostLossSignal {
+  const signal = signals[generation];
+  if (signal === undefined)
+    throw new Error(`missing host loss signal for generation ${generation}`);
+  return signal;
+}
+
 function expectedHostLossGeneration(error: RenderError): number | undefined {
   if (error.code !== 'device-operation-failed') return undefined;
   if (error.detail.operation !== 'renderer-event') return undefined;
@@ -234,7 +241,7 @@ async function screenshotPixels(
   label: string,
 ): Promise<ScreenshotPixels> {
   const shot = await page.elementLocator(canvas).screenshot({
-    path: `../../../../artifacts/wave1-rendering/wave1-recovery-${label}.png`,
+    path: `__screenshots__/wave1-rendering-recovery.browser.test.ts/wave1-recovery-${label}.png`,
     base64: true,
   });
   const base64 = typeof shot === 'string' ? shot : shot.base64;
@@ -342,6 +349,7 @@ async function submitFrame(
       pixels: pixelStats(pixels),
       state: inspection.state,
       temporal: inspection.temporal,
+      forwardShadowReceiver: inspection.directionalShadow.forwardReceiver,
       dynamicGeometry: inspection.dynamicGeometry,
       recovery: inspection.recovery,
       recoveryEvidence: inspection.recoveryEvidence,
@@ -391,12 +399,14 @@ async function flushCleanup(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
+const recoveryViewportSize = 256;
+
 it('recovers the same Renderer, World, and lease through two host loss cycles', async () => {
   const canvas = document.createElement('canvas');
-  canvas.width = 384;
-  canvas.height = 384;
-  canvas.style.width = '384px';
-  canvas.style.height = '384px';
+  canvas.width = recoveryViewportSize;
+  canvas.height = recoveryViewportSize;
+  canvas.style.width = `${recoveryViewportSize}px`;
+  canvas.style.height = `${recoveryViewportSize}px`;
   document.body.appendChild(canvas);
 
   const hostLoss = createHostLossInstrumentation();
@@ -490,8 +500,8 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
     expect(baseline.receipt.deviceGeneration).toBe(0);
     expect(baseline.receipt.graphGeneration).toBeTypeOf('number');
     expect(baseline.receipt.barrelDistortion).toMatchObject({
-      width: 384,
-      height: 384,
+      width: recoveryViewportSize,
+      height: recoveryViewportSize,
       centerX: 0.5,
       centerY: 0.5,
     });
@@ -551,8 +561,7 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
 
     const recoveryResources: RecoveryResourceSample[] = [];
     for (let cycle = 1; cycle <= 2; cycle += 1) {
-      const signal = hostLoss.signals[cycle - 1];
-      if (signal === undefined) throw new Error(`missing host loss signal for cycle ${cycle}`);
+      const signal = hostLossSignal(hostLoss.signals, cycle - 1);
       // Submit one real active-Barrel frame, then retire its device before the
       // queue completion resolves. The receipt and its mapping are one
       // picture context; recovery must reject both together and publish a
@@ -633,8 +642,7 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
       expect(lease).toBe(initialLease);
       const recoveryReadyMeshEpoch =
         renderer.inspect().recoveryEvidence.residency.meshResidencyEpoch;
-      const recoveredSignal = hostLoss.signals[cycle];
-      if (recoveredSignal === undefined) throw new Error(`missing recovered device ${cycle}`);
+      const recoveredSignal = hostLossSignal(hostLoss.signals, cycle);
       const recoveryReadyMeshIndexBuffers = recoveredSignal.meshIndexBuffers.size;
       expect(recoveryReadyMeshIndexBuffers).toBe(0);
       world.update(1 / 60).unwrap();
@@ -665,8 +673,8 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
       expect(recoveredFrame.receipt.graphGeneration).toBeTypeOf('number');
       expect(recoveredFrame.receipt.graphGeneration).not.toBe(lateReceipt.graphGeneration);
       expect(recoveredFrame.receipt.barrelDistortion).toMatchObject({
-        width: 384,
-        height: 384,
+        width: recoveryViewportSize,
+        height: recoveryViewportSize,
         centerX: 0.5,
         centerY: 0.5,
       });
@@ -714,33 +722,51 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
       expect(recoveredResources.dynamicCandidates).toBe(0);
       expect(recoveredResources.dynamicMeshBytes).toBe(0);
 
-      const skyOn = cropPixels(recoveredFrame.pixels, 0.5, 0.2, 0.45, 0.18);
-      removeAtmosphere();
-      world.update(1 / 60).unwrap();
-      const atmosphereOff = await submitFrame(
-        world,
-        renderer,
-        lease,
-        canvas,
-        `cycle-${cycle}-atmosphere-off`,
-      );
-      expect(
-        pixelDelta(skyOn, cropPixels(atmosphereOff.pixels, 0.5, 0.2, 0.45, 0.18)).changedPixels,
-      ).toBeGreaterThan(0);
-      addAtmosphere();
-      world.update(1 / 60).unwrap();
-      const atmosphereOn = await submitFrame(
-        world,
-        renderer,
-        lease,
-        canvas,
-        `cycle-${cycle}-atmosphere-on`,
-      );
-      expect(pixelDelta(atmosphereOff.pixels, atmosphereOn.pixels).changedPixels).toBeGreaterThan(
-        0,
-      );
-      expect(atmosphereOn.inspection.temporal.mode).toBe('taa');
+      // The first replacement exercises the atmosphere graph transition.
+      // The second keeps that graph steady while repeating device reconstruction
+      // and the dynamic geometry publication and retirement checks.
+      let beforeDynamicPublish = recoveredFrame;
+      if (cycle === 1) {
+        const skyOn = cropPixels(recoveredFrame.pixels, 0.5, 0.2, 0.45, 0.18);
+        removeAtmosphere();
+        world.update(1 / 60).unwrap();
+        const atmosphereOff = await submitFrame(
+          world,
+          renderer,
+          lease,
+          canvas,
+          `cycle-${cycle}-atmosphere-off`,
+        );
+        expect(
+          pixelDelta(skyOn, cropPixels(atmosphereOff.pixels, 0.5, 0.2, 0.45, 0.18)).changedPixels,
+        ).toBeGreaterThan(0);
+        addAtmosphere();
+        world.update(1 / 60).unwrap();
+        beforeDynamicPublish = await submitFrame(
+          world,
+          renderer,
+          lease,
+          canvas,
+          `cycle-${cycle}-atmosphere-on`,
+        );
+        expect(
+          pixelDelta(atmosphereOff.pixels, beforeDynamicPublish.pixels).changedPixels,
+        ).toBeGreaterThan(0);
+        expect(beforeDynamicPublish.inspection.temporal.mode).toBe('taa');
+      }
 
+      // Both wall meshes use four slots. Bind the complete material set
+      // before publishing the closed mesh to keep its receiver topology.
+      world
+        .set(recipe.entities.wall, MeshRenderer, {
+          materials: [
+            recipe.assets.wood,
+            recipe.assets.metal,
+            recipe.assets.wood,
+            recipe.assets.metal,
+          ],
+        })
+        .unwrap();
       const closedCandidate = prepareDynamic(
         renderer,
         world,
@@ -759,7 +785,9 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
       expect(renderer.dynamicGeometryReceipt(closedCandidate)?.frameId).toBe(
         closed.receipt.frameId,
       );
-      expect(pixelDelta(atmosphereOn.pixels, closed.pixels).changedPixels).toBeGreaterThan(0);
+      expect(pixelDelta(beforeDynamicPublish.pixels, closed.pixels).changedPixels).toBeGreaterThan(
+        0,
+      );
       expect(closed.inspection.dynamicGeometry?.published).toBeGreaterThanOrEqual(1);
       boundIndexBuffer(hostLoss.signals[cycle], recipe.assets.wallClosed);
       expect(resourceSample(closed.inspection).graphResources).toBe(
@@ -772,16 +800,6 @@ it('recovers the same Renderer, World, and lease through two host loss cycles', 
       world
         .set(recipe.entities.wall, MeshFilter, {
           assetHandle: recipe.assets.wallApertureHandle,
-        })
-        .unwrap();
-      world
-        .set(recipe.entities.wall, MeshRenderer, {
-          materials: [
-            recipe.assets.wood,
-            recipe.assets.metal,
-            recipe.assets.wood,
-            recipe.assets.metal,
-          ],
         })
         .unwrap();
       world.update(1 / 60).unwrap();

@@ -71,6 +71,21 @@ function triangleArea(positions: Float32Array, a: number, b: number, c: number) 
   return area;
 }
 
+it('uses a narrow jet with a rounded head rather than a broad conical spike', () => {
+  const positions = waterEntrySurface('tongue').attributes.position;
+  if (!(positions instanceof Float32Array)) throw new Error('Expected entry geometry');
+  const roots: number[] = [],
+    head: number[] = [];
+  for (let vertex = 0; vertex < positions.length; vertex += 3) {
+    const y = positions[vertex + 1] ?? 0;
+    const radius = Math.hypot((positions[vertex] ?? 0) - 0.055 * y * y, positions[vertex + 2] ?? 0);
+    if (y === 0) roots.push(radius);
+    if (y > 0.85 && y < 1) head.push(radius);
+  }
+  expect(Math.max(...roots)).toBeLessThan(0.3);
+  expect(Math.min(...head)).toBeGreaterThan(0.08);
+});
+
 it('publishes a sealed tongue tip without degenerate triangles or an annular top opening', () => {
   const mesh = waterEntrySurface('tongue');
   const positions = mesh.attributes.position;

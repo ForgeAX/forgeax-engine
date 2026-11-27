@@ -1,10 +1,8 @@
-import { createHash } from 'node:crypto';
-import { type PackProgram, preparePackProgram } from '@forgeax/engine-pack/runtime';
-import type { ViteDevServer } from 'vite';
-import { devProgramResourceMeta } from './dev-program-resources.js';
-import { normalizeDevProgramUrl, withDevProgramSession } from './dev-program-url.js';
+import { sha256 } from '@forgeax/engine-types';
+import type { Plugin, ViteDevServer } from 'vite';
 import { type EngineCapabilityMeta, engineCapabilityMeta } from './execution-workers.js';
-import { rewriteModuleSpecifiers } from './module-specifiers.js';
+import { projectModuleSpecifiers, readModuleSpecifiers } from './module-specifiers.js';
+import { packProgramImportIdentities, sealPluginProgramGraph } from './plugin-program-artifacts.js';
 
 /** Freeze the same final Vite modules consumed by page and plugin imports. */
 export async function captureDevPluginPrograms(
@@ -53,7 +51,7 @@ export async function captureDevPluginPrograms(
       url.includes('\0') || url.startsWith('virtual:')
         ? `/@id/${url.replace('\0', '__x00__')}`
         : url;
-    const filename = `modules/${createHash('sha256').update(withDevProgramSession(url, null)).digest('hex')}.js`;
+    const filename = `modules/${sha256(withDevProgramSession(url, null))}.js`;
     files.set(request, filename);
     files.set(url, filename);
     moduleIds.add(withDevProgramSession(id, null));
@@ -69,20 +67,16 @@ export async function captureDevPluginPrograms(
       id.includes('__vite-browser-external')
     )
       unsupported ??= `plugin program resource requires a portable producer: ${url}`;
-    const dependencies: string[] = [];
-    rewriteModuleSpecifiers(result.code, url, (specifier) => {
-      dependencies.push(specifier);
-      return undefined;
-    });
+    const source = projectModuleSpecifiers(result.code, url);
     const edges = new Map<string, string>();
-    for (const dependency of dependencies) {
+    for (const { specifier: dependency } of source.edges) {
       if (!dependency.startsWith('/')) {
         unsupported ??= `plugin program import requires a portable producer: ${dependency}`;
         continue;
       }
       edges.set(dependency, await visit(dependency));
     }
-    modules[filename] = rewriteModuleSpecifiers(result.code, url, (specifier) => {
+    modules[filename] = source.rewrite((specifier) => {
       const target = edges.get(specifier);
       return target?.startsWith('modules/') ? `./${target.slice('modules/'.length)}` : target;
     });
@@ -90,7 +84,7 @@ export async function captureDevPluginPrograms(
     // producer IDs. Only final HTTP locators acquire this Host's session tag.
     responses.set(
       delivered,
-      rewriteModuleSpecifiers(result.code, url, (specifier) => {
+      source.rewrite((specifier) => {
         const target = edges.get(specifier);
         return target?.startsWith('modules/') ? urls[target] : undefined;
       }),
@@ -115,27 +109,94 @@ export async function captureDevPluginPrograms(
     // Vite's graph also records new URL() assets. Those bytes belong to their
     // runtime loader, not the ESM graph, and must never be transformed as JS.
     // Follow actual module edges while retaining shared-dependency protection.
-    const dependencies: string[] = [];
-    rewriteModuleSpecifiers(transformed.code, node.url, (specifier) => {
-      dependencies.push(specifier);
-      return undefined;
-    });
-    for (const dependency of dependencies) await protect(dependency);
+    for (const { specifier } of readModuleSpecifiers(transformed.code, node.url))
+      await protect(specifier);
   };
   for (const url of capabilities) await protect(url);
-  const programs: Record<string, PackProgram> = {};
-  if (!unsupported)
-    for (const [key, entry] of entries)
-      programs[key] = preparePackProgram({
-        modules,
-        entry,
-        export: 'default',
-        imports: Object.fromEntries(Object.keys(imports).map((name) => [name, identity])),
-      }).unwrap();
+  const sealed = unsupported
+    ? undefined
+    : sealPluginProgramGraph(modules, packProgramImportIdentities(imports), entries);
   return {
     responses,
     moduleIds,
     entries: [...new Set(entries.values())].sort(),
-    archive: unsupported ? { error: unsupported } : { programs, imports, urls },
+    archive: sealed
+      ? { graph: sealed.graph, programs: Object.fromEntries(sealed.programs), imports, urls }
+      : { error: unsupported },
   };
+}
+
+function editProgramQuery(url: string, keep: (part: string) => boolean, append?: string): string {
+  const split = url.indexOf('?');
+  if (split < 0) return append === undefined ? url : `${url}?${append}`;
+  const query = url
+    .slice(split + 1)
+    .split('&')
+    .filter(keep);
+  if (append !== undefined) query.push(append);
+  return url.slice(0, split) + (query.length ? `?${query.join('&')}` : '');
+}
+
+const isSemanticProgramQuery = (part: string) =>
+  !/^t=\d+$/.test(part) && part !== 'import' && part !== 'import=';
+
+/** Strip only Vite transport cache hints; semantic module queries stay intact. */
+export function normalizeDevProgramUrl(url: string): string {
+  return editProgramQuery(url, isSemanticProgramQuery);
+}
+
+export const devProgramSessionQuery = 'forgeax-program-session';
+
+export function devProgramSession(url: string): string | null {
+  if (!url.includes('?')) return null;
+  return new URLSearchParams(url.slice(url.indexOf('?') + 1)).get(devProgramSessionQuery);
+}
+
+/** Session locators belong to this Host, never to the portable program graph. */
+export function withDevProgramSession(url: string, session: string | null): string {
+  const append =
+    session === null ? undefined : `${devProgramSessionQuery}=${encodeURIComponent(session)}`;
+  return editProgramQuery(
+    url,
+    (part) => !new URLSearchParams(part).has(devProgramSessionQuery),
+    append,
+  );
+}
+
+export const devProgramResourceMeta = 'forgeax.programResource';
+
+/** Vite 8 producer evidence; preserve its code, filters and hook ordering. */
+export function markDevProgramResources(plugins: readonly Plugin[]): void {
+  for (const name of ['vite:asset', 'vite:worker', 'vite:wasm-helper']) {
+    const plugin = plugins.find((plugin) => plugin.name === name);
+    const hook = plugin?.load;
+    if (!plugin || !hook) throw new TypeError(`Vite resource producer unavailable: ${name}`);
+    const handler = typeof hook === 'function' ? hook : hook.handler;
+    const wrapped: typeof handler = async function (...args) {
+      const result = await handler.apply(this, args);
+      if (
+        result == null ||
+        (name === 'vite:asset' && new URLSearchParams(args[0].split('?')[1]).has('raw'))
+      )
+        return result;
+      return typeof result === 'string'
+        ? { code: result, meta: { [devProgramResourceMeta]: name } }
+        : { ...result, meta: { ...result.meta, [devProgramResourceMeta]: name } };
+    };
+    plugin.load = typeof hook === 'function' ? wrapped : { ...hook, handler: wrapped };
+  }
+  for (const name of ['vite:asset-import-meta-url', 'vite:worker-import-meta-url', 'vite:css']) {
+    const plugin = plugins.find((plugin) => plugin.name === name);
+    const hook = plugin?.transform;
+    if (!plugin || !hook) throw new TypeError(`Vite resource producer unavailable: ${name}`);
+    const handler = typeof hook === 'function' ? hook : hook.handler;
+    const wrapped: typeof handler = async function (...args) {
+      const result = await handler.apply(this, args);
+      if (result == null) return result;
+      return typeof result === 'string'
+        ? { code: result, meta: { [devProgramResourceMeta]: name } }
+        : { ...result, meta: { ...result.meta, [devProgramResourceMeta]: name } };
+    };
+    plugin.transform = typeof hook === 'function' ? wrapped : { ...hook, handler: wrapped };
+  }
 }

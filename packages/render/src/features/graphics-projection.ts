@@ -23,8 +23,6 @@ import type {
   FramePresentationPendingReason,
 } from '../render-contract';
 
-import type { SceneDataCatalog } from '../temporal/scene-data-catalog';
-
 import { featureScopeKey, type NativeFeatureWorkRouting } from './frame-plan';
 
 import type { PreparedPlanResources } from './native-resource-admission';
@@ -166,13 +164,6 @@ export interface FeatureSlot {
     { readonly execution: RenderFeaturePlanExecution; readonly signature: string }
   >;
   signatureInspection: SignatureInspection | undefined;
-  /** Scene-data catalog of each view for the current prepared generation. */
-  readonly sceneData: Map<string, SceneDataCatalog>;
-  /** Monotonic view cuts so a token cannot become current again after rollback. */
-  readonly sceneDataAdmissionRevisions: Map<
-    string,
-    { readonly identity: string | undefined; readonly revision: number }
-  >;
   readonly nativeRouting: NativeFeatureWorkRouting;
   /** Fixed event facts; replacement order never retargets an older frame. */
   readonly stageEvents: Partial<Record<RenderFeatureStageEvent['stage'], RenderFeatureStageEvent>>;

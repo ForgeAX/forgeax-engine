@@ -1,6 +1,7 @@
 import { EmptyState, Switch } from '@forgeax/view-components';
 import { ChevronDown, ChevronRight, List, Play } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { useViewerTranslation } from '../i18n';
 import { useSelection } from '../selection-context';
 import { commandRowAnchor, eventBrowserAnchor, passAnchor, selectedAnchor } from '../selectors';
 import { useViewModel } from '../viewer-context';
@@ -10,6 +11,7 @@ interface PanelProps {
 }
 
 export function EventBrowser(_props?: PanelProps) {
+  const t = useViewerTranslation();
   const model = useViewModel();
   const { selectedWorkIndex, selectCommand, selectWork } = useSelection();
   const [collapsed, setCollapsed] = useState<ReadonlySet<number>>(new Set());
@@ -40,7 +42,7 @@ export function EventBrowser(_props?: PanelProps) {
   if (!model) {
     return (
       <div className="forgeax-panel flex">
-        <EmptyState title="No tape loaded" description="Import or drop a .rhitape file" />
+        <EmptyState title={t('noTape')} description={t('importOrDrop')} />
       </div>
     );
   }
@@ -56,7 +58,7 @@ export function EventBrowser(_props?: PanelProps) {
     <section className="forgeax-panel flex flex-col" {...{ [eventBrowserAnchor()]: mode }}>
       <div className="forgeax-panel-toolbar">
         <Switch
-          label="All commands"
+          label={t('allCommands')}
           checked={mode === 'all-commands'}
           onCheckedChange={(checked) => setMode(checked ? 'all-commands' : 'works-only')}
         />
@@ -80,7 +82,9 @@ export function EventBrowser(_props?: PanelProps) {
                 )}
                 <List className="fx-icon" />
                 <span>
-                  {pass.kind === 'render' ? 'Render' : 'Compute'} pass #{pass.passIndex}
+                  {t(pass.kind === 'render' ? 'renderPass' : 'computePass', {
+                    index: pass.passIndex,
+                  })}
                 </span>
                 <span className="text-muted-foreground">
                   (
@@ -144,7 +148,7 @@ export function EventBrowser(_props?: PanelProps) {
                         )}
                         <span className="shrink-0 font-medium">
                           {work === undefined
-                            ? `event ${command?.eventIndex ?? -1}`
+                            ? t('event', { index: command?.eventIndex ?? -1 })
                             : `#${work.workIndex} ${work.kind}`}
                         </span>
                         {command?.kind !== work?.kind && (
@@ -165,7 +169,7 @@ export function EventBrowser(_props?: PanelProps) {
                     ? passWorks.length
                     : (commandsByPass.get(pass.passIndex)?.length ?? 0)) === 0 && (
                     <p className="px-fx-8 py-fx-4 text-caption text-muted-foreground">
-                      No commands
+                      {t('noCommands')}
                     </p>
                   )}
                 </div>
@@ -174,7 +178,7 @@ export function EventBrowser(_props?: PanelProps) {
           );
         })}
         {passes.length === 0 && (
-          <p className="p-fx-8 text-caption text-muted-foreground">No events in tape</p>
+          <p className="p-fx-8 text-caption text-muted-foreground">{t('noEvents')}</p>
         )}
         {commands.length > 0 && (
           <button
@@ -183,7 +187,7 @@ export function EventBrowser(_props?: PanelProps) {
             onClick={() => selectCommand(commands[0]?.eventIndex ?? 0)}
             {...{ [commandRowAnchor()]: '0' }}
           >
-            command
+            {t('command')}
           </button>
         )}
       </div>

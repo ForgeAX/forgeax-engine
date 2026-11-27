@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
+import { readCookedShaderManifestPublication, readShaderManifestText, processShaderManifestUrl } from '../../../../scripts/lib/shader-manifest.mjs';
 
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
@@ -79,7 +79,7 @@ if (!existsSync(manifestPath)) {
   console.error(`[smoke] FAIL - dist/shaders/manifest.json missing at ${manifestPath}`);
   process.exit(1);
 }
-const manifest = JSON.parse(readShaderManifestText(manifestPath));
+const manifest = await readCookedShaderManifestPublication(JSON.parse(readShaderManifestText(manifestPath)));
 const manifestUrl = processShaderManifestUrl(manifestPath);
 const materialPackage = JSON.parse(
   readFileSync(resolve(appRoot, 'src', 'shader-defs.pack.json'), 'utf8'),
@@ -87,12 +87,12 @@ const materialPackage = JSON.parse(
 const redMaterialPackage = JSON.parse(
   readFileSync(resolve(appRoot, 'src', 'shader-defs-red.pack.json'), 'utf8'),
 );
-const material = materialPackage.assets?.find((asset) => asset?.kind === 'material')?.payload;
+const material = materialPackage.assets?.['shader-defs.wgsl']?.payload;
 if (material === undefined) {
   console.error('[smoke] FAIL - shader-defs.pack.json has no material asset payload');
   process.exit(1);
 }
-const redMaterial = redMaterialPackage.assets?.find((asset) => asset?.kind === 'material')?.payload;
+const redMaterial = redMaterialPackage.assets?.['shader-defs-red.wgsl']?.payload;
 if (redMaterial === undefined) {
   console.error('[smoke] FAIL - shader-defs-red.pack.json has no material asset payload');
   process.exit(1);

@@ -1,6 +1,10 @@
 import { assert, expect, it, vi } from 'vitest';
 import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
+import { runtimeTerrainFixture } from '../../__tests__/terrain/runtime-fixture';
+import { worldRenderResources } from '../../publication/resource-scope';
+import type { DispatchEntry } from '../../render-system-extract';
 import { RenderScene } from '../../scene/render-scene';
+import { TerrainSourceCache } from '../../terrain/source';
 import { buildDispatchPlan } from '../fold-buckets';
 import type { ValidatedRenderable } from '../frame-snapshot';
 import { MeshDrawSlots } from '../mesh-draw-slots';
@@ -21,6 +25,18 @@ function terrainSource(source: ValidatedRenderable['source'], _count: number) {
 
 function terrainRows(row: ValidatedRenderable, count: number): ValidatedRenderable[] {
   const source = terrainSource(row.source, count);
+  const fixture = runtimeTerrainFixture({
+    columns: count + 1,
+    rows: 2,
+    spacing: 1,
+    subsectionVertices: 2,
+    heights: new Float32Array((count + 1) * 2),
+  });
+  const terrain = new TerrainSourceCache().resolve(
+    worldRenderResources(fixture.world),
+    fixture.handle,
+  );
+  fixture.assets.dispose();
   return Array.from({ length: count }, (_, index) => ({
     ...row,
     source: {
@@ -29,15 +45,7 @@ function terrainRows(row: ValidatedRenderable, count: number): ValidatedRenderab
         index,
         lod: 0,
         neighbors: [0, 0, 0, 0],
-        source: {
-          version: 0,
-          asset: { columns: 1, rows: 1, spacing: 1, subsectionVertices: 2, heightRange: [0, 1] },
-          layers: [],
-          activeLayers: [],
-          grids: [],
-          sectionCount: count,
-          sections: undefined,
-        },
+        source: terrain,
       },
     },
   }));
@@ -121,6 +129,86 @@ function capacityFixture(capacity = 2) {
   return { rows, scene, internals, metrics };
 }
 
+it('retains the physical addresses of immutable native rows until the allocator changes', () => {
+  const { rows, scene, internals } = capacityFixture(3);
+  const source = rows[0];
+  const peer = rows[1];
+  assert(source && peer);
+  const input = [{ ...source, meshSlot: -1 }];
+  const address = vi.spyOn(scene, 'meshDrawSlot');
+  const plan = () =>
+    buildDispatchPlan(internals, input, [], [], [], undefined, false, undefined, scene, true);
+  const first = plan().validatedOrdered;
+  expect(first.at(0)?.meshSlot).toBe(0);
+  expect(input[0]?.meshSlot).toBe(-1);
+  expect(plan().validatedOrdered).toBe(first);
+  expect(address).toHaveBeenCalledTimes(1);
+
+  scene.meshDrawSlot(peer.source);
+  const refreshed = plan().validatedOrdered;
+  expect(refreshed).not.toBe(first);
+  expect(refreshed.at(0)?.meshSlot).toBe(0);
+  expect(first.at(0)?.meshSlot).toBe(0);
+  expect(plan().validatedOrdered).toBe(refreshed);
+  expect(address).toHaveBeenCalledTimes(3);
+});
+
+it('publishes a changed physical row while preserving the other addressed rows', () => {
+  const { rows, scene } = capacityFixture(8);
+  const input = rows.map((row) => ({ ...row, meshSlot: -1 }));
+  const first = scene.addressOwnedMeshDrawRows(input);
+  const moved = input.slice();
+  const row = moved[1];
+  assert(row);
+  moved[1] = { ...row, source: { ...row.source } };
+  const next = scene.addressOwnedMeshDrawRows(moved);
+  expect(next.rows.at(0)).toBe(first.rows.at(0));
+  expect(next.rows.at(1)).not.toBe(first.rows.at(1));
+  expect(next.rows.at(1)?.source).toBe(moved[1].source);
+  expect(first.rows.at(1)?.source).toBe(row.source);
+  expect(next.rows.map((entry) => entry.meshSlot)).toEqual(
+    first.rows.map((entry) => entry.meshSlot),
+  );
+});
+
+it('retains addressed native rows when the same dispatch selects multiple passes per row', () => {
+  const { rows, scene, internals } = capacityFixture(3);
+  const dispatchFor = (index: number): DispatchEntry => ({
+    entityIndex: rows[index]?.source.entityKey ?? -1,
+    renderableIndex: index,
+    materialHandle: 1,
+    passIndex: 0,
+    queue: 2000,
+    layer: 0,
+    tags: { LightMode: 'Forward' },
+    renderState: undefined,
+    defines: undefined,
+    vertexEntry: undefined,
+    fragmentEntry: undefined,
+    materialShaderId: undefined,
+  });
+  const second = dispatchFor(1);
+  const readTags = vi.fn(() => ({ LightMode: 'Forward' }));
+  Object.defineProperty(second, 'tags', { get: readTags });
+  const dispatch = [second, { ...second, passIndex: 1 }, dispatchFor(0), dispatchFor(2)];
+  const plan = (entries: readonly DispatchEntry[], owned = true) =>
+    buildDispatchPlan(internals, rows, entries, [], [], undefined, false, undefined, scene, owned)
+      .validatedOrdered;
+  const first = plan(dispatch);
+  expect(first.map((row) => row.renderableIndex)).toEqual([1, 0, 2]);
+  readTags.mockClear();
+  const warm = plan(dispatch);
+  expect(readTags).not.toHaveBeenCalled();
+  expect(Object.is(warm, first)).toBe(true);
+  expect(plan([dispatchFor(0), second, dispatchFor(2)]).map((row) => row.renderableIndex)).toEqual([
+    0, 1, 2,
+  ]);
+
+  plan(dispatch, false);
+  dispatch.unshift(dispatchFor(2));
+  expect(plan(dispatch, false).map((row) => row.renderableIndex)).toEqual([2, 1, 0]);
+});
+
 it('recovers below the address budget after an oversized candidate loses its sources', () => {
   const { rows, scene, internals } = capacityFixture();
   const plan = (rows: readonly ValidatedRenderable[]) =>
@@ -132,7 +220,7 @@ it('recovers below the address budget after an oversized candidate loses its sou
       entityKey: source.entityKey,
     })),
   );
-  expect(plan(rows.slice(0, 1)).validatedOrdered[0]?.meshSlot).toBe(0);
+  expect(plan(rows.slice(0, 1)).validatedOrdered.at(0)?.meshSlot).toBe(0);
 });
 
 it.each([
@@ -218,7 +306,7 @@ it('reclaims prior folded work before newly visible ordinary sources need its ca
     scene,
   );
   expect(first.foldDispatchPlan?.foldedBucketCount).toBe(1);
-  expect(first.validatedOrdered[0]?.foldedMeshSlot).toBe(2);
+  expect(first.validatedOrdered.at(0)?.foldedMeshSlot).toBe(2);
   const next = buildDispatchPlan(internals, rows, [], [], [], undefined, false, undefined, scene);
   expect(next.validatedOrdered.map((row) => row.meshSlot)).toEqual([0, 1, 2]);
   expect(next.validatedOrdered.every((row) => row.foldedMeshSlot === undefined)).toBe(true);
@@ -245,6 +333,30 @@ it('retires exact source allocations on remove, recreate and reset without a cac
   scene.apply([{ kind: 'update', entityKey: c.entityKey, snapshot: c }]);
   expect(scene.meshDrawSlot(c)).toBe(aSlot);
   expect(scene.meshDrawCapacity).toBe(3);
+});
+
+it('retires a missed row generation when a borrowed view catches up after slot reuse', () => {
+  const owner = new RenderScene();
+  const before = receiptRow().source;
+  const survivor = { ...before, entityKey: before.entityKey + 1 };
+  const replacement = { ...before, entityKey: before.entityKey + 2 };
+  owner.rebuild([before, survivor]);
+  const view = new RenderScene(owner.sceneRows);
+  const previous = view.slot(before.entityKey);
+  assert(previous);
+  const address = view.meshDrawSlot(before);
+  const stable = view.meshDrawSlot(survivor);
+  owner.apply([{ kind: 'remove', entityKey: before.entityKey }]);
+  owner.prepareRow(replacement).publish();
+  const next = owner.slot(replacement.entityKey);
+  assert(next);
+  expect(next.slot).toBe(previous.slot);
+  expect(next.generation).not.toBe(previous.generation);
+
+  view.observeBaseline();
+  expect(view.meshDrawSlot(replacement)).toBe(address);
+  expect(view.meshDrawSlot(survivor)).toBe(stable);
+  expect(view.meshDrawCapacity).toBe(2);
 });
 
 it('assigns the same source address to independently ordered main and shadow rosters', () => {
@@ -284,8 +396,8 @@ it('assigns the same source address to independently ordered main and shadow ros
   expect(first.validatedOrdered.map((entry) => entry.meshSlot)).toEqual([0, 1]);
   expect(first.shadowValidatedOrdered.map((entry) => entry.meshSlot)).toEqual([1, 0]);
   const next = buildDispatchPlan(internals, [b], [], [], [a], undefined, false, undefined, scene);
-  expect(next.validatedOrdered[0]?.meshSlot).toBe(1);
-  expect(next.shadowValidatedOrdered[0]?.meshSlot).toBe(0);
+  expect(next.validatedOrdered.at(0)?.meshSlot).toBe(1);
+  expect(next.shadowValidatedOrdered.at(0)?.meshSlot).toBe(0);
 });
 
 it('addresses only actual native children and reuses capacity while streaming across a large source', () => {
@@ -480,4 +592,37 @@ it('bounds native ledgers through quiet spikes, shrink, failed candidates and cl
   expect(ledger('entries')).toHaveLength(0);
   expect(ledger('scratch')).toHaveLength(0);
   expect([...held]).toHaveLength(64);
+});
+
+it('visits only submitted keyed-draw bounds and still observes the shadow roster', () => {
+  const { rows, scene } = capacityFixture(4);
+  const [first, last] = rows;
+  assert(first && last);
+  const keyed = { ...first, source: { ...first.source, nativeDraw: { key: 'child' } } };
+  const shadow = { ...last, source: { ...last.source, nativeDraw: { key: 'shadow-child' } } };
+  const skip = vi.fn(() => first.source);
+  const inspectShadow = vi.fn(() => shadow.source);
+  const ordinary = {
+    ...first,
+    get source() {
+      return skip();
+    },
+  };
+  scene.beginOwnedMeshDrawFrame(
+    [ordinary, keyed, ordinary],
+    [
+      {
+        ...shadow,
+        get source() {
+          return inspectShadow();
+        },
+      },
+    ],
+    1,
+    2,
+  );
+  expect(skip).not.toHaveBeenCalled();
+  expect(inspectShadow).toHaveBeenCalledOnce();
+  scene.beginOwnedMeshDrawFrame([ordinary], [], 0, 0);
+  expect(skip).not.toHaveBeenCalled();
 });

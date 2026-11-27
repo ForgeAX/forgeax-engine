@@ -14,6 +14,7 @@ import { RhiErrorListenerRegistry } from '../lifecycle';
 import { MaterialResource } from '../material-resource';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
+import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import { ensureShadowDepthLayers, promoteGraphCandidate } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
@@ -132,16 +133,22 @@ describe('GpuDrivenView graph projection', () => {
     const first = snapshot(1);
     const releases: ReturnType<typeof vi.fn>[] = [];
     let rejectCleanup = true;
-    const acquire = scene.inputs.holdMembers.bind(scene.inputs);
-    const holds = vi.spyOn(scene.inputs, 'holdMembers').mockImplementation((members) => {
-      const release = vi.fn(acquire(members));
+    let cleanupFault = false;
+    const acquire = scene.inputs.holdHeader.bind(scene.inputs);
+    const holds = vi.spyOn(scene.inputs, 'holdHeader').mockImplementation((header, batch) => {
+      const release = vi.fn(acquire(header, batch));
       releases.push(release);
       return release;
     });
     try {
       scene.sync(projection.apply([updateSnapshot(first)])).unwrap();
       topology.rebuild(projection.slotsSnapshot());
-      updateGpuView(view, topology.query(topology.sourcePlan(), undefined), scene, planes).unwrap();
+      updateGpuView(
+        view,
+        topology.query(topology.sourcePlan(), undefined).active,
+        scene,
+        planes,
+      ).unwrap();
       expect(releases).toHaveLength(1);
       const prior = releases[0];
       const secondSource = snapshot(2);
@@ -163,11 +170,14 @@ describe('GpuDrivenView graph projection', () => {
       const cause = new Error('second acquisition failed');
       const cleanup = new Error('rollback release failed');
       holds
-        .mockImplementationOnce((members) => {
-          const release = acquire(members);
+        .mockImplementationOnce((header, batch) => {
+          const release = acquire(header, batch);
           const rollback = vi.fn(() => {
             release();
-            if (cleanupFails && rejectCleanup) throw cleanup;
+            if (cleanupFails && rejectCleanup) {
+              cleanupFault = true;
+              throw cleanup;
+            }
           });
           releases.push(rollback);
           return rollback;
@@ -179,7 +189,7 @@ describe('GpuDrivenView graph projection', () => {
       try {
         updateGpuView(
           view,
-          topology.query(topology.sourcePlan(), undefined),
+          topology.query(topology.sourcePlan(), undefined).active,
           scene,
           planes,
         ).unwrap();
@@ -198,13 +208,18 @@ describe('GpuDrivenView graph projection', () => {
         expect((failure as AggregateError).errors).toEqual([cause, cleanup]);
         expect((failure as AggregateError).cause).toBe(cause);
       } else expect(failure).toBe(cause);
-      view.dispose();
+      if (cleanupFails) expect(() => view.dispose()).toThrow(AggregateError);
+      else view.dispose();
       expect(prior).toHaveBeenCalledTimes(1);
     } finally {
       rejectCleanup = false;
       holds.mockRestore();
-      view.dispose();
-      scene.dispose();
+      try {
+        if (cleanupFault) expect(() => view.dispose()).toThrow(AggregateError);
+        else view.dispose();
+      } finally {
+        scene.dispose();
+      }
     }
   });
 
@@ -227,7 +242,7 @@ describe('GpuDrivenView graph projection', () => {
     const update = (rows?: Uint32Array) =>
       updateGpuView(
         view,
-        topology.query(topology.sourcePlan(), undefined),
+        topology.query(topology.sourcePlan(), undefined).active,
         available.scene,
         planes,
         undefined,
@@ -263,6 +278,7 @@ describe('GpuDrivenView graph projection', () => {
       ).toBe(true);
       view._commitResourceReplacement();
       await device.queue.onSubmittedWorkDone();
+      (await view.settleRetirement()).unwrap();
       destroys.mockClear();
       view._recoverFromOverflow().unwrap();
       expect(view.currentResourceGeneration).toBe(view.inspect().resourceGeneration);
@@ -277,6 +293,7 @@ describe('GpuDrivenView graph projection', () => {
       expect(view.inspect().sharedInputUploadBytes).toBe(0);
       view._commitResourceReplacement();
       await device.queue.onSubmittedWorkDone();
+      (await view.settleRetirement()).unwrap();
       expect(destroys).toHaveBeenCalledWith(first);
       update().unwrap();
       expect(view.visibleSurfaceRowsBuffer).toBeUndefined();
@@ -300,6 +317,8 @@ describe('GpuDrivenView graph projection', () => {
       temporalView: new TemporalViewHistory(),
       compiledFrameGraph: null,
       retiredCompiledFrameGraphs: new Set(),
+      materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+      meshBindGroupCache: new WeakMap(),
       activePipeline,
       installedPipelineConfig: undefined,
     } as unknown as RenderFrameState;
@@ -394,12 +413,12 @@ describe('GpuDrivenView graph projection', () => {
     }).unwrap();
     updateGpuView(
       view,
-      topology.query(topology.sourcePlan(), undefined),
+      topology.query(topology.sourcePlan(), undefined).active,
       sceneAvailability.scene,
       frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
     ).unwrap();
     expect(view.inspect()).toMatchObject({
-      topologyRevision: topology.query(topology.sourcePlan(), undefined).revision,
+      topologyRevision: topology.query(topology.sourcePlan(), undefined).active.revision,
       candidateCount: 1,
       batchCount: 1,
       visibleCapacity: 64,
@@ -414,7 +433,7 @@ describe('GpuDrivenView graph projection', () => {
 
     updateGpuView(
       view,
-      topology.query(topology.sourcePlan(), undefined),
+      topology.query(topology.sourcePlan(), undefined).active,
       sceneAvailability.scene,
       frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
     ).unwrap();
@@ -517,7 +536,7 @@ describe('GpuDrivenView graph projection', () => {
     const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
     updateGpuView(
       view,
-      topology.query(topology.sourcePlan(), undefined),
+      topology.query(topology.sourcePlan(), undefined).active,
       sceneAvailability.scene,
       planes,
     ).unwrap();
@@ -550,6 +569,8 @@ describe('GpuDrivenView graph projection', () => {
       compiledFrameGraph: null,
       compiledFrameGraphGeneration: 0,
       retiredCompiledFrameGraphs: new Set(),
+      materialBgAssemblyCache: new MaterialBgAssemblyCache(),
+      meshBindGroupCache: new WeakMap(),
       activePipeline,
       installedPipelineConfig: undefined,
     } as unknown as RenderFrameState;
@@ -643,7 +664,7 @@ describe('GpuDrivenView graph projection', () => {
     topology.rebuild(projection.slotsSnapshot());
     updateGpuView(
       view,
-      topology.query(topology.sourcePlan(), undefined),
+      topology.query(topology.sourcePlan(), undefined).active,
       sceneAvailability.scene,
       planes,
     ).unwrap();
@@ -682,6 +703,7 @@ describe('GpuDrivenView graph projection', () => {
     expect(retirePrevious).toHaveBeenCalledOnce();
     await device.queue.onSubmittedWorkDone();
     await Promise.resolve();
+    (await view.settleRetirement()).unwrap();
     expect(destroyBuffer.mock.calls.some(([buffer]) => buffer === previousVisible)).toBe(true);
 
     const returnedToPreviousTopology = compile(preparedFrame(view), 1);
@@ -692,7 +714,7 @@ describe('GpuDrivenView graph projection', () => {
     sceneAvailability.scene.dispose();
   });
 
-  it('releases a promoted generation once when the queue fence rejects', async () => {
+  it('retains a promoted generation and its exact failure when the queue fence rejects', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
     const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
@@ -712,7 +734,7 @@ describe('GpuDrivenView graph projection', () => {
     const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
     updateGpuView(
       view,
-      topology.query(topology.sourcePlan(), undefined),
+      topology.query(topology.sourcePlan(), undefined).active,
       sceneAvailability.scene,
       planes,
     ).unwrap();
@@ -725,17 +747,23 @@ describe('GpuDrivenView graph projection', () => {
     topology.rebuild(projection.slotsSnapshot());
     updateGpuView(
       view,
-      topology.query(topology.sourcePlan(), undefined),
+      topology.query(topology.sourcePlan(), undefined).active,
       sceneAvailability.scene,
       planes,
     ).unwrap();
-    vi.spyOn(device.queue, 'onSubmittedWorkDone').mockRejectedValueOnce(new Error('device lost'));
+    const failure = new Error('device lost');
+    vi.spyOn(device.queue, 'onSubmittedWorkDone').mockRejectedValueOnce(failure);
     view._commitResourceReplacement();
     await Promise.resolve();
     await Promise.resolve();
-    expect(destroyBuffer.mock.calls.filter(([buffer]) => buffer === firstVisible)).toHaveLength(1);
-
-    view.dispose();
+    const settled = await view.settleRetirement();
+    expect(settled.ok).toBe(false);
+    if (!settled.ok) expect((settled.error.cause as AggregateError).errors).toContain(failure);
+    expect(destroyBuffer.mock.calls.filter(([buffer]) => buffer === firstVisible)).toHaveLength(0);
+    expect(view.inspect().resourceAllocation.pendingRetirementBytes).toBeGreaterThan(0);
+    expect(() => view.dispose()).toThrow();
+    expect((await view.settleRetirement()).ok).toBe(false);
+    expect(destroyBuffer.mock.calls.filter(([buffer]) => buffer === firstVisible)).toHaveLength(0);
     sceneAvailability.scene.dispose();
   });
 });
@@ -759,7 +787,7 @@ describe('GpuDrivenView scene buffer growth', () => {
     const update = () =>
       updateGpuView(
         view,
-        topology.query(topology.sourcePlan(), undefined),
+        topology.query(topology.sourcePlan(), undefined).active,
         available.scene,
         planes,
       );

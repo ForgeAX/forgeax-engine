@@ -1,16 +1,14 @@
 /** Shared author markup and one startup lifecycle, emitted statically for each host. */
+
+import { renderStartupCover, STARTUP_COVER_STYLES } from '@forgeax/engine-app';
 import {
   DEFAULT_LOAD_PROGRESS_LABELS,
-  encodeBase64,
   type LoadProgressLabels,
   resolveLoadProgressLabels,
 } from '@forgeax/engine-types';
-import forgeaxLogo from './forgeax-logo.svg?raw';
 import { type StartupCacheIdentity, startupCacheSource } from './startup-cache-source.js';
 import type { StartupUiOptions, StartupUiTemplate } from './startup-ui.js';
 import type { HostVersions } from './versions.js';
-
-const FORGEAX_LOGO_DATA_URI = `data:image/svg+xml;base64,${encodeBase64(new TextEncoder().encode(forgeaxLogo))}`;
 
 function escapeHtml(value: string): string {
   return value
@@ -48,7 +46,6 @@ export function hostStartupDocument(
   ui: StartupUiOptions = {},
 ): string {
   const labels = resolveLoadProgressLabels(input);
-  const status = labels.phases['engine-code'] ?? labels.loading;
   const html = `<!doctype html>
 <html lang="${escapeHtml(labels.lang)}">
   <head>
@@ -63,25 +60,8 @@ export function hostStartupDocument(
       #app-shell { position: relative; isolation: isolate; }
       #game-ui { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
       #forgeax-status { display: none; position: absolute; left: 10px; bottom: 8px; max-width: calc(100% - 20px); z-index: 2147483645; color: #fff; opacity: 0.5; font: 400 10px/14px system-ui, sans-serif; pointer-events: none; user-select: none; }
-      #forgeax-loading { position: absolute; inset: 0; z-index: 2147483646; display: grid; place-items: center; overflow: auto; padding: 24px; box-sizing: border-box; background: #07090d; color: #e6e6e6; font: 15px/1.6 system-ui, sans-serif; text-align: center; opacity: 1; transition: opacity 150ms ease; }
-      #forgeax-loading[aria-hidden="true"] { opacity: 0; pointer-events: none; }
-      #forgeax-loading-content { position: absolute; inset: 0; }
-      #forgeax-loading-brand { display: flex; align-items: center; gap: 9px; min-width: 0; white-space: nowrap; }
-      #forgeax-loading-logo { display: block; flex: 0 0 auto; width: 28px; height: auto; }
-      #forgeax-loading-brand-name { color: rgb(245 247 250 / 82%); font-size: 16px; font-weight: 600; letter-spacing: 0.02em; line-height: 1; }
-      #forgeax-loading-title { position: absolute; top: 50%; right: 24px; left: 24px; margin: 0; color: #f5f7fa; font-size: clamp(26px, 4vw, 38px); font-weight: 600; letter-spacing: 0.01em; line-height: 1.2; overflow-wrap: anywhere; transform: translateY(-50%); }
-      #forgeax-loading-progress-content { position: absolute; right: clamp(16px, 4vw, 64px); bottom: clamp(22px, 6vh, 52px); left: clamp(16px, 4vw, 64px); display: grid; gap: 12px; text-align: left; }
-      #forgeax-loading-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 3fr); align-items: center; column-gap: 16px; }
-      #forgeax-loading-summary { display: flex; align-items: baseline; justify-content: flex-end; gap: 10px; min-width: 0; white-space: nowrap; font-size: 13px; line-height: 1.6; }
-      #forgeax-loading-status { flex: 0 0 auto; margin: 0; color: rgb(230 235 245 / 62%); }
-      #forgeax-loading-detail { flex: 0 1 auto; min-width: 1em; margin: 0; overflow: hidden; color: rgb(230 235 245 / 42%); }
-      #forgeax-loading-detail:empty { display: none; }
-      #forgeax-loading-meta { flex: 0 0 auto; margin: 0; color: rgb(230 235 245 / 62%); font-variant-numeric: tabular-nums; }
-      #forgeax-loading-progress { width: 100%; height: 3px; border-radius: 2px; overflow: hidden; background: rgb(230 235 245 / 11%); }
-      #forgeax-loading-fill { width: 0; height: 100%; background: #c6764f; transition: width 200ms linear; }
-      #forgeax-loading-slow, #forgeax-loading-reload { margin: 0; justify-self: end; }
-      #forgeax-loading-slow, #forgeax-loading-reload { display: none; }
-      #forgeax-loading-reload, #forgeax-fatal-copy, #forgeax-fatal-reload { border: 1px solid rgb(230 235 245 / 35%); border-radius: 5px; padding: 7px 14px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
+      #forgeax-fps-history { position: absolute; left: clamp(12px,3vw,32px); top: clamp(12px,3vh,24px); width: 276px; max-width: calc(100% - 24px); height: auto; z-index: 2147483645; pointer-events: none; background: #101e23eb; border: 1px solid #e9d4a869; border-radius: 9px; }
+${STARTUP_COVER_STYLES}      #forgeax-loading-reload, #forgeax-fatal-copy, #forgeax-fatal-reload { border: 1px solid rgb(230 235 245 / 35%); border-radius: 5px; padding: 7px 14px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
       #forgeax-fatal { position: absolute; inset: 0; z-index: 2147483647; display: none; place-items: center; overflow: auto; padding: 24px; box-sizing: border-box; background: #0b0d10; color: #e6e6e6; font: 15px/1.6 system-ui, sans-serif; text-align: center; }
       #forgeax-fatal-content { display: grid; gap: 12px; width: min(680px, 100%); text-align: left; }
       #forgeax-fatal-message { margin: 0; font-size: 18px; }
@@ -89,51 +69,12 @@ export function hostStartupDocument(
       #forgeax-fatal-diagnostics-title { margin: 0; font-size: 15px; font-weight: 600; }
       #forgeax-fatal-copy-status { min-height: 1.5em; margin: 0; color: rgb(230 235 245 / 68%); font-size: 12px; }
       #forgeax-fatal-details { min-width: 0; max-height: 45vh; margin: 0; padding: 12px; border: 1px solid rgb(230 235 245 / 16%); border-radius: 5px; background: rgb(0 0 0 / 24%); overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
-      @media (max-width: 600px) {
-        #forgeax-loading-row { column-gap: 10px; }
-        #forgeax-loading-brand { gap: 5px; }
-        #forgeax-loading-logo { width: 18px; }
-        #forgeax-loading-brand-name { font-size: 12px; }
-        #forgeax-loading-summary { gap: 3px; font-size: clamp(8px, 2.6vw, 13px); }
-      }
-      @media (max-width: 360px) {
-        #forgeax-loading-brand { gap: 4px; }
-        #forgeax-loading-logo { width: 16px; }
-        #forgeax-loading-brand-name { font-size: 10px; }
-      }
-      @media (prefers-reduced-motion: reduce) { #forgeax-loading, #forgeax-loading-fill { transition: none; } }
     </style>
   </head>
   <body>
     <div id="app-shell"><canvas id="app"></canvas><div id="game-ui"></div>
-    <div id="forgeax-status">${versions === undefined ? '' : `${escapeHtml(labels.host.game)} ${escapeHtml(versions.game)} | ${escapeHtml(labels.host.engine)} ${escapeHtml(versions.engine)} | `}<span id="forgeax-fps" aria-label="${escapeHtml(labels.host.completedFramesPerSecond)}">FPS --</span></div>
-${startupMarkup(
-  'forgeax-loading',
-  'status',
-  ui.loading,
-  `    <div id="forgeax-loading" role="status" aria-live="polite" aria-atomic="true">
-      <div id="forgeax-loading-content">
-        <h1 id="forgeax-loading-title">${escapeHtml(title)}</h1>
-        <div id="forgeax-loading-progress-content">
-          <div id="forgeax-loading-row">
-            <div id="forgeax-loading-brand">
-              <img id="forgeax-loading-logo" src="${FORGEAX_LOGO_DATA_URI}" alt="" aria-hidden="true" />
-              <span id="forgeax-loading-brand-name">ForgeAX</span>
-            </div>
-            <div id="forgeax-loading-summary">
-              <p id="forgeax-loading-status">${escapeHtml(status)}</p>
-              <p id="forgeax-loading-detail"></p>
-              <p id="forgeax-loading-meta">0% · ${escapeHtml(labels.elapsed.replace('{seconds}', '0'))}</p>
-            </div>
-          </div>
-          <div id="forgeax-loading-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="forgeax-loading-status"><div id="forgeax-loading-fill"></div></div>
-          <p id="forgeax-loading-slow">${escapeHtml(labels.slow)}</p>
-          <button id="forgeax-loading-reload" type="button">${escapeHtml(labels.reload)}</button>
-        </div>
-      </div>
-    </div>
-`,
-)}
+    <div id="forgeax-status">${versions === undefined ? '' : `${escapeHtml(labels.host.game)} ${escapeHtml(versions.game)} | ${escapeHtml(labels.host.engine)} ${escapeHtml(versions.engine)} | `}<span id="forgeax-fps" aria-label="${escapeHtml(labels.host.completedFramesPerSecond)}">Render FPS --</span> <span id="forgeax-frame-gap"></span></div>
+${startupMarkup('forgeax-loading', 'status', ui.loading, renderStartupCover(title, labels))}
 ${startupMarkup(
   'forgeax-fatal',
   'alert',
@@ -203,7 +144,7 @@ export function hostStartupScript(
         const findCanvas = (root) => {
           const preferred = root?.querySelector?.('canvas#app') ?? root?.querySelector?.('#app');
           if (preferred !== null && preferred !== undefined) return preferred;
-          let fallback = root?.querySelector?.('canvas');
+          let fallback = root?.querySelector?.('canvas:not(#forgeax-fps-history)');
           const descendants = root?.querySelectorAll?.('*');
           if (descendants === null || descendants === undefined) return fallback;
           for (const element of descendants) {
@@ -596,30 +537,93 @@ export function hostStartupScript(
           }
         };
         // Receipt observation outlives the loading overlay. It does not request
-        // render frames or sample rAF; one timer updates text only when changed.
+        // render frames or sample rAF; one timer owns both HUD views.
         const frameRate = (() => {
           const node = document.querySelector('#forgeax-fps');
+          const gap = document.querySelector('#forgeax-frame-gap');
           const status = document.querySelector('#forgeax-status');
           let closed = !gamePage || node?.id !== 'forgeax-fps';
-          let session, surface, deviceGeneration = -1, lastFrame = -1;
-          let since, count = 0, timer;
-          const text = value => {
-            if (node?.textContent !== value) setText(node, value);
+          const graph = !closed && query.get('forgeax-fps-chart') === '1'
+            ? document.createElement('canvas') : null;
+          const ctx = graph?.getContext?.('2d');
+          if (ctx && status !== null) {
+            graph.id = 'forgeax-fps-history';
+            graph.width = 276;
+            graph.height = 78;
+            graph.hidden = true;
+            graph.setAttribute('role', 'img');
+            graph.setAttribute('aria-label', 'Render FPS over the last 20 seconds');
+            status.after(graph);
+          }
+          const intervalMs = ctx ? 500 : 1000;
+          const historyMs = 20_000;
+          const capacity = historyMs / intervalMs + 1;
+          const rates = ctx ? new Float32Array(capacity) : undefined;
+          const times = ctx ? new Float64Array(capacity) : undefined;
+          let next = 0, used = 0;
+          const drawGraph = (now, fps) => {
+            if (!ctx || !rates || !times) return;
+            rates[next] = fps; times[next] = now;
+            next = (next + 1) % capacity;
+            used = Math.min(used + 1, capacity);
+            const first = (next - used + capacity) % capacity;
+            let ceiling = 60;
+            for (let i = 0; i < used; i++) {
+              const index = (first + i) % capacity;
+              if (now - times[index] <= historyMs) ceiling = Math.max(ceiling, rates[index]);
+            }
+            ceiling = Math.ceil(ceiling / 30) * 30;
+            const left = 30, right = 266, top = 23, bottom = 67;
+            ctx.clearRect(0, 0, graph.width, graph.height);
+            ctx.font = '11px system-ui, sans-serif';
+            ctx.fillStyle = '#fff4de';
+            ctx.fillText('Render FPS · 20 s', 10, 15);
+            ctx.fillStyle = '#bec9be';
+            ctx.strokeStyle = '#6e898055';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < 3; i++) {
+              const y = top + (bottom - top) * i / 2;
+              ctx.fillText(String(ceiling * (1 - i / 2)), 6, y + 3);
+              ctx.beginPath(); ctx.moveTo(left, y + 0.5); ctx.lineTo(right, y + 0.5); ctx.stroke();
+            }
+            ctx.strokeStyle = '#a9e0a9';
+            ctx.fillStyle = ctx.strokeStyle;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            let x = right, y = bottom;
+            for (let i = 0; i < used; i++) {
+              const index = (first + i) % capacity;
+              const age = now - times[index];
+              if (age > historyMs) continue;
+              x = right - age * (right - left) / historyMs;
+              y = bottom - rates[index] * (bottom - top) / ceiling;
+              ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+            ctx.beginPath(); ctx.arc(x, y, 2.25, 0, Math.PI * 2); ctx.fill();
+            graph.hidden = false;
           };
+          let session, surface, deviceGeneration = -1, lastFrame = -1;
+          let since, previousAt, count = 0, longestGap = 0, timer;
           const reset = () => {
             clearStartupTimeout(timer); timer = undefined;
-            since = undefined; count = 0;
-            text('FPS --'); setDisplay(status, 'none');
+            since = undefined; previousAt = undefined; count = 0; longestGap = 0;
+            next = 0; used = 0;
+            if (graph !== null) graph.hidden = true;
+            showText(node, 'Render FPS --'); showText(gap, ''); setDisplay(status, 'none');
           };
           const tick = () => {
             if (closed || !isForeground()) { reset(); return; }
             const now = clockNow();
             const elapsed = now - since;
             if (Number.isFinite(elapsed) && elapsed > 0) {
-              text('FPS ' + (count * 1000 / elapsed).toFixed(1));
-              count = 0; since = now;
+              const fps = count * 1000 / elapsed;
+              showText(node, 'Render FPS ' + fps.toFixed(1));
+              showText(gap, Math.round(Math.max(longestGap, now - previousAt)) + ' ms max gap');
+              drawGraph(now, fps);
+              count = 0; longestGap = 0; since = now;
             }
-            timer = setStartupTimeout(tick, 1000);
+            timer = setStartupTimeout(tick, intervalMs);
           };
           const completed = detail => {
             const canvas = currentCanvas();
@@ -633,11 +637,16 @@ export function hostStartupScript(
             }
             if (detail.frameId <= lastFrame) return;
             lastFrame = detail.frameId;
+            const now = clockNow();
             if (since === undefined) {
-              since = clockNow();
+              since = now;
               setDisplay(status, 'block');
-              timer = setStartupTimeout(tick, 1000);
-            } else count += 1;
+              timer = setStartupTimeout(tick, intervalMs);
+            } else {
+              count += 1;
+              longestGap = Math.max(longestGap, now - previousAt);
+            }
+            previousAt = now;
           };
           const onReceipt = event => { if (eventCanvas(event) === currentCanvas()) completed(event.detail); };
           const visibilityChanged = () => reset();

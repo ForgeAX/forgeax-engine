@@ -162,11 +162,18 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, custom: ptr<f
 `,
   );
   const binding = createStandaloneRuntimeAssetBinding('material-publication');
+  const cooker = createMaterialPackCooker([assets]);
   const plugin = pluginPack({
     roots: [assets],
     runtimeBinding: binding,
     producerReadiness: 'on-demand',
-    cookers: [createMaterialPackCooker([assets])],
+    // This fixture verifies the complete compiled wire and its transported WGSL.
+    cookers: [
+      {
+        ...cooker,
+        cook: (input: unknown) => cooker.cook({ ...(input as object), publication: undefined }),
+      },
+    ],
     ddc: { projectDdcRoot: join(root, '.ddc') },
   });
   const server = await createServer({

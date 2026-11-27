@@ -7,7 +7,7 @@ import {
   type TerrainAsset,
   type TextureAsset,
 } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { installDefaultAssetDecoders } from '../../../runtime/src/asset-contributions';
 import { AssetRegistry } from '../asset-registry';
 import { runtimeAssets } from '../internal/runtime-assets';
@@ -233,81 +233,78 @@ it('protects generated Terrain outputs without claiming shared source dependenci
     image,
     sampler: { kind: 'sampler', magFilter: 'linear', minFilter: 'linear' },
   });
-  try {
-    const rootHandle = (await assets.load(guid('terrain'), 'terrain')).unwrap();
-    const root = assets.read(rootHandle).unwrap();
-    const section = root.sections[0];
-    if (section === undefined) throw new Error('Expected Terrain section');
-    const sectionHandle = section.material as AssetHandle<'material'>;
-    const sectionMaterial = assets.read(sectionHandle).unwrap();
-    const control = sectionMaterial.values?.terrainWeightTexture as {
-      readonly sampler: AssetHandle<'sampler'>;
-    };
-    expect(runtimeAssets(assets).dependencies(sectionHandle).unwrap()).toContain(
-      (await assets.load(guid('shared'), 'material')).unwrap(),
-    );
-    for (const [key, kind] of [
-      ['layer', 'material'],
-      ['shared', 'material'],
-      ['image', 'texture'],
-      ['sampler', 'sampler'],
-    ] as const) {
-      const handle = (await assets.load(guid(key), kind)).unwrap();
-      expect(assets.replace(handle, assets.read(handle).unwrap()).ok).toBe(true);
-    }
-    const shared = (await assets.load(guid('shared'), 'material')).unwrap();
-    assets.update(shared, { values: { roughness: 0.25 } }).unwrap();
-    expect(assets.read(shared).unwrap().values?.roughness).toBe(0.25);
-    const sharedImage = (await assets.load(guid('image'), 'texture')).unwrap();
-    const imageRange = {
-      origin: { x: 0, y: 0 },
-      size: { width: 1, height: 1 },
-      data: Uint8Array.of(0, 255, 0, 255),
-    };
-    assets.writeRange(sharedImage, imageRange).unwrap();
-    const sharedSampler = (await assets.load(guid('sampler'), 'sampler')).unwrap();
-    assets.update(sharedSampler, { magFilter: 'nearest' }).unwrap();
-    const rejection = {
-      ok: false,
-      error: { code: 'asset-invalid-value', expected: 'writes to Terrain author fields' },
-    };
-    for (const handle of [
-      ...root.grids,
-      section.heightTexture,
-      section.weightTexture,
-      section.material,
-      control.sampler,
-    ]) {
-      const derived = handle as AssetHandle;
-      const value = assets.read<Asset>(derived).unwrap();
-      expect(assets.replace(derived, value), `generated ${value.kind} ${derived}`).toMatchObject(
-        rejection,
-      );
-      expect(assets.update(derived, {}), `generated ${value.kind} ${derived}`).toMatchObject(
-        rejection,
-      );
-    }
-    for (const handle of [section.heightTexture, section.weightTexture])
-      expect(assets.writeRange(handle as AssetHandle<'texture'>, imageRange)).toMatchObject(
-        rejection,
-      );
-    const grid = root.grids[0] as AssetHandle<'mesh'>;
-    expect(
-      assets.writeRange(grid, {
-        attribute: 'position',
-        first: 0,
-        values: Float32Array.of(0, 0, 0),
-      }),
-    ).toMatchObject(rejection);
-    const copied = assets.copy(control.sampler).unwrap();
-    expect(assets.update(control.sampler, { magFilter: 'nearest' }).ok).toBe(false);
-    expect(assets.update(copied, { magFilter: 'nearest' }).ok).toBe(true);
-    expect(
-      terrainDerivedClosureValid(assets.read(rootHandle).unwrap(), closure(assets, rootHandle)),
-    ).toBe(true);
-  } finally {
-    assets.dispose();
+  onTestFinished(() => assets.dispose());
+  const rootHandle = (await assets.load(guid('terrain'), 'terrain')).unwrap();
+  const root = assets.read(rootHandle).unwrap();
+  const section = root.sections[0];
+  if (section === undefined) throw new Error('Expected Terrain section');
+  const sectionHandle = section.material as AssetHandle<'material'>;
+  const sectionMaterial = assets.read(sectionHandle).unwrap();
+  const control = sectionMaterial.values?.terrainWeightTexture as {
+    readonly sampler: AssetHandle<'sampler'>;
+  };
+  expect(runtimeAssets(assets).dependencies(sectionHandle).unwrap()).toContain(
+    (await assets.load(guid('shared'), 'material')).unwrap(),
+  );
+  for (const [key, kind] of [
+    ['layer', 'material'],
+    ['shared', 'material'],
+    ['image', 'texture'],
+    ['sampler', 'sampler'],
+  ] as const) {
+    const handle = (await assets.load(guid(key), kind)).unwrap();
+    expect(assets.replace(handle, assets.read(handle).unwrap()).ok).toBe(true);
   }
+  const shared = (await assets.load(guid('shared'), 'material')).unwrap();
+  assets.update(shared, { values: { roughness: 0.25 } }).unwrap();
+  expect(assets.read(shared).unwrap().values?.roughness).toBe(0.25);
+  const sharedImage = (await assets.load(guid('image'), 'texture')).unwrap();
+  const imageRange = {
+    origin: { x: 0, y: 0 },
+    size: { width: 1, height: 1 },
+    data: Uint8Array.of(0, 255, 0, 255),
+  };
+  assets.writeRange(sharedImage, imageRange).unwrap();
+  const sharedSampler = (await assets.load(guid('sampler'), 'sampler')).unwrap();
+  assets.update(sharedSampler, { magFilter: 'nearest' }).unwrap();
+  const rejection = {
+    ok: false,
+    error: { code: 'asset-invalid-value', expected: 'writes to Terrain author fields' },
+  };
+  for (const handle of [
+    ...root.grids,
+    section.heightTexture,
+    section.weightTexture,
+    section.material,
+    control.sampler,
+  ]) {
+    const derived = handle as AssetHandle;
+    const value = assets.read<Asset>(derived).unwrap();
+    expect(assets.replace(derived, value), `generated ${value.kind} ${derived}`).toMatchObject(
+      rejection,
+    );
+    expect(assets.update(derived, {}), `generated ${value.kind} ${derived}`).toMatchObject(
+      rejection,
+    );
+  }
+  for (const handle of [section.heightTexture, section.weightTexture])
+    expect(assets.writeRange(handle as AssetHandle<'texture'>, imageRange)).toMatchObject(
+      rejection,
+    );
+  const grid = root.grids[0] as AssetHandle<'mesh'>;
+  expect(
+    assets.writeRange(grid, {
+      attribute: 'position',
+      first: 0,
+      values: Float32Array.of(0, 0, 0),
+    }),
+  ).toMatchObject(rejection);
+  const copied = assets.copy(control.sampler).unwrap();
+  expect(assets.update(control.sampler, { magFilter: 'nearest' }).ok).toBe(false);
+  expect(assets.update(copied, { magFilter: 'nearest' }).ok).toBe(true);
+  expect(
+    terrainDerivedClosureValid(assets.read(rootHandle).unwrap(), closure(assets, rootHandle)),
+  ).toBe(true);
 });
 
 it('adopts a seam rectangle and its atlas at one revision without replacing identities or old captures', () => {

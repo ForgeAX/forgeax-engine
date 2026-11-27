@@ -20,6 +20,11 @@ export interface PrimitiveAllocation<Mesh, Ranges> {
   readonly materialRanges: Ranges;
 }
 
+/** All prepared slots of one Source share this allocation-lifetime observation. */
+export interface PrimitiveAllocationResidency {
+  invalidated: boolean;
+}
+
 const RECORD = 0;
 const INSTANCE_START = 1;
 const INSTANCE_COUNT = 2;
@@ -31,6 +36,10 @@ const STAMP = 6;
 const INSTANCE_CAPACITY = 7;
 const WIDTH = 8;
 
+/** Strongest write required by any lane of this synchronous publication. */
+export const SlotWrite = { pose: 0, instances: 1, full: 2, reset: 3 } as const;
+type SlotWrite = (typeof SlotWrite)[keyof typeof SlotWrite];
+
 /**
  * Slot-indexed GPU Scene allocations as numeric columns plus two shared
  * reference columns (interned Mesh and material-range owners): no object per
@@ -39,8 +48,14 @@ const WIDTH = 8;
 export class PrimitiveAllocations<Mesh, Ranges> {
   private columns = new Uint32Array(64 * WIDTH);
   private present = new Uint8Array(64);
+  /** Attempt-local write class, addressed by the same dense slot as its allocation. */
+  private writeClasses = new Uint32Array(64);
+  private writeEpoch = 0;
   private meshes: (Mesh | undefined)[] = [];
   private ranges: (Ranges | undefined)[] = [];
+  /** Scene version whose complete numeric rows were consumed from preparation. */
+  private publications = new Float64Array(64);
+  private readonly residencies = new Map<number, PrimitiveAllocationResidency>();
   private stamps = 0;
   private count = 0;
 
@@ -114,10 +129,17 @@ export class PrimitiveAllocations<Mesh, Ranges> {
     };
   }
 
-  set(slot: number, allocation: PrimitiveAllocation<Mesh, Ranges>): void {
+  set(
+    slot: number,
+    allocation: PrimitiveAllocation<Mesh, Ranges>,
+    residency?: PrimitiveAllocationResidency,
+  ): void {
     if (!Number.isSafeInteger(slot) || slot < 0)
       throw new RangeError('GPU Scene allocations are addressed by non-negative slots');
     this.ensure(slot);
+    this.invalidateResidency(slot);
+    if (residency !== undefined) this.residencies.set(slot, residency);
+    this.publications[slot] = 0;
     const base = slot * WIDTH;
     const columns = this.columns;
     columns[base + RECORD] = allocation.recordIndex;
@@ -148,11 +170,47 @@ export class PrimitiveAllocations<Mesh, Ranges> {
       throw new RangeError('GPU Scene instance resize exceeds the reserved capacity');
     this.columns[base + INSTANCE_COUNT] = instanceCount;
     this.columns[base + INSTANCE_TRANSFORM_COUNT] = instanceTransformCount;
+    this.publications[slot] = 0;
+  }
+
+  beginWrites(): void {
+    // Two low bits hold the class. A new attempt also invalidates failed writes.
+    if (this.writeEpoch === 0xfffffffc) {
+      this.writeClasses.fill(0);
+      this.writeEpoch = 0;
+    }
+    this.writeEpoch += 4;
+  }
+
+  requireWrite(slot: number, kind: SlotWrite): void {
+    const next = this.writeEpoch + kind;
+    if ((this.writeClasses[slot] ?? 0) < next) this.writeClasses[slot] = next;
+  }
+
+  writeClass(slot: number): SlotWrite {
+    const mark = this.writeClasses[slot] ?? 0;
+    return mark < this.writeEpoch ? SlotWrite.pose : ((mark & 3) as SlotWrite);
+  }
+
+  /** Grow only the existing columns; no live allocation is published. */
+  prepareSlot(slot: number): void {
+    this.ensure(slot);
+  }
+
+  acceptPublication(slot: number, version: number): void {
+    if (this.present[slot] !== 1) throw new RangeError('GPU Scene allocation unavailable');
+    this.publications[slot] = version;
+  }
+
+  publicationVersion(slot: number): number {
+    return this.present[slot] === 1 ? (this.publications[slot] ?? 0) : 0;
   }
 
   delete(slot: number): void {
     if (this.present[slot] !== 1) return;
+    this.invalidateResidency(slot);
     this.present[slot] = 0;
+    this.publications[slot] = 0;
     this.meshes[slot] = undefined;
     this.ranges[slot] = undefined;
     this.count--;
@@ -165,19 +223,38 @@ export class PrimitiveAllocations<Mesh, Ranges> {
   }
 
   clear(): void {
-    this.present.fill(0);
+    for (const residency of this.residencies.values()) residency.invalidated = true;
+    this.residencies.clear();
+    this.columns = new Uint32Array(0);
+    this.present = new Uint8Array(0);
+    this.writeClasses = new Uint32Array(0);
+    this.writeEpoch = 0;
+    this.publications = new Float64Array(0);
     this.meshes = [];
     this.ranges = [];
     this.count = 0;
   }
 
+  private invalidateResidency(slot: number): void {
+    const residency = this.residencies.get(slot);
+    if (residency === undefined) return;
+    residency.invalidated = true;
+    this.residencies.delete(slot);
+  }
+
   private ensure(slot: number): void {
     if (slot < this.present.length) return;
-    let capacity = this.present.length;
+    let capacity = Math.max(64, this.present.length);
     while (capacity <= slot) capacity *= 2;
     const present = new Uint8Array(capacity);
     present.set(this.present);
     this.present = present;
+    const writeClasses = new Uint32Array(capacity);
+    writeClasses.set(this.writeClasses);
+    this.writeClasses = writeClasses;
+    const publications = new Float64Array(capacity);
+    publications.set(this.publications);
+    this.publications = publications;
     const columns = new Uint32Array(capacity * WIDTH);
     columns.set(this.columns);
     this.columns = columns;

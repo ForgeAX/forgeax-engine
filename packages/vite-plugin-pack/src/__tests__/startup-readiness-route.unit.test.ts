@@ -23,7 +23,7 @@ describe('startup readiness route boundary', () => {
         runtimeScope: () => binding,
         state: () => ({ status: 'failed' as const, error: failure }),
       } as TransportRouteContext['devSession'],
-      scopedPackageUrl: (_binding, packageUrl) => packageUrl,
+      scopedCatalogEntry: (_binding, entry) => entry,
       scopedCatalogBody: () => JSON.stringify({ entries: [] }),
     } satisfies TransportRouteContext;
     const response = {

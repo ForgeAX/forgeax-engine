@@ -112,7 +112,7 @@ fn tsr_reconstruct(@builtin(global_invocation_id) id: vec3<u32>,
     if(i32(n%13u)>=inputFootprint.x) { continue; }
     let p=clamp(inputOrigin+vec2<i32>(i32(n%13u),i32(n/13u)),vec2<i32>(0),vec2<i32>(sceneSize)-1);
     reconstructSceneTile[n]=textureLoad(scene,p,0);
-    reconstructTemporalTile[n]=textureLoad(sceneTemporal,p,0);
+    reconstructTemporalTile[n]=loadSceneTemporal(p);
   }
   var needsRows=false;
   if(params.hasCoverage!=0u) {
@@ -161,10 +161,14 @@ fn tsr_reconstruct(@builtin(global_invocation_id) id: vec3<u32>,
     // even when no summary was needed or this is a partial output group.
     workgroupBarrier();
   }
-  if (any(id.xy >= size)) { return; }
-  let pixel = vec2<i32>(id.xy);
+  let inside = all(id.xy < size);
+  // TSR_RECONSTRUCTION_EDGE_GUARD
   let result = tsrReconstruct(input, size, inputOrigin, coverageOrigin);
-  textureStore(colorOutput, pixel, result.color);
-  textureStore(temporalOutput, pixel, result.temporal);
-  textureStore(metadataOutput, pixel, result.metadata);
+  if (inside) {
+    let pixel = vec2<i32>(id.xy);
+    textureStore(colorOutput, pixel, result.color);
+    textureStore(temporalOutput, pixel, result.temporal);
+    textureStore(metadataOutput, pixel, result.metadata);
+  }
+  tsrPublishHalf(id.xy, lane, size, result.color);
 }

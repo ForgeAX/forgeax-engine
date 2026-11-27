@@ -13,6 +13,7 @@ import type { RenderSystemInternals } from '../record/render-context';
 import { runProfiledRenderPhase, runRecordProfilePhase } from '../record/render-context';
 import { querySceneExecution } from '../record/resident-meshes';
 import { gpuDrivenPipelineLane } from '../record/view-pipeline-demand';
+import { markPipelinePreparationPending } from '../render-system-presentation';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import { RenderGpuDrivenPrepareOrder, RenderSsrAdmissionOrder } from '../system-order';
 import type { GpuDrivenRasterLane } from './gpu-driven-raster-systems';
@@ -20,7 +21,7 @@ import { type ViewPassPlanQueue, ViewPassPlans } from './pass-plan-systems';
 import { RenderQueue, renderSubmission, renderWorldFor } from './render-world';
 import { ViewSsrAdmission, viewSsrAdmissionOf } from './ssr-admission-systems';
 import { ViewStandardLighting, viewStandardLightingOf } from './standard-lighting-systems';
-import { readViewField, requireViewField } from './view-field';
+import { readViewField, readViewState, requireViewField } from './view-field';
 
 /** RenderQueue: the view's GPU-driven frame selection and its executed GPU Scene query. */
 export const RENDER_GPU_DRIVEN_PREPARE_SYSTEM = 'render-gpu-driven-prepare';
@@ -104,12 +105,8 @@ export function viewGpuDrivenSourcesOf(
   world: World,
   entity: EntityHandle,
 ): FrameGpuDrivenSources | undefined {
-  if (!world.hasComponent(entity, ViewGpuDrivenPrepareInput)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewGpuDrivenPrepareState>(
-      requireViewField(world, entity, ViewGpuDrivenPrepareInput, 'state'),
-    )
-    .unwrap();
+  const state = readViewState<ViewGpuDrivenPrepareState>(world, entity, ViewGpuDrivenPrepareInput);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.sources : undefined;
 }
 
@@ -194,10 +191,8 @@ export function viewGpuDrivenOf(
   world: World,
   entity: EntityHandle | undefined,
 ): ViewGpuDrivenOutcome | undefined {
-  if (entity === undefined || !world.hasComponent(entity, ViewGpuDriven)) return undefined;
-  const state = world
-    .resolveUniqueRef<ViewGpuDrivenState>(requireViewField(world, entity, ViewGpuDriven, 'state'))
-    .unwrap();
+  const state = readViewState<ViewGpuDrivenState>(world, entity, ViewGpuDriven);
+  if (state === undefined) return undefined;
   return state.frame === renderSubmission(world).frame ? state.outcome : undefined;
 }
 
@@ -321,7 +316,7 @@ export function consumeRecordingGpuDriven(
   const consumed = consumeViewGpuDriven(internals, gpuDriven, (reason) =>
     frameState.surfaceSubmissionObservation?.setActualLaneReason(reason),
   );
-  if (consumed.rejected) return undefined;
+  if (consumed.rejected) return { kind: 'rejected' as const };
   const preparation = consumed.preparation;
   if (
     internals.viewEntity !== undefined &&
@@ -332,7 +327,11 @@ export function consumeRecordingGpuDriven(
   const input =
     preparation?.input ??
     buildFrameGpuDrivenInput(sources, consumed.input, consumed.frame, standard, pipeline);
-  return { ...consumed, gpuInput: input, prepared: preparation?.prepared };
+  if (input.sourcePreparationPending === true) {
+    markPipelinePreparationPending(frameState, { code: 'scene-pipeline-preparation' });
+    return { kind: 'pending' as const };
+  }
+  return { kind: 'ready' as const, ...consumed, gpuInput: input, prepared: preparation?.prepared };
 }
 
 /**

@@ -5,7 +5,6 @@ import { AssetRegistry } from '../asset-registry';
 import { createCatalogSource } from '../catalog-source';
 import { runtimeAssets } from '../internal/runtime-assets';
 import { materialProductionFixture } from './fixtures/material-production';
-import { materialRecordFixture } from './fixtures/material-publication';
 
 const owners: AssetRegistry[] = [];
 afterEach(() => {
@@ -45,13 +44,10 @@ it('requires an explicit source and its decoder instead of selecting another loa
 });
 
 async function fixture() {
-  const publication = await materialProductionFixture(
-    true,
-    materialRecordFixture({
-      parameters: [{ name: 'roughness', type: 'f32' }],
-      values: { roughness: 0.3 },
-    }),
-  );
+  const publication = await materialProductionFixture(true, {
+    parameters: [{ name: 'roughness', type: 'f32' }],
+    values: { roughness: 0.3 },
+  });
   const fetcher = vi.fn<typeof fetch>(async (input) => {
     const url = String(input);
     if (url === publication.entry.packageUrl) return new Response(JSON.stringify(publication.pack));

@@ -1,4 +1,17 @@
 import type { RenderFeatureFullscreenProgramDeclaration } from '../plan';
+
+export function distanceOutlineFloodEntryPoint(step: number): string {
+  return step === 1 ? 'fs_main' : `fs_step_${step}`;
+}
+
+// The admitted 16-bit target extent and outline style caps limit the first jump to 8192.
+const floodEntryPoints = Array.from({ length: 14 }, (_, index) => {
+  const step = 2 ** index;
+  return `@fragment fn ${distanceOutlineFloodEntryPoint(step)}(input: Output) -> @location(0) vec4<f32> {
+    return flood(input, ${step});
+  }`;
+}).join('\n');
+
 // The native fullscreen ABI reserves depth@3 + depthSampler@4; additional
 // color reads begin at binding 5 whenever scene depth is present.
 // Integer seed coordinates are lossless in rgba16float: byte lanes and a
@@ -88,8 +101,9 @@ fn flags(s:vec4<f32>)->u32{return (u32(s.w)>>7u)&7u;}
 fn seed(p:vec2<i32>,bits:u32)->vec4<f32>{let q=vec2<u32>(p);return vec4<f32>(f32(q.x&255u),f32(q.x>>8u),f32(q.y&255u),f32((q.y>>8u)|(bits<<7u)|1024u));}
 fn rawDepth(v:vec4<f32>)->f32{let b=vec4<u32>(v);return bitcast<f32>(b.x|(b.y<<8u)|(b.z<<16u)|(b.w<<24u));}
 fn inRegion(p:vec2<i32>)->bool{let q=vec2<f32>(p);return all(q>=params.region.xy)&&all(q<params.region.zw);}
-@fragment fn fs_main(input:Output)->@location(0)vec4<f32>{let p=vec2<i32>(input.position.xy);if(!inRegion(p)){return vec4<f32>(0);}var best=vec4<f32>(0);var bestDistance=0xffffffffu;let stride=i32(params.settings.x);let lo=vec2<i32>(params.region.xy);let hi=vec2<i32>(params.region.zw)-1;
+fn flood(input:Output,stride:i32)->vec4<f32>{let p=vec2<i32>(input.position.xy);if(!inRegion(p)){return vec4<f32>(0);}var best=vec4<f32>(0);var bestDistance=0xffffffffu;let lo=vec2<i32>(params.region.xy);let hi=vec2<i32>(params.region.zw)-1;
 for(var y=-1;y<=1;y++){for(var x=-1;x<=1;x++){let q=clamp(p+vec2<i32>(x,y)*stride,lo,hi);let candidate=textureLoad(source,q,0);if(!valid(candidate)){continue;}let delta=p-point(candidate);let distance=u32(delta.x*delta.x+delta.y*delta.y);if(distance<bestDistance){bestDistance=distance;best=candidate;}}}return best;}
+${floodEntryPoints}
 `,
     reads: ['scene-color'],
     params: { byteSize: 672, defaultValue: new Uint8Array(672) },

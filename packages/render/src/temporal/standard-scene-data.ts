@@ -8,10 +8,10 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import { isTemporalAntialias } from '../components/camera';
 import { SceneDataUnavailableError } from '../errors/render';
 import { motionBlurTemporalDemand } from '../features/motion-blur/motion-blur-params';
-import { GPU_TEXTURE_USAGE_COPY_SRC } from '../gpu-texture-usage';
 import type { RenderExtent } from '../pipeline/render-extent';
 import { renderExtentSize } from '../pipeline/render-extent';
 import type { WaterInfoGraphTargets } from '../pipeline/standard-build-context';
+import { PREDEPTH_FRAGMENT_ENTRY } from '../predepth-coverage';
 import { selectMainPassMaterials } from '../record/main-pass';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { scenePassContext } from '../record/scene-pass-work';
@@ -32,9 +32,8 @@ import { addTypedScenePass } from '../typed-render-graph-primitives';
 import {
   type SCENE_DATA_STANDARD_GBUFFER_NORMAL_V2_SCHEMA,
   SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR,
-  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
-  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR,
-  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+  type SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+  type SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
   type SCENE_DATA_TEMPORAL_V1_SCHEMA,
 } from './scene-data';
 
@@ -85,6 +84,7 @@ export interface StandardTemporalDemandInput {
   readonly taa: boolean;
   readonly motionBlur: boolean;
   readonly ssr?: boolean;
+  readonly gtao?: boolean;
   readonly visibleSurface?: boolean;
   /** Diffuse GI reprojects its history through the shared motion target. */
   readonly diffuseGi?: boolean;
@@ -95,6 +95,7 @@ export interface StandardTemporalDemand {
     | 'taa'
     | 'motion-blur'
     | 'ssr'
+    | 'gtao'
     | 'visible-surface'
     | 'diffuse-gi'
   )[];
@@ -119,6 +120,7 @@ export function aggregateTemporalDemand(
     ...(input.taa ? (['taa'] as const) : []),
     ...(input.motionBlur ? (['motion-blur'] as const) : []),
     ...(input.ssr ? (['ssr'] as const) : []),
+    ...(input.gtao ? (['gtao'] as const) : []),
     ...(input.visibleSurface ? (['visible-surface'] as const) : []),
     ...(input.diffuseGi ? (['diffuse-gi'] as const) : []),
   ];
@@ -245,16 +247,6 @@ export interface StandardSceneDataTargets {
   readonly temporal: RenderPipelineTarget;
 }
 
-/** Material-normal and depth semantics shared by current-view scene consumers. */
-export interface StandardSceneSurfaceDataTargets {
-  readonly normalSchema: typeof SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA;
-  readonly depthSchema: typeof SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA;
-  /** `encodeStandardNormalRoughness` packed material normal in world space. */
-  readonly normal: RenderPipelineTarget;
-  /** Current-view raster depth, with opaque/Alpha Mask coverage. */
-  readonly depth: RenderPipelineTarget;
-}
-
 const TEMPORAL_TARGET: GraphTextureDescriptor = {
   format: STANDARD_TEMPORAL_FORMAT,
   size: 'surface',
@@ -285,32 +277,6 @@ export function createStandardSceneSurfaceDepthTarget(
   });
 }
 
-/** Allocate the Forward surface inputs when no compatible Deferred GBuffer exists. */
-export function createStandardSceneSurfaceDataTargets(
-  graph: RenderGraphBuilder<RenderPipelineFrame>,
-  size: GraphTextureDescriptor['size'],
-  sharedDepth?: RenderPipelineTarget,
-): Result<StandardSceneSurfaceDataTargets, RenderGraphError> {
-  const normal = createRenderPipelineTarget(graph, 'standard-scene-surface-normal', {
-    format: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.format,
-    size,
-    sampleCount: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.sampleCount,
-    usage: GPU_TEXTURE_USAGE_COPY_SRC,
-  });
-  if (!normal.ok) return normal;
-  const depth =
-    sharedDepth === undefined
-      ? createStandardSceneSurfaceDepthTarget(graph, size)
-      : ok(sharedDepth);
-  if (!depth.ok) return depth;
-  return ok({
-    normalSchema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
-    depthSchema: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
-    normal: normal.value,
-    depth: depth.value,
-  });
-}
-
 export function addStandardSceneDataPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   target: RenderPipelineTarget,
@@ -319,11 +285,12 @@ export function addStandardSceneDataPass(
   surfaces: 'opaque' | 'forward-only-opaque' = 'opaque',
   waterInfoTargets?: WaterInfoGraphTargets,
   extraAccesses?: readonly GraphAccess[],
+  writeDepth = false,
 ): Result<void, RenderGraphError> {
   const selector = COLOR_PASS_SELECTOR;
   const excludeSelector = surfaces === 'forward-only-opaque' ? DEFERRED_PASS_SELECTOR : undefined;
   return addTypedScenePass(graph, {
-    name: 'standard-scene-data',
+    name: writeDepth ? 'standard-depth-velocity' : 'standard-scene-data',
     extraAccesses,
     // GBuffer already wrote this loaded target. An empty CPU supplement has
     // no work. The GPU owner derives live eligibility from its encoder predicate.
@@ -348,42 +315,40 @@ export function addStandardSceneDataPass(
     // pair. Keep it on the ordinary opaque Standard lane rather than asking
     // a medium material to assemble a bind group from resources that this
     // pass cannot own yet.
-    recordMode: 'opaque',
+    recordMode: writeDepth ? 'opaque-depth' : 'opaque',
+    ...(writeDepth ? { fragmentEntryPoint: 'fs_temporal_depth' } : {}),
     passKind: 'temporal',
-    // The temporal producer re-rasterizes the current scene after the main
-    // color pass has populated depth. Its output is a semantic motion target;
-    // it must cover the same fragments even when TAA jitter moves the raster
-    // edge by a subpixel, while the loaded scene depth remains the consumer's
-    // depth-rejection source for Motion Blur/TAA.
+    // Match the scene's raster coverage. The prepass owns depth, while the
+    // late producer retains the depth already written by the color pass.
     clearColor: [0, 0, -1, 1],
     colorLoadOp: surfaces === 'opaque' ? 'clear' : 'load',
-    depthLoadOp: 'load',
+    depthLoadOp: writeDepth ? 'clear' : 'load',
   });
 }
 
 /**
- * Produce shared current-view surface semantics for Forward scene consumers.
- * Without a normal target the pass is depth-only (UE DepthPass PositionOnly):
- * no color attachment, and only Alpha Mask draws keep a fragment for coverage.
+ * Produce depth for Forward scene consumers. Alpha Mask draws retain
+ * a colorless fragment entry to evaluate coverage.
  */
 export function addStandardSceneSurfaceDataPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
-  targets: Pick<StandardSceneSurfaceDataTargets, 'depth'> &
-    Partial<Pick<StandardSceneSurfaceDataTargets, 'normal'>>,
+  depth: RenderPipelineTarget,
   gpuDriven?: RenderPipelineGpuDrivenProjection,
   name = 'standard-scene-surface-data',
-  fragmentEntryPoint = 'fs_ao_input',
+  forwardDisplayDepth?: 'prepass',
 ): Result<void, RenderGraphError> {
   return addTypedScenePass(graph, {
     name,
     ...(gpuDriven === undefined ? {} : { gpuDriven }),
     gpuDrivenFilter: 'opaque',
-    ...(targets.normal === undefined ? { colorTargets: [] } : { color: targets.normal }),
-    depth: targets.depth,
+    standardOpaqueRows: true,
+    ...(forwardDisplayDepth === undefined ? {} : { forwardDisplayDepth }),
+    colorTargets: [],
+    depth,
     selector: FORWARD_PASS_SELECTOR,
     recordMode: 'opaque',
     passKind: 'forward',
-    fragmentEntryPoint,
+    fragmentEntryPoint: PREDEPTH_FRAGMENT_ENTRY,
     colorLoadOp: 'clear',
     depthLoadOp: 'clear',
   });

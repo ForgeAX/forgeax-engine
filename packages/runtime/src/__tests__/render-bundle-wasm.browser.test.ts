@@ -1,6 +1,5 @@
 import type { Result } from '@forgeax/engine-rhi';
 import { expect, it } from 'vitest';
-import { RenderBundleCache } from '../../../render/src/record/render-bundle-cache';
 import { createShaderModule, ensureReady, rhi } from '../../../rhi-wgpu/src/index';
 
 function value<T>(result: Result<T, unknown>): T {
@@ -64,17 +63,13 @@ it('reuses a source-built WASM render bundle without consuming its handle', asyn
     const bytes = new Uint8Array(value(mapped.getMappedRange()));
     expect(Array.from(bytes.slice(0, 4))).toEqual([255, 0, 0, 255]);
     mapped.unmap();
-    const cache = new RenderBundleCache({ colorFormats: ['rgba8unorm'] });
     for (let frame = 0; frame < 96; frame++) {
       const visible = Math.floor(frame / 4) % 2 === 0;
       const encoder = value(device.createCommandEncoder());
       const pass = encoder.beginRenderPass({
         colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1] }],
       });
-      cache.encode(device, pass, (target) => {
-        target.setPipeline(pipeline);
-        if (visible) target.draw(3);
-      });
+      if (visible) value(pass.executeBundles([bundle]));
       pass.end();
       encoder.copyTextureToBuffer({ texture }, { buffer: readback, bytesPerRow: 256 }, [8, 8]);
       value(device.queue.submit([value(encoder.finish())]));

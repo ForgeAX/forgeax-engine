@@ -1,3 +1,6 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # @forgeax/engine-pack
 
 ## Authoring diagnostics and discovery
@@ -9,8 +12,13 @@ files returns the structured `atlas-empty-input` failure.
 ScriptablePack runtime imports resolve with Node's ESM conditions from the original
 author module, including `@forgeax/engine/geometry` and separate Engine domain packages.
 The relocated Worker imports the resulting canonical file URL. It never borrows
-dependencies from the Pack loader installation; projects and source libraries own
-their imports. Missing-module errors retain the author path and specifier in both
+dependencies from the Pack loader installation. Projects and source libraries own
+their imports. A host can pass a `packageBinding` with the selected package name
+and directory to metadata scans and lazy production. Node resolves that package
+and its subpaths through its own exports. Missing selected exports fail during
+author module loading.
+Each Worker lease resets this selection, and explicit selections do not reuse
+unbound metadata cache entries. Missing-module errors retain the author path and specifier in both
 structured detail and the ordinary error message.
 
 Live generation admits the pure `ReflectionProbe` schema and
@@ -22,6 +30,11 @@ Malformed Meta diagnostics retain AJV instance paths, schema paths, keywords and
 `PACK_AUTHORING_OPERATION_DESCRIPTORS` is the operation-semantic authority. Source operations may write; values/apply, rebuild and cold-cook require an inspected `expectedRevision`. Create, clone/import and draft operations retain their own identity and document revision contracts. DevKit projects this metadata into operation help and required inputs.
 
 ## Shared material program transport
+
+Ordinary `.pack.ts` materials publish a `material-template/1` contract and a
+content-addressed WGSL source library. Asset loading verifies the source
+artifact before making the contract available to Render. Runtime selection
+uses the current pass and renderer context to compile and cache the requested program.
 
 Player delivery may group complete WGSL artifacts into bounded Zstd streams.
 The existing stored `byteRange` locates a stream in an `FXBUNDL1` Bundle; optional
@@ -136,17 +149,18 @@ The Node-only `./build` entry exposes `AssetCliContext` and
 trailing LF. Source producers share these rules while retaining their own
 parsers, sidecar identity checks and filesystem writes.
 
-## MaterialAsset 唯一成功路径
+## Canonical MaterialAsset Path
 
-Pack 承载 `paramSchema -> derive -> compile/reflect -> cook/load -> extract/record`
-中的 cook/load 边界：producer 先发布含 `coordinateSet`、transform、
-`physicalUvScale`、artifact 与 `layoutIdentity` 的 receipt，再由 catalog 按 GUID
-提供给 runtime。identity 或 receipt 过期时 inspect producer evidence，修复后
-recook 并重新验证，不手改 cooked payload。
+Pack owns the cook/load boundary in
+`paramSchema -> derive -> compile/reflect -> cook/load -> extract/record`:
+the producer first publishes a receipt containing `coordinateSet`, transform,
+`physicalUvScale`, artifact and `layoutIdentity`; catalog then serves it to runtime
+by GUID. When identity or receipts expire, inspect producer evidence, repair,
+recook and verify again. Never edit cooked payloads manually.
 
 > [!IMPORTANT]
-> Pack 是发布与证据边界，不是第二份 schema；恢复动作依赖结构化状态与 receipt，
-> 并沿 producer owner 回到源输入。
+> Pack is a publication and evidence boundary, not a second schema. Recovery uses
+> structured state and receipts and follows producer ownership back to source inputs.
 
 ## Authoring and recovery index
 
@@ -168,15 +182,16 @@ instances, isolated worker lifetimes, deferred content reads and complete final
 reference validation keep their existing owners. Direct Pack JSON plugin
 outputs remain explicit in their source entries.
 
-## ScriptablePack 与 Pack authoring
+## ScriptablePack and Pack Authoring
 
 A `terrain` ScriptablePack output supplies a validated `TerrainSource`. The terrain producer derives subsection meshes, height/control mips and Standard material arrays as one GUID-linked closure; the existing Pack cook, Catalog and runtime loader own publication. See [the terrain contract](../terrain/README.md) for bounds and layer semantics.
 
 > [!IMPORTANT]
-> 这里有两个一等 source 实体，且必须保持可见区别：`ScriptablePack` 是可执行的
-> `*.pack.ts` TypeScript source；`Pack` 是可编辑、可持久化的 `*.pack.json` JSON
-> source。参数化只是 ScriptablePack/Pack instance 的可选能力，不是第三种实体。
-> 构建后的 Pack v2 是 transport 产物；runtime 只按 GUID 加载产物。
+> Keep the two first-class source entities visibly distinct: `ScriptablePack` is
+> executable `*.pack.ts` TypeScript source; `Pack` is editable, persistable
+> `*.pack.json` JSON source. Parameterization is an optional capability of
+> ScriptablePack/Pack instances, not a third entity. Built Pack v2 uses
+> `*.runtime-pack.json`; the runtime locates it by asset GUID through the Catalog.
 
 The current authoring contract keeps one Pack identity and derives every output
 identity from the author-owned pair `(packageId, sourceKey)`:
@@ -279,15 +294,15 @@ keep strict whole-project admission, including global identity checks.
 reports only `identity`; `present` and `ready` require current materialization
 and validated Pack/artifact evidence respectively.
 
-## 灯光 Pack/Catalog 入口
+## Lighting Pack/Catalog Entry Points
 
-三条最短入口：
+Three direct entry points:
 
-1. scene Pack 只保存 `RectAreaLight`、`SpotLight`、`LightProbe` 的 authored 字段，并把 `iesProfile`/`cookie` 写入 `refs`。
-2. `IesProfileAsset` 由 `iesImporter` 在 build-time 生成 fixed cooked payload；`SpotLight.cookie` 仍是普通 `TextureAsset`。
-3. runtime 按 GUID 读取 Catalog/Pack 记录；`current`、`accepted`、`lastKnownGood`、`verified` 分层检查，缺失时回到 producer 重建。
+1. Scene Packs retain authored `RectAreaLight`, `SpotLight` and `LightProbe` fields and put `iesProfile`/`cookie` into `refs`.
+2. `iesImporter` produces a fixed cooked `IesProfileAsset` payload at build time; `SpotLight.cookie` remains an ordinary `TextureAsset`.
+3. Runtime reads Catalog/Pack records by GUID. Check `current`, `accepted`, `lastKnownGood` and `verified` separately; return to the producer to rebuild missing evidence.
 
-Pack 是 published 边界，不是 author authority、runtime registry 或 GPU owner。源文件与 Meta 保留 authored identity，DDC/Catalog 是可丢弃或可重建的 projection；`sourceKey` 只表达 producer 语义，不是 URL 替身。
+Pack is the published boundary, not authoring authority, a runtime registry or a GPU owner. Source files and Meta retain authored identity; DDC/Catalog are disposable or rebuildable projections. `sourceKey` expresses producer semantics and is not a URL substitute.
 
 ## Material contract index
 
@@ -334,9 +349,17 @@ ordinary `mesh`/`sprite` layouts. This is a derived program selection within
 the same material GUID; it does not add a second authoring asset.
 
 `MaterialCookProgramContext` is the closed union of raster and Surface-derivative
-contexts. Derivatives use `pipeline: ray`, `profile: forgeax-material-ray-v1` and
-mesh/storage inputs: `pass: ray-hit` selects `cs_surface`, while `pass: card-capture`
-selects `vs_card` with the fixed `fs_card` fragment entry. Both select an existing
+contexts. Derivatives use `pipeline: ray` and mesh/storage inputs:
+
+| Pass | Required profile | Entry |
+|:--|:--|:--|
+| `ray-hit` | `forgeax-material-ray-v1` | `cs_surface` |
+| `card-capture` | `forgeax-material-card-v4` | `vs_card` with fixed `fs_card` |
+
+The Card v3 context carries the real object basis and qualifies reachable Surface member/global dependencies, excluding unavailable camera
+direction/time from static Surface inputs. Old Card v1/v2 publications and mismatched
+pass/profile pairs are rejected; recook and republish the material generation.
+Both select an existing
 authored pass without a raster address pair or submission ABI. Card cooking
 validates its four `rgba16float` outputs. The executable validator and JSON schema
 admit both contexts; `raster-probe` remains a build-time diagnostic. The complete
@@ -384,10 +407,9 @@ consume the loaded handles through the World's asset registry.
 For failure, switch on `code`, inspect `expected`, `hint`, and narrowed `detail`:
 repair the definition or producer, rebuild/cold-cook, refresh the Catalog LKG,
 or attach the missing Host capability. A missing audio/video/VFX capability is
-an install/play/execute error, not a durable-load error. The machine contract
-lives in [`pack.schema.json`](schema/pack.schema.json) and
-[`meta.schema.json`](schema/meta.schema.json); this section is guidance, not a
-second manifest.
+an install/play/execute error, not a durable-load error. Runtime Pack v2 and Meta sidecars use [`pack.schema.json`](schema/pack.schema.json)
+and [`meta.schema.json`](schema/meta.schema.json). Authored v3 Pack JSON uses
+`parsePackSourceJson`.
 
 The machine contract is [`schemas/asset-authority.schema.json`](../../schemas/asset-authority.schema.json). The audit gate is [`check-asset-authority-audit.mjs`](../../scripts/forgeax/check-asset-authority-audit.mjs); it reports subject, execution, author authority, runtime source, lifecycle, owner, producer, and sourceKey evidence for every named category.
 
@@ -421,10 +443,12 @@ generated descriptor file.
 
 Put the material payload in the package `assets[]` row and keep its `refs[]` graph complete. The `passes`, `values`, `parent`, and texture `coordinates` remain one authored route. A valid cooked material record contains `resolved`, `refs`, `artifact`, and `receipt`. If any part is absent, recover by fixing the producer payload or re-running the cook; this is the recovery route. Then repeat `lookup/verify --guid --project --catalog --json`.
 
-当 `parameters` 将字段声明为 `texture` 时，`values` 可保留纹理 GUID 字符串简写；省略
-`parameters` 的默认材质也只对 `MATERIAL_TEXTURE_SLOTS` 中的纹理槽启用该简写。只有
-sampler、强度或非默认坐标等附加元数据才使用结构化纹理对象。坐标字段的省略由运行时
-统一解析为 identity，但 cook/load 不得把 identity 坐标自动展开并写回创作 payload。
+When `parameters` declares a `texture` field, `values` can retain the texture GUID
+string shorthand. Default materials without `parameters` enable it only for texture
+slots in `MATERIAL_TEXTURE_SLOTS`. Structured texture objects carry additional
+metadata such as sampler, intensity or nondefault coordinates. Runtime resolves
+omitted coordinates to identity; cook/load must not expand and write identity
+coordinates back into authored payloads.
 
 > [!IMPORTANT]
 > The producer publishes facts; the consumer does not guess. `packageId`,
@@ -831,7 +855,12 @@ When `kind: 'material'`, the `payload` object carries `passes[]` + `values` (fea
 | `values` | `Record<string, unknown>` | Child-owned values, including per-slot texture coordinates. |
 | `parent` | `AssetGuid` | Optional serialized parent edge. |
 
-**Validation** is performed by the material schema and build-time cook. The cook resolves the parent chain, validates values and pass programs, and emits a `material-cook/5` record, artifact, references, and receipt. The receipt keeps material, source, layout, program, pipeline, publication, and cook identities together with compiler/WASM provenance and generation counters. Runtime reports a structured missing-cook error instead of compiling a material; stale generations are recooked by the producer.
+**Validation** starts with the material schema and the Pack producer. The
+producer resolves the parent chain and validates values. Scriptable Packs
+publish the resolved source template. Compiled publications emit a
+`material-cook/5` record, artifacts, references and receipt. The receipt binds
+material, source, layout, program, pipeline and publication identities to
+compiler/WASM provenance and generation counters.
 
 Raster program contexts distinguish `storage-buffer-minimum`,
 `storage-buffer-projector`, `storage-buffer`, `storage-buffer-atmosphere` and
@@ -905,14 +934,18 @@ The `verify` subcommand runs a fail-fast 7-step chain:
 ## Mesh-binary artifact contract
 
 `MESH_BIN_VERSION` and `MESH_BIN_HEADER_BYTES` are the Pack-owned facts for
-the v5 `<guid>.bin` mesh artifact. The header carries the geometry projection
-version, attribute mask, stride, digest, cardinality, and payload byte lengths;
-the import encoder and assets-runtime decoder consume those facts from the
-package root. Independent test fixtures may keep literal header values only as
+the `<guid>.bin` mesh artifact. The header carries the geometry projection
+version, attribute mask, stride, digest, cardinality, and payload byte lengths.
+The Geometry encoder and decoder consume those facts from Pack. Independent test fixtures may keep literal header values only as
 wire-format oracles, never as a second layout table.
 
 The 80-byte header stores `morphBytes` at offset 40; offset 44 remains zero.
-Payload order is header, interleaved vertices, morph streams, indices, JSON.
+Payload order is header, vertices, morph streams, indices, JSON. V4 through V6
+store interleaved vertices. V7 uses a digest for the physical vertex layout and
+stores the position, tangent basis, UV and color streams in that order, omitting
+absent streams. The total stride and vertex byte length stay the same. V7
+omits the morph section and is restricted to standalone rigid triangle meshes.
+
 V5 metadata stores `morphTargetMasks` (one to eight targets): bits 1/2/4 select
 position/normal/tangent with 3/3/4 little-endian float32 components per vertex.
 Bits 8/16/32 mark present channels containing only positive zero; those lanes
@@ -1074,7 +1107,7 @@ binary transport table and the same typed-array allowlist as capture. They accep
 captured plain-object snapshot roots; root arrays and binary views are rejected.
 Encoding reserves the root `binary` field and rejects collisions before data can
 be overwritten. Nested author objects need no reserved fields. See Import's
-`runtime-pack-source/2` snapshot contract for portable source archives.
+`runtime-pack-source/3` snapshot contract for portable source archives.
 
 Material publication uniqueness and direct/scene-index completeness include the
 color input derived from each ABI receipt. Plain and colored programs may share
@@ -1175,3 +1208,22 @@ texture references, or return the helper map from `.pack.ts`. The build prepares
 GPU programs, never pixels. Runtime Packs reuse an already prepared generator's
 `programs`; raw WGSL cooking is a build responsibility. Generated pixel data and
 GPU objects never enter the Pack or its portable snapshot.
+
+For a custom 2D or 2D-array mip chain, declare
+`mips: { kind: 'custom', levelCount }` on the output. Use `mipLevel` on the
+raster pass for its destination attachments, and
+`{ kind: 'local', name, mipLevel }` for each selected source mip. The source
+is bound as a single-level view, so the shader reads it at LOD zero.
+`_textureSize` is the destination level's extent. Transients can declare a
+custom chain to carry intermediate values across levels. Generate every
+published level before sampling the output. Select `mips: { kind: 'generate' }`
+and a [built-in filter](../assets-runtime/README.md#gpu-mip-generation) for
+ordinary reductions.
+
+A `compute-volume` pass writes one published 3D `r8unorm` output with a single
+mip. Its module defines `fn volumeValue(position: vec3<u32>, extent: vec3<u32>) -> f32`.
+The pass has empty `reads` and declares the output name in `writes`. The compiler
+wraps the function in a fixed compute entry. Renderer writes four adjacent
+voxels per invocation into a row-aligned storage buffer, then copies the whole
+volume into the sampled texture. The scratch buffer is released when generation
+completes.

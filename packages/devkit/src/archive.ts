@@ -1,4 +1,9 @@
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname, resolve } from 'node:path';
 import { deflateRawSync } from 'node:zlib';
+import { sha256 as contentSha256 } from '@forgeax/engine-types';
+import type { CommandResult } from './types.js';
+import { failCommand } from './types.js';
 
 export interface ZipEntry {
   readonly path: string;
@@ -59,32 +64,18 @@ export function createZip(entriesInput: readonly ZipEntry[]): Buffer {
     local.writeUInt16LE(20, 4);
     local.writeUInt16LE(UTF8_FLAG, 6);
     local.writeUInt16LE(DEFLATE_METHOD, 8);
-    local.writeUInt16LE(0, 10);
     local.writeUInt16LE(DOS_EPOCH_DATE, 12);
     local.writeUInt32LE(checksum, 14);
     local.writeUInt32LE(compressed.byteLength, 18);
     local.writeUInt32LE(source.byteLength, 22);
     local.writeUInt16LE(name.byteLength, 26);
-    local.writeUInt16LE(0, 28);
     localParts.push(local, name, compressed);
 
     const central = Buffer.alloc(46);
     central.writeUInt32LE(0x0201_4b50, 0);
     central.writeUInt16LE(20, 4);
-    central.writeUInt16LE(20, 6);
-    central.writeUInt16LE(UTF8_FLAG, 8);
-    central.writeUInt16LE(DEFLATE_METHOD, 10);
-    central.writeUInt16LE(0, 12);
-    central.writeUInt16LE(DOS_EPOCH_DATE, 14);
-    central.writeUInt32LE(checksum, 16);
-    central.writeUInt32LE(compressed.byteLength, 20);
-    central.writeUInt32LE(source.byteLength, 24);
-    central.writeUInt16LE(name.byteLength, 28);
-    central.writeUInt16LE(0, 30);
-    central.writeUInt16LE(0, 32);
-    central.writeUInt16LE(0, 34);
-    central.writeUInt16LE(0, 36);
-    central.writeUInt32LE(0, 38);
+    // The central directory stores the same entry fields after its creator version.
+    local.copy(central, 6, 4, 28);
     central.writeUInt32LE(offset, 42);
     centralParts.push(central, name);
 
@@ -102,4 +93,50 @@ export function createZip(entriesInput: readonly ZipEntry[]): Buffer {
   end.writeUInt32LE(centralDirectory.byteLength, 12);
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...localParts, centralDirectory, end]);
+}
+
+export async function publishChecksummedFile(file: string, bytes: Uint8Array) {
+  const sha256 = contentSha256(bytes);
+  const checksumPath = `${file}.sha256`;
+  const suffix = `.partial-${process.pid}`;
+  const temporary = file + suffix;
+  const checksum = checksumPath + suffix;
+  try {
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(temporary, bytes);
+    await writeFile(checksum, `${sha256}  ${basename(file)}\n`, 'utf8');
+    await rename(checksum, checksumPath);
+    await rename(temporary, file);
+    return { path: file, bytes: bytes.byteLength, sha256, checksumPath };
+  } finally {
+    await Promise.all([rm(temporary, { force: true }), rm(checksum, { force: true })]);
+  }
+}
+
+export const GAME_PACKAGE_DOCUMENT_PATHS = Object.freeze([
+  'README.md',
+  'docs/feedback.md',
+] as const);
+
+export async function readGamePackageDocuments(
+  root: string,
+): Promise<CommandResult<readonly ZipEntry[]>> {
+  const entries: ZipEntry[] = [];
+  for (const path of GAME_PACKAGE_DOCUMENT_PATHS) {
+    try {
+      entries.push({ path, bytes: await readFile(resolve(root, path)) });
+    } catch (cause) {
+      return failCommand(
+        'game-package-document-missing',
+        'the game to contain README.md and docs/feedback.md',
+        'Restore README.md and docs/feedback.md before creating a Web ZIP.',
+        {
+          root,
+          path,
+          reason: cause instanceof Error ? cause.message : String(cause),
+        },
+      );
+    }
+  }
+  return { ok: true, value: entries };
 }

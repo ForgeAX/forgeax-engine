@@ -26,13 +26,12 @@ import type { CanvasAppError } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import type { World } from '@forgeax/engine-ecs';
 import {
+  createCatalogHotSubscription,
   createCatalogSource,
   AssetRegistry,
 } from '@forgeax/engine-assets-runtime';
-import type { CatalogDelta, CatalogEntry, RuntimeAssetBinding } from '@forgeax/engine-types';
+import type { CatalogDelta } from '@forgeax/engine-types';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { decodeCatalogWire } from '@forgeax/engine-pack';
-import { createCatalogClient } from '@forgeax/engine-vite-plugin-pack/catalog-client';
 
 
 import { Transform } from '@forgeax/engine-scene';
@@ -96,15 +95,13 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   let disposeCatalog = (): void => {};
   const developmentBinding = runtimeBinding;
   if (developmentBinding !== undefined) {
-    const catalogClient = createCatalogClient(
-      () => readCatalogRows(developmentBinding),
-      import.meta.hot,
-    );
     assets.setCatalogSource(
       createCatalogSource({
         url: developmentBinding.catalogUrl,
         expectedScope: developmentBinding,
-        subscribe: catalogClient.subscribe,
+        subscribe: createCatalogHotSubscription(import.meta.hot, () => {
+          void assets.reconcileCatalog();
+        }),
       }),
     );
     const stopCatalog = assets.subscribeCatalog((delta) => {
@@ -171,25 +168,6 @@ async function bootstrap(target: HTMLCanvasElement): Promise<void> {
   console.warn('[custom-importer] running.');
 }
 
-async function readCatalogRows(binding: RuntimeAssetBinding): Promise<readonly CatalogEntry[]> {
-  const response = await fetch(binding.catalogUrl);
-  if (!response.ok)
-    throw {
-      code: 'catalog-route-failed',
-      expected: 'an HTTP 2xx response from the scoped catalog route',
-      hint: 'wait for the runtime scope to become available, then retry catalog enumeration',
-      detail: { status: response.status, statusText: response.statusText },
-    };
-  const raw = (await response.json()) as unknown;
-  // Enumeration retains degraded rows for the existing diagnostic/recovery path.
-  const rows =
-    raw !== null && typeof raw === 'object' && !Array.isArray(raw) &&
-    (raw as { schemaVersion?: unknown }).schemaVersion !== 'pack-index-tables/1'
-      ? (raw as { entries?: unknown }).entries
-      : raw;
-  return decodeCatalogWire(rows).unwrap();
-}
-
 async function handleCatalogDelta(
   delta: CatalogDelta,
   assets: AssetRegistry,
@@ -215,8 +193,7 @@ async function handleCatalogDelta(
     console.error('[custom-importer] catalog recovery failed:', recovered.error);
     return;
   }
-  assets.invalidate(row.guid);
-  const blob = await loadReelGameBlob(assets);
+  const blob = await loadReelGameBlob(assets, true);
   if (blob === undefined) {
     const title = readLastKnownGood()?.title ?? 'none';
     setAssetStatus(`catalog reload failed retained title=${JSON.stringify(title)}`);
@@ -229,7 +206,7 @@ async function handleCatalogDelta(
   );
 }
 
-async function loadReelGameBlob(assets: AssetRegistry): Promise<ReelGameBlob | undefined> {
+async function loadReelGameBlob(assets: AssetRegistry, refresh = false): Promise<ReelGameBlob | undefined> {
   const guidRes = AssetGuid.parse(REEL_GAME_LEVEL_1_GUID);
   if (!guidRes.ok) {
     console.error('[custom-importer] REEL_GAME_LEVEL_1_GUID parse failed:', guidRes.error.code);
@@ -240,9 +217,18 @@ async function loadReelGameBlob(assets: AssetRegistry): Promise<ReelGameBlob | u
     console.error('[custom-importer] load failed:', res.error);
     return undefined;
   }
-  const value = assets.read(res.value).unwrap();
-  assets.release(res.value).unwrap();
-  return value;
+  try {
+    if (refresh) {
+      const reloaded = await assets.reload(res.value, { conflict: 'reject' });
+      if (!reloaded.ok) {
+        console.error('[custom-importer] reload failed:', reloaded.error);
+        return undefined;
+      }
+    }
+    return assets.read(res.value).unwrap();
+  } finally {
+    assets.release(res.value).unwrap();
+  }
 }
 
 // OOS-1 boundary: the engine does not understand reel-game semantics. The host

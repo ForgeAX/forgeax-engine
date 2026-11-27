@@ -71,7 +71,7 @@ const RUN_CLIP_GUID = '019ecd87-179b-71f7-b9f8-4c8518326b65';
 // use (Skylight/SkyboxBackground hold the equirect handle; projection is internal).
 
 // DejaVu Sans Mono MSDF font; its source publication includes the sampler closure.
-const FONT_GUID = '019eb276-4d96-7f2c-9ecf-5124a020eebb';
+const FONT_GUID = '0172daac-227f-5a3b-b6ae-313f9fd52081';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#game');
 if (!canvas) throw new Error('collectathon: missing <canvas id="game"> in index.html');

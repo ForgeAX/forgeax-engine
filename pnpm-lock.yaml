@@ -6,6 +6,9 @@ importers:
   .:
     configDependencies: {}
     packageManagerDependencies:
+      '@pnpm/exe':
+        specifier: 12.15.0
+        version: 12.15.0
       pnpm:
         specifier: 12.15.0
         version: 12.15.0
@@ -89,6 +92,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@pnpm/exe@12.15.0':
+    resolution: {integrity: sha512-TB8j1Xzjl7KIuq+kWkPuEPNaQSECL+cFO+1BBhKmeDJo6zKNkgCAlm7gl8Dezz+sP5rnqDjDYKdISvC5j2lKwQ==}
+    engines: {node: '>=18'}
+    hasBin: true
+
   pnpm@12.15.0:
     resolution: {integrity: sha512-s5UdbW/0qfE9x89WzSjSuOs328ycaOUuHhGRhz6p+CoBcoerULqtxczElPA2xnwOR+sTYIwvo29HcRth6hKOYQ==}
     engines: {node: '>=18'}
@@ -138,6 +146,23 @@ snapshots:
   '@pnpm/exe.win32-x64@12.15.0':
     optional: true
 
+  '@pnpm/exe@12.15.0':
+    optionalDependencies:
+      '@pnpm/exe.android-arm64': 12.15.0
+      '@pnpm/exe.android-x64': 12.15.0
+      '@pnpm/exe.darwin-arm64': 12.15.0
+      '@pnpm/exe.darwin-x64': 12.15.0
+      '@pnpm/exe.freebsd-x64': 12.15.0
+      '@pnpm/exe.linux-arm64': 12.15.0
+      '@pnpm/exe.linux-arm64-musl': 12.15.0
+      '@pnpm/exe.linux-ppc64': 12.15.0
+      '@pnpm/exe.linux-riscv64': 12.15.0
+      '@pnpm/exe.linux-s390x': 12.15.0
+      '@pnpm/exe.linux-x64': 12.15.0
+      '@pnpm/exe.linux-x64-musl': 12.15.0
+      '@pnpm/exe.win32-arm64': 12.15.0
+      '@pnpm/exe.win32-x64': 12.15.0
+
   pnpm@12.15.0:
     optionalDependencies:
       '@pnpm/exe.android-arm64': 12.15.0
@@ -173,6 +198,7 @@ overrides:
   hono: 4.13.18
   joi: ^18.3.1
   minimatch: ^11.0.1
+  postcss-selector-parser: 6.1.6
   qs: ^6.16.1
   zod: ^4.6.7
 
@@ -6788,6 +6814,9 @@ importers:
       '@forgeax/engine-fbx':
         specifier: workspace:*
         version: link:../../../packages/fbx
+      '@forgeax/engine-geometry':
+        specifier: workspace:*
+        version: link:../../../packages/geometry
       '@forgeax/engine-import':
         specifier: workspace:*
         version: link:../../../packages/import
@@ -6922,6 +6951,9 @@ importers:
       '@forgeax/engine-shader-compiler':
         specifier: workspace:*
         version: link:../../../packages/shader-compiler
+      '@forgeax/engine-ui-blitz':
+        specifier: workspace:*
+        version: link:../../../packages/ui-blitz
       '@forgeax/engine-vite-plugin-pack':
         specifier: workspace:*
         version: link:../../../packages/vite-plugin-pack
@@ -8423,6 +8455,9 @@ importers:
       '@forgeax/engine-physics-rapier3d':
         specifier: workspace:*
         version: link:../../../packages/physics-rapier3d
+      '@forgeax/engine-platform-browser':
+        specifier: workspace:*
+        version: link:../../../packages/platform-browser
       '@forgeax/engine-render':
         specifier: workspace:*
         version: link:../../../packages/render
@@ -11479,6 +11514,9 @@ importers:
       pngjs:
         specifier: ^7.0.0
         version: 7.0.0
+      three-render-defaults:
+        specifier: npm:three@0.187.0
+        version: three@0.187.0
       vite:
         specifier: 8.3.5
         version: 8.3.5(@types/node@20.19.43)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.20.6)(yaml@2.9.1)
@@ -12149,6 +12187,9 @@ importers:
       postcss:
         specifier: ^8.5.31
         version: 8.5.32
+      postcss-selector-parser:
+        specifier: 6.1.6
+        version: 6.1.6
       tailwindcss:
         specifier: ^3.4.19
         version: 3.4.19(tsx@4.20.6)(yaml@2.9.1)
@@ -13074,8 +13115,8 @@ importers:
         version: 0.1.71
     devDependencies:
       upstream-webgpu:
-        specifier: npm:webgpu@0.4.0
-        version: webgpu@0.4.0(supports-color@7.2.0)
+        specifier: npm:webgpu@0.6.2
+        version: webgpu@0.6.2(supports-color@7.2.0)
 
   packages/ddc:
     dependencies:
@@ -13213,6 +13254,9 @@ importers:
       '@forgeax/engine-rhi-webgpu':
         specifier: workspace:*
         version: link:../rhi-webgpu
+      '@forgeax/engine-rhi-wgpu-native':
+        specifier: workspace:*
+        version: link:../rhi-wgpu-native
       '@forgeax/engine-runtime':
         specifier: workspace:*
         version: link:../runtime
@@ -13264,6 +13308,9 @@ importers:
       magic-string:
         specifier: 0.30.21
         version: 0.30.21
+      node-web-audio-api:
+        specifier: 2.2.0
+        version: 2.2.0
       parse5:
         specifier: 7.3.0
         version: 7.3.0
@@ -13310,10 +13357,6 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.2
-    optionalDependencies:
-      upstream-webgpu:
-        specifier: npm:webgpu@0.4.0
-        version: webgpu@0.4.0(supports-color@7.2.0)
 
   packages/dsh:
     dependencies:
@@ -13526,6 +13569,9 @@ importers:
       '@forgeax/engine-rhi-wgpu':
         specifier: workspace:*
         version: link:../rhi-wgpu
+      '@forgeax/engine-rhi-wgpu-native':
+        specifier: workspace:*
+        version: link:../rhi-wgpu-native
       '@forgeax/engine-runtime':
         specifier: workspace:*
         version: link:../runtime
@@ -13975,15 +14021,15 @@ importers:
         specifier: 0.18.13
         version: 0.18.13
       three:
-        specifier: 0.184.0
-        version: 0.184.0
+        specifier: 0.187.0
+        version: 0.187.0
     devDependencies:
       '@types/node':
         specifier: ^20.14.0
         version: 20.19.43
       '@types/three':
-        specifier: 0.184.0
-        version: 0.184.0
+        specifier: 0.187.0
+        version: 0.187.0
       '@webgpu/types':
         specifier: ^0.1.74
         version: 0.1.74
@@ -14045,6 +14091,9 @@ importers:
       '@types/node':
         specifier: ^20.14.0
         version: 20.19.43
+      '@webgpu/types':
+        specifier: ^0.1.74
+        version: 0.1.74
 
   packages/naga:
     dependencies:
@@ -14679,6 +14728,9 @@ importers:
 
   packages/rhi-webgpu:
     dependencies:
+      '@forgeax/engine-platform':
+        specifier: workspace:*
+        version: link:../platform
       '@forgeax/engine-rhi':
         specifier: workspace:*
         version: link:../rhi
@@ -14873,6 +14925,9 @@ importers:
       '@forgeax/engine-codec':
         specifier: workspace:*
         version: link:../codec
+      '@forgeax/engine-platform':
+        specifier: workspace:*
+        version: link:../platform
       '@forgeax/engine-rhi':
         specifier: workspace:*
         version: link:../rhi
@@ -15058,8 +15113,8 @@ importers:
         specifier: ^3.2.1
         version: 3.2.1
       i18next:
-        specifier: 26.0.10
-        version: 26.0.10(typescript@6.0.3)
+        specifier: 26.3.4
+        version: 26.3.4(typescript@6.0.3)
       parse5:
         specifier: ^7.3.0
         version: 7.3.0
@@ -17887,9 +17942,6 @@ packages:
   '@types/stats.js@0.17.4':
     resolution: {integrity: sha512-jIBvWWShCvlBqBNIZt0KAshWpvSjhkwkEu4ZUcASoAvhmrgAUI2t1dXrjSL4xXVLB4FznPrIsX3nKXFl/Dt4vA==}
 
-  '@types/three@0.184.0':
-    resolution: {integrity: sha512-4mY2tZAu0y0B0567w7013BBXSpsP0+Z48NJvmNo4Y/Pf76yCyz6Jw4P3tUVs10WuYNXXZ+wmHyGWpCek3amJxA==}
-
   '@types/three@0.187.0':
     resolution: {integrity: sha512-v+vKNarUtk4n2QRZ4+CN5ygMM0ARUjXjIQl0R/unMUfmStFeVqGbgqarbrpoGTXRZoulSH16ePrVJVxPJEbMUA==}
 
@@ -18168,6 +18220,9 @@ packages:
     resolution: {integrity: sha512-+ys997U96po4Kx/ABpBCqhA9EuxJaQWDQg7295H4hBphv3IZg0boBKuwYpt4YXp6MZ5AmZQnU/tyMTlRpaSejg==}
     engines: {node: '>= 0.4'}
 
+  caller@1.1.0:
+    resolution: {integrity: sha512-n+21IZC3j06YpCWaxmUy5AnVqhmCIM2bQtqQyy00HJlmStRt6kwDX5F9Z97pqwAB+G/tgSz6q/kUBbNyQzIubw==}
+
   camelcase-css@2.0.1:
     resolution: {integrity: sha512-QOSvevhslijgYwRx6Rv7zKdMF8lbRmx+uQGx2+vDc+KI/eBnsy9kit5aj23AgGu3pa4t9AgwbnXWqS+iOY+2aA==}
     engines: {node: '>= 6'}
@@ -18332,6 +18387,10 @@ packages:
 
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
+
+  data-uri-to-buffer@4.0.1:
+    resolution: {integrity: sha512-0R9ikRb668HB7QDxT1vkpuUBtqc53YyAwMwGeUFKRojY/NWKvdZ+9UYtRfGmhqNbRkTSVpMbmyhXipFFv2cb/A==}
+    engines: {node: '>= 12'}
 
   data-urls@5.0.0:
     resolution: {integrity: sha512-ZYP5VBHshaDAiVZxjbRVcFJpc+4xGgT0bK3vzy1HLN8jTO975HEbuYzZJcHoQEY5K1a0z8YayJkyVETa08eNTg==}
@@ -18619,6 +18678,10 @@ packages:
       picomatch:
         optional: true
 
+  fetch-blob@3.2.0:
+    resolution: {integrity: sha512-7yAQpD2UMJzLi1Dqv7qFYnPbaPx7ZfFK6PiIxQ4PfkGPyNyl2Ugx+a/umUonmKqjhM4DnfbMvdX6otXq83soQQ==}
+    engines: {node: ^12.20 || >= 14.13}
+
   fflate@0.8.3:
     resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
 
@@ -18665,6 +18728,10 @@ packages:
   form-data@4.0.6:
     resolution: {integrity: sha512-vKatAh4SlVfgbv+YtmhiRjhEMJsYpsG1Y2rMQtR+SVSbytsSD1YGzDIcrAJmdFec88u/+VoGmxnl+80gL1tRCQ==}
     engines: {node: '>= 6'}
+
+  formdata-polyfill@4.0.10:
+    resolution: {integrity: sha512-buewHzMvYL29jdeQTVILecSaZKnt/RJWjoZCF5OW60Z67/GmSLBkOFM7qh1PI3zFNtJbaZL5eQu1vLfazOwj4g==}
+    engines: {node: '>=12.20.0'}
 
   forwarded@0.2.0:
     resolution: {integrity: sha512-buRG0fpBtRHSTCOASe6hD258tEubFoRLb4ZNA6NxMVHNw2gOcwHo9wyablzMzOA5z9xA9L1KNjk/Nt6MT9aYow==}
@@ -18808,8 +18875,8 @@ packages:
     resolution: {integrity: sha512-eKCa6bwnJhvxj14kZk5NCPc6Hb6BdsU9DZcOnmQKSnO1VKrfV0zCvtttPZUsBvjmNDn8rpcJfpwSYnHBjc95MQ==}
     engines: {node: '>=18.18.0'}
 
-  i18next@26.0.10:
-    resolution: {integrity: sha512-k3yGPAlWR2RdMYoVXJoDZDT87qeHIWKH7gVksdZMpRty7QX/D9QZeYGvN08KGbKHke9wn01eYT+EEsrqX/YTlw==}
+  i18next@26.3.4:
+    resolution: {integrity: sha512-pa7m0d7pBDqGHZxljT+WPFeyFgQ7P7SciPPo1tTqYuO0z4sqADYhwnBESmmGp/wEof1inwdls/k8ZgTg8rxFHA==}
     peerDependencies:
       typescript: ^5 || ^6
     peerDependenciesMeta:
@@ -19294,6 +19361,15 @@ packages:
   neo-async@2.6.2:
     resolution: {integrity: sha512-Yd3UES5mWCSqR+qNT93S3UoYUkqAZ9lLg8a7g9rimsWmYGK8cVToA4/sF3RrshdyV3sAGMXVUmpMYOw+dLpOuw==}
 
+  node-domexception@1.0.0:
+    resolution: {integrity: sha512-/jKZoMpw0F8GRwl4/eLROPA3cfcXtLApP0QzLmUT/HuPCZWyB7IY9ZrMeKw2O/nFIqPQB3PVM9aYm0F312AXDQ==}
+    engines: {node: '>=10.5.0'}
+    deprecated: Use your platform's native DOMException instead
+
+  node-fetch@3.3.2:
+    resolution: {integrity: sha512-dRB78srN/l6gqWulah9SrxeYnxeddIG30+GOqK/9OlLVyLg3HPnr6SqOWTWOXKRwC2eGYCkZ59NNuSgvSrpgOA==}
+    engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
+
   node-releases@2.0.63:
     resolution: {integrity: sha512-6li2QanLsAXpIH2R6j77MzRyvOyrvdTqlKtO4CgBdHGNvN99ZZfyxszHc5o5+IZBWD5u6Hzwg83JoGXmqZNG9Q==}
     engines: {node: '>=18'}
@@ -19301,6 +19377,10 @@ packages:
   node-sarif-builder@4.1.0:
     resolution: {integrity: sha512-IWqZF6u0EI/07HTBm+zZ+MgXgWl09dnSJRGaDCPBSlOqilDcx6pj3Mpb3HvPN8V2Gr+ISw7ZrMsL7STWs1F++w==}
     engines: {node: '>=20'}
+
+  node-web-audio-api@2.2.0:
+    resolution: {integrity: sha512-qM3dW3Z5HIz+O+++Uiia8x0OSNHcfJGUlexpCTdAkw8JlM17Ru1nV9a94wlxNRXqxT0Lr/ewwEnBXUwGMt24AA==}
+    engines: {node: '>= 22'}
 
   normalize-path@3.0.0:
     resolution: {integrity: sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA==}
@@ -20259,12 +20339,20 @@ packages:
     engines: {node: '>=20.0.0'}
     hasBin: true
 
-  webgpu@0.4.0:
-    resolution: {integrity: sha512-F5pimn3Aoi0zWjuRdiVs5TnrUwSzD2lESBohsIUsqyitWkGRQlXU2fhV6ycXlQTa1bvAf3sjqiUpBEpmSQ5ptA==}
+  web-streams-polyfill@3.3.3:
+    resolution: {integrity: sha512-d2JWLCivmZYTSIoge9MsgFCZrt571BikcWGYkjC1khllbTeDlGqZ2D8vD8E/lJa8WGWbb7Plm8/XJYV7IJHZZw==}
+    engines: {node: '>= 8'}
+
+  webgpu@0.6.2:
+    resolution: {integrity: sha512-3L4GfmqJLvYUIEWJngEQY+2HQiUlAFkg8+P8NDDj3Xx5hHHIFO/r8JW+ynfqBj7kHN4mbnwO74uB+lrRtLhp4Q==}
 
   webidl-conversions@7.0.0:
     resolution: {integrity: sha512-VwddBukDzu71offAQR975unBIGqfKZpM+8ZX6ySk8nYhVoo5CYaZyzt3YBvYtRtO+aoGlqxPg/B87NGVZ/fu6g==}
     engines: {node: '>=12'}
+
+  webidl-conversions@8.0.1:
+    resolution: {integrity: sha512-BMhLD/Sw+GbJC21C/UgyaZX41nPt8bUTg+jWyDeg7e7YN4xOM05YPSIXceACnXVtqyEw/LMClUQMtMZ+PGGpqQ==}
+    engines: {node: '>=20'}
 
   webpack-virtual-modules@0.6.2:
     resolution: {integrity: sha512-66/V2i5hQanC51vBQKPH4aI8NMAcBW59FVBs+rC7eGHupMyfn34q7rZIE+ETlJ+XTevqfUhVVBgSUNSW2flEUQ==}
@@ -21866,15 +21954,6 @@ snapshots:
 
   '@types/stats.js@0.17.4': {}
 
-  '@types/three@0.184.0':
-    dependencies:
-      '@dimforge/rapier3d-compat': 0.12.0
-      '@tweenjs/tween.js': 23.1.3
-      '@types/stats.js': 0.17.4
-      '@types/webxr': 0.5.24
-      fflate: 0.8.3
-      meshoptimizer: 1.1.1
-
   '@types/three@0.187.0':
     dependencies:
       '@dimforge/rapier3d-compat': 0.12.0
@@ -22184,6 +22263,8 @@ snapshots:
       call-bind-apply-helpers: 1.0.2
       get-intrinsic: 1.3.0
 
+  caller@1.1.0: {}
+
   camelcase-css@2.0.1: {}
 
   caniuse-lite@1.0.30001826: {}
@@ -22335,6 +22416,8 @@ snapshots:
       rrweb-cssom: 0.8.0
 
   csstype@3.2.3: {}
+
+  data-uri-to-buffer@4.0.1: {}
 
   data-urls@5.0.0:
     dependencies:
@@ -22670,6 +22753,11 @@ snapshots:
     optionalDependencies:
       picomatch: 4.0.7
 
+  fetch-blob@3.2.0:
+    dependencies:
+      node-domexception: 1.0.0
+      web-streams-polyfill: 3.3.3
+
   fflate@0.8.3: {}
 
   figures@6.1.0:
@@ -22724,6 +22812,10 @@ snapshots:
       es-set-tostringtag: 2.1.0
       hasown: 2.0.4
       mime-types: 2.1.35
+
+  formdata-polyfill@4.0.10:
+    dependencies:
+      fetch-blob: 3.2.0
 
   forwarded@0.2.0: {}
 
@@ -22882,7 +22974,7 @@ snapshots:
 
   human-signals@8.0.1: {}
 
-  i18next@26.0.10(typescript@6.0.3):
+  i18next@26.3.4(typescript@6.0.3):
     optionalDependencies:
       typescript: 6.0.3
 
@@ -23325,12 +23417,26 @@ snapshots:
 
   neo-async@2.6.2: {}
 
+  node-domexception@1.0.0: {}
+
+  node-fetch@3.3.2:
+    dependencies:
+      data-uri-to-buffer: 4.0.1
+      fetch-blob: 3.2.0
+      formdata-polyfill: 4.0.10
+
   node-releases@2.0.63: {}
 
   node-sarif-builder@4.1.0:
     dependencies:
       '@types/sarif': 2.1.7
       fs-extra: 11.4.1
+
+  node-web-audio-api@2.2.0:
+    dependencies:
+      caller: 1.1.0
+      node-fetch: 3.3.2
+      webidl-conversions: 8.0.1
 
   normalize-path@3.0.0: {}
 
@@ -24392,14 +24498,18 @@ snapshots:
       - debug
       - supports-color
 
-  webgpu@0.4.0(supports-color@7.2.0):
+  web-streams-polyfill@3.3.3: {}
+
+  webgpu@0.6.2(supports-color@7.2.0):
     dependencies:
-      '@webgpu/types': 0.1.71
+      '@webgpu/types': 0.1.74
       debug: 4.4.3(supports-color@7.2.0)
     transitivePeerDependencies:
       - supports-color
 
   webidl-conversions@7.0.0: {}
+
+  webidl-conversions@8.0.1: {}
 
   webpack-virtual-modules@0.6.2: {}
 

@@ -63,6 +63,8 @@ export function materialRecordFixture(
     values?: Readonly<Record<string, MaterialValue | null>>;
     surface?: MaterialSurfaceDeclaration;
     contexts?: readonly MaterialCookRasterContext[];
+    programs?: readonly MaterialCookProgram[];
+    sourceClosure?: readonly string[];
   } = {},
 ): MaterialReady['record'] {
   const guid = options.guid ?? '019f0000-0000-7000-8000-000000000701';
@@ -71,8 +73,9 @@ export function materialRecordFixture(
   const parameters = options.parameters ?? [];
   const values = options.values ?? {};
   const surface = options.surface;
-  const programs: MaterialCookProgram[] = (options.contexts ?? [MATERIAL_CONTEXT]).flatMap(
-    (context) =>
+  const programs =
+    options.programs ??
+    (options.contexts ?? [MATERIAL_CONTEXT]).flatMap((context) =>
       [...new Set(passes.map((pass) => pass.program.module))].map((module) => {
         const bytes = new TextEncoder().encode(
           `published ${module} ${context.backend}/${context.capability}`,
@@ -89,22 +92,16 @@ export function materialRecordFixture(
           selections: passes
             .filter((pass) => pass.program.module === module)
             .flatMap((pass) =>
-              (['direct', 'scene-index'] as const).map((address) => ({
-                pass: pass.name,
-                context: {
-                  ...context,
-                  pass: /shadow/i.test(pass.name) ? ('shadow' as const) : context.pass,
-                },
-                address,
-                entry: address === 'direct' ? 'vs_main' : 'vs_scene_index',
-                abi: FIXTURE_ABI,
-              })),
+              fixtureSelections(pass.name, {
+                ...context,
+                pass: /shadow/i.test(pass.name) ? 'shadow' : context.pass,
+              }),
             ),
         };
       }),
-  );
+    );
   const artifactDigest = createMaterialProgramSetDigest(programs, passes);
-  const sourceClosure = ['material.json', 'shader.wgsl'];
+  const sourceClosure = options.sourceClosure ?? ['material.json', 'shader.wgsl'];
   const standard = passes.some((pass) => isStandardRootModule(pass.program.module));
   return {
     schemaVersion: 'material-cook/5',

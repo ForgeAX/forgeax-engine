@@ -88,6 +88,13 @@ describe('generated Worker startup URLs', () => {
         throw new Error('expected one Vite output');
       const chunk = bundle.output.find((entry) => entry.type === 'chunk');
       if (chunk?.type !== 'chunk') throw new Error('adapter chunk missing');
+      const nativeManifest = 'https://forgeax.package/shaders/manifest.json';
+      expect(
+        runInNewContext(
+          `${chunk.code}\nAdapter.forgeaxBundlerAdapter({ shaderManifestUrl: "${nativeManifest}" })`,
+          { URL, location: { href: 'game.js' } },
+        ).shaderManifestUrl,
+      ).toBe(nativeManifest);
       const moduleUrl = new URL('assets/main.js', new URL(base, documentUrl)).href;
       const typedSource =
         `${chunk.code}\nconst forgeaxBundlerAdapter = Adapter.forgeaxBundlerAdapter;

@@ -1,5 +1,11 @@
 import { rhi } from '@forgeax/engine-rhi-null';
-import { expect, it, vi } from 'vitest';
+import { assert, expect, it, vi } from 'vitest';
+import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
+import {
+  issuedSectionIndex,
+  sealSourceDraws,
+  sourceDrawForSection,
+} from '../../gpu-driven/source-draw-indices';
 import type { RenderableDrawReceipt } from '../gpu-draw-receipts';
 import { emitGpuDrivenDrawReceipts } from '../gpu-draw-receipts';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
@@ -328,4 +334,120 @@ it('maps retained ordinal ownership through the current same-count mesh replacem
     pass.end();
     f.dispose();
   }
+});
+
+it.each(
+  [
+    [0, 1, 2],
+    [0, 2],
+    [2, 0],
+  ].map((sections) => ({ sections })),
+)('routes issued sections $sections exactly once as selection rotates', async ({ sections }) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  const entry = f.add({ entity: 1, claimed: sections });
+  const draws = sealSourceDraws([...(entry.source.gpuDrivenDraws ?? [])]);
+  Object.assign(entry.source, { gpuDrivenDraws: draws });
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  try {
+    expect(Object.isFrozen(draws)).toBe(true);
+    for (const section of [-1, 0.5, 0, 1, 2, 3])
+      expect(issuedSectionIndex(draws, section)).toBe(sections.indexOf(section));
+    for (const selected of [sections, ...sections.map((section) => [section]), []]) {
+      f.selectedDraws.clear();
+      for (const [i, section] of sections.entries()) {
+        const draw = draws[i];
+        assert(draw);
+        expect(sourceDrawForSection(draws, section)).toBe(draw);
+        expect(Object.isFrozen(draw)).toBe(true);
+        if (selected.includes(section)) f.selectedDraws.add(draw.geometry);
+      }
+      const selection = f.prepareSelection();
+      f.receipts.length = 0;
+      f.record(pass, 'forward', selection);
+      const gpu = vi.fn();
+      emitGpuDrivenDrawReceipts([entry.source], selection, gpu);
+      expect(gpu.mock.calls.map(([, section]) => section).sort()).toEqual([...selected].sort());
+      expect(f.receipts.map((receipt) => receipt.submesh)).toEqual(
+        [0, 1, 2].filter((section) => !selected.includes(section)),
+      );
+    }
+    expect(f.errors).toEqual([]);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});
+
+it.each([
+  'borrowed',
+  'caller-frozen',
+  'issued',
+] as const)('preserves legacy duplicate and missing section semantics for a %s roster', async (owner) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  const entry = f.add({ entity: 1, claimed: [0, 1, 2] });
+  const selection = f.prepareSelection();
+  const rows = [...(entry.source.gpuDrivenDraws ?? [])];
+  const [first, second, third] = rows;
+  assert(first && second && third);
+  const duplicates = sealSourceDraws([{ ...first, drawItemIndex: 1 }, second]);
+  expect(issuedSectionIndex(duplicates, 1)).toBeUndefined();
+  expect(sourceDrawForSection(duplicates, 1)).toBe(duplicates[0]);
+  const { drawItemIndex: _legacy, ...ordinal } = third;
+  const live = [{ ...first, drawItemIndex: 1 }, { ...second, materialSlot: 1 }, ordinal];
+  const table =
+    owner === 'issued'
+      ? sealSourceDraws(live)
+      : owner === 'caller-frozen'
+        ? Object.freeze(live)
+        : live;
+  Object.assign(entry.source, { gpuDrivenDraws: table });
+  const owns = vi.spyOn(selection, 'owns').mockReturnValue(false);
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  try {
+    for (let revision = 0; revision < (owner === 'borrowed' ? 2 : 1); revision++) {
+      if (revision === 1) {
+        const [a, b] = live;
+        assert(a && b);
+        live.splice(0, 2, b, a);
+      }
+      expect(issuedSectionIndex(table, 1)).toBeUndefined();
+      expect(sourceDrawForSection(table, 1)).toBe(table[0]);
+      expect(sourceDrawForSection(table, 2)).toBe(ordinal);
+      owns.mockClear();
+      expect(selection.has(entry.source, 1)).toBe(false);
+      expect(owns.mock.calls[0]?.[1]).toBe(table[0]);
+      owns.mockClear();
+      f.receipts.length = 0;
+      f.record(pass, 'forward', selection);
+      expect(owns.mock.calls.map(([, draw, index]) => [draw, index])).toEqual([[table[1], 1]]);
+      expect(f.receipts.map(({ submesh }) => submesh)).toEqual([0, 1, 2]);
+    }
+    expect(f.errors).toEqual([]);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});
+
+it('observes same-length caller edits until a new owner explicitly issues the table', () => {
+  const template = receiptRow().source.gpuDrivenDraws?.[0];
+  assert(template);
+  const live = [2, 0].map((drawItemIndex) => ({ ...template, drawItemIndex }));
+  const table = Object.freeze(live);
+  const row = table[0];
+  assert(row);
+  expect(issuedSectionIndex(table, 2)).toBeUndefined();
+  expect(sourceDrawForSection(table, 2)).toBe(row);
+  row.drawItemIndex = 7;
+  expect(sourceDrawForSection(table, 2)).toBeUndefined();
+  expect(sourceDrawForSection(table, 7)).toBe(row);
+  expect(issuedSectionIndex(table, 7)).toBeUndefined();
+  const owned = sealSourceDraws(table.map((draw) => ({ ...draw })));
+  row.drawItemIndex = 8;
+  expect(issuedSectionIndex(owned, 7)).toBe(0);
+  expect(sourceDrawForSection(table, 8)).toBe(row);
 });

@@ -2,6 +2,7 @@ import { type ExecutionApp, subscribeBrowserFrameSubmitted } from '@forgeax/engi
 import { createApp } from '@forgeax/engine-app/browser';
 import { expect, it } from 'vitest';
 import { commands, page } from 'vitest/browser';
+import { observeReadyPictures } from './ready-picture-count';
 
 declare module 'vitest/browser' {
   interface BrowserCommands {
@@ -62,16 +63,19 @@ async function fixture() {
     globalThis.Worker = NativeWorker;
   }
   if (engineWorker === undefined) throw new Error('Native Engine Worker was not created');
+  const readyPictures = observeReadyPictures(canvas);
   return {
     app,
     canvas,
     channel,
     messages,
     submitted,
+    readyPictures,
     engineWorker,
     async dispose() {
       const disposed = await app.dispose();
       unsubscribe();
+      readyPictures.dispose();
       channel.port1.close();
       app.canvas?.remove();
       canvas.remove();
@@ -107,14 +111,14 @@ it('reports lost asset authority after an unpublished commit and starts a new id
   try {
     first.app.start().unwrap();
     await expect
-      .poll(() => first.app.execution.report().render?.completedFrame, { timeout: 60_000 })
+      .poll(() => first.readyPictures.count, { timeout: 60_000 })
       .toBeGreaterThanOrEqual(60);
     first.app.pause().unwrap();
     await expect
       .poll(
         () => {
-          const render = first.app.execution.report().render;
-          return render?.completedFrame === render?.submittedFrame;
+          const { frame, render } = first.app.execution.report();
+          return frame.inFlight === 0 && render?.completedFrame === render?.submittedFrame;
         },
         { timeout: 30_000 },
       )
@@ -173,7 +177,7 @@ it('reports lost asset authority after an unpublished commit and starts a new id
     second = await fixture();
     second.app.start().unwrap();
     await expect
-      .poll(() => second?.app.execution.report().render?.completedFrame, { timeout: 60_000 })
+      .poll(() => second?.readyPictures.count, { timeout: 60_000 })
       .toBeGreaterThanOrEqual(60);
     const fresh = second.messages.find((value) => value.kind === 'initial');
     if (fresh === undefined || second.app.remoteEval === undefined)

@@ -33,8 +33,8 @@ const TARGET_FRAMES = process.env.FORGEAX_DAWN_LIGHTWEIGHT === '1' ? 24 : 60;
 const CLEAR_COLOR: readonly [number, number, number] = [0.05, 0.05, 0.08];
 
 // ─── Engine shader manifest (dawn-node path) ─────────────────────────────
-const { buildEngineShaderManifest } = await import('@forgeax/engine-vite-plugin-shader');
-const ENGINE_MANIFEST = await buildEngineShaderManifest();
+const { buildEngineShaderTemplateManifest } = await import('@forgeax/engine-vite-plugin-shader');
+const ENGINE_MANIFEST = await buildEngineShaderTemplateManifest();
 const MANIFEST_URL = createShaderManifestUrl(ENGINE_MANIFEST);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────

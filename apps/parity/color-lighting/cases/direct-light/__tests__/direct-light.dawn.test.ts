@@ -4,7 +4,7 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry, createPrimitiveMesh } from '@forgeax/engine-geometry';
-import { readShaderManifestPublication } from '@forgeax/engine-shader';
+import { admitShaderTemplateManifest } from '@forgeax/engine-shader';
 import type { TextureAsset } from '@forgeax/engine-types';
 import {
   Camera,
@@ -20,9 +20,10 @@ import {
 import type { RendererLegacyHostAdapter } from '@forgeax/engine-render/internal/construct-renderer';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { Transform } from '@forgeax/engine-scene';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterAll, describe, expect, it } from 'vitest';
 import { readbackTexturePixels } from '../../../../../../packages/rhi-debug/src/readback';
+import { rewriteShaderTemplateSources } from '../../../../../../packages/runtime/src/__tests__/shader-manifest-url.fixture';
 import { drawReadyFrame } from '../../../../../../scripts/test/ready-render-frame.mjs';
 import sceneCaseSchema from '../../../schemas/scene-case.schema.json' with { type: 'json' };
 import { createForgeaxAdapter } from '../../../src/adapters/forgeax-adapter';
@@ -82,7 +83,6 @@ const hdrpCasePaths = lightCaseNames.map((name) =>
   resolve(import.meta.dirname, `../cases/${name}-hdrp.json`),
 );
 const validate = new Ajv2020({ allErrors: true, strict: false }).compile(sceneCaseSchema);
-type DawnEngineManifest = Awaited<ReturnType<typeof buildEngineShaderManifest>>;
 
 async function dawnProvenance(backend: string): Promise<DirectLightProvenance> {
   const adapter = navigator.gpu === undefined ? null : await navigator.gpu.requestAdapter();
@@ -109,56 +109,31 @@ async function dawnProvenance(backend: string): Promise<DirectLightProvenance> {
 function mutateSpotShaderSource(source: string, falsifier: string): string {
   if (falsifier === 'tile-minus-one' || falsifier === 'wrong-tile') {
     const tile = falsifier === 'tile-minus-one' ? '-1' : '99';
-    const decodedTile = source.replaceAll(
-      'let tile = bitcast<i32>(light.kind_and_shadow.y);',
-      `let tile = ${tile};`,
+    return source.replaceAll(
+      /(let (?:tile|encoded_tile) = )bitcast<i32>\(light\.metadata\.y\);/g,
+      `$1${tile};`,
     );
-    if (decodedTile !== source) return decodedTile;
-    const rewritten = source.replace(
-      /let (col_[A-Za-z0-9_]*) = f32\(\(shadowAtlasTile % 2i\)\);\n\s*let (row_[A-Za-z0-9_]*) = f32\(\(shadowAtlasTile \/ 2i\)\);/g,
-      `let $1 = f32((${tile}i % 2i));\n    let $2 = f32((${tile}i / 2i));`,
-    );
-    if (rewritten !== source) return rewritten;
-    return source;
   }
   if (falsifier === 'eval-spot') {
     return source.replace(
-      /fn (evalSpotShadowedX_[A-Za-z0-9_]+)\(([^)]*)\) -> vec3<f32> \{[\s\S]*?\n\}\n\n(?=fn )/g,
-      'fn $1($2) -> vec3<f32> {\n    return vec3(0f);\n}\n\n',
+      /(fn evalSpotShadowedLobes\([^{}]*\) -> DirectLobes \{)[\s\S]*?^\}/m,
+      '$1\n  return DirectLobes(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));\n}',
     );
   }
   return source;
 }
 
-function applySpotShaderFalsifier(manifest: DawnEngineManifest, falsifier: string): DawnEngineManifest {
-  let changed = 0;
-  const rewrite = (source: string): string => {
-    const rewritten = mutateSpotShaderSource(source, falsifier);
-    if (rewritten !== source) changed += 1;
-    return rewritten;
-  };
-  const result = {
-    ...manifest,
-    entries: manifest.entries.map((entry) => ({ ...entry, wgsl: rewrite(entry.wgsl) })),
-    materialShaders: manifest.materialShaders.map((shader) => ({
-      ...shader,
-      composedWgsl: rewrite(shader.composedWgsl),
-      variants: shader.variants.map((variant) => ({ ...variant, composedWgsl: rewrite(variant.composedWgsl) })),
-    })),
-  };
-  if (changed === 0) throw new Error(`spot-shadow falsifier ${falsifier} did not match the manifest`);
-  return result;
-}
-
 const manifestPath = process.env.FORGEAX_DAWN_SHADER_MANIFEST;
 const sourceManifest = manifestPath === undefined
-  ? await buildEngineShaderManifest()
-  : (( await readShaderManifestPublication(
-      JSON.parse(readFileSync(manifestPath, 'utf8')),
-    )) as DawnEngineManifest);
-const ENGINE_MANIFEST = process.env.FORGEAX_DAWN_SPOT_SHADOW_FALSIFIER === undefined
-  ? sourceManifest
-  : applySpotShaderFalsifier(sourceManifest, process.env.FORGEAX_DAWN_SPOT_SHADOW_FALSIFIER);
+  ? await buildEngineShaderTemplateManifest()
+  : admitShaderTemplateManifest(JSON.parse(readFileSync(manifestPath, 'utf8'))).unwrap().wire;
+const falsifier = process.env.FORGEAX_DAWN_SPOT_SHADOW_FALSIFIER;
+const shaderControl = falsifier === undefined
+  ? undefined
+  : rewriteShaderTemplateSources(sourceManifest, (source) => mutateSpotShaderSource(source, falsifier));
+if (shaderControl?.patched === 0)
+  throw new Error(`spot-shadow falsifier ${falsifier} did not match the template source`);
+const ENGINE_MANIFEST = shaderControl?.manifest ?? sourceManifest;
 const ENGINE_MANIFEST_URL = URL.createObjectURL(
   new Blob([JSON.stringify(ENGINE_MANIFEST)], { type: 'application/json' }),
 );

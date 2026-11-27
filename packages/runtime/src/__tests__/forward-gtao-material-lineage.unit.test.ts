@@ -1,10 +1,17 @@
 import { readFileSync } from 'node:fs';
 import { attachRecorder, buildFrameModel } from '@forgeax/engine-rhi-debug';
 import { createShaderModule, rhi } from '@forgeax/engine-rhi-null';
-import type { ShaderRegistry } from '@forgeax/engine-shader';
+import {
+  createMaterialProgramArtifactReceipt,
+  findVariantByDefines,
+  ok,
+  publishShaderProgramTemplates,
+  type ShaderProgramTemplate,
+  ShaderRegistry,
+} from '@forgeax/engine-shader';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import ts from 'typescript';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import {
   recordedForwardGtaoFragmentEntryPoints,
   resolveForwardGtaoMaterialLineage,
@@ -15,7 +22,7 @@ const material: MaterialAsset = {
   passes: [{ name: 'forward', program: { module: 'forgeax_material::standard' } }],
 };
 
-it('keeps the Browser lineage callers aligned with the required capture arguments', () => {
+it('keeps the Browser lineage caller aligned with the required capture arguments', () => {
   const parse = (relativePath: string) =>
     ts.createSourceFile(
       relativePath,
@@ -32,27 +39,23 @@ it('keeps the Browser lineage callers aligned with the required capture argument
   const required = declaration.parameters.filter(
     (parameter) => parameter.questionToken === undefined && parameter.initializer === undefined,
   ).length;
-  for (const relativePath of [
-    './forward-gtao-webgpu.browser.test.ts',
-    './forward-gtao-surface-semantics.browser.test.ts',
-  ]) {
-    const source = parse(relativePath);
-    const calls: ts.CallExpression[] = [];
-    const visit = (node: ts.Node): void => {
-      if (
-        ts.isCallExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === declaration.name?.text
-      ) {
-        calls.push(node);
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(source);
-    expect(calls.length, relativePath).toBeGreaterThan(0);
-    for (const call of calls) {
-      expect(call.arguments.length, relativePath).toBeGreaterThanOrEqual(required);
+  const relativePath = './forward-gtao-surface-semantics.browser.test.ts';
+  const source = parse(relativePath);
+  const calls: ts.CallExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === declaration.name?.text
+    ) {
+      calls.push(node);
     }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  expect(calls.length, relativePath).toBeGreaterThan(0);
+  for (const call of calls) {
+    expect(call.arguments.length, relativePath).toBeGreaterThanOrEqual(required);
   }
 });
 
@@ -106,6 +109,113 @@ it('resolves the authored forward module to the uniquely captured admitted varia
     sourceDigest: 'captured-digest',
     compilerProfile: { profile: 'browser-webgpu' },
   });
+});
+
+it('matches the captured native recipe without composing unselected variants', async () => {
+  const profile = {
+    id: 'lineage-test',
+    language: 'wgsl',
+    profileVersion: '1',
+    adapterVersion: '1',
+    compilerVersion: '1',
+    nagaVersion: '1',
+  } as const;
+  const identifier = 'forgeax::default-standard-pbr';
+  const source = '@fragment fn fs_opaque() -> @location(0) vec4f { return vec4f(1); }';
+  const projectedSource = source.replace('vec4f(1)', 'vec4f(0)');
+  const entryPoints = [{ name: 'fs_opaque', stage: 'fragment' as const, bindings: [] }];
+  const library = publishShaderProgramTemplates(
+    new Map([
+      [
+        identifier,
+        {
+          schemaVersion: 'shader-program-template/1',
+          compilerProfile: profile,
+          source,
+          imports: {},
+          axes: ['AO'],
+        },
+      ],
+    ]),
+  ).unwrap();
+  const compose = vi.fn(
+    (_template: ShaderProgramTemplate, defines: Readonly<Record<string, boolean>>) => {
+      if (defines.AO !== true) throw new Error('unselected shader recipe compiled');
+      return ok({
+        manifestEntry: {
+          hash: 'capture',
+          wgsl: defines.FORWARD_SCREEN_SHADOW_RECEIVER ? projectedSource : source,
+          defines,
+          glsl: undefined,
+          bindings: '[]',
+          compilerProfile: profile,
+          entryPoints,
+          reflection: {
+            schemaVersion: 'shader-reflection/3' as const,
+            uvSetCount: 0,
+            boundGlobals: [],
+            entryPoints,
+          },
+        },
+        uvSetCount: 0,
+        receipt: createMaterialProgramArtifactReceipt({
+          schema: [],
+          directEntry: 'vs_main',
+          vertexInputs: [],
+        }),
+      });
+    },
+  );
+  const wire = {
+    schemaVersion: '7.0.0',
+    library,
+    entries: [],
+    materialShaders: [
+      {
+        identifier,
+        sourcePath: identifier,
+        paramSchema: '[]',
+        program: identifier,
+        selection: { AO: true },
+      },
+    ],
+  };
+  const registry = new ShaderRegistry({
+    manifestUrl: '/forward-lineage',
+    readText: async () => JSON.stringify(wire),
+    programCompiler: { profile, compile: compose },
+  });
+  (await registry.loadManifest()).unwrap();
+  registry.installMaterialManifestTemplate(identifier, '').unwrap();
+  const row = registry.materialShaderManifestEntry(identifier);
+  if (row === undefined) throw new Error('missing test material shader');
+  expect(findVariantByDefines(row, { AO: true })?.composedWgsl).toBe(source);
+
+  expect(
+    resolveForwardGtaoMaterialLineage(registry, material, source, ['fs_opaque']),
+  ).toMatchObject({
+    shaderIdentifier: identifier,
+    hash: 'capture',
+    variantSelection: { kind: 'single', definesKey: '', defines: { AO: true } },
+  });
+  expect(compose).toHaveBeenCalledTimes(1);
+  expect(() =>
+    resolveForwardGtaoMaterialLineage(registry, material, projectedSource, ['fs_opaque']),
+  ).toThrow('matches=0');
+  expect(compose).toHaveBeenCalledTimes(1);
+  registry.selectStandardSurfaceProgram(identifier, '', 0, true).unwrap();
+  expect(
+    resolveForwardGtaoMaterialLineage(registry, material, projectedSource, ['fs_opaque']),
+  ).toMatchObject({
+    shaderIdentifier: identifier,
+    hash: 'capture',
+    variantSelection: {
+      kind: 'single',
+      definesKey: expect.stringContaining(':forward-screen-shadow'),
+      defines: { AO: true, FORWARD_SCREEN_SHADOW_RECEIVER: true },
+    },
+  });
+  expect(compose).toHaveBeenCalledTimes(2);
 });
 
 it('rejects a source that is not in the authored module publication', () => {

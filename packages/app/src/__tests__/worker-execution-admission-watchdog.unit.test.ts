@@ -753,92 +753,105 @@ describe('Worker frame admission watchdog', () => {
     await app.dispose();
   });
 
-  it('waits for source publication capacity before issuing another simulation request', async () => {
+  it('continues simulation while both publication credits await actual GPU completion', async () => {
     const { app, callbacks, frame } = await createRunningApp('render-worker');
     const emit = listener();
-    emit({
-      ...completeMessage(frame),
-      kind: 'simulation-complete',
-    } as EngineToHostMessage);
-    callbacks.at(-1)?.(16);
-    const next = frames().at(-1);
-    if (next === undefined) throw new Error('Expected an admitted simulation frame');
-    emit({
-      ...completeMessage(next),
-      kind: 'simulation-complete',
-    } as EngineToHostMessage);
-    callbacks.at(-1)?.(32);
-    expect(frames()).toHaveLength(2); // Both publications are sealed; neither is submitted yet.
-    const requestedTicks = callbacks.length;
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(app.lastError).toBeUndefined();
-    expect(callbacks).toHaveLength(requestedTicks);
-    const pendingReason = {
-      code: 'draw-terrain-missing',
-      entity: 42,
-      section: 3,
-    } as const;
-    const picture = {
-      ...completeMessage(frame),
-      presentation: 'pending',
-      presentationPendingReason: pendingReason,
-    } as never;
-    emit({ kind: 'render-submitted', epoch: 1, frame: picture });
-    emit({ kind: 'render-complete', epoch: 0, frame: picture });
-    emit({ kind: 'render-ready', epoch: 1 }); // Duplicate readiness cannot reopen a full source.
-    expect(frames()).toHaveLength(2);
-    probes.now = 3040;
-    emit({ kind: 'render-complete', epoch: 1, frame: picture });
-    expect(frames()).toHaveLength(3);
-    const third = frames().at(-1);
-    if (third === undefined) throw new Error('Expected an admitted simulation frame');
-    expect(third).toMatchObject({ frameId: 3, deltaSeconds: 3.024, sampleTimeSeconds: 3.04 });
-    emit({
-      ...completeMessage(third),
-      kind: 'simulation-complete',
-    } as EngineToHostMessage);
-    callbacks.at(-1)?.(3056);
-    emit({ kind: 'render-complete', epoch: 1, frame: picture });
-    expect(frames()).toHaveLength(3); // A duplicate picture completion returns no second credit.
-    expect(probes.browserCompleted).toHaveBeenCalledTimes(1);
-    expect(probes.browserCompleted).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
+    const complete = (source: typeof frame): void =>
+      emit({ ...completeMessage(source), kind: 'simulation-complete' } as EngineToHostMessage);
+    try {
+      complete(frame);
+      callbacks.at(-1)?.(16);
+      const second = frames().at(-1);
+      if (second === undefined) throw new Error('Expected the second sealed publication');
+      expect(second.render).not.toBe(false);
+      complete(second);
+      callbacks.at(-1)?.(32);
+      const third = frames().at(-1);
+      if (third === undefined) throw new Error('Expected simulation under render pressure');
+      expect(third).toMatchObject({
+        frameId: 3,
+        render: false,
+        deltaSeconds: 0.016,
+        sampleTimeSeconds: 0.032,
+      });
+      complete(third);
+      const requestedTicks = callbacks.length;
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(app.lastError).toBeUndefined();
+      expect(callbacks).toHaveLength(requestedTicks);
+      const pendingReason = { code: 'draw-terrain-missing', entity: 42, section: 3 } as const;
+      const picture = {
+        ...completeMessage(frame),
         presentation: 'pending',
         presentationPendingReason: pendingReason,
-      }),
-    );
-    await app.dispose();
+      } as never;
+      emit({ kind: 'render-submitted', epoch: 1, frame: picture });
+      emit({ kind: 'render-complete', epoch: 0, frame: picture });
+      emit({ kind: 'render-ready', epoch: 1 });
+      expect(frames()).toHaveLength(3);
+      expect(probes.browserCompleted).not.toHaveBeenCalled();
+      emit({ kind: 'render-complete', epoch: 1, frame: picture });
+      callbacks.at(-1)?.(3040);
+      const fourth = frames().at(-1);
+      if (fourth === undefined) throw new Error('Expected the next true picture');
+      expect(fourth).toMatchObject({
+        frameId: 4,
+        deltaSeconds: 3.008,
+        sampleTimeSeconds: 3.04,
+        temporalReset: true,
+      });
+      expect(fourth.render).not.toBe(false);
+      complete(fourth);
+      emit({ kind: 'render-complete', epoch: 1, frame: picture });
+      callbacks.at(-1)?.(3056);
+      expect(frames().at(-1)).toMatchObject({ frameId: 5, render: false });
+      expect(probes.browserCompleted).toHaveBeenCalledTimes(1);
+      expect(probes.browserCompleted).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          presentation: 'pending',
+          presentationPendingReason: pendingReason,
+        }),
+      );
+    } finally {
+      await app.dispose();
+    }
   });
 
   it.each([
     [3, 3],
     [4, 4],
     ['default', 3],
-  ] as const)('admits %s (%i) sealed publications while keeping one simulation credit and real completion retirement', async (option, capacity) => {
+  ] as const)('bounds actual pictures at %s (%i) through successive simulation-only ticks', async (option, capacity) => {
     const { app, callbacks, frame } = await createRunningApp('render-worker', option);
     const emit = listener();
+    const complete = (source: typeof frame): void =>
+      emit({ ...completeMessage(source), kind: 'simulation-complete' } as EngineToHostMessage);
     try {
       for (let id = 1; id <= capacity; id++) {
         const current = frames().at(-1);
         if (current === undefined) throw new Error('Missing simulation');
         expect(current.frameId).toBe(id);
-        callbacks.at(-1)?.(id * 16 - 1);
-        expect(frames()).toHaveLength(id); // Still only one World update in flight.
-        emit({ ...completeMessage(current), kind: 'simulation-complete' } as EngineToHostMessage);
-        if (id < capacity) expect(frames()).toHaveLength(id + 1);
+        expect(current.render).not.toBe(false);
+        const tick = callbacks.at(-1);
+        tick?.(id * 16 - 1);
+        expect(frames()).toHaveLength(id);
+        complete(current);
+        expect(frames()).toHaveLength(id + 1);
+        tick?.(id * 16 - 1);
+        expect(frames()).toHaveLength(id + 1);
       }
-      expect(frames()).toHaveLength(capacity);
-      const beforeLateCallback = app.execution.report().frame;
-      callbacks.at(-1)?.(64);
-      expect(frames()).toHaveLength(capacity);
-      // The last display demand already fired and is coalesced until credit
-      // returns. Its late callback cannot count a second throttled tick.
-      expect(app.execution.report().frame).toEqual(beforeLateCallback);
-      // Diagnostics retain the real pipeline depth and admitted waiting ticks.
+      const last = capacity + 12;
+      for (let id = capacity + 1; id <= last; id++) {
+        const update = frames().at(-1);
+        if (update === undefined) throw new Error('Missing simulation-only frame');
+        expect(update).toMatchObject({ frameId: id, render: false });
+        complete(update);
+        if (id < last) callbacks.at(-1)?.(id * 16);
+      }
       expect(app.execution.report().frame).toEqual({
-        submitted: capacity,
-        completed: capacity,
+        submitted: last,
+        completed: last,
         inFlight: 0,
         highWater: capacity,
         throttledTicks: capacity,
@@ -846,46 +859,53 @@ describe('Worker frame admission watchdog', () => {
       const picture = completeMessage(frame) as never;
       emit({ kind: 'render-submitted', epoch: 1, frame: picture });
       emit({ kind: 'render-complete', epoch: 0, frame: picture });
-      expect(frames()).toHaveLength(capacity); // No source credit for submit or stale epoch.
-      probes.now = 65;
+      expect(probes.browserCompleted).not.toHaveBeenCalled();
+      expect(frames()).toHaveLength(last);
       emit({ kind: 'render-complete', epoch: 1, frame: picture });
-      expect(frames()).toHaveLength(capacity + 1);
-      expect(frames().at(-1)?.frameId).toBe(capacity + 1);
+      callbacks.at(-1)?.(last * 16);
+      expect(frames()).toHaveLength(last + 1);
+      expect(frames().at(-1)).toMatchObject({ frameId: last + 1, temporalReset: true });
+      expect(frames().at(-1)?.render).not.toBe(false);
       emit({ kind: 'render-complete', epoch: 1, frame: picture });
-      expect(frames()).toHaveLength(capacity + 1);
+      expect(probes.browserCompleted).toHaveBeenCalledTimes(1);
+      expect(frames()).toHaveLength(last + 1);
     } finally {
       await app.dispose();
     }
   });
 
-  it('retains a resume reset while publication capacity is full', async () => {
+  it('retains a resume reset until the first picture after a simulation-only tick', async () => {
     const { app, callbacks, frame } = await createRunningApp('render-worker');
     const emit = listener();
-    emit({
-      ...completeMessage(frame),
-      kind: 'simulation-complete',
-    } as EngineToHostMessage);
-    callbacks.at(-1)?.(16);
-    const second = frames().at(-1);
-    if (second === undefined) throw new Error('Expected the second sealed publication');
-    emit({ ...completeMessage(second), kind: 'simulation-complete' } as EngineToHostMessage);
-    app.pause().unwrap();
-    app.resume().unwrap();
-    callbacks.at(-1)?.(32);
-    expect(frames()).toHaveLength(2);
-    emit({ kind: 'render-complete', epoch: 1, frame: completeMessage(frame) as never });
-    const resumed = frames().at(-1);
-    if (resumed === undefined) throw new Error('Expected an admitted simulation frame');
-    expect(resumed).toMatchObject({ frameId: 3, deltaSeconds: 0, temporalReset: true });
-    emit({
-      ...completeMessage(resumed),
-      kind: 'simulation-complete',
-    } as EngineToHostMessage);
-    emit({ kind: 'render-complete', epoch: 1, frame: completeMessage(second) as never });
-    callbacks.at(-1)?.(48);
-    expect(frames()).toHaveLength(4);
-    expect(frames().at(-1)?.temporalReset).not.toBe(true);
-    await app.dispose();
+    const complete = (source: typeof frame): void =>
+      emit({ ...completeMessage(source), kind: 'simulation-complete' } as EngineToHostMessage);
+    try {
+      complete(frame);
+      callbacks.at(-1)?.(16);
+      const second = frames().at(-1);
+      if (second === undefined) throw new Error('Expected the second sealed publication');
+      complete(second);
+      app.pause().unwrap();
+      app.resume().unwrap();
+      callbacks.at(-1)?.(32);
+      const update = frames().at(-1);
+      if (update === undefined) throw new Error('Expected simulation on resume');
+      expect(update).toMatchObject({ frameId: 3, render: false, deltaSeconds: 0 });
+      complete(update);
+      emit({ kind: 'render-complete', epoch: 1, frame: completeMessage(frame) as never });
+      callbacks.at(-1)?.(48);
+      const resumed = frames().at(-1);
+      if (resumed === undefined) throw new Error('Expected the next picture after resume');
+      expect(resumed).toMatchObject({ frameId: 4, deltaSeconds: 0.016, temporalReset: true });
+      expect(resumed.render).not.toBe(false);
+      complete(resumed);
+      emit({ kind: 'render-complete', epoch: 1, frame: completeMessage(second) as never });
+      callbacks.at(-1)?.(64);
+      expect(frames()).toHaveLength(5);
+      expect(frames().at(-1)?.temporalReset).not.toBe(true);
+    } finally {
+      await app.dispose();
+    }
   });
 
   it('does not regress completed frame 4 when old frame 1 arrives or block frame 5', async () => {
@@ -977,10 +997,11 @@ describe('Worker frame admission watchdog', () => {
     emit({ ...completeMessage(successor), kind: 'simulation-complete' } as EngineToHostMessage);
     callbacks.at(-1)?.(3072);
     emit({ kind: 'render-ready', epoch: 2 });
-    expect(frames()).toHaveLength(capacity + 1);
+    expect(frames()).toHaveLength(4);
+    expect(frames().at(-1)?.render === false).toBe(capacity === 2);
     await app.dispose();
     emit({ kind: 'render-complete', epoch: 2, frame: completeMessage(resumed) as never });
-    expect(frames()).toHaveLength(capacity + 1);
+    expect(frames()).toHaveLength(4);
   });
 
   it('projects the actual Render Worker backend and storage-buffer limit into the report', async () => {
@@ -1066,11 +1087,18 @@ describe('Worker frame admission watchdog', () => {
       const picture = completeMessage(frame) as never;
       emit({ kind: 'render-complete', epoch: 1, frame: picture });
       emit({ kind: 'render-ready', epoch: 2 });
-      expect(frames()).toHaveLength(2);
+      expect(frames()).toHaveLength(3);
+      const update = frames().at(-1);
+      if (update === undefined) throw new Error('Missing replacement simulation-only tick');
+      expect(update).toMatchObject({ frameId: 3, render: false });
+      expect(app.execution.report().render?.completedFrame).toBe(0);
       emit({ kind: 'render-complete', epoch: 2, frame: picture });
       expect(frames()).toHaveLength(3);
-      expect(frames().at(-1)?.frameId).toBe(3);
       expect(app.execution.report().render?.completedFrame).toBe(1);
+      emit({ ...completeMessage(update), kind: 'simulation-complete' } as EngineToHostMessage);
+      callbacks.at(-1)?.(3082);
+      expect(frames()).toHaveLength(4);
+      expect(frames().at(-1)?.render).not.toBe(false);
       expect(app.lastError).toBeUndefined();
     } finally {
       await app.dispose();
@@ -1088,9 +1116,17 @@ describe('Worker frame admission watchdog', () => {
         code: 'system-failed',
         expected: 'World update succeeds',
         hint: 'rebuild the poisoned World',
-        detail: {},
+        systemName: 'Update/voxel-wall/input-and-feedback',
+        detail: { code: 'fixture-replace-failed', message: 'replace the wall mesh' },
         partialWrite: true,
         retryable: false,
+      });
+      expect(app.lastError).toMatchObject({
+        code: 'app-system-update-failed',
+        detail: {
+          systemName: 'Update/voxel-wall/input-and-feedback',
+          cause: { code: 'fixture-replace-failed', message: 'replace the wall mesh' },
+        },
       });
       const rebuilding = app.execution.rebuild();
       emit({ kind: 'render-ready', epoch: 1 });
@@ -1194,13 +1230,13 @@ describe('Worker frame admission watchdog', () => {
       callbacks.at(-1)?.(31);
       expect(events.at(-1)).toMatchObject({
         event: 'host-admission',
-        outcome: 'render-credit',
-        frameId: null,
+        outcome: 'simulation-only',
+        frameId: 3,
         deviceGeneration: null,
-        frameDue: true,
+        frameDue: false,
         capacity: 2,
         renderCompletedFrame: 0,
-        ledger: { submitted: 2, completed: 2, inFlight: 0 },
+        ledger: { submitted: 3, completed: 2, inFlight: 1 },
       });
       const picture = { ...completeMessage(frame), deviceGeneration: 9 } as never;
       emit({ kind: 'render-complete', epoch: 0, frame: picture });
@@ -1211,22 +1247,24 @@ describe('Worker frame admission watchdog', () => {
         messageRenderEpoch: 0,
         renderEpoch: 1,
       });
-      expect(frames()).toHaveLength(2);
+      expect(frames()).toHaveLength(3);
       emit({ kind: 'render-complete', epoch: 1, frame: picture });
       expect(frames()).toHaveLength(3);
-      expect(events.at(-2)).toMatchObject({
+      expect(events.at(-1)).toMatchObject({
         event: 'host-ack-accepted',
         frameId: 1,
         deviceGeneration: 9,
         renderCompletedFrame: 1,
       });
+      emit({ ...simulation, frameId: 3 });
+      callbacks.at(-1)?.(48);
       expect(events.at(-1)).toMatchObject({
         event: 'host-admission',
         outcome: 'issued',
-        frameId: 3,
+        frameId: 4,
         deviceGeneration: null,
         frameDue: false,
-        ledger: { submitted: 3, completed: 2, inFlight: 1 },
+        ledger: { submitted: 4, completed: 3, inFlight: 1 },
       });
       expect(blocked).toMatchObject({ ledger: { submitted: 1, completed: 0, inFlight: 1 } });
       const accepted = events.filter((event) => event.event === 'host-ack-accepted').length;

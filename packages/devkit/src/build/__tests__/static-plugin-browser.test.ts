@@ -336,9 +336,15 @@ it.each([
         );
         const archive = JSON.parse(
           await readFile(resolve(root, 'dist', defined(archivePath)), 'utf8'),
-        ) as { programs?: Record<string, PackProgram>; error?: string };
+        ) as {
+          graph: Pick<PackProgram, 'modules' | 'imports'>;
+          programs?: Record<string, Pick<PackProgram, 'entry' | 'export' | 'digest'>>;
+          error?: string;
+        };
         expect(archive.error).toBeUndefined();
-        const programs = Object.values(defined(archive.programs));
+        const selections = Object.values(defined(archive.programs));
+        expect(selections.every((entry) => !('modules' in entry))).toBe(true);
+        const programs = selections.map((entry) => ({ ...archive.graph, ...entry }));
         expect(programs).toHaveLength(3);
         for (const program of programs) {
           expect(verifyPackProgram(program).ok).toBe(true);
@@ -408,7 +414,14 @@ it.each([
           ).href,
         );
         const archive = await archiveResponse.json();
-        const artifact = Object.values(archive.programs)[0] as PackProgram;
+        const selections = archive.programs as Record<
+          string,
+          Pick<PackProgram, 'entry' | 'export' | 'digest'>
+        >;
+        const artifact = {
+          ...archive.graph,
+          ...defined(Object.values(selections)[0]),
+        } as PackProgram;
         const route = '**/*.programs.json';
         await page.route(route, (route) => route.fulfill({ status: 404, body: 'unavailable' }));
         const missing = await page.evaluate(

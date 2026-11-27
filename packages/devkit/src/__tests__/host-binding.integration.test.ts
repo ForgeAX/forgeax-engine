@@ -665,6 +665,8 @@ it('uses the executing source Host Engine with an SDK-local presentation package
       createViteConfig(facts.value, 'serve', '/', { host: { backend } }),
     ).rejects.toMatchObject({
       code: 'host-assembly-invalid',
+      expected: 'the project and View Host to use the same Engine build',
+      hint: expect.stringContaining("project's own Engine installation"),
       detail: { reason: expect.stringContaining('frontend Engine source conflict') },
     });
   } finally {

@@ -1,23 +1,18 @@
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
-import { type CatalogDelta, type CatalogEntry, ok } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
+import { type CatalogEntry, ok } from '@forgeax/engine-types';
+import { expect, it, onTestFinished, vi } from 'vitest';
+import { testGate } from '../../../../scripts/test/test-gate.mjs';
 import { defineAssetKind } from '../asset-kind.js';
 import { AssetRegistry } from '../asset-registry.js';
-import { type CatalogListener, createCatalogSource } from '../catalog-source.js';
+import { createCatalogSource } from '../catalog-source.js';
 import { CatalogReplica } from '../registry/catalog-state.js';
+import { catalogChannel } from './fixtures/catalog-pack';
 
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
 const C = '33333333-3333-4333-8333-333333333333';
 const scope = { scopeId: 'test', generation: 1 };
 const kind = defineAssetKind<{ value: string }, 'test-demand'>('test-demand');
-function gate<T>() {
-  let resolve: (value: T) => void = () => {};
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
 function publication(guid: string, generation = 1, refs: string[] = [], plugin = false) {
   const packageUrl = `https://demand.invalid/${guid}.pack.json`;
   const value = createRuntimePackPublication({
@@ -52,20 +47,6 @@ function declaration(row: CatalogEntry): CatalogEntry {
   const { publication: _, ...navigation } = row;
   return { ...navigation, lifecycle: 'missing' };
 }
-function subscribe() {
-  let listener: CatalogListener = () => {};
-  return {
-    subscribe(next: CatalogListener) {
-      listener = next;
-      return () => {
-        listener = () => {};
-      };
-    },
-    emit(delta: CatalogDelta) {
-      listener(delta);
-    },
-  };
-}
 
 it('keeps native plugin references deferred until that asset is requested', async () => {
   const root = publication(A, 1, [B], true);
@@ -79,13 +60,10 @@ it('keeps native plugin references deferred until that asset is requested', asyn
     }),
     fetcher: async () => Response.json(root.pack),
   });
-  try {
-    expect(await registry.readPluginDefinition(A)).toMatchObject({ ok: true });
-    expect(fetchPack).not.toHaveBeenCalled();
-    expect(registry.inspectSource()?.ready).toEqual([A]);
-  } finally {
-    registry.dispose();
-  }
+  onTestFinished(() => registry.dispose());
+  expect(await registry.readPluginDefinition(A)).toMatchObject({ ok: true });
+  expect(fetchPack).not.toHaveBeenCalled();
+  expect(registry.inspectSource()?.ready).toEqual([A]);
 });
 
 it('materializes the requested eager closure while leaving an unrelated declaration untouched', async () => {
@@ -107,16 +85,13 @@ it('materializes the requested eager closure while leaving an unrelated declarat
       return ok(envelope.payload as { value: string });
     },
   });
-  try {
-    expect(registry.read((await registry.load(A, kind)).unwrap()).unwrap()).toMatchObject({
-      value: A,
-    });
-    expect(fetchPack).toHaveBeenCalledTimes(1);
-    expect(fetchPack.mock.calls[0]?.[0]).toBe(B);
-    expect(registry.inspectSource()?.ready).toEqual([A, B]);
-  } finally {
-    registry.dispose();
-  }
+  onTestFinished(() => registry.dispose());
+  expect(registry.read((await registry.load(A, kind)).unwrap()).unwrap()).toMatchObject({
+    value: A,
+  });
+  expect(fetchPack).toHaveBeenCalledTimes(1);
+  expect(fetchPack.mock.calls[0]?.[0]).toBe(B);
+  expect(registry.inspectSource()?.ready).toEqual([A, B]);
 });
 
 it('rejects a declared kind mismatch before requesting its unpublished package', async () => {
@@ -129,25 +104,22 @@ it('rejects a declared kind mismatch before requesting its unpublished package',
       importTransport: { fetchPack },
     }),
   });
-  try {
-    expect(await registry.load(A, 'mesh')).toMatchObject({
-      ok: false,
-      error: {
-        code: 'asset-kind-mismatch',
-        detail: { guid: A, expectedKind: 'mesh', actualKind: kind.kind },
-      },
-    });
-    expect(fetchPack).not.toHaveBeenCalled();
-  } finally {
-    registry.dispose();
-  }
+  onTestFinished(() => registry.dispose());
+  expect(await registry.load(A, 'mesh')).toMatchObject({
+    ok: false,
+    error: {
+      code: 'asset-kind-mismatch',
+      detail: { guid: A, expectedKind: 'mesh', actualKind: kind.kind },
+    },
+  });
+  expect(fetchPack).not.toHaveBeenCalled();
 });
 
 it('keeps independent concurrent demand publications from superseding an unrelated package read', async () => {
   const first = publication(A);
   const second = publication(B);
-  const entered = gate<void>();
-  const held = gate<Response>();
+  const entered = testGate<void>();
+  const held = testGate<Response>();
   const fetchPack = vi.fn(async (guid: string) => ({
     ok: true as const,
     entries: [guid === A ? first.row : second.row],
@@ -205,23 +177,20 @@ it.each([
       importTransport: { fetchPack },
     }),
   });
-  try {
-    expect(await registry.load(A, kind)).toMatchObject({
-      ok: false,
-      error: { code: 'asset-package-invalid', detail: { reason: 'publication generation' } },
-    });
-    expect(fetchPack).not.toHaveBeenCalled();
-  } finally {
-    registry.dispose();
-  }
+  onTestFinished(() => registry.dispose());
+  expect(await registry.load(A, kind)).toMatchObject({
+    ok: false,
+    error: { code: 'asset-package-invalid', detail: { reason: 'publication generation' } },
+  });
+  expect(fetchPack).not.toHaveBeenCalled();
 });
 
 it('rejects late sibling publications after a newer sibling HMR update', async () => {
   const first = publication(A);
   const sibling = publication(B);
   const newerSibling = publication(B, 2);
-  const channel = subscribe();
-  const held = gate<readonly CatalogEntry[]>();
+  const channel = catalogChannel();
+  const held = testGate<readonly CatalogEntry[]>();
   const session = new CatalogReplica(
     {
       enumerate: async () => ok([declaration(first.row), declaration(sibling.row)]),
@@ -230,55 +199,28 @@ it('rejects late sibling publications after a newer sibling HMR update', async (
     },
     scope,
   );
-  try {
-    expect((await session.start()).ok).toBe(true);
-    const pending = session.require(A);
-    channel.emit({ added: [], changed: [newerSibling.row], removed: [], ...scope });
-    held.resolve([first.row, sibling.row]);
-    expect(await pending).toMatchObject({
-      ok: false,
-      error: { code: 'asset-superseded', detail: { guid: B } },
-    });
-    expect(session.get(B)?.publication?.generation).toBe(2);
-    expect(session.get(A)?.publication).toBeUndefined();
-  } finally {
-    session.dispose();
-  }
+  onTestFinished(() => session.dispose());
+  expect((await session.start()).ok).toBe(true);
+  const pending = session.require(A);
+  channel.emit({ added: [], changed: [newerSibling.row], removed: [], ...scope });
+  held.resolve([first.row, sibling.row]);
+  expect(await pending).toMatchObject({
+    ok: false,
+    error: { code: 'asset-superseded', detail: { guid: B } },
+  });
+  expect(session.get(B)?.publication?.generation).toBe(2);
+  expect(session.get(A)?.publication).toBeUndefined();
 });
 
-it('fences replacement scope and disposal while a producer response remains pending', async () => {
-  for (const retire of ['scope', 'dispose'] as const) {
-    const published = publication(A);
-    const channel = subscribe();
-    const held = gate<readonly CatalogEntry[]>();
-    const session = new CatalogReplica(
-      {
-        enumerate: async () => ok([declaration(published.row)]),
-        subscribe: channel.subscribe,
-        get: async () => ok(await held.promise),
-      },
-      scope,
-    );
-    await session.start();
-    const pending = session.require(A);
-    if (retire === 'dispose') session.dispose();
-    else channel.emit({ added: [], changed: [], removed: [], ...scope, generation: 2 });
-    if (retire === 'scope') held.resolve([published.row]);
-    expect(await pending).toMatchObject({
-      ok: false,
-      error: { code: retire === 'dispose' ? 'asset-runtime-disposed' : 'catalog-discontinuous' },
-    });
-    held.resolve([published.row]);
-    expect(session.get(A)?.publication).toBeUndefined();
-    session.dispose();
-  }
-});
-
-it('rejects a late read after removal and identical navigation re-addition', async () => {
+it.each([
+  ['scope replacement', 'catalog-discontinuous'],
+  ['disposal', 'asset-runtime-disposed'],
+  ['removal and identical re-addition', 'asset-superseded'],
+] as const)('fences an in-flight read after %s', async (retire, code) => {
   const published = publication(A);
   const row = declaration(published.row);
-  const channel = subscribe();
-  const held = gate<readonly CatalogEntry[]>();
+  const channel = catalogChannel();
+  const held = testGate<readonly CatalogEntry[]>();
   const session = new CatalogReplica(
     {
       enumerate: async () => ok([row]),
@@ -287,14 +229,24 @@ it('rejects a late read after removal and identical navigation re-addition', asy
     },
     scope,
   );
-  await session.start();
-  const pending = session.require(A);
-  channel.emit({ added: [], changed: [], removed: [A], ...scope });
-  channel.emit({ added: [row], changed: [], removed: [], ...scope });
-  held.resolve([published.row]);
-  expect(await pending).toMatchObject({ ok: false, error: { code: 'asset-superseded' } });
-  expect(session.get(A)?.publication).toBeUndefined();
-  session.dispose();
+  try {
+    (await session.start()).unwrap();
+    const pending = session.require(A);
+    if (retire === 'disposal') {
+      session.dispose();
+    } else if (retire === 'scope replacement') {
+      channel.emit({ added: [], changed: [], removed: [], ...scope, generation: 2 });
+    } else {
+      channel.emit({ added: [], changed: [], removed: [A], ...scope });
+      channel.emit({ added: [row], changed: [], removed: [], ...scope });
+    }
+    if (retire !== 'disposal') held.resolve([published.row]);
+    expect(await pending).toMatchObject({ ok: false, error: { code } });
+    expect(session.get(A)?.publication).toBeUndefined();
+  } finally {
+    held.resolve([published.row]);
+    session.dispose();
+  }
 });
 
 it('returns a structured Result when a custom source get rejects', async () => {

@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   restrictShadowCasterClasses,
-  SHADOW_CASTER_PROMOTE_WINDOW,
-  SHADOW_CASTER_SETTLE_FRAMES,
-  SHADOW_CASTER_SETTLE_MAX,
   ShadowCasterClassifier,
   ShadowSlotSelection,
 } from '../gpu-driven/shadow-caster-classes';
@@ -44,35 +41,55 @@ function classify(
 }
 
 const rigid = (slot: number) => ({ slot, snapshot: {} });
+const stationary = (slot: number) => ({ slot, snapshot: { mobility: 'static' as const } });
 
-/** Runs quiet frames so a later change is not a periodic mover's. */
-function rest(
-  classifier: ShadowCasterClassifier,
-  slots: readonly { slot: number; snapshot: object }[],
-  scene: ReturnType<typeof fakeScene>['scene'],
-): void {
-  for (let frame = 0; frame < SHADOW_CASTER_SETTLE_FRAMES; frame += 1)
-    classify(classifier, slots, scene);
-}
+it('keeps a preparation current after its exact prepared caster layout is accepted', () => {
+  const classifier = new ShadowCasterClassifier();
+  const scene = fakeScene();
+  const previous = [rigid(0)];
+  classify(classifier, previous, scene.scene);
+  const fixed = (slot: number) => ({ slot, snapshot: { mobility: 'static' as const } });
+  const slots = [...previous, fixed(1)];
+  scene.change([1]);
+  const expected = classifier.preview({ slots, slotAt: (slot) => slots[slot] }, scene.scene);
+  const current = classifier.preparationCurrent(expected);
+  expect(current()).toBe(true);
+  expect(classify(classifier, slots, scene.scene).staticSlots.has(1)).toBe(true);
+  expect(current()).toBe(true);
 
-/** Updates until the given slots are static; returns the frames it took. */
-function framesUntilStatic(
-  classifier: ShadowCasterClassifier,
-  slots: readonly { slot: number; snapshot: object }[],
-  scene: ReturnType<typeof fakeScene>['scene'],
-  slot: number,
-  limit = 4 * SHADOW_CASTER_SETTLE_MAX,
-): number {
-  for (let frame = 1; frame <= limit; frame += 1) {
-    if (classify(classifier, slots, scene).staticSlots.has(slot)) return frame;
+  scene.change([1, 2]);
+  classify(classifier, [...previous, fixed(2)], scene.scene);
+  expect(current()).toBe(false);
+});
+
+it('previews the next real classification without modifying the accepted caster classes', () => {
+  const classifier = new ShadowCasterClassifier(),
+    scene = fakeScene();
+  let slots = [rigid(0)];
+  const input = () => ({ slots, slotAt: (slot: number) => slots.find((row) => row.slot === slot) });
+  for (let frame = 0; frame < 132; frame++) {
+    if (frame === 2) {
+      slots = [...slots, rigid(1)];
+      scene.change([1]);
+    }
+    if (frame === 5) scene.change([0]);
+    const before = classifier.inspect();
+    const projected = classifier.preview(input(), scene.scene);
+    expect(classifier.inspect()).toEqual(before);
+    const second = classifier.preview(input(), scene.scene);
+    const actual = classifier.update(input(), scene.scene);
+    for (const slot of [0, 1]) {
+      expect(projected.staticSlots.has(slot)).toBe(actual.staticSlots.has(slot));
+      expect(second.dynamicSlots.has(slot)).toBe(actual.dynamicSlots.has(slot));
+    }
+    scene.quiet();
   }
-  return Number.POSITIVE_INFINITY;
-}
+});
 
 describe('ShadowCasterClassifier', () => {
   it('updates one known caster without enumerating clean class membership', () => {
     const fake = fakeScene();
-    const slots = Array.from({ length: 1000 }, (_, slot) => rigid(slot));
+    const slots = Array.from({ length: 1000 }, (_, slot) => stationary(slot));
     const classifier = new ShadowCasterClassifier();
     const source = { slots, slotAt: (slot: number) => slots[slot] };
     const before = classifier.update(source, fake.scene);
@@ -95,127 +112,70 @@ describe('ShadowCasterClassifier', () => {
     expect([...before.staticSlots]).toContain(500);
   });
 
-  it('starts the first population static and promotes later casters after one window', () => {
-    const fake = fakeScene();
-    const slots = [
-      rigid(0),
-      rigid(1),
-      { slot: 2, snapshot: { skinBinding: { skeleton: 1, joints: [2] } } },
-    ];
-    const classifier = new ShadowCasterClassifier();
-    const first = classify(classifier, slots, fake.scene);
-    expect([...first.staticSlots]).toEqual([0, 1]);
-    expect([...first.dynamicSlots]).toEqual([2]);
-    expect(classifier.inspect().pendingPromotions).toBe(0);
-    // A caster created after the first update waits one window.
-    const later = [...slots, rigid(3)];
-    fake.change([3]);
-    let frame = 1;
-    let promotedAt = 0;
-    for (; frame < 4 * SHADOW_CASTER_SETTLE_FRAMES; ) {
-      frame += 1;
-      const classes = classify(classifier, later, fake.scene);
-      fake.quiet();
-      if (classes.staticSlots.has(3)) {
-        promotedAt = frame;
-        expect([...classes.staticSlots]).toEqual([0, 1, 3]);
-        expect(classifier.inspect().flips).toBe(1);
-        break;
-      }
-      expect([...classes.staticSlots]).toEqual([0, 1]);
-    }
-    expect(promotedAt % SHADOW_CASTER_PROMOTE_WINDOW).toBe(0);
-    expect(promotedAt - 2).toBeGreaterThanOrEqual(SHADOW_CASTER_PROMOTE_WINDOW);
-    expect(promotedAt - 2).toBeLessThan(2 * SHADOW_CASTER_PROMOTE_WINDOW);
-    const settled = classify(classifier, later, fake.scene);
-    expect(classifier.inspect()).toMatchObject({ flips: 0, pendingPromotions: 0 });
-    expect(classify(classifier, later, fake.scene)).toBe(settled);
-  });
-
-  it('keeps created casters dynamic so spawns never touch the static layer', () => {
+  it('keeps undeclared and periodically moving casters dynamic throughout 6400 frames', () => {
     const fake = fakeScene();
     const classifier = new ShadowCasterClassifier();
-    const slots = [rigid(0)];
-    expect(framesUntilStatic(classifier, slots, fake.scene, 0)).toBeLessThan(Infinity);
-    const settled = classify(classifier, slots, fake.scene);
-    // A spawn storm: a fresh caster every frame, each despawned the next frame.
-    for (let spawn = 1; spawn <= 3 * SHADOW_CASTER_SETTLE_FRAMES; spawn += 1) {
-      const slot = 1000 + spawn;
-      fake.change([slot, slot - 1]);
-      const classes = classify(classifier, [rigid(0), rigid(slot)], fake.scene);
-      expect(classes.staticSlots).toBe(settled.staticSlots);
-      expect(classifier.inspect().flips).toBe(0);
-    }
-  });
-
-  it('moves a changed caster to the dynamic layer at once and back after settling', () => {
-    const fake = fakeScene();
-    const classifier = new ShadowCasterClassifier();
-    const slots = [rigid(0), rigid(1)];
-    framesUntilStatic(classifier, slots, fake.scene, 1);
-    rest(classifier, slots, fake.scene);
-    fake.change([1]);
-    const moved = classify(classifier, slots, fake.scene);
-    expect([...moved.staticSlots]).toEqual([0]);
-    expect(moved.dynamicSlots.has(1)).toBe(true);
-    expect(classifier.inspect().flips).toBe(1);
-    fake.quiet();
-    const frames = framesUntilStatic(classifier, slots, fake.scene, 1);
-    expect(frames).toBeGreaterThanOrEqual(SHADOW_CASTER_SETTLE_FRAMES - 1);
-    expect(frames).toBeLessThan(SHADOW_CASTER_SETTLE_FRAMES + SHADOW_CASTER_PROMOTE_WINDOW);
-  });
-
-  it('treats every caster as changed when the change history cannot prove otherwise', () => {
-    const fake = fakeScene();
-    const classifier = new ShadowCasterClassifier();
-    const slots = [
-      rigid(0),
-      rigid(1),
-      { slot: 2, snapshot: { skinBinding: { skeleton: 1, joints: [2] } } },
-    ];
-    framesUntilStatic(classifier, slots, fake.scene, 1);
-    rest(classifier, slots, fake.scene);
-    // A history gap or resync: a moved caster must never stay in the static layer.
-    fake.change(undefined);
-    const unproven = classify(classifier, slots, fake.scene);
-    expect([...unproven.staticSlots]).toEqual([]);
-    expect([...unproven.dynamicSlots]).toEqual([0, 1, 2]);
-    fake.quiet();
-    expect(framesUntilStatic(classifier, slots, fake.scene, 0)).toBeLessThan(
-      SHADOW_CASTER_SETTLE_FRAMES + SHADOW_CASTER_PROMOTE_WINDOW,
-    );
-  });
-
-  it('backs off a periodic mover and recovers once it stays still', () => {
-    const fake = fakeScene();
-    const classifier = new ShadowCasterClassifier();
-    const slots = [rigid(0)];
-    framesUntilStatic(classifier, slots, fake.scene, 0);
-    // Moving 150 frames apart: every move lands within one threshold of the
-    // previous promotion, so the threshold doubles past the period.
-    let flips = 0;
-    for (let frame = 1; frame <= 150 * 20; frame += 1) {
-      if (frame % 150 === 0) fake.change([0]);
+    const rows = [stationary(0), rigid(1), stationary(2)];
+    for (let frame = 0; frame < 6400; frame++) {
+      if (frame % 100 === 1) fake.change([2]);
       else fake.quiet();
-      classify(classifier, slots, fake.scene);
-      flips += classifier.inspect().flips;
+      const classes = classify(classifier, rows, fake.scene);
+      expect(classes.dynamicSlots.has(1)).toBe(true);
+      expect(classes.staticSlots.has(2)).toBe(frame === 0);
+      expect(classes.staticSlots.has(0)).toBe(true);
     }
-    // Without backoff a 150-frame mover flips twice per period (40 times here).
-    expect(flips).toBeLessThanOrEqual(4);
-    fake.quiet();
-    const recovery = framesUntilStatic(classifier, slots, fake.scene, 0);
-    expect(recovery).toBeGreaterThan(SHADOW_CASTER_SETTLE_FRAMES + SHADOW_CASTER_PROMOTE_WINDOW);
-    expect(recovery).toBeLessThanOrEqual(SHADOW_CASTER_SETTLE_MAX + SHADOW_CASTER_PROMOTE_WINDOW);
-    // Staying static halves the threshold back to the base.
-    for (let frame = 0; frame < 2 * SHADOW_CASTER_SETTLE_MAX; frame += 1) {
-      classify(classifier, slots, fake.scene);
+    expect(classifier.inspect()).toMatchObject({
+      promotions: 0,
+      demotions: 1,
+      pendingPromotions: 0,
+    });
+  });
+
+  it('keeps the static population fixed during continuous spawn and despawn', () => {
+    const fake = fakeScene(),
+      classifier = new ShadowCasterClassifier();
+    const initial = classify(classifier, [stationary(0)], fake.scene);
+    for (let frame = 1; frame <= 300; frame++) {
+      const slot = frame + 1000;
+      fake.change([slot, slot - 1, slot]);
+      const classes = classify(classifier, [stationary(0), rigid(slot)], fake.scene);
+      expect(classes.staticSlots).toBe(initial.staticSlots);
+      expect([...classes.dynamicSlots]).toEqual([slot]);
     }
-    fake.change([0]);
-    classify(classifier, slots, fake.scene);
-    fake.quiet();
-    expect(framesUntilStatic(classifier, slots, fake.scene, 0)).toBeLessThan(
-      SHADOW_CASTER_SETTLE_FRAMES + SHADOW_CASTER_PROMOTE_WINDOW,
+  });
+
+  it('demotes unproven survivors after journal loss and honors new generations', () => {
+    const fake = fakeScene(),
+      classifier = new ShadowCasterClassifier();
+    const initial = [stationary(0), stationary(1), rigid(2)];
+    classify(classifier, initial, fake.scene);
+    fake.change(undefined);
+    const changed = classify(
+      classifier,
+      [stationary(0), { ...stationary(1), generation: 1 }],
+      fake.scene,
     );
+    expect([...changed.staticSlots]).toEqual([1]);
+    expect([...changed.dynamicSlots]).toEqual([0]);
+    expect(classifier.inspect()).toMatchObject({ replacements: 1, removals: 1, historyGaps: 1 });
+  });
+
+  it.each([
+    'skinBinding',
+    'spriteInstances',
+    'gpuVertexSource',
+    'instances',
+    'morph',
+  ])('keeps deforming %s draws dynamic even with an explicit static declaration', (field) => {
+    const fake = fakeScene(),
+      classifier = new ShadowCasterClassifier();
+    const classes = classify(
+      classifier,
+      [{ slot: 1, snapshot: { mobility: 'static', [field]: {} } }],
+      fake.scene,
+    );
+    expect([...classes.dynamicSlots]).toEqual([1]);
+    expect(classifier.inspect().alwaysDynamicCount).toBe(1);
   });
 
   it('places Mobility static casters in the static layer from their first update', () => {
@@ -233,7 +193,7 @@ describe('ShadowCasterClassifier', () => {
     expect(classifier.inspect().flips).toBe(0);
 
     // A declared caster created mid-run joins at once, without a window wait;
-    // an undeclared one waits.
+    // an undeclared one stays dynamic.
     fake.change([1, 3]);
     const created = classify(classifier, [declared(0), rigid(1), skinned, declared(3)], fake.scene);
     expect([...created.staticSlots]).toEqual([0, 3]);
@@ -259,80 +219,21 @@ describe('ShadowCasterClassifier', () => {
     fake.change([0]);
     expect([...classify(classifier, slots, fake.scene).dynamicSlots]).toEqual([0]);
     fake.quiet();
-    const frames = framesUntilStatic(classifier, slots, fake.scene, 0);
-    expect(frames).toBeGreaterThanOrEqual(SHADOW_CASTER_SETTLE_FRAMES - 1);
-    expect(frames).toBeLessThan(SHADOW_CASTER_SETTLE_FRAMES + SHADOW_CASTER_PROMOTE_WINDOW);
+    fake.change([0]);
+    classify(classifier, [rigid(0)], fake.scene);
+    fake.change([0]);
+    expect([...classify(classifier, slots, fake.scene).staticSlots]).toEqual([0]);
+    expect(classifier.inspect()).toMatchObject({
+      promotions: 1,
+      demotions: 1,
+      pendingPromotions: 0,
+    });
   });
-
-  it('treats a caster in a reused slot as created, not as its predecessor changing', () => {
-    const fake = fakeScene();
-    const classifier = new ShadowCasterClassifier();
-    const declared = { slot: 0, generation: 0, snapshot: { mobility: 'static' as const } };
-    classify(classifier, [declared, rigid(1)], fake.scene);
-    // Both occupants leave and new casters take their slots before the next update.
-    fake.change([0, 1]);
-    const successors = [
-      { slot: 0, generation: 1, snapshot: { mobility: 'static' as const } },
-      { slot: 1, generation: 1, snapshot: {} },
-    ];
-    const replaced = classify(classifier, successors, fake.scene);
-    // The declared newcomer keeps its promise; neither replacement is a flip.
-    expect([...replaced.staticSlots]).toEqual([0]);
-    expect([...replaced.dynamicSlots]).toEqual([1]);
-    expect(classifier.inspect().flips).toBe(0);
-    fake.quiet();
-    // The undeclared newcomer waits one creation window, not a settle threshold.
-    const frames = framesUntilStatic(classifier, successors, fake.scene, 1);
-    expect(frames).toBeLessThanOrEqual(2 * SHADOW_CASTER_PROMOTE_WINDOW);
-  });
-});
-
-it('counts classification attempts, transitions and population without exposing mutable state', () => {
-  const fake = fakeScene();
-  const classifier = new ShadowCasterClassifier();
-  const slots = [
-    rigid(0),
-    rigid(1),
-    { slot: 2, snapshot: { skinBinding: { skeleton: 1, joints: [2] } } },
-  ];
-  classify(classifier, slots, fake.scene);
-  const first = classifier.inspect();
-  expect(first).toMatchObject({
-    staticCount: 2,
-    dynamicCount: 1,
-    alwaysDynamicCount: 1,
-    creations: 3,
-    updates: 1,
-    promotions: 0,
-    demotions: 0,
-  });
-  fake.change([1]);
-  classify(classifier, slots, fake.scene);
-  expect(classifier.inspect()).toMatchObject({
-    staticCount: 1,
-    dynamicCount: 2,
-    demotions: 1,
-    contentChanges: 1,
-  });
-  fake.quiet();
-  framesUntilStatic(classifier, slots, fake.scene, 1);
-  expect(classifier.inspect()).toMatchObject({ promotions: 1, demotions: 1 });
-  const replaced = [{ ...rigid(1), generation: 2 }];
-  fake.change([0, 1, 2]);
-  classify(classifier, replaced, fake.scene);
-  expect(classifier.inspect()).toMatchObject({
-    replacements: 1,
-    removals: 2,
-    creations: 3,
-    promotions: 1,
-    demotions: 1,
-  });
-  expect(first).toMatchObject({ staticCount: 2, updates: 1, promotions: 0, demotions: 0 });
 });
 
 it('does no population reads for material-only revisions and visits only a changed slot', () => {
   const fake = fakeScene();
-  const rows = new Map(Array.from({ length: 50_000 }, (_, slot) => [slot, rigid(slot)]));
+  const rows = new Map(Array.from({ length: 50_000 }, (_, slot) => [slot, stationary(slot)]));
   let rosterReads = 0,
     slotReads = 0;
   const source = {
@@ -359,13 +260,12 @@ it('does no population reads for material-only revisions and visits only a chang
   expect(classifier.update(source, fake.scene)).toBe(moved);
   expect({ rosterReads, slotReads }).toEqual({ rosterReads: 0, slotReads: 1 });
   fake.quiet();
-  for (let index = 0; index < SHADOW_CASTER_SETTLE_FRAMES + SHADOW_CASTER_PROMOTE_WINDOW; index++)
-    classifier.update(source, fake.scene);
-  expect(classifier.inspect().staticCount).toBe(stable.staticSlots.size);
+  for (let index = 0; index < 116; index++) classifier.update(source, fake.scene);
+  expect(classifier.inspect().staticCount).toBe(stable.staticSlots.size - 1);
   expect({ rosterReads, slotReads }).toEqual({ rosterReads: 0, slotReads: 1 });
 });
 
-it('routes cast and visibility changes through the slot journal and cancels deadlines', () => {
+it('routes cast and visibility changes through the slot journal and retires removed sources', () => {
   const fake = fakeScene();
   const classifier = new ShadowCasterClassifier();
   for (const snapshot of [
@@ -386,7 +286,7 @@ it('routes cast and visibility changes through the slot journal and cancels dead
 
 it('intersects fixed caster roots only in actual membership reads and observes raw restrictions', () => {
   const fake = fakeScene();
-  const slots = Array.from({ length: 1000 }, (_, slot) => rigid(slot));
+  const slots = Array.from({ length: 1000 }, (_, slot) => stationary(slot));
   const classifier = new ShadowCasterClassifier();
   const source = { slots, slotAt: (slot: number) => slots[slot] };
   const initial = classifier.update(source, fake.scene);

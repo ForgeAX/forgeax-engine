@@ -1,12 +1,12 @@
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { AssetError, type AssetHandle, err, ok } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { samplerContribution } from '../../../render/src/assets/asset-decoders';
 import { defineAssetKind } from '../asset-kind';
 import { AssetRegistry } from '../asset-registry';
 import { createCatalogSource } from '../catalog-source';
 import { runtimeAssets } from '../internal/runtime-assets';
 import { defined } from './assert-defined';
+import { catalogPack } from './fixtures/catalog-pack';
 
 interface Counter {
   count: number;
@@ -46,28 +46,13 @@ describe('custom runtime asset owner preparation', () => {
     const guid = '00000000-0000-7000-8000-000000000123';
     const publish = (count: number) => {
       const packageUrl = 'https://counter.invalid/pack.json';
-      const result = createRuntimePackPublication({
-        scopeId: 'asset-runtime',
-        sourcePath: 'counter.pack',
-        sourceRevision: String(count),
-        packageUrl,
-        pack: {
-          assets: [
-            { guid, kind: kind.kind, refs: [], artifacts: {}, payload: { count, samples: [] } },
-          ],
-        },
-      });
+      const result = catalogPack(
+        [{ guid, kind: kind.kind, refs: [], artifacts: {}, payload: { count, samples: [] } }],
+        { sourcePath: 'counter.pack', sourceRevision: String(count), packageUrl },
+      );
       assets.setCatalogSource(
         createCatalogSource({
-          entries: [
-            {
-              guid,
-              kind: kind.kind,
-              packageUrl,
-              sourcePath: 'counter.pack',
-              publication: result.publication,
-            },
-          ],
+          entries: result.rows,
           fetch: async () => new Response(JSON.stringify(result.pack)),
         }),
       );
@@ -98,13 +83,10 @@ describe('custom runtime asset owner preparation', () => {
     });
     const guid = '00000000-0000-7000-8000-000000000124';
     const packageUrl = 'https://counter.invalid/scalar.json';
-    const publication = createRuntimePackPublication({
-      scopeId: 'asset-runtime',
-      sourcePath: 'scalar.pack',
-      sourceRevision: '1',
-      packageUrl,
-      pack: { assets: [{ guid, kind: scalar.kind, refs: [], artifacts: {}, payload: value }] },
-    });
+    const publication = catalogPack(
+      [{ guid, kind: scalar.kind, refs: [], artifacts: {}, payload: value }],
+      { sourcePath: 'scalar.pack', packageUrl },
+    );
     assets.setCatalogSource(
       createCatalogSource({
         entries: [
@@ -120,13 +102,10 @@ describe('custom runtime asset owner preparation', () => {
         fetch: async () => new Response(JSON.stringify(publication.pack)),
       }),
     );
-    try {
-      const handle = (await assets.load(guid, scalar)).unwrap();
-      expect(assets.read(handle).unwrap()).toBe(value);
-      expect(assets.inspect()).toEqual({ assets: [{ guid, kind: scalar.kind, name: 'counter' }] });
-    } finally {
-      assets.dispose();
-    }
+    onTestFinished(() => assets.dispose());
+    const handle = (await assets.load(guid, scalar)).unwrap();
+    expect(assets.read(handle).unwrap()).toBe(value);
+    expect(assets.inspect()).toEqual({ assets: [{ guid, kind: scalar.kind, name: 'counter' }] });
   });
 
   it('supports complete scalar payload replacement and rejects a preparation owner retiring during admission', () => {

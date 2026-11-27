@@ -1,25 +1,28 @@
+<!-- LANG-SWITCH -->
+**Language**: **English** · [简体中文](README.zh-CN.md)
+
 # Textures (LearnOpenGL §1.4)
 
 > [!NOTE]
-> **对应 LO 原章节**：[LearnOpenGL §1.4 Textures](https://learnopengl.com/Getting-started/Textures)
+> **Original chapter**: [LearnOpenGL 1.4 Textures](https://learnopengl.com/Getting-started/Textures)
 >
-> **对应引擎能力**：feat-20260515-learn-render-getting-started — `@forgeax/engine-image` 解码 + `forgeax asset import` 产 sidecar + GUID 寻址的 `assets.load(guid, 'texture')`；Renderer 自动消费材质的 `values.baseColorTexture` 槽位。
+> **Engine capability**: feat-20260515-learn-render-getting-started -- `@forgeax/engine-image` decoding, `forgeax asset import` sidecars and GUID-addressed `assets.load(guid, 'texture')`. Renderer consumes material `values.baseColorTexture` automatically.
 
-## 这个示例展示什么
+## What This Example Shows
 
-LO §1.4 展示磁盘图片如何成为材质采样输入。这个示例用 Catalog 加载纹理，在运行时创建 cube 和材质，然后将资产句柄绑定到 ECS 实体。
+LO 1.4 shows how a disk image becomes a material sampling input. This example loads textures through Catalog, creates a cube and material at runtime and binds asset handles to ECS entities.
 
-1. `forgeax asset import` 维护图片 sidecar 中的 GUID 和导入设置。
-2. `assets.load(textureGuid, 'texture')` 返回受管理的纹理句柄。
-3. `assets.create(mesh)` 和 `assets.create(material)` 创建本例几何与材质；材质的 `values.baseColorTexture` 引用纹理。
-4. `MeshFilter.assetHandle` 和 `MeshRenderer.materials` 引用这些句柄。Renderer 负责资源上传、绑定和后续资产更新。
+1. `forgeax asset import` maintains GUIDs and import settings in image sidecars.
+2. `assets.load(textureGuid, 'texture')` returns a managed texture handle.
+3. `assets.create(mesh)` and `assets.create(material)` create geometry/materials; `values.baseColorTexture` references the texture.
+4. `MeshFilter.assetHandle` and `MeshRenderer.materials` reference these handles. Renderer owns upload, binding and later asset updates.
 
-## 渲染流程
+## Rendering Flow
 
 ```mermaid
 flowchart LR
   Disk["assets/wood-container.jpg<br/>+ .meta.json"] --> Imp["forgeax asset import"]
-  Imp --> Sidecar["GUID 写入 sidecar<br/>(UUIDv7)"]
+  Imp --> Sidecar["GUID written to sidecar<br/>(UUIDv7)"]
   Sidecar --> RT["assets.load(guid, 'texture')"]
   RT --> Reg["AssetRegistry"]
   Reg --> Up["uploadTexture<br/>(rgba8unorm-srgb)"]
@@ -30,9 +33,9 @@ flowchart LR
   Pipe --> Frame["swap-chain frame"]
 ```
 
-## 引擎用法
+## Engine Usage
 
-资产调用摘自 [src/index.ts](src/index.ts) 的启动流程；`assets` 和 `world` 来自已经创建的 App，`textureGuid` 是已校验的纹理 GUID，`materialEntry.payload` 是示例 Pack 中的材质声明。
+Asset calls come from [src/index.ts](src/index.ts)'s bootstrap. `assets` and `world` belong to an existing App, `textureGuid` is a verified texture GUID, and `materialEntry.payload` is the example Pack's material declaration.
 
 ```ts
 import { createBoxGeometry } from '@forgeax/engine-geometry';
@@ -53,31 +56,31 @@ world.spawn(
 ).unwrap();
 ```
 
-纹理通过 Catalog 的 GUID 加载；几何与材质直接由 `assets.create` 建立运行时身份。相机和 Update 系统保持在示例自己的 ECS 装配中，最后由 `app.start()` 驱动帧循环。运行时修改材质使用 `assets.update(material, { values: { baseColor: [1, 0.5, 0.2, 1] } }).unwrap()`，版本和渲染更新由资产 owner 维护。
+Textures load by Catalog GUID; `assets.create` establishes runtime geometry/material identity directly. Cameras and Update systems remain in the example's ECS composition; `app.start()` drives the frame loop. Update material color with `assets.update(material, { values: { baseColor: [1, 0.5, 0.2, 1] } }).unwrap()`; the asset owner maintains versions and rendering updates.
 
-## 与 LO 原版的差异
+## Differences From LO
 
-| 维度 | LO 原版（C++ / GLSL 330） | forgeax 这里（TS / WGSL） |
+| Dimension | Original LO (C++ / GLSL 330) | ForgeaX (TS / WGSL) |
 |:--|:--|:--|
-| 解码 | `stb_image.h` 的 `stbi_load("container.jpg", &w, &h, &nrChannels, 0)`，单线程同步读 + 解码 | build-time `@forgeax/engine-image` 在 `forgeax asset import` 流水线里调用解码 → 写 sidecar；runtime 完全隔离解码（charter P5 + research F-4） |
-| GPU 上传 | `glGenTextures(1, &id) + glBindTexture(GL_TEXTURE_2D, id) + glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, data)` 串行手写状态机 | `assets.load(woodGuid, 'texture')` 单入口 → 引擎内部 `uploadTexture` + 自动绑定到 `materialBindGroup` 槽位（`render-system-extract.ts` 的 switch `mat.shadingModel`） |
-| 采样器配置 | `glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)` + `GL_TEXTURE_MIN_FILTER, GL_LINEAR` 等四五行 GL 调用 | `importSettings: { colorSpace, mipmap, addressMode, filterMode }` 一次性写入 sidecar；reimport byte-identical（AC-16） |
-| 颜色空间 | `glTexImage2D(internalformat=GL_SRGB)` 手指定 + 教程末提示注意线性空间 | `TextureAsset.format: 'rgba8unorm-srgb' \| 'rgba8unorm'` + `colorSpace: 'srgb' \| 'linear'`；`linear + srgb` 组合在 dawn 测试里抛 `image-format-unsupported.detail.formatColorSpaceConflict`（AC-08） |
-| Shader 采样 | `texture(ourTexture, TexCoord)` GLSL `sampler2D` uniform；CPU 侧 `glUniform1i(loc, 0)` 手绑 unit 0 | WGSL `@group(?) @binding(?) var sampler_0: sampler` + `var texture_0: texture_2d<f32>` 由引擎自动布局；AI 用户不写 binding number |
-| 错误处理 | `if (data) { ... glTexImage2D(...); stbi_image_free(data); } else { std::cout << "Failed to load texture" << std::endl; }` 字符串打印；可静默继续 | forgeax 用结构化错误（`err.code` 闭族 `AssetErrorCode 4` + `PackErrorCode 8` + image-format-unsupported / image-meta-missing）替代 LO C++ 抛异常 / 静默失败；AI 用户 `switch (err.code)` exhaustive narrow，不解析 `err.message`（charter P3） |
-| 路径加载 | `stbi_load("container.jpg", ...)` 直接物理路径 | runtime 不接受路径；GUID 是唯一寻址凭证；pack-index.json 4 字段（`guid` / `packageUrl` / `kind` / `sourcePath`）由 `vite-plugin-pack` 在 build/dev 阶段维护 |
-| Mesh 顶点 | `glVertexAttribPointer(0, 3, GL_FLOAT, ...) + glEnableVertexAttribArray(0)` + `glVertexAttribPointer(1, 2, GL_FLOAT, ...)` 手布局 pos + uv | `MeshFilter { assetHandle: cubeHandleRes.value }`（由资产 owner 管理的几何句柄）；引擎自动绑定 `@location(0) pos` + `@location(1) uv` |
+| Decoding | Synchronous, single-threaded `stbi_load("container.jpg", &w, &h, &nrChannels, 0)` in `stb_image.h` | Build-time `@forgeax/engine-image` decodes and writes sidecars during `forgeax asset import`; runtime stays isolated from decoding (charter P5 / research F-4) |
+| GPU upload | Manually sequence `glGenTextures(1, &id)`, `glBindTexture(GL_TEXTURE_2D, id)`, `glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, data)` | `assets.load(woodGuid, 'texture')` enters Engine `uploadTexture` and automatic materialBindGroup binding (`render-system-extract.ts`, `mat.shadingModel`) |
+| Sampler | Several calls such as `glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)` / `GL_TEXTURE_MIN_FILTER, GL_LINEAR` | Sidecar `importSettings: { colorSpace, mipmap, addressMode, filterMode }`; byte-identical reimport (AC-16) |
+| Color space | Manual `glTexImage2D(internalformat=GL_SRGB)` and tutorial advice on linear space | `TextureAsset.format: 'rgba8unorm-srgb' \| 'rgba8unorm'`, `colorSpace: 'srgb' \| 'linear'`; conflicting linear/sRGB produces `image-format-unsupported.detail.formatColorSpaceConflict` in Dawn tests (AC-08) |
+| Sampling | GLSL `texture(ourTexture, TexCoord)`, sampler2D uniform, manual `glUniform1i(loc, 0)` | Engine lays out WGSL `@group(?) @binding(?) var sampler_0: sampler` / `var texture_0: texture_2d<f32>`; AI users choose no binding numbers |
+| Errors | `if (data) { ... glTexImage2D(...); stbi_image_free(data); } else { std::cout << "Failed to load texture" << std::endl; }` can print or continue silently | Structured `err.code` (AssetErrorCode 4, PackErrorCode 8, image-format-unsupported / image-meta-missing), with exhaustive narrowing rather than message parsing (charter P3) |
+| Addressing | Physical path in `stbi_load("container.jpg", ...)` | Runtime accepts only GUIDs. `vite-plugin-pack` maintains pack-index.json `guid`, `packageUrl`, `kind`, `sourcePath` during build/dev |
+| Vertex layout | Manual pos/uv `glVertexAttribPointer(0, 3, GL_FLOAT, ...)`, `glEnableVertexAttribArray(0)`, `glVertexAttribPointer(1, 2, GL_FLOAT, ...)` | Managed `MeshFilter { assetHandle: cubeHandleRes.value }`; Engine binds `@location(0) pos` and `@location(1) uv` |
 
-## 关键代码量
+## Key Source Files
 
-| 文件 | 行数 | 角色 |
+| File | Lines | Role |
 |:--|---:|:--|
-| `src/index.ts` | ~390 | 三段式注释（引擎使用 + 示例胶水 + 启动）+ 4 步 recipe + `// ac-09:` 锚点 + `__captureTextures` 钩子 |
-| `assets/wood-container.meta.json` | ~30 | `kind=external-asset-package` sidecar（subAssets[0]={kind,sourceIndex,guid} + importSettings 5 字段） |
+| `src/index.ts` | ~390 | Three sections (Engine usage, glue, bootstrap), four-step recipe, `// ac-09:` anchor and `__captureTextures` hook |
+| `assets/wood-container.meta.json` | ~30 | `kind=external-asset-package` sidecar: subAssets[0]={kind,sourceIndex,guid}, five importSettings fields |
 | `assets/material-wood.pack.json` | ~25 | `kind=internal-text-package`（UnlitMaterialAsset payload + baseColorTexture refs[0]） |
-| `src/__tests__/textures.browser.test.ts` | ~150 | vitest browser e2e（AC-08 + AC-09 + AC-13 + AC-15 (c) + AC-17 (a) 三段断言） |
-| `src/__tests__/textures-srgb.dawn.test.ts` | ~110 | dawn-node sRGB / linear 一致性反例（AC-08 image-format-unsupported.detail.formatColorSpaceConflict） |
-| `scripts/smoke-dawn.mjs` | ~330 | dawn-node 端到端：解码 → 上传 → 60 帧 → 5-pixel grid readback + AC-25 wall-time 监控 |
+| `src/__tests__/textures.browser.test.ts` | ~150 | Vitest browser e2e (AC-08, AC-09, AC-13, AC-15(c), AC-17(a)) |
+| `src/__tests__/textures-srgb.dawn.test.ts` | ~110 | Dawn sRGB/linear conflict counterexample (AC-08 image-format-unsupported.detail.formatColorSpaceConflict) |
+| `scripts/smoke-dawn.mjs` | ~330 | Dawn e2e: decode, upload, 60 frames, five-pixel readback grid and AC-25 wall-time monitoring |
 
 ## HMR manual verification
 
@@ -101,28 +104,28 @@ pnpm --filter "@forgeax/app-learn-render-1-getting-started-4-textures" dev
 
 Failure surface: the dev plugin does not block on schema errors; malformed sidecars are skipped with a `[forgeax-pack] scan error` console warn so iteration is uninterrupted. Schema-level enforcement runs through `forgeax asset verify --root <project> --json` (8-step fail-fast scanner; the dev path optimises for iteration cadence).
 
-## 运行
+## Run
 
 ```bash
-# 开发服务器（vite 端口 5183）
+# Dev server (Vite port 5183)
 pnpm --filter "@forgeax/app-learn-render-1-getting-started-4-textures" dev
 
-# 构建（产出 dist/）
+# Build dist/
 pnpm --filter "@forgeax/app-learn-render-1-getting-started-4-textures" build
 
 # vitest browser e2e（chromium + WebGPU）
 pnpm test:browser
 
-# vitest dawn e2e（sRGB / linear 一致性）
+# Vitest Dawn e2e (sRGB / linear consistency)
 pnpm test:dawn
 
 # dawn-node smoke (60 frames + pixel readback epsilon <= 0.05)
 pnpm --filter "@forgeax/app-learn-render-1-getting-started-4-textures" smoke
 
-# 录制 golden PNG（forgeax-engine-assets 子模块）
+# Record a golden PNG in the forgeax-engine-assets submodule
 pnpm --filter "@forgeax/app-learn-render-1-getting-started-4-textures" exec node scripts/bench-screenshot.mjs
 
-# Build-time importer（产 sidecar；reimport byte-identical AC-16）
+# Build-time importer: sidecars and byte-identical reimport (AC-16)
 pnpm exec forgeax asset import \
   apps/learn-render/1.getting-started/4.textures/assets/wood-container.jpg
 pnpm exec forgeax asset verify \
@@ -130,9 +133,9 @@ pnpm exec forgeax asset verify \
 ```
 
 <details>
-<summary>LO 原版 C++/GLSL 关键片段（参考用）</summary>
+<summary>Original LO C++/GLSL excerpts (reference)</summary>
 
-LO §1.4 在 `src/1.getting_started/4.1.textures/textures.cpp` + `4.1.texture.fs` / `4.1.texture.vs` 的核心代码（来自 [JoeyDeVries/LearnOpenGL master 分支](https://github.com/JoeyDeVries/LearnOpenGL)）：
+Core LO 1.4 code from `src/1.getting_started/4.1.textures/textures.cpp`, `4.1.texture.fs` and `4.1.texture.vs` ([JoeyDeVries/LearnOpenGL master](https://github.com/JoeyDeVries/LearnOpenGL)):
 
 ```glsl
 // 4.1.texture.vs (vertex shader, GLSL 330)
@@ -214,6 +217,6 @@ while (!glfwWindowShouldClose(window))
 }
 ```
 
-`stb_image.h` / `stbi_load` / `glGenTextures` / `glBindTexture` / `glTexImage2D` / `glTexParameteri` / `glGenerateMipmap` / `texture(sampler2D, ...)` / `void main` / `gl_Position` 十个 LO §1.4 关键标识在本折叠块全部命中（grep 闸门 AC-23 + T-M8-05 description）。
+This block contains all ten required LO 1.4 identifiers: `stb_image.h`, `stbi_load`, `glGenTextures`, `glBindTexture`, `glTexImage2D`, `glTexParameteri`, `glGenerateMipmap`, `texture(sampler2D, ...)`, `void main`, `gl_Position` (AC-23 and T-M8-05).
 
 </details>

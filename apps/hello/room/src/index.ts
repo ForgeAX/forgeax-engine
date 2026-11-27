@@ -27,7 +27,7 @@ import { renderComponentsPlugin } from '@forgeax/engine-render';
 import { scenePlugin } from '@forgeax/engine-scene';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 
-const ROOM_SCENE_GUID = '019e2808-d3ba-735f-811f-ae7bbb465392';
+const ROOM_SCENE_GUID = '6498c168-6c36-55ae-aa5a-9ed01836ff62';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (!canvas) throw new Error('hello-room: missing <canvas id="app"> in index.html');

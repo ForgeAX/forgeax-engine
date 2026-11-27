@@ -19,7 +19,8 @@ describe('SceneInstance structure characterization', () => {
     // runtime projection baseline, with a small guard against re-growing the
     // former numeric/mount implementation.
     expect(snapshot.lines).toBeLessThan(1700);
-    expect(snapshot.exportedFunctions).toBe(23);
+    // The new engine-internal resumable entry shares the existing synchronous algorithm.
+    expect(snapshot.exportedFunctions).toBe(24);
     expect(snapshot.hasStatePayload).toBe(false);
     expect(snapshot.hasWorldStateWeakMap).toBe(false);
   });

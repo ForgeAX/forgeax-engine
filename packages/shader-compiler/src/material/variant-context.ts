@@ -62,15 +62,16 @@ export function materialBindingsCarryClusterGroup(
   return (
     contract === 'render-material' ||
     contract === 'render-material-with-scene-depth' ||
-    contract === 'render-material-and-scene-depth'
+    contract === 'render-material-and-scene-depth' ||
+    contract === 'render-lit-material-and-scene-depth'
   );
 }
 
 /**
  * Lower the context for one program. The declared binding contract narrows the
  * context selectors to the resources that contract can bind. The packed
- * cluster and atmosphere records of the uniform fallback are group 2
- * resources, so a group-0 or View program never selects them: its fallback
+ * Cluster and atmosphere records share the packed View texture. Compact
+ * group-0 and View-only material contracts omit that texture: their fallback
  * fog is the same View-only fog its storage variants compile without the
  * group 0 atmosphere tables, and the same fog the packaged particle programs
  * compile, instead of importing a texture its layout cannot hold.

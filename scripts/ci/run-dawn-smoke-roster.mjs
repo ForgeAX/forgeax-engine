@@ -5,6 +5,7 @@ import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { appPackages } from '../build-task-cache.mjs';
 import { pnpmCommand } from '../lib/pnpm-command.mjs';
+import coreDeferredAppBuilds from './core-app-build-deferred.json' with { type: 'json' };
 import { runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 
 export const ROSTER_SCHEMA_VERSION = 3;
@@ -13,6 +14,12 @@ export const SMOKE_MIN_FRAMES = 60;
 export const ENTRY_TIMEOUT_MS = 300_000;
 export const RECEIPT_PREFIX = '[forgeax-smoke-receipt] ';
 export const RECEIPT_PARSER_ID = 'forgeax-smoke-receipt-v1';
+
+const deferredAppBuilds = new Set(coreDeferredAppBuilds.map((app) => `apps/${app}`));
+
+export function isSmokeAppBuildDeferred(entry) {
+  return deferredAppBuilds.has(dirname(entry.path));
+}
 
 export function parseSmokeFrameBudget(value = SMOKE_MIN_FRAMES) {
   if (
@@ -982,6 +989,7 @@ export function preflightRunEntries(
     const packageDirectory = resolve(repoRoot, dirname(entry.path));
     if (!builtDirectories.has(packageDirectory))
       failures.push(`${entry.path}: missing canonical app build graph entry`);
+    if (isSmokeAppBuildDeferred(entry)) continue;
     const shaderManifest = resolve(packageDirectory, 'dist', 'shaders', 'manifest.json');
     if (!existsSync(shaderManifest)) failures.push(`${entry.path}: missing ${shaderManifest}`);
   }

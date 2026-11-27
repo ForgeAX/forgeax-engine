@@ -1,5 +1,12 @@
 {
   "sceneTree": {
+    "clearSearch": "清除搜索",
+    "dismissClipboardError": "关闭剪贴板错误",
+    "unavailableDescription": "连接 View 工作区 API 以加载 Engine 场景树。",
+    "loading": "正在加载层级",
+    "openPreview": "从内容浏览器打开场景预览，以加载 Engine 层级。",
+    "loadMore": "已显示 {{count}} 个实体。加载更多",
+    "loadingDescription": "正在读取所选 Engine 目标。",
     "title": "场景树",
     "sceneRoot": "场景",
     "empty": "无层级数据",

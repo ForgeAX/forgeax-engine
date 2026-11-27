@@ -10,7 +10,8 @@ const handle = <T>(name: string): T => ({ name }) as unknown as T;
 
 const fallback: SkylightFallback = {
   irradianceTexture: handle<Texture>('irr-tex'),
-  irradianceView: handle<TextureView>('irr'),
+  irradianceView: handle<TextureView>('background'),
+  skySh: handle<Buffer>('sky-sh'),
   prefilterTexture: handle<Texture>('pref-tex'),
   prefilterView: handle<TextureView>('pref'),
   brdfLutTexture: handle<Texture>('brdf-tex'),
@@ -23,7 +24,7 @@ describe('skylightBindGroupResources', () => {
   it.each([
     false,
     true,
-  ])('retains global reflection input for medium probe selection %s', (localProbe) => {
+  ])('binds the selected reflection input for medium probe selection %s', (localProbe) => {
     const global = handle<TextureView>('global-environment');
     const selected = localProbe ? handle<TextureView>('local-probe') : global;
     const sampler = fallback.sampler;
@@ -32,7 +33,6 @@ describe('skylightBindGroupResources', () => {
       {
         ...skylightBindGroupResources(fallback),
         prefilterView: selected,
-        ...(localProbe ? { skylightPrefilterView: global } : {}),
       },
       { sampler, backdropView: global },
       [],
@@ -52,15 +52,12 @@ describe('skylightBindGroupResources', () => {
       kind: 'textureView',
       value: selected,
     });
-    expect(entries.find((entry) => entry.binding === 47)?.resource).toEqual({
-      kind: 'textureView',
-      value: global,
-    });
+    expect(entries.some((entry) => entry.binding === 47)).toBe(false);
   });
 
   it('projects the fallback bundle with one sampler for both sampled slots', () => {
     expect(skylightBindGroupResources(fallback)).toEqual({
-      irradianceView: fallback.irradianceView,
+      skySh: fallback.skySh,
       irradianceSampler: fallback.sampler,
       prefilterView: fallback.prefilterView,
       prefilterSampler: fallback.sampler,
@@ -71,12 +68,12 @@ describe('skylightBindGroupResources', () => {
 
   it('replaces only the views when active IBL views are supplied', () => {
     const views = {
-      irr: handle<TextureView>('active-irr'),
+      skySh: handle<Buffer>('active-sky-sh'),
       pref: handle<TextureView>('active-pref'),
       brdf: handle<TextureView>('active-brdf'),
     };
     const resources = skylightBindGroupResources(fallback, views);
-    expect(resources.irradianceView).toBe(views.irr);
+    expect(resources.skySh).toBe(views.skySh);
     expect(resources.prefilterView).toBe(views.pref);
     expect(resources.brdfLutView).toBe(views.brdf);
     expect(resources.irradianceSampler).toBe(fallback.sampler);

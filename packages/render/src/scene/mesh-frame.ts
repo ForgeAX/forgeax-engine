@@ -2,7 +2,13 @@ import { deriveVertexCount, deriveVertexLayoutProjection } from '@forgeax/engine
 import type { AssetGuid, MeshAsset } from '@forgeax/engine-types';
 import type { MaterialResource } from '../material-resource';
 import { morphChannels, packMorphDeltas } from '../morph-attributes';
-import { changes, type Node, put, remove } from './frame-tree';
+import {
+  geometryAt,
+  type MeshDirectory,
+  publishGeometry,
+  removeGeometry,
+  visitGeometryChanges,
+} from './mesh-directory';
 import { skinGeometryEnvelopes } from './skin-geometry';
 
 const EMPTY_MATERIALS: readonly MaterialResource[] = Object.freeze([]);
@@ -10,6 +16,8 @@ const EMPTY_MATERIALS: readonly MaterialResource[] = Object.freeze([]);
 /** Shared geometry facts. Vertex bytes remain with the asset and GPU residency owners. */
 export interface MeshGeometry {
   readonly handle: number;
+  /** Exact producer revision used to capture metadata; absent on unqualified callers. */
+  readonly source?: { readonly identity: string; readonly revision: number };
   readonly bounds: Float32Array | undefined;
   /** Shared base-position enclosure, derived only on admitted Mesh changes.
    * Absence forbids Skin culling; never substitute the rigid/bind-pose box.
@@ -49,24 +57,21 @@ function morphDeltas(mesh: MeshAsset): MeshMorphDeltas | undefined {
   };
 }
 
-/** An immutable geometry root; asset edits copy tree paths, never instance bindings. */
+/** Immutable geometry facts shared by culling, material dispatch and draw recording. */
 export class MeshFrame {
-  constructor(private readonly root: Node<MeshGeometry> | undefined = undefined) {}
+  readonly identity = Symbol();
+
+  constructor(private readonly root?: MeshDirectory) {}
 
   get(handle: number | undefined): MeshGeometry | undefined {
-    if (handle === undefined) return undefined;
-    let node = this.root;
-    while (node !== undefined) {
-      if (node.key === handle) return node.value;
-      node = handle < node.key ? node.left : node.right;
-    }
-    return undefined;
+    return handle === undefined ? undefined : geometryAt(this.root, handle);
   }
 
   with(
     handle: number,
     mesh: MeshAsset,
     materials: readonly MaterialResource[] = EMPTY_MATERIALS,
+    provenance?: { readonly identity: string; readonly revision: number },
   ): MeshFrame {
     // Only metadata is captured. A range edit may mutate the asset's backing bytes,
     // while old frames must retain their original bounds and section description.
@@ -82,6 +87,7 @@ export class MeshFrame {
         : undefined;
     const geometry: MeshGeometry = {
       handle,
+      ...(provenance === undefined ? {} : { source: Object.freeze({ ...provenance }) }),
       bounds,
       skinEnvelopes: skinGeometryEnvelopes(mesh),
       morph: morphDeltas(mesh),
@@ -93,18 +99,26 @@ export class MeshFrame {
       lods: mesh.lods,
       lodHysteresis: mesh.lodHysteresis,
     };
-    return new MeshFrame(put(this.root, geometry, 0, handle, 1));
+    return this.withGeometry(geometry);
+  }
+
+  /** Consume already-captured metadata without rereading the asset or deriving it again. */
+  withGeometry(geometry: MeshGeometry): MeshFrame {
+    if (!Number.isSafeInteger(geometry.handle))
+      throw new RangeError('Mesh handle must be a safe integer');
+    return new MeshFrame(publishGeometry(this.root, geometry));
   }
 
   without(handle: number): MeshFrame {
-    return this.get(handle) === undefined ? this : new MeshFrame(remove(this.root, 0, handle));
+    const next = removeGeometry(this.root, handle);
+    return next === this.root ? this : new MeshFrame(next);
   }
 
   changesSince(
     previous: MeshFrame,
     visit: (before: MeshGeometry | undefined, after: MeshGeometry | undefined) => void,
   ): void {
-    changes(previous.root, this.root, visit);
+    visitGeometryChanges(previous.root, this.root, visit);
   }
 }
 

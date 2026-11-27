@@ -1,79 +1,180 @@
+import { type AssetRegistry, installMaterialReadyShaders } from '@forgeax/engine-assets-runtime';
 import {
-  type AssetRegistry,
-  createMaterialLoader,
-  installMaterialReadyShaders,
-} from '@forgeax/engine-assets-runtime';
-import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import { decompressZstd } from '@forgeax/engine-codec';
-import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
-import type { AssetHandle, MaterialAsset } from '@forgeax/engine-types';
+  completeEmbeddedMaterial,
+  projectMaterialTemplate,
+} from '@forgeax/engine-assets-runtime/internal';
+import { prepareRetainedZstdDecoder } from '@forgeax/engine-codec';
+import type { CookedMaterialRecord } from '@forgeax/engine-pack';
+import {
+  readMaterialTemplateSources,
+  validateMaterialTemplatePublication,
+} from '@forgeax/engine-pack/material-cook';
+import type { MaterialAsset } from '@forgeax/engine-types';
 import { ThreeCompatibilityError } from './errors';
 import { TEXTURE_SLOTS } from './material';
 import { clearSurfaceProgramSelection, surfaceProgram } from './node-surface';
+import { readMaterialPublication } from './program-publication';
 
-async function registerPrograms(
-  assets: AssetRegistry,
-  publications: string,
-): Promise<readonly AssetHandle<'material'>[]> {
-  const compressed = Uint8Array.from(atob(publications), (character) => character.charCodeAt(0));
-  const decoded = await decompressZstd(compressed);
-  if (!decoded.ok) throw decoded.error;
-  const records: unknown = JSON.parse(new TextDecoder().decode(decoded.value));
-  if (!Array.isArray(records)) throw new Error('invalid material publication');
-  return Promise.all(
-    records.map(async (publication) => {
-      const record = validateCookedMaterialRecord(publication).unwrap();
-      const ready = await createMaterialLoader({
-        loadPublication: async () => ({
-          guid: record.guid,
-          record,
-          artifacts: Object.fromEntries(
-            record.programs.map(({ artifact }) => [artifact.path, artifact]),
-          ),
-        }),
-      }).load({ guid: record.guid, specializationKey: record.specializationKey ?? '' });
-      if (ready.status !== 'Ready') throw ready.error;
-      const material: MaterialAsset = {
-        kind: 'material',
-        ...record.resolved,
-        passes: record.resolved.passes as NonNullable<MaterialAsset['passes']>,
-        parameters: ready.record.parameterContract.parameters,
+function publicationBytes(text: string): Uint8Array {
+  const raw = atob(text);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+function installProgram(assets: AssetRegistry, record: CookedMaterialRecord) {
+  const ready = completeEmbeddedMaterial(record);
+  if (ready.status !== 'Ready') throw ready.error;
+  const program: MaterialAsset = {
+    kind: 'material',
+    ...record.resolved,
+    passes: record.resolved.passes as NonNullable<MaterialAsset['passes']>,
+    parameters: ready.record.parameterContract.parameters,
+    values: Object.fromEntries(
+      Object.entries(record.resolved.values).filter(
+        ([, value]) => value === null || typeof value !== 'object' || !('texture' in value),
+      ),
+    ),
+  };
+  return {
+    program,
+    names: new Set(program.parameters?.map((parameter) => parameter.name)),
+    projection: installMaterialReadyShaders(
+      assets.shaderRegistry,
+      ready,
+      assets.materialArtifactRegistry,
+    ),
+  };
+}
+
+async function preparePhysicalTemplates(assets: AssetRegistry, bytes: Uint8Array) {
+  const { sources: sourceText, recipes } = JSON.parse(new TextDecoder().decode(bytes)) as {
+    sources: string;
+    recipes: Record<string, unknown>;
+  };
+  const source = new TextEncoder().encode(sourceText);
+  const keys = ['', 'baseColorTexture'] as const;
+  const publications = keys.map((key) =>
+    validateMaterialTemplatePublication(recipes[key]).unwrap(),
+  );
+  const digest = publications[0]?.sourceArtifact.digest;
+  if (digest === undefined) throw new Error('Missing Physical source template');
+  if (publications.some((publication) => publication.sourceArtifact.digest !== digest))
+    throw new Error('Physical templates must reference the same verified source');
+  const sources = readMaterialTemplateSources(source, digest).unwrap();
+  const prepare = () =>
+    import('@forgeax/engine-shader-compiler/program').then(({ prepareShaderProgramCompiler }) =>
+      prepareShaderProgramCompiler(),
+    );
+  const entries = await Promise.all(
+    publications.map(async (publication, index) => {
+      const key = keys[index];
+      if (key === undefined) throw new Error('Unrecognized Physical template');
+      const material = publication.resolved;
+      const compiled = await assets.shaderRegistry.prepareMaterialTemplate(
+        { guid: publication.guid, material, sources },
+        prepare,
+      );
+      const projection = projectMaterialTemplate(
+        { publication, sources },
+        0,
+        compiled.unwrap(),
+        assets.shaderRegistry,
+        assets.materialArtifactRegistry,
+      );
+      const program: MaterialAsset = {
+        ...material,
         values: Object.fromEntries(
-          Object.entries(record.resolved.values).filter(
+          Object.entries(material.values ?? {}).filter(
             ([, value]) => value === null || typeof value !== 'object' || !('texture' in value),
           ),
         ),
       };
-      assets.materialPayloadProjections.set(
-        material,
-        installMaterialReadyShaders(assets.shaderRegistry, ready, assets.materialArtifactRegistry),
-      );
-      return assets.create(material).unwrap();
+      return [
+        key,
+        {
+          program,
+          projection,
+          names: new Set(program.parameters?.map(({ name }) => name)),
+        },
+      ] as const;
     }),
   );
+  return new Map<string, ReturnType<typeof installProgram>>(entries);
 }
 
-/** Cook admits the native skin ABI and optional Physical layer programs. */
+function readPrograms(assets: AssetRegistry, decoded: Uint8Array) {
+  return readMaterialPublication(decoded).map((record) => installProgram(assets, record));
+}
+
+async function packagedPrograms(assets: AssetRegistry) {
+  const [{ materialPrograms }, { physicalTemplates }, decode] = await Promise.all([
+    import('./generated/materials.mjs'),
+    import('./generated/physical.mjs'),
+    prepareRetainedZstdDecoder(),
+  ]);
+  const unpack = (publication: string) => {
+    const result = decode(publicationBytes(publication));
+    if (!result.ok) throw result.error;
+    return result.value;
+  };
+  const read = (publication: string) => readPrograms(assets, unpack(publication));
+  type Selection = {
+    sources: readonly string[];
+    programs: WeakRef<ReturnType<typeof readPrograms>>;
+  };
+  let selections: WeakMap<readonly string[], Selection> | undefined;
+  let skin: ReturnType<typeof readPrograms> | undefined;
+  const physical = await preparePhysicalTemplates(assets, unpack(physicalTemplates));
+  return {
+    additional(sources: readonly string[]) {
+      const cached = selections?.get(sources);
+      if (
+        cached &&
+        cached.sources.length === sources.length &&
+        cached.sources.every((value, i) => value === sources[i])
+      ) {
+        // Validated selections need no setup until a draw requests them. Only
+        // a live projection pins the installed descriptors between submissions.
+        let active = cached.programs.deref();
+        return () => {
+          active ??= cached.programs.deref();
+          if (!active) {
+            active = cached.sources.flatMap(read);
+            cached.programs = new WeakRef(active);
+          }
+          return active;
+        };
+      }
+      const programs = sources.flatMap(read);
+      if (typeof WeakRef === 'function' && sources.length) {
+        selections ??= new WeakMap();
+        selections.set(sources, { sources: [...sources], programs: new WeakRef(programs) });
+      }
+      return () => programs;
+    },
+    skin: () => (skin ??= read(materialPrograms)),
+    physical: (key: string) => physical.get(key),
+  };
+}
+
+const packaged = new WeakMap<AssetRegistry, ReturnType<typeof packagedPrograms>>();
+
+/** Admit the two built-in Physical shapes before synchronous scene projection. */
 export async function prepareMaterialPrograms(
   assets: AssetRegistry,
   additional: readonly string[] = [],
 ): Promise<(material: MaterialAsset, skinned?: boolean) => MaterialAsset> {
-  const { materialPrograms } = await import('./generated/materials.mjs');
-  const { physicalPrograms } = await import('./generated/physical.mjs');
-  const handles = (
-    await Promise.all(
-      [materialPrograms, physicalPrograms, ...additional].map((publication) =>
-        registerPrograms(assets, publication),
-      ),
-    )
-  ).flat();
-  const programs = handles.map((handle) => {
-    const program = runtimeAssets(assets).borrow<MaterialAsset>(handle).unwrap();
-    const projection = assets.getMaterialProjectionForPayload(program);
-    if (projection === undefined) throw new Error('missing native material projection');
-    assets.release(handle).unwrap();
-    return { program, projection };
-  });
+  let prepared = packaged.get(assets);
+  if (!prepared) {
+    prepared = packagedPrograms(assets).catch((error) => {
+      packaged.delete(assets);
+      throw error;
+    });
+    packaged.set(assets, prepared);
+  }
+  const bundled = await prepared;
+  const additionalPrograms = bundled.additional(additional);
   return (material, skinned = false) => {
     const recipe = surfaceProgram(material);
     if (recipe !== undefined && skinned)
@@ -91,26 +192,38 @@ export async function prepareMaterialPrograms(
             ? 'skinned-unlit'
             : undefined;
     if (family === undefined) return material;
+    const extra = additionalPrograms();
     const required = Object.keys(material.values ?? {}).filter((name) => {
       const value = material.values?.[name];
       return (
         value !== null && typeof value === 'object' && ('texture' in value || 'source' in value)
       );
     });
-    const entry = programs.find(
-      ({ projection, program }) =>
-        (recipe === undefined
-          ? projection.materialGuid.startsWith(`forgeax-three-${family}`)
-          : projection.materialGuid === recipe.programGuid &&
-            program.passes?.every(
-              (pass) =>
-                pass.program.moduleSlots?.surface === `forgeax_three::surface_${recipe.graphKey}`,
-            ) === true) &&
-        (family !== 'physical' ||
-          program.parameters?.filter((parameter) => parameter.type.startsWith('texture')).length ===
-            required.length) &&
-        required.every((name) => program.parameters?.some((parameter) => parameter.name === name)),
-    );
+    const programs =
+      family === 'skinned-unlit'
+        ? extra.length
+          ? [...bundled.skin(), ...extra]
+          : bundled.skin()
+        : extra;
+    const key = family === 'physical' ? required.slice().sort().join('-') : undefined;
+    const entry =
+      (key === undefined ? undefined : bundled.physical(key)) ??
+      programs.find(
+        ({ projection, program }) =>
+          (recipe === undefined
+            ? projection.materialGuid.startsWith(`forgeax-three-${family}`)
+            : projection.materialGuid === recipe.programGuid &&
+              program.passes?.every(
+                (pass) =>
+                  pass.program.moduleSlots?.surface === `forgeax_three::surface_${recipe.graphKey}`,
+              ) === true) &&
+          (family !== 'physical' ||
+            program.parameters?.filter((parameter) => parameter.type.startsWith('texture'))
+              .length === required.length) &&
+          required.every((name) =>
+            program.parameters?.some((parameter) => parameter.name === name),
+          ),
+      );
     if (entry === undefined) {
       if (recipe !== undefined)
         throw new ThreeCompatibilityError(
@@ -134,8 +247,7 @@ export async function prepareMaterialPrograms(
         `Cook the exact source slots with cookPhysicalMaterials([${JSON.stringify(slots)}]) and pass its publication through forgeax.materialPrograms. Include the exact set for each add/remove transition; no broader recipe or dropped map is accepted.`,
       );
     }
-    const { program, projection } = entry;
-    const names = new Set(program.parameters?.map((parameter) => parameter.name));
+    const { program, projection, names } = entry;
     const values = Object.fromEntries(
       Object.entries({ ...program.values, ...material.values }).filter(([name]) => names.has(name)),
     );
@@ -155,10 +267,14 @@ export async function prepareMaterialPrograms(
         return {
           ...source,
           name: pass.name,
+          ...(projection.sourceTemplate !== undefined && source.name !== pass.name
+            ? { templatePass: source.name }
+            : {}),
           ...(pass.renderState === undefined ? {} : { renderState: pass.renderState }),
         };
       }),
     };
+    assets.bindReceivedMaterialTemplate(passProjection);
     assets.materialPayloadProjections.set(projected, passProjection);
     return projected;
   };

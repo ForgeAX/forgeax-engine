@@ -7,7 +7,19 @@ import {
   MAX_VISIBILITY_DISTANCE_FIELD_AXIS,
   type MeshDistanceField,
 } from './distance-field';
-import { FieldBrickBuilder, fieldBrickLane, fieldBrickStart } from './distance-field-bricks';
+import {
+  distanceFieldDataLayout,
+  distanceFieldSurfaceCounts,
+} from './distance-field-artifact-layout';
+import {
+  FieldBrickBuilder,
+  fieldBrickLane,
+  fieldBrickStart,
+  MAX_DISTANCE_FIELD_BYTES,
+} from './distance-field-bricks';
+import { createTriangleAreaTest } from './distance-field-surface';
+import { buildDistanceFieldSurface } from './distance-field-surface-build';
+import { cappedDistanceSampleError, distanceBoxBandLimit } from './triangle-distance-interval';
 import { createTriangleQuery, type QueryTriangle } from './triangle-query';
 
 /** Fixed stratification; independent deterministic RNG, not an Embree/UE byte reproduction. */
@@ -39,6 +51,10 @@ const DIRECTIONS = signDirections();
 
 type FieldTriple = [number, number, number];
 type FieldFailure = Result<never, DistanceFieldError>;
+type SampledDistanceField = Extract<
+  MeshDistanceField,
+  { readonly policy: { readonly kind: 'sampled-visibility' } }
+>;
 
 function visibilityInputFailure(
   positions: ArrayLike<number>,
@@ -91,29 +107,32 @@ interface VisibilityTriangles {
   /** Sidedness of the nondegenerate triangles the query traces, in query order. */
   readonly activeFlags: number[];
   readonly triangles: QueryTriangle[];
+  readonly originalPrimitives: number[];
   readonly min: FieldTriple;
   readonly max: FieldTriple;
   readonly twoSidedCount: number;
 }
 
-function isDegenerate(a: FieldVec3, b: FieldVec3, c: FieldVec3): boolean {
-  const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]] as const;
-  const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]] as const;
-  return (
-    Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]) ===
-    0
-  );
+function includeVisibilityBounds(min: FieldTriple, max: FieldTriple, triangle: QueryTriangle) {
+  for (const p of triangle)
+    for (const axis of [0, 1, 2] as const) {
+      min[axis] = Math.min(min[axis], p[axis]);
+      max[axis] = Math.max(max[axis], p[axis]);
+    }
 }
 
 function collectVisibilityTriangles(
   indices: ArrayLike<number>,
   points: readonly FieldVec3[],
   sidedness: ArrayLike<number>,
+  canonical: Float32Array,
 ): Result<VisibilityTriangles, DistanceFieldError> {
   const topology = new Uint32Array(indices.length);
   const flags = new Uint8Array(indices.length / 3);
   const activeFlags: number[] = [];
   const triangles: QueryTriangle[] = [];
+  const originalPrimitives: number[] = [],
+    isDegenerate = createTriangleAreaTest(canonical);
   const min: FieldTriple = [Infinity, Infinity, Infinity];
   const max: FieldTriple = [-Infinity, -Infinity, -Infinity];
   let twoSidedCount = 0;
@@ -130,18 +149,24 @@ function collectVisibilityTriangles(
     flags[i / 3] = flag;
     twoSidedCount += flag;
     topology.set(ids, i);
-    if (isDegenerate(a, b, c)) continue;
+    if (isDegenerate(ids[0] ?? -1, ids[1] ?? -1, ids[2] ?? -1)) continue;
     activeFlags.push(flag);
     triangles.push([a, b, c]);
-    for (const p of [a, b, c])
-      for (const axis of [0, 1, 2] as const) {
-        min[axis] = Math.min(min[axis], p[axis]);
-        max[axis] = Math.max(max[axis], p[axis]);
-      }
+    originalPrimitives.push(i / 3);
+    includeVisibilityBounds(min, max, [a, b, c]);
   }
   if (!triangles.length)
     return distanceFieldFailure('visibility geometry has no nondegenerate triangles');
-  return ok({ topology, flags, activeFlags, triangles, min, max, twoSidedCount });
+  return ok({
+    topology,
+    flags,
+    activeFlags,
+    triangles,
+    originalPrimitives,
+    min,
+    max,
+    twoSidedCount,
+  });
 }
 
 /** The adjacent f32 value one step farther from zero (the smallest subnormal below zero for 0). */
@@ -242,6 +267,7 @@ function budgetFailure(name: string, value: number, max: number): FieldFailure |
 /** Banded unsigned distance with a 98-direction backface vote for the sign. */
 class VisibilitySampler {
   negativeSamples = 0;
+  unsignedSampleError = 0;
   private readonly query: ReturnType<typeof createTriangleQuery>;
   private readonly nearestBudget: { remaining: number };
   private readonly rayBudget: { remaining: number };
@@ -273,6 +299,21 @@ class VisibilitySampler {
     this.distanceBand = distanceBand;
   }
 
+  surface(
+    positions: Float32Array,
+    indices: Uint32Array,
+    sidedness: Uint8Array,
+    originalPrimitives: readonly number[],
+  ) {
+    return buildDistanceFieldSurface(
+      positions,
+      indices,
+      sidedness,
+      this.query.snapshot(),
+      originalPrimitives,
+    );
+  }
+
   fillBrick(index: number, brick: Float32Array): FieldFailure | undefined {
     const dimensions = this.dimensions,
       origin = this.origin,
@@ -286,18 +327,23 @@ class VisibilitySampler {
       ),
     );
     const center = lower.map((v, a) => (v + (upper[a] ?? 0)) / 2) as FieldTriple;
-    const radius = Math.hypot(...upper.map((v, a) => (v - (lower[a] ?? 0)) / 2));
-    // The unsigned distance is 1-Lipschitz. An outward guard covers coordinate
-    // and nearest-query rounding; no sample within the band is discarded.
-    const guard =
-      distanceBand + radius + Math.max(spacing * 1e-5, ...center.map((v) => Math.abs(v) * 1e-7));
-    const nearest = this.query.nearestSquared(center, guard, this.nearestBudget);
+    const limit = distanceBoxBandLimit(
+      center,
+      { min: lower as FieldTriple, max: upper as FieldTriple },
+      distanceBand,
+    );
+    if (limit === null)
+      return distanceFieldFailure(
+        'visibility brick distance certificate overflow',
+        'distance-field-limit',
+      );
+    const nearest = this.query.nearestInterval(center, limit, this.nearestBudget);
     if (nearest === null)
       return distanceFieldFailure(
         'visibility brick closest-point budget exhausted; raise closestPointBudget or the voxel size',
         'distance-field-limit',
       );
-    if (nearest >= guard * guard) {
+    if (nearest.lower >= limit) {
       brick.fill(distanceBand);
       return undefined;
     }
@@ -323,21 +369,27 @@ class VisibilitySampler {
       Math.fround(origin[1] + Math.fround(y * spacing)),
       Math.fround(origin[2] + Math.fround(z * spacing)),
     ];
-    const nearest = this.query.nearestSquared(p, distanceBand, this.nearestBudget);
-    if (nearest === null)
+    const evidence = this.query.nearestSample(p, distanceBand, this.nearestBudget);
+    if (evidence === null)
       return distanceFieldFailure(
         'visibility closest-point budget exhausted; raise closestPointBudget or the voxel size',
         'distance-field-limit',
       );
-    const distance = Math.sqrt(nearest);
+    const nearest = evidence.sampleSquared,
+      distance = Math.sqrt(nearest);
     // A capped nearest result contains no geometry reachable by a sign ray:
     // its pulled-back start puts the far endpoint strictly inside the band.
     const back =
       !this.allTwoSided && nearest < distanceBand * distanceBand ? this.backfaceVotes(p) : 0;
     if (typeof back !== 'number') return back;
-    return Math.fround(
+    const value = Math.fround(
       Math.min(distance, distanceBand) * (back > DIRECTIONS.length * 0.25 ? -1 : 1),
     );
+    const error = cappedDistanceSampleError(value, evidence, distanceBand);
+    if (error === null)
+      return distanceFieldFailure('visibility sample unsigned certificate is invalid');
+    this.unsignedSampleError = Math.max(this.unsignedSampleError, error);
+    return value;
   }
 
   private backfaceVotes(p: FieldVec3): number | FieldFailure {
@@ -376,7 +428,7 @@ export async function buildVisibilityDistanceField(
   positions: ArrayLike<number>,
   indices: ArrayLike<number>,
   options: VisibilityDistanceFieldOptions,
-): Promise<Result<MeshDistanceField, DistanceFieldError>> {
+): Promise<Result<SampledDistanceField, DistanceFieldError>> {
   const {
     closestPointBudget = DEFAULT_VISIBILITY_CLOSEST_POINT_BUDGET,
     signRayBudget = DEFAULT_VISIBILITY_SIGN_RAY_BUDGET,
@@ -396,9 +448,9 @@ export async function buildVisibilityDistanceField(
   const pointsResult = canonicalPoints(positions);
   if (!pointsResult.ok) return pointsResult;
   const { points, canonical } = pointsResult.value;
-  const source = collectVisibilityTriangles(indices, points, options.triangleSidedness);
+  const source = collectVisibilityTriangles(indices, points, options.triangleSidedness, canonical);
   if (!source.ok) return source;
-  const { topology, flags, activeFlags, triangles, min, max } = source.value;
+  const { topology, flags, activeFlags, triangles, originalPrimitives, min, max } = source.value;
   const mostlyTwoSided = source.value.twoSidedCount * 4 >= flags.length;
   const lattice = traceLatticeFor(min, max, spacing, mostlyTwoSided);
   if (!lattice.ok) return lattice;
@@ -418,14 +470,26 @@ export async function buildVisibilityDistanceField(
     distanceBand,
     { closestPoint: closestPointBudget, signRay: signRayBudget },
   );
-  const storage = new FieldBrickBuilder(dimensions),
+  const surface = sampler.surface(canonical, topology, flags, originalPrimitives);
+  if (!surface.ok) return surface;
+  const brickCount = dimensions.reduce((n, d) => n * Math.ceil(d / 4), 1);
+  const minimum = distanceFieldDataLayout(
+    brickCount,
+    64,
+    distanceFieldSurfaceCounts(surface.value),
+  );
+  if (!minimum.ok) return minimum;
+  // Every unique brick adds exactly 256 bytes, so the canonical directory's
+  // remaining span is also the exact additional sample-storage allowance.
+  const sampleBudget = brickCount * 4 + 256 + MAX_DISTANCE_FIELD_BYTES - minimum.value.byteLength;
+  const storage = new FieldBrickBuilder(dimensions, sampleBudget),
     brick = new Float32Array(64);
   for (let index = 0; index < storage.bricks.length; index++) {
     const brickFailure = sampler.fillBrick(index, brick);
     if (brickFailure !== undefined) return brickFailure;
     if (!storage.store(index, brick))
       return distanceFieldFailure(
-        'visibility field storage exceeds 32 MiB',
+        'visibility samples and source surface exceed 32 MiB',
         'distance-field-limit',
       );
   }
@@ -438,12 +502,14 @@ export async function buildVisibilityDistanceField(
     origin,
     spacing,
     ...storage.finish(),
+    surface: surface.value,
     policy: {
       kind: 'sampled-visibility',
       sourceDigest,
       mostlyTwoSided,
       traceBounds: { min: lo, max: hi },
       distanceBand,
+      unsignedSampleError: sampler.unsignedSampleError,
     },
     quality: { negativeSamples: sampler.negativeSamples, testedTriangles: triangles.length },
   });

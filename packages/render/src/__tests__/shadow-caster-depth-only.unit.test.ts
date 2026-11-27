@@ -1,8 +1,14 @@
+import {
+  createBoxGeometry,
+  deriveVertexLayoutProjection,
+  prepareStaticMeshVertexStreams,
+} from '@forgeax/engine-geometry';
 import { describe, expect, it } from 'vitest';
 import { materialPipelineCacheKey } from '../assembly/material-shader-policy';
 import { SHADOW_CASTER_SHADER_ID } from '../pbr-pipeline';
 import {
   positionOnlyShadowVertexEntry,
+  requestGpuDrivenShadowPipeline,
   SHADOW_CASTER_POSITION_ONLY_ENTRY,
   shadowCasterDepthOnly,
 } from '../record/shadow-pass';
@@ -154,4 +160,46 @@ describe('positionOnlyShadowVertexEntry', () => {
       positionOnlyShadowVertexEntry(both, { deformation: 'rigid', shadowVertexEntry: 'vs_shadow' }),
     ).toBe('vs_shadow');
   });
+});
+
+it('uses only the position and normal streams for a stock opaque shadow', () => {
+  const mesh = createBoxGeometry(1, 1, 1).unwrap();
+  const streams = prepareStaticMeshVertexStreams(
+    mesh.vertices,
+    deriveVertexLayoutProjection(mesh.attributes),
+  );
+  if (streams === undefined) throw new Error('Box has no static vertex streams');
+  const shadow = {
+    shadowArtifact: {
+      material: SHADOW_CASTER_SHADER_ID,
+      receipt: { sceneIndexEntry: 'vs_scene_index' },
+      program: {
+        entryPoints: [
+          { stage: 'vertex', name: 'vs_scene_index' },
+          { stage: 'vertex', name: SHADOW_CASTER_POSITION_ONLY_ENTRY },
+        ],
+      },
+    },
+    deformation: 'rigid',
+    material: {},
+    mesh: { layoutProjection: streams.layout, indexFormat: 'uint16' },
+  } as unknown as Parameters<typeof requestGpuDrivenShadowPipeline>[2];
+  const runtime = { device: { caps: { storageBuffer: true } } } as Parameters<
+    typeof requestGpuDrivenShadowPipeline
+  >[0]['runtime'];
+  const resolve = (...args: Parameters<NonNullable<typeof runtime.getMaterialShaderPipeline>>) => {
+    bindings = args[13];
+    return null;
+  };
+  let bindings: typeof streams.layout | undefined;
+  requestGpuDrivenShadowPipeline({ runtime }, resolve, shadow, batch(), false);
+  expect(bindings?.streams).toEqual(streams.layout.streams?.slice(0, 2));
+  requestGpuDrivenShadowPipeline(
+    { runtime },
+    resolve,
+    shadow,
+    batch({ key: { admission: 'alpha-mask' } }),
+    false,
+  );
+  expect(bindings).toBe(streams.layout);
 });

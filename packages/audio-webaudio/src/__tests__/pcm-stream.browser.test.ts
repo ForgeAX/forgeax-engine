@@ -40,6 +40,42 @@ it('addresses the rounded PCM frame and joins the loop boundary in native output
   }
 });
 
+it('reads only verified windows using the package Host transport', async () => {
+  const bytes = addressedPcmWav();
+  const manifest = await indexPcmWave(bytes);
+  const url = 'https://forgeax.package/tone.wav';
+  const fetchStream = vi.fn(
+    async (_: string, init: { signal: AbortSignal; headers: { Range: string } }) => {
+      const [start, end] = init.headers.Range.slice(6).split('-').map(Number) as [number, number];
+      return new Response(bytes.slice(start, end + 1), {
+        status: 206,
+        headers: { 'Content-Range': `bytes ${start}-${end}/${bytes.length}` },
+      });
+    },
+  );
+  const context = new OfflineAudioContext(1, 4800, 48000);
+  const engine = new WebAudioEngine({ context, fetchStream });
+  try {
+    engine.play(
+      5,
+      {
+        kind: 'audio',
+        sourceKey: 'installed-tone',
+        mediaType: 'audio/wav',
+        stream: { ...manifest, url },
+      },
+      { loop: false, volume: 1, spatialBlend: 0, bus: 'music' },
+    );
+    await expect.poll(() => engine.getStreamState(5)?.pcmBytes ?? 0).toBeGreaterThan(0);
+    expect(fetchStream.mock.calls[0]?.[0]).toBe(url);
+    expect(fetchStream.mock.calls[0]?.[1].headers.Range).toBe('bytes=44-96043');
+    const output = (await context.startRendering()).getChannelData(0);
+    expect(output.some((sample) => Math.abs(sample) > 0.001)).toBe(true);
+  } finally {
+    engine.destroy();
+  }
+});
+
 it('streams real Range windows with pause, seek, rate, effects, bus and cancellation', async () => {
   // The fixture is emitted by the same audio importer before Vite starts.
   const bytes = toneWav();

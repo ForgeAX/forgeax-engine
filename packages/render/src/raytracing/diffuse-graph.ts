@@ -1,4 +1,5 @@
 import {
+  type GraphBuffer,
   type GraphTextureView,
   type RenderGraphBuilder,
   RenderGraphError,
@@ -22,19 +23,28 @@ export type ExactRayDiffuseTargets = RayDiffuseTargets & {
 
 export interface RayDiffuseTargets {
   readonly scene: RenderPipelineTarget;
+  /** The deferred raster produces this only for an admitted GI consumer. */
+  readonly diffuseGiBaseline: GraphBuffer;
+  readonly subsurfaceDiffuse?: RenderPipelineTarget;
   readonly depth: GraphTextureView;
   readonly normal: RenderPipelineTarget;
   readonly albedo: RenderPipelineTarget;
   readonly f0: RenderPipelineTarget;
-  /** Visible-surface identity; only the exact gather reads it (`visibleSurface` profiles). */
+  readonly compactGbuffer?: true;
+  /** Same-frame identity for exact gather and canonical software Screen receivers. */
   readonly identity?: RenderPipelineTarget;
   readonly motion: RenderPipelineTarget;
-  /** The view's shared closest-depth pyramid, created on first request. */
-  readonly depthPyramid?: () => Result<GraphTextureView, RenderGraphError>;
+  /** Compact velocity carries previous device Z beside the legacy XY word. */
+  readonly motionWithDepth?: RenderPipelineTarget;
+  /** The view HZB used by short-range AO. */
+  readonly sceneHzb?: () => Result<GraphTextureView, RenderGraphError>;
+  /** The closest HZB used only by hierarchical screen tracing. */
+  readonly closestHzb?: () => Result<GraphTextureView, RenderGraphError>;
   /** Deferred split-sum response and the SSR-replaceable fallback; present when any
    * reflection consumer is admitted. Lite reflections add world specular into both. */
   readonly reflection?: {
     readonly fallback: RenderPipelineTarget;
+    readonly composeReflection?: true;
     readonly response: RenderPipelineTarget;
   };
 }
@@ -148,17 +158,13 @@ export function addRayDiffusePasses(
     if (!reconstructed.ok) return reconstructed;
     irradiance = reconstructed.value;
   }
-  const reflectionResponse =
-    prepared.reflections === undefined ? undefined : target.reflection?.response.view;
   const composited = addRayDiffuseCompositePass(
     graph,
     'ray-diffuse.composite',
     () => prepared.composite,
     target,
     irradiance,
-    view,
     prepared.pixelCount,
-    reflectionResponse,
   );
   if (!composited.ok || prepared.reflections === undefined || target.reflection === undefined)
     return composited;

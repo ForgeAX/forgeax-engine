@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "sideEffects": false,
   "description": "Scene identity, hierarchy, and world transform propagation.",
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.mjs" }, "./package.json": "./package.json" },
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.mjs" }, "./internal": { "types": "./dist/internal.d.ts", "import": "./dist/internal.mjs" }, "./package.json": "./package.json" },
   "main": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
   "files": ["dist", "src", "!src/**/__tests__/**",  "README.md", "LICENSE"],

@@ -95,7 +95,7 @@ fn evaluate_surface(input : SurfaceInput) -> SurfaceData {
     expect(surfaceSource).toContain(
       'SurfaceData(vec3<f32>(0.0), input.viewDirectionWS, 0.0, 1.0, emissive, 0.0, opacity, 0.0, 0.0)',
     );
-    expect(defaultSource).toMatch(/alphaClipThreshold,\s*0\.0,\s*\);/);
+    expect(defaultSource).toMatch(/coverage\.clipThreshold,\s*0\.0,\s*\);/);
   });
 
   it('keeps the default evaluator in the same Surface ABI family', () => {

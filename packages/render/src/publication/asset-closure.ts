@@ -27,17 +27,21 @@ export class PublishedAssetClosure {
         const patch =
           change === undefined || base === undefined
             ? undefined
-            : publishAssetPatch(records.borrow<Asset>(handle).unwrap(), change, base);
+            : publishAssetPatch(records.resolveStoredAsset<Asset>(handle).unwrap(), change, base);
         if (patch !== undefined) patches.set(handle, patch);
       },
-      rows: (): readonly (readonly [number, Asset, number])[] =>
-        [...transaction.changed]
-          .filter((handle) => transaction.has(handle) && !patches.has(handle))
-          .map((handle) => [
-            handle,
-            records.borrow<Asset>(handle).unwrap(),
-            transaction.version(handle) ?? 0,
-          ]),
+      rows: (
+        usePrepared?: (handle: number, revision: number) => boolean,
+      ): readonly (readonly [number, Asset, number])[] => {
+        const rows: (readonly [number, Asset, number])[] = [];
+        for (const handle of transaction.changed) {
+          if (!transaction.has(handle) || patches.has(handle)) continue;
+          const revision = transaction.version(handle) ?? 0;
+          if (usePrepared?.(handle, revision)) continue;
+          rows.push([handle, records.resolveStoredAsset<Asset>(handle).unwrap(), revision]);
+        }
+        return rows;
+      },
       patches: (): readonly PublishedAssetPatch[] =>
         [...patches.values()].filter(({ handle }) => transaction.has(handle)),
       retired: transaction.retired,

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { textureContribution } from '@forgeax/engine-image';
 import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
-import { ImporterRegistry, runImport } from '@forgeax/engine-import';
+import { projectImportPack, ImporterRegistry, runImport } from '@forgeax/engine-import';
 import { DirectionalLight, inspectVolumetricFog, validateVolumetricFog } from '@forgeax/engine-render';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import { volumetricDensityImporter } from '../volumetric-density-importer';
@@ -26,7 +26,7 @@ describe('public volumetric fog MVD asset chain', () => {
     }, importers, { readSource: async () => ({ ok: true, value: new TextEncoder().encode(JSON.stringify({ format: 'forgeax-volumetric-density', width: 64, height: 64, depth: 64, base: 19, gradient: 0 })) }) });
     expect(imported.ok).toBe(true);
     if (!imported.ok || 'skipped' in imported.value) throw new Error('Density source did not produce a publication');
-    const row = imported.value.pack.assets[0]!;
+    const row = projectImportPack(imported.value.product).assets[0]!;
     const body = row.artifacts.body;
     const bodyBytes = body?.bytes;
     if (bodyBytes === undefined) throw new Error('Density body artifact is absent');

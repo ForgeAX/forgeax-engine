@@ -1,20 +1,19 @@
 import { fork } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { NativeCookDraft, NativeCooker } from '@forgeax/engine-pack/native-cooker';
+import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import type { ToolRunOptions, ToolTerminal } from '@forgeax/engine-tool-runtime';
-import type { ImportContext, Importer, ImportProductFinalizeResult } from '@forgeax/engine-types';
+import type { ImportContext, Importer } from '@forgeax/engine-types';
 import type { InlineConfig } from 'vite';
 import type { DevKitAppOptions, DevKitDeliveryOptions } from '../plugin-build.js';
 import type { ProjectFacts } from '../types.js';
 import type {
   BuildCallbackRequest,
-  BuildCookerDescriptor,
-  BuildImporterDescriptor,
-  BuildProcessRequest,
+  BuildRequest,
+  BuildResponse,
+  BuildResult,
 } from './build-process.js';
 import { decodeBuildMessage, encodeBuildMessage } from './build-process-wire.js';
 import {
@@ -22,7 +21,7 @@ import {
   type PluginSourceInventory,
   pluginAssetClosure,
 } from './plugin-assets.js';
-import { compileNodePluginPrograms } from './plugin-programs-node.js';
+import { compileNodePluginPrograms, openNodePluginStage } from './plugin-programs-node.js';
 
 export interface ProjectCookers {
   readonly appOptions: DevKitAppOptions;
@@ -40,12 +39,6 @@ export interface BuildSessionDeadlines {
   readonly operationTimeoutMs?: number;
   readonly cleanupTimeoutMs?: number;
 }
-
-type Request = BuildProcessRequest extends infer T
-  ? T extends BuildProcessRequest
-    ? Omit<T, 'id'>
-    : never
-  : never;
 
 /** Project code, native registry and each original cook function stay in one killable process. */
 export async function loadProjectCookers(
@@ -86,9 +79,7 @@ export async function loadProjectCookers(
     };
   const inventory = options.inventory ?? (await discoverPluginAssets(facts));
   const records = pluginAssetClosure(inventory, facts.roots.build);
-  const directory = resolve(facts.root, '.forgeax', 'build');
-  await mkdir(directory, { recursive: true });
-  const temporary = await mkdtemp(resolve(directory, 'session-'));
+  const { path: temporary, dispose: disposeStage } = await openNodePluginStage(facts.root, 'build');
   const watchFiles = new Set<string>();
   let child: ReturnType<typeof fork> | undefined;
   const contexts = new Map<number, ImportContext>();
@@ -105,13 +96,13 @@ export async function loadProjectCookers(
     pending.clear();
     child?.kill('SIGKILL');
   }
-  function request<T>(
-    value: Request,
+  function request<Operation extends BuildRequest['operation']>(
+    value: BuildRequest & { readonly operation: Operation },
     timeoutMs = options.operationTimeoutMs ?? 60_000,
     context?: ImportContext,
     signal?: AbortSignal,
-  ): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
+  ): Promise<BuildResult[Operation]> {
+    return new Promise((resolve, reject) => {
       if (!child?.connected || disposed || terminated) {
         reject(new Error('build process is unavailable'));
         return;
@@ -136,7 +127,7 @@ export async function loadProjectCookers(
       pending.set(id, {
         resolve(value) {
           finish();
-          resolve(value as T);
+          resolve(value as BuildResult[Operation]);
         },
         reject(error) {
           finish();
@@ -160,7 +151,7 @@ export async function loadProjectCookers(
       if (child && child.exitCode === null && child.signalCode === null) {
         await new Promise<void>((resolve) => child?.once('exit', () => resolve()));
       }
-      await rm(temporary, { recursive: true, force: true });
+      await disposeStage();
     }
   }
   try {
@@ -180,9 +171,7 @@ export async function loadProjectCookers(
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     });
     child.on('message', (packet: Uint8Array) => {
-      let message:
-        | BuildCallbackRequest
-        | { id: number; ok: boolean; value?: unknown; error?: unknown };
+      let message: BuildCallbackRequest | BuildResponse;
       try {
         message = decodeBuildMessage(packet) as typeof message;
       } catch (error) {
@@ -200,14 +189,10 @@ export async function loadProjectCookers(
                 value = await context.readSource();
                 break;
               case 'readSibling':
-                value = await context.readSibling(
-                  ...(message.args as Parameters<ImportContext['readSibling']>),
-                );
+                value = await context.readSibling(...message.args);
                 break;
               case 'decodeImage':
-                value = await context.decodeImage(
-                  ...(message.args as Parameters<ImportContext['decodeImage']>),
-                );
+                value = await context.decodeImage(...message.args);
                 break;
             }
             if (child?.connected)
@@ -229,12 +214,7 @@ export async function loadProjectCookers(
     child.on('exit', (code, signal) => {
       abort(new Error(`build process exited (${code ?? signal})`));
     });
-    const started = await request<{
-      appOptions: DevKitAppOptions;
-      delivery: DevKitDeliveryOptions;
-      cookers: readonly BuildCookerDescriptor[];
-      importers: readonly BuildImporterDescriptor[];
-    }>(
+    const started = await request(
       {
         operation: 'start',
         entry: resolve(temporary, 'compiled', 'entry.mjs'),
@@ -262,14 +242,14 @@ export async function loadProjectCookers(
           ...(cacheIdentity === true
             ? {
                 cacheIdentity: () =>
-                  request<string>(
+                  request(
                     { operation: 'cacheIdentity', key },
                     options.operationTimeoutMs ?? 60_000,
                   ),
               }
             : {}),
           cook: (input) =>
-            request<NativeCookDraft>(
+            request(
               { operation: 'cook', key, input },
               timeoutMs ?? options.operationTimeoutMs ?? 60_000,
             ),
@@ -300,7 +280,7 @@ export async function loadProjectCookers(
           ...(descriptor.decodeImage
             ? {
                 decodeImage: (...args: Parameters<ImportContext['decodeImage']>) =>
-                  request<Awaited<ReturnType<ImportContext['decodeImage']>>>({
+                  request({
                     operation: 'decodeImage',
                     key: descriptor.key,
                     args,
@@ -310,10 +290,7 @@ export async function loadProjectCookers(
           ...(descriptor.publish
             ? {
                 catalog: {
-                  publish: (input: {
-                    importSettings: Readonly<Record<string, unknown>>;
-                    subAssets: ImportContext['subAssets'];
-                  }) => request<boolean>({ operation: 'publish', key: descriptor.key, input }),
+                  publish: (input) => request({ operation: 'publish', key: descriptor.key, input }),
                 },
               }
             : {}),
@@ -321,7 +298,7 @@ export async function loadProjectCookers(
         ...(descriptor.finalize
           ? ({
               finalize: (product, options) =>
-                request<ImportProductFinalizeResult>({
+                request({
                   operation: 'finalize',
                   key: descriptor.key,
                   product,
@@ -364,7 +341,7 @@ export async function loadProjectCookers(
           caller: _caller,
           ...wire
         } = options;
-        return request<ToolTerminal<unknown>>(
+        return request(
           { operation: 'tool', tool, args, options: wire },
           (options.deadlineMs ?? 60_000) + 5_000,
           undefined,

@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import { createRenderReadLease } from '@forgeax/engine-ecs/projection';
@@ -28,14 +27,10 @@ import {
   createMaterialShaderProgram,
   createStandardPbrArtifactReceipt,
   type MaterialShaderArtifact,
-  violatedVariantPermutationRules,
 } from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
-import {
-  buildEngineShaderManifest,
-  publishedVariantDefines,
-} from '@forgeax/engine-vite-plugin-shader';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { skyViewBindings } from '../environment/bindings';
 import { type GpuDrivenPbrProgram, standardPbrProgramKey } from '../gpu-driven/pbr-program';
 import { GpuDrivenProduction, type PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
 import {
@@ -52,12 +47,19 @@ import {
   GPU_BUFFER_USAGE_UNIFORM,
   GPU_BUFFER_USAGE_VERTEX,
 } from '../gpu-usage';
+import {
+  assembleMaterialWithSkylightEntries,
+  createSkylightFallback,
+  skylightBindGroupResources,
+} from '../ibl/skylight-bind-group';
 import type { ShadowViewIdentity } from '../inspection-types';
 import { MaterialResource } from '../material-resource';
 import {
   buildGpuDrivenPbrInstancesBindGroupLayout,
   buildGpuDrivenPbrPipelineLayout,
+  buildGpuDrivenPrimitiveBindGroupLayout,
   buildPbrPipelineLayouts,
+  buildPbrViewBglEntries,
   omittedStandardMaterialBindings,
 } from '../pbr-pipeline';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
@@ -69,6 +71,11 @@ import {
   recordGpuDrivenShadowIndirect,
 } from '../record/shadow-pass';
 import { VIEW_UNIFORM_BUFFER_SIZE, writeViewUbo } from '../record/view-ubo';
+import {
+  type PrimitiveReflection,
+  projectPrimitiveReflectionLayout,
+  retainPipelinePrimitiveReflection,
+} from '../reflection/primitive-bindings';
 import type { RenderPipelineFrame, RenderPipelineGpuDrivenProjection } from '../render-pipeline';
 import type {
   ExtractedFrame,
@@ -76,6 +83,7 @@ import type {
   RenderableSnapshot,
 } from '../render-system-extract';
 import { PersistentRenderScene } from '../scene/render-scene';
+import { readEngineTemplates } from './engine-shader-templates.dawn.fixture';
 import {
   admitPbrDawnFixture,
   verifyRetainedRasterClass,
@@ -84,12 +92,8 @@ import { verifyRetainedRasterRouting } from './gpu-driven-raster-routing-dawn-fi
 import { nativeDeviceFixture } from './native-device-fixture';
 
 const STANDARD_PBR_RECEIPT = createStandardPbrArtifactReceipt();
-const ENGINE_SHADER_MANIFEST = await buildEngineShaderManifest();
-const STANDARD_PBR_SOURCE = readFileSync(
-  new URL('../../../shader/src/default-standard-pbr.wgsl', import.meta.url),
-  'utf8',
-);
-const STANDARD_PBR_PRODUCER = ENGINE_SHADER_MANIFEST.materialShaders.find(
+const MATERIAL_PROGRAMS = [...(await readEngineTemplates()).materialShaderManifestEntries()];
+const STANDARD_PBR_PRODUCER = MATERIAL_PROGRAMS.find(
   ({ identifier }) => identifier === 'forgeax::default-standard-pbr',
 );
 const STANDARD_PBR_GPU_VARIANT = STANDARD_PBR_PRODUCER?.variants.find(
@@ -125,7 +129,7 @@ const STANDARD_PBR_COLORED_GPU_VARIANT = STANDARD_PBR_PRODUCER?.variants.find(
     defines.STANDARD_LEAN_INPUTS !== true,
 );
 const STANDARD_PBR_COLORED_RECEIPT = createStandardPbrArtifactReceipt(false, true);
-const SHADOW_CASTER_PRODUCER = ENGINE_SHADER_MANIFEST.materialShaders.find(
+const SHADOW_CASTER_PRODUCER = MATERIAL_PROGRAMS.find(
   ({ identifier }) => identifier === 'forgeax::default-shadow-caster',
 );
 const SHADOW_CASTER_GPU_ALPHA_VARIANT = SHADOW_CASTER_PRODUCER?.variants.find(
@@ -160,7 +164,7 @@ it.each([
   ['Standard with vertex color', STANDARD_PBR_COLORED_GPU_VARIANT],
   ['Shadow', SHADOW_CASTER_GPU_ALPHA_VARIANT],
   ['lean Shadow', SHADOW_CASTER_GPU_ALPHA_LEAN_VARIANT],
-] as const)('selects the ordinary mesh layout for %s', (_label, variant) => {
+] as const)('uses the Scene transform table and an empty rigid Primitive for %s', (_label, variant) => {
   expect(variant).toBeDefined();
   if (variant === undefined) throw new Error('missing ordinary scene-index variant');
   expect(variant.defines.WATER_WAVES_AVAILABLE).toBe(false);
@@ -169,7 +173,8 @@ it.each([
   expect(vertex).toBeDefined();
   expect(
     vertex?.bindings.filter((binding) => binding.group === 2).map(({ binding }) => binding),
-  ).toEqual([0]);
+  ).toEqual([]);
+  expect(vertex?.bindings.some(({ group, binding }) => group === 3 && binding === 9)).toBe(true);
 });
 
 // Keep the existing 60-frame local/native window and CI lightweight profile.
@@ -285,6 +290,7 @@ function alphaMaskSnapshot(
   world[15] = 1;
   return {
     assetHandle,
+    mobility: 'static',
     transform: { world },
     localAabb: new Float32Array([-1, -1, -1, 1, 1, 1]),
     material,
@@ -592,7 +598,12 @@ function writeDirectionalViewUbo(
 }
 
 /** Main and per-kind shadow view groups over shared 1x1 depth arrays and their uniforms. */
-function createAlphaMaskViews(device: RhiDevice, viewLayout: BindGroupLayout) {
+function createAlphaMaskViews(
+  device: RhiDevice,
+  viewLayout: BindGroupLayout,
+  sky: Parameters<typeof skyViewBindings>[0],
+) {
+  const skyEntries = skyViewBindings(sky);
   const viewUniform = createUniformBuffer(device, VIEW_UNIFORM_BUFFER_SIZE);
   const shadowViewUniform = createUniformBuffer(device, VIEW_UNIFORM_BUFFER_SIZE);
   const directionalCascadeUniform = createUniformBuffer(device, 256);
@@ -630,6 +641,7 @@ function createAlphaMaskViews(device: RhiDevice, viewLayout: BindGroupLayout) {
     .createBindGroup({
       layout: viewLayout,
       entries: [
+        ...skyEntries,
         { binding: 0, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
         { binding: 3, resource: { kind: 'textureView', value: viewDepth } },
         { binding: 4, resource: { kind: 'sampler', value: comparisonSampler } },
@@ -638,7 +650,6 @@ function createAlphaMaskViews(device: RhiDevice, viewLayout: BindGroupLayout) {
         { binding: 6, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
         { binding: 7, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
         { binding: 8, resource: { kind: 'textureView', value: viewDepth } },
-        { binding: 10, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
       ],
     })
     .unwrap();
@@ -647,6 +658,7 @@ function createAlphaMaskViews(device: RhiDevice, viewLayout: BindGroupLayout) {
       .createBindGroup({
         layout: viewLayout,
         entries: [
+          ...skyEntries,
           {
             binding: 0,
             resource: { kind: 'buffer', value: { buffer: shadowViewUniform, size: 4096 } },
@@ -661,10 +673,6 @@ function createAlphaMaskViews(device: RhiDevice, viewLayout: BindGroupLayout) {
           },
           { binding: 7, resource: { kind: 'buffer', value: { buffer: cascadeBuffer } } },
           { binding: 8, resource: { kind: 'textureView', value: viewDepth } },
-          {
-            binding: 10,
-            resource: { kind: 'buffer', value: { buffer: shadowViewUniform, size: 4096 } },
-          },
         ],
       })
       .unwrap();
@@ -688,7 +696,6 @@ function createAlphaMaskViews(device: RhiDevice, viewLayout: BindGroupLayout) {
   device.queue.writeBuffer(spotCascadeUniform, 0, new Uint32Array([0, 1, 0, 0])).unwrap();
   device.queue.writeBuffer(spotCascadeUniform, 16, shadowLightMatrix).unwrap();
   return {
-    viewUniform,
     viewBindGroup,
     shadowViewBindGroups,
     buffers: [
@@ -736,19 +743,7 @@ function createAlphaMaskMaterialInputs(device: RhiDevice, transformed: boolean) 
   const discardedBaseColorView = device
     .createTextureView(discardedBaseColorTexture, { dimension: '2d' })
     .unwrap();
-  const materialCubeTexture = device
-    .createTexture({
-      label: 'gpu-driven-alpha-mask.material-fallback-cube',
-      format: 'rgba8unorm',
-      size: { width: 1, height: 1, depthOrArrayLayers: 6 },
-      usage: 0x06,
-      dimension: '2d',
-      textureBindingViewDimension: 'cube',
-    })
-    .unwrap();
-  const materialCubeView = device
-    .createTextureView(materialCubeTexture, { dimension: 'cube' })
-    .unwrap();
+  const skylight = createSkylightFallback(device, device.queue);
   const baseColorSampler = device
     .createSampler({ magFilter: 'nearest', minFilter: 'nearest' })
     .unwrap();
@@ -781,10 +776,21 @@ function createAlphaMaskMaterialInputs(device: RhiDevice, transformed: boolean) 
   return {
     opaque: { buffer: opaqueMaterialBuffer, baseColorView: opaqueBaseColorView },
     discarded: { buffer: discardedMaterialBuffer, baseColorView: discardedBaseColorView },
-    materialCubeView,
+    skylight: skylightBindGroupResources(skylight),
     baseColorSampler,
-    buffers: [opaqueMaterialBuffer, discardedMaterialBuffer],
-    textures: [opaqueBaseColorTexture, discardedBaseColorTexture, materialCubeTexture],
+    buffers: [
+      opaqueMaterialBuffer,
+      discardedMaterialBuffer,
+      skylight.skySh,
+      skylight.intensityBuffer,
+    ],
+    textures: [
+      opaqueBaseColorTexture,
+      discardedBaseColorTexture,
+      skylight.irradianceTexture,
+      skylight.prefilterTexture,
+      skylight.brdfLutTexture,
+    ],
   };
 }
 
@@ -793,10 +799,8 @@ function createAlphaMaskMaterialGroup(
   layout: BindGroupLayout,
   inputs: AlphaMaskMaterialInputs,
   material: { readonly buffer: Buffer; readonly baseColorView: TextureView },
-  viewUniform: Buffer,
   sceneMaterialBuffer: Buffer,
 ): BindGroup {
-  const iblStart = 1 + BUILTIN_USER_REGION_TEXTURE_FIELDS.length * 2;
   const omitted = omittedStandardMaterialBindings(
     BUILTIN_USER_REGION_TEXTURE_FIELDS,
     false,
@@ -817,31 +821,15 @@ function createAlphaMaskMaterialGroup(
         resource: { kind: 'textureView' as const, value: baseColorView },
       },
     ]).flat(),
-    {
-      binding: iblStart + 0,
-      resource: { kind: 'textureView' as const, value: inputs.materialCubeView },
-    },
-    { binding: iblStart + 1, resource: { kind: 'sampler' as const, value: baseColorSampler } },
-    {
-      binding: iblStart + 2,
-      resource: { kind: 'textureView' as const, value: baseColorView },
-    },
-    { binding: 47, resource: { kind: 'textureView' as const, value: baseColorView } },
-    { binding: iblStart + 3, resource: { kind: 'sampler' as const, value: baseColorSampler } },
-    { binding: iblStart + 4, resource: { kind: 'textureView' as const, value: baseColorView } },
-    {
-      binding: iblStart + 5,
-      resource: { kind: 'buffer' as const, value: { buffer: viewUniform, size: 4096 } },
-    },
-    {
-      binding: 46,
-      resource: {
-        kind: 'buffer' as const,
-        value: { buffer: sceneMaterialBuffer },
-      },
-    },
-  ].filter((entry) => !omitted.has(entry.binding));
-  return device.createBindGroup({ layout, entries }).unwrap();
+  ];
+  const selected = assembleMaterialWithSkylightEntries(entries, inputs.skylight, null).filter(
+    (entry) => !omitted.has(entry.binding),
+  );
+  selected.push({
+    binding: 46,
+    resource: { kind: 'buffer', value: { buffer: sceneMaterialBuffer } },
+  });
+  return device.createBindGroup({ layout, entries: selected }).unwrap();
 }
 
 function alphaMaskExtractedFrame(source: RenderableSnapshot): ExtractedFrame {
@@ -971,7 +959,7 @@ function createAlphaMaskShadowPipeline(
     .unwrap();
 }
 
-/** The unmoved caster settles into each available static layer. */
+/** The fixture declares a rigid static caster for every available static layer. */
 function alphaMaskRasterIdentity(identity: AlphaMaskShadowIdentity): ShadowViewIdentity {
   return shadowViewHasStaticLayer(identity) ? { ...identity, layer: 'static' } : identity;
 }
@@ -1100,6 +1088,7 @@ function addAlphaMaskRaster(
     readonly depthView: GraphTextureView;
     readonly viewBindGroup: BindGroup;
     readonly frameResources: PreparedGpuDrivenFrame['standardPbrFrameResources'];
+    readonly reflection: PrimitiveReflection;
   },
   name: string,
   outputView: GraphTextureView,
@@ -1134,7 +1123,9 @@ function addAlphaMaskRaster(
           prepareMaterialBinding: (
             (groups: readonly (BindGroup | undefined)[]) => (slot: number) => {
               const group = groups[slot];
-              return group === undefined ? undefined : { group, byteOffset: slot * 1280 };
+              return group === undefined
+                ? undefined
+                : { group, byteOffset: slot * 1280, reflection: frame.reflection };
             }
           )([materialBindGroup()]),
         }),
@@ -1189,7 +1180,7 @@ function addAlphaMaskShadowDepthRasters(
             depthStoreOp: 'store',
           },
           encode: ({ pass }) => {
-            pass.setBindGroup(0, shadowViewGroup, [0, 0]);
+            pass.setBindGroup(0, shadowViewGroup, [0]);
             recordGpuDrivenShadowIndirect(pass, submission);
           },
         },
@@ -1224,6 +1215,7 @@ interface AlphaMaskRun {
   readonly shadowDepthReadbackBuffers: readonly AlphaMaskShadowDepthReadback[];
   readonly viewBindGroup: BindGroup;
   readonly opaqueMaterialBindGroup: BindGroup;
+  readonly reflection: PrimitiveReflection;
   readonly setDiscardedTexture: (discarded: boolean) => void;
   readonly coordinateSet: 1 | 7 | undefined;
   readonly vertexColorAvailable: boolean;
@@ -1254,11 +1246,19 @@ function expectAlphaMaskPasses(compiled: CompiledRenderGraph<RenderPipelineFrame
   );
 }
 
-async function executeAlphaMaskFrame(run: AlphaMaskRun, label: string): Promise<void> {
+async function executeAlphaMaskFrame(
+  run: AlphaMaskRun,
+  prepared: PreparedGpuDrivenFrame,
+  label: string,
+): Promise<void> {
   const encoder = run.device.createCommandEncoder({ label }).unwrap();
-  expect(run.compiled.execute({ encoder } as unknown as RenderPipelineFrame).ok).toBe(true);
+  run.compiled.execute({ encoder } as unknown as RenderPipelineFrame).unwrap();
+  prepared._sealResourceReads().unwrap();
   run.device.queue.submit([encoder.finish().unwrap()]).unwrap();
-  await run.device.queue.onSubmittedWorkDone();
+  const completed = run.device.queue.onSubmittedWorkDone();
+  prepared._trackSubmittedWork(completed);
+  await completed;
+  prepared._commitResourceReplacement();
 }
 
 /** Admit the same binding-input domain before measuring stable frames. */
@@ -1285,7 +1285,6 @@ function prepareStableAlphaMask(run: AlphaMaskRun): PreparedGpuDrivenFrame | und
   if (!stablePrepared.ok || stablePrepared.value === undefined) return undefined;
   const stableShadowUpdated = stablePrepared.value.updateShadowViews?.(run.shadowViews);
   expect(stableShadowUpdated?.ok).toBe(true);
-  stablePrepared.value._commitResourceReplacement();
   return stablePrepared.value;
 }
 
@@ -1331,8 +1330,7 @@ async function recordStableAlphaMaskFrames(run: AlphaMaskRun) {
     expect(framePrepared.ok).toBe(true);
     if (!framePrepared.ok || framePrepared.value === undefined) return;
     expect(framePrepared.value.updateShadowViews?.(run.shadowViews)?.ok).toBe(true);
-    framePrepared.value._commitResourceReplacement();
-    await executeAlphaMaskFrame(run, `gpu-driven-alpha-mask-stable-${frame}`);
+    await executeAlphaMaskFrame(run, framePrepared.value, `gpu-driven-alpha-mask-stable-${frame}`);
     inspections.push(stableFrameInspection(run.production.inspect()));
   }
   return { inspections, metrics };
@@ -1410,13 +1408,13 @@ async function expectAlphaMaskReadbacks(run: AlphaMaskRun): Promise<void> {
  */
 async function verifyCompiledAlphaMask(run: AlphaMaskRun): Promise<boolean> {
   expectAlphaMaskPasses(run.compiled);
-  await executeAlphaMaskFrame(run, 'gpu-driven-alpha-mask-dawn');
-  run.prepared._commitResourceReplacement();
+  await executeAlphaMaskFrame(run, run.prepared, 'gpu-driven-alpha-mask-dawn');
   expect(run.production.inspect().worldEntitiesScanned).toBe(1);
   expect(run.production.inspect().sceneTableUploadBytes).toBeGreaterThan(0);
   expect(run.production.inspect().paletteUploadBytes).toBe(0);
   const stablePrepared = prepareStableAlphaMask(run);
   if (stablePrepared === undefined) return false;
+  await executeAlphaMaskFrame(run, stablePrepared, 'gpu-driven-alpha-mask-warmup');
   const stableBaseline = run.production.inspect();
   const stable = await recordStableAlphaMaskFrames(run);
   if (stable === undefined) return false;
@@ -1453,6 +1451,7 @@ async function verifyCompiledAlphaMask(run: AlphaMaskRun): Promise<boolean> {
       persistentFrame: run.persistentFrame,
       viewBindGroup: run.viewBindGroup,
       materialBindGroup: run.opaqueMaterialBindGroup,
+      reflection: run.reflection,
     });
   }
   (await run.compiled.retire()).unwrap();
@@ -1482,18 +1481,57 @@ describe('GPU-driven production PBR Dawn regression', () => {
     const viewShader = (
       await createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL, label: 'gpu-driven-view' })
     ).unwrap();
-    const pbrLayouts = buildPbrPipelineLayouts(device, {
+    const pbrCaps = {
       storageBuffer: true,
       extendedLighting: false,
       projectorAvailable: false,
       transmissionBackdrop: false,
-    });
+    };
+    const viewBgl = device
+      .createBindGroupLayout({
+        entries: [
+          ...buildPbrViewBglEntries(pbrCaps),
+          { binding: 34, visibility: 2, buffer: { type: 'uniform' } },
+          { binding: 35, visibility: 2, buffer: { type: 'uniform' } },
+          { binding: 39, visibility: 2, texture: { sampleType: 'float' } },
+        ],
+      })
+      .unwrap();
+    const pbrLayouts = { ...buildPbrPipelineLayouts(device, pbrCaps), viewBgl };
     const instancesLayout = buildGpuDrivenPbrInstancesBindGroupLayout(device, {
       storageBuffer: true,
     });
-    const pipelineLayout = buildGpuDrivenPbrPipelineLayout(device, pbrLayouts, instancesLayout);
-    const views = createAlphaMaskViews(device, pbrLayouts.viewBgl);
+    const primitive = buildGpuDrivenPrimitiveBindGroupLayout(device, false);
+    const pipelineLayout = buildGpuDrivenPbrPipelineLayout(
+      device,
+      { ...pbrLayouts, meshArrayBgl: primitive },
+      instancesLayout,
+    );
+    const projectionLayout = projectPrimitiveReflectionLayout(device, primitive, [], 7);
+    const forwardLayout = buildGpuDrivenPbrPipelineLayout(
+      device,
+      { ...pbrLayouts, meshArrayBgl: projectionLayout.layout },
+      instancesLayout,
+    );
+    const createPipeline = device.createRenderPipeline.bind(device);
+    const pipelineSpy = vi
+      .spyOn(device, 'createRenderPipeline')
+      .mockImplementation((descriptor) => {
+        const module = descriptor.fragment?.module;
+        if (module !== shaders.producer && module !== shaders.defaultProducer)
+          return createPipeline(descriptor);
+        const pipeline = createPipeline({ ...descriptor, layout: forwardLayout });
+        if (pipeline.ok) retainPipelinePrimitiveReflection(pipeline.value, projectionLayout);
+        return pipeline;
+      });
+    onTestFinished(() => pipelineSpy.mockRestore());
     const materials = createAlphaMaskMaterialInputs(device, coordinateSet !== undefined);
+    const views = createAlphaMaskViews(device, pbrLayouts.viewBgl, materials.skylight);
+    const reflection = {
+      prefilterView: materials.skylight.prefilterView,
+      prefilterSampler: materials.skylight.prefilterSampler,
+      intensityBuffer: materials.skylight.intensityBuffer,
+    };
     const persistentAssets = new AssetRegistry();
     const source = alphaMaskSnapshot(coordinateSet, vertexColorAvailable, persistentAssets);
     const persistentWorld = new World({ assets: persistentAssets });
@@ -1525,7 +1563,6 @@ describe('GPU-driven production PBR Dawn regression', () => {
       pbrLayouts.materialBgl,
       materials,
       materials.opaque,
-      views.viewUniform,
       scene.materialBuffer,
     );
     const discardedMaterialBindGroup = createAlphaMaskMaterialGroup(
@@ -1533,7 +1570,6 @@ describe('GPU-driven production PBR Dawn regression', () => {
       pbrLayouts.materialBgl,
       materials,
       materials.discarded,
-      views.viewUniform,
       scene.materialBuffer,
     );
     expect(initialGpuState.plan).toMatchObject({
@@ -1566,6 +1602,7 @@ describe('GPU-driven production PBR Dawn regression', () => {
       materialPipelineState: {
         pbrPipelineLayout: pipelineLayout,
         gpuDrivenPbrPipelineLayout: pipelineLayout,
+        gpuDrivenPrimitiveBindGroupLayout: primitive,
         meshBindGroupLayout: pbrLayouts.meshArrayBgl,
         instancesBindGroupLayout: instancesLayout,
         gpuDrivenInstancesBindGroupLayout: instancesLayout,
@@ -1731,6 +1768,7 @@ describe('GPU-driven production PBR Dawn regression', () => {
       depthView,
       viewBindGroup: views.viewBindGroup,
       frameResources: preparedFrame.standardPbrFrameResources,
+      reflection,
     };
     addAlphaMaskRaster(
       graph,
@@ -1829,6 +1867,7 @@ describe('GPU-driven production PBR Dawn regression', () => {
         shadowDepthReadbackBuffers,
         viewBindGroup: views.viewBindGroup,
         opaqueMaterialBindGroup,
+        reflection,
         setDiscardedTexture: (discarded) => {
           currentOpaqueMaterialGroup = discarded
             ? discardedMaterialBindGroup
@@ -1856,86 +1895,12 @@ describe('GPU-driven production PBR Dawn regression', () => {
   });
 });
 
-// STANDARD_LEAN_INPUTS removes UV sets 1-7, the object-space position and the
-// object basis from the vertex output and keeps the tangent for normal maps; every published lean
-// row must still validate, and its interface must be smaller than the general
-// row it replaces.
-it('validates every STANDARD_LEAN_INPUTS row and shrinks its vertex output', {
-  timeout: 600_000,
-}, async () => {
-  const standard = STANDARD_PBR_PRODUCER;
-  if (standard === undefined) throw new Error('missing Standard PBR manifest entry');
-  const byKey = new Map(standard.variants.map((variant) => [variant.definesKey, variant]));
-  const expectedLean = publishedVariantDefines(STANDARD_PBR_SOURCE).filter(
-    (defines) => defines.STANDARD_LEAN_INPUTS === true,
-  );
-  const lean = standard.variants.filter((variant) => variant.defines.STANDARD_LEAN_INPUTS === true);
-  expect(lean.map((variant) => variant.defines)).toEqual(expectedLean);
-  for (const waves of [false, true]) {
-    for (const rgba16 of [false, true]) {
-      const lane = lean.filter(
-        (variant) =>
-          variant.defines.WATER_WAVES_AVAILABLE === waves &&
-          variant.defines.WATER_INFO_RGBA16 === rgba16,
-      );
-      expect(lane).toHaveLength(640);
-      const added = lane.filter(
-        ({ defines }) => !defines.DIRECTIONAL_SHADOW_SIMPLE && defines.LEAN_LIGHTING,
-      );
-      expect(added).toHaveLength(32);
-      expect(lane.filter((row) => !added.includes(row))).toHaveLength(608);
-    }
-  }
-
-  const adapter = await navigator.gpu.requestAdapter();
-  if (adapter === null) throw new Error('lean input validation requires a GPU adapter');
-  const device = await adapter.requestDevice({ requiredFeatures: ['primitive-index'] });
-  const failures: string[] = [];
-  const vsOut = (code: string) => /struct VsOut\s*\{([^}]*)\}/.exec(code)?.[1] ?? '';
-  for (const variant of lean) {
-    const module = device.createShaderModule({ code: variant.composedWgsl });
-    const errors = (await module.getCompilationInfo()).messages.filter((m) => m.type === 'error');
-    if (errors.length > 0) failures.push(`${variant.definesKey}: ${errors[0]?.message}`);
-    const generalDefines: Record<string, boolean> = {
-      ...variant.defines,
-      STANDARD_LEAN_INPUTS: false,
-    };
-    for (const rule of violatedVariantPermutationRules(generalDefines)) {
-      if (
-        rule.axis !== 'WATER_INFO_RGBA16' ||
-        rule.value !== false ||
-        generalDefines.WATER_WAVES_AVAILABLE !== false
-      ) {
-        throw new Error(`unsupported general comparison for ${variant.definesKey}`);
-      }
-      generalDefines[rule.axis] = rule.value;
-    }
-    const general = byKey.get(
-      variant.definesKey
-        .replace('STANDARD_LEAN_INPUTS=true', 'STANDARD_LEAN_INPUTS=false')
-        .replace(
-          `WATER_INFO_RGBA16=${variant.defines.WATER_INFO_RGBA16}`,
-          `WATER_INFO_RGBA16=${generalDefines.WATER_INFO_RGBA16}`,
-        ),
-    );
-    if (general === undefined) throw new Error(`missing general row for ${variant.definesKey}`);
-    expect(general.defines).toEqual(generalDefines);
-    const fields = vsOut(variant.composedWgsl);
-    expect(fields).not.toMatch(/\b(?:uvPair[123]|positionOS|objectBasis\d)_?\s*:/);
-    expect(fields).toMatch(/\bworldTangent_?\s*:/);
-    expect(fields).toMatch(/\buvPair0_?\s*:\s*vec2<f32>/);
-    expect(fields.length).toBeLessThan(vsOut(general.composedWgsl).length);
-  }
-  device.destroy();
-  expect(failures).toEqual([]);
-});
-
 // The depth / shadow caster keeps only position, UV0 and the material row for
 // a lean batch, as UE's depth-only pass (DepthOnlyVertexShader.usf:15-16).
 it('validates every lean shadow-caster row and drops its normal, tangent and UV1-7', {
   timeout: 600_000,
 }, async () => {
-  const caster = ENGINE_SHADER_MANIFEST.materialShaders.find(
+  const caster = MATERIAL_PROGRAMS.find(
     (entry) => entry.identifier === 'forgeax::default-shadow-caster',
   );
   if (caster === undefined) throw new Error('missing shadow caster manifest entry');

@@ -1,16 +1,20 @@
 import { isValidAssetGuidString, ok, type Result } from '@forgeax/engine-types';
-import type {
-  StandardCardCapture,
-  StandardDiffuseGi,
-  StandardGlobalSdfRegion,
-  StandardIrradianceField,
+import {
+  isMeshDfApproxPolicy,
+  type StandardCardCapture,
+  type StandardDiffuseGi,
+  type StandardGlobalSdfRegion,
+  type StandardIrradianceField,
 } from '../pipeline/standard-profile';
 import { type GlobalSdfGrid, normalizeGlobalSdfGrid } from './global-sdf';
 import { packGlobalSdfQuerySettings } from './global-sdf-query';
+import { splitProbeBudget } from './probe-budget';
 import { freezeLiteReflections, validateLiteReflections } from './reflections-plan';
 import { type RayReferenceError, rayReferenceFailure } from './scene';
 import { validateSceneFieldBudget } from './scene-field-projection';
 import { validateScreenProbes } from './screen-probe-plan';
+
+export { splitProbeBudget } from './probe-budget';
 
 /** Octahedral texels per probe axis for both irradiance and depth moments. One
  * 64-thread workgroup integrates one probe (UE uses 6x6 irradiance plus a
@@ -27,8 +31,10 @@ export const IRRADIANCE_FIELD_PROBE_STRIDE =
 export const IRRADIANCE_FIELD_PROBE_BYTES = IRRADIANCE_FIELD_PROBE_STRIDE * 16;
 /** Per probe: 64 x vec2f mean/mean^2 ray distance. */
 export const IRRADIANCE_FIELD_DEPTH_BYTES = IRRADIANCE_FIELD_TEXELS * 8;
-/** Per probe: updates, classification, f16 relocation offset (`IrradianceFieldProbeState`). */
+/** Per probe: updates, classification, per-level-spacing-normalized f16 offset. */
 export const IRRADIANCE_FIELD_META_BYTES = 16;
+/** Internal transient cache identity; a different encoding requires zero history. */
+export const IRRADIANCE_FIELD_META_ENCODING = 'spacing-normalized-f16-v1';
 export const IRRADIANCE_FIELD_MAX_PROBES = 32768;
 const IRRADIANCE_FIELD_MAX_LEVELS = 4;
 
@@ -91,7 +97,7 @@ export function validateGlobalSdfRegion(
 export function validateCardCapture(cards: StandardCardCapture): Result<void, RayReferenceError> {
   if (
     !isObject(cards) ||
-    unknownKey(cards, ['resolution', 'maxCaptureBytes', 'budget']) !== undefined ||
+    unknownKey(cards, ['resolution', 'maxCaptureBytes', 'budget', 'radiosity']) !== undefined ||
     !Number.isInteger(cards.resolution) ||
     cards.resolution < 8 ||
     cards.resolution > 512 ||
@@ -104,7 +110,36 @@ export function validateCardCapture(cards: StandardCardCapture): Result<void, Ra
     );
   if (!Number.isSafeInteger(cards.budget) || cards.budget < 1)
     return rayReferenceFailure('Native Card capture requires a positive per-frame tile budget');
+  const radiosity = cards.radiosity;
+  if (
+    radiosity !== undefined &&
+    (!isObject(radiosity) ||
+      unknownKey(radiosity, ['probeSpacing', 'hemisphereResolution', 'updateFactor']) !==
+        undefined ||
+      ![4, 8].includes(radiosity.probeSpacing) ||
+      ![3, 4].includes(radiosity.hemisphereResolution) ||
+      ![64, 128].includes(radiosity.updateFactor))
+  )
+    return rayReferenceFailure(
+      'Invalid Card radiosity spacing, hemisphere resolution or update factor',
+    );
   return ok(undefined);
+}
+
+function validateIrradianceFieldInputs(
+  field: StandardIrradianceField,
+): ReturnType<typeof validateGlobalSdfRegion> {
+  if (field.hardwareRayTracing !== undefined && typeof field.hardwareRayTracing !== 'boolean')
+    return rayReferenceFailure('irradiance field hardwareRayTracing must be boolean');
+  const region = validateGlobalSdfRegion(field.region);
+  if (!region.ok) return region;
+  const cards = validateCardCapture(field.cards);
+  if (!cards.ok) return cards;
+  if (field.resolution !== 'full' && field.resolution !== 'half')
+    return rayReferenceFailure("irradiance field resolution must be 'full' or 'half'");
+  if (typeof field.radiosity !== 'boolean')
+    return rayReferenceFailure('irradiance field radiosity must be boolean');
+  return region;
 }
 
 /** Derive the probe lattice and budgets. Pure CPU; no device or scene access. */
@@ -122,17 +157,12 @@ export function planIrradianceField(
     'resolution',
     'radiosity',
     'clipmap',
+    'hardwareRayTracing',
   ]);
   if (extra !== undefined)
     return rayReferenceFailure(`irradiance field contains unsupported field '${extra}'`);
-  const region = validateGlobalSdfRegion(field.region);
+  const region = validateIrradianceFieldInputs(field);
   if (!region.ok) return region;
-  const cards = validateCardCapture(field.cards);
-  if (!cards.ok) return cards;
-  if (field.resolution !== 'full' && field.resolution !== 'half')
-    return rayReferenceFailure("irradiance field resolution must be 'full' or 'half'");
-  if (typeof field.radiosity !== 'boolean')
-    return rayReferenceFailure('irradiance field radiosity must be boolean');
   const grid = region.value.grid;
   const spacing = Math.fround(field.probeSpacing);
   if (!Number.isFinite(spacing) || spacing < grid.spacing)
@@ -250,17 +280,6 @@ export function irradianceFieldRelightHysteresis(
   return sweep === undefined ? plan.hysteresis : Math.min(plan.hysteresis, sweep);
 }
 
-/** Level `l` gets a 2^-l share of the budget, at least one probe, at most one window. */
-export function splitProbeBudget(budget: number, levels: number, perLevel: number): number[] {
-  const total = 2 - 2 ** (1 - levels);
-  const out = Array.from({ length: levels }, (_, l) =>
-    Math.min(perLevel, Math.max(1, Math.floor((budget * 2 ** -l) / total))),
-  );
-  const rest = budget - out.reduce((n, v) => n + v, 0);
-  out[0] = Math.max(1, Math.min(perLevel, (out[0] ?? 0) + rest));
-  return out;
-}
-
 const EXACT_KEYS = [
   'gather',
   'maxBounces',
@@ -330,6 +349,7 @@ export function validateDiffuseGi(gi: StandardDiffuseGi): Result<void, RayRefere
           'probes',
           'field',
           'reflections',
+          'softwareTracing',
         ]) !== undefined
       )
         return rayReferenceFailure(
@@ -337,6 +357,14 @@ export function validateDiffuseGi(gi: StandardDiffuseGi): Result<void, RayRefere
         );
       const probes = validateScreenProbes(gi.probes);
       if (!probes.ok) return probes;
+      const softwareTracing = gi.softwareTracing;
+      if (
+        softwareTracing !== undefined &&
+        (!isMeshDfApproxPolicy(softwareTracing) || softwareTracing.nearDistance === undefined)
+      )
+        return rayReferenceFailure(
+          'Screen-probe software tracing requires finite Mesh DF voxel policy and positive f32 nearDistance',
+        );
       const plan = planIrradianceField(gi.field);
       return plan.ok ? validateLiteReflections(gi) : plan;
     }
@@ -369,7 +397,12 @@ export function freezeDiffuseGi(gi: StandardDiffuseGi): StandardDiffuseGi {
             ],
           }),
         }),
-    cards: Object.freeze({ ...cards }),
+    cards: Object.freeze({
+      ...cards,
+      ...(cards.radiosity === undefined
+        ? {}
+        : { radiosity: Object.freeze({ ...cards.radiosity }) }),
+    }),
     region: Object.freeze({ ...region, grid: freezeGlobalSdfGrid(region.grid) }),
   });
   if (gi.gather === 'screen-probe')
@@ -378,6 +411,9 @@ export function freezeDiffuseGi(gi: StandardDiffuseGi): StandardDiffuseGi {
       environment,
       ...reflections,
       field,
+      ...(gi.softwareTracing === undefined
+        ? {}
+        : { softwareTracing: Object.freeze({ ...gi.softwareTracing }) }),
       probes: Object.freeze({
         ...gi.probes,
         screenTrace: Object.freeze({ ...gi.probes.screenTrace }),

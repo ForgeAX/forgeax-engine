@@ -1,33 +1,30 @@
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
-import { createModelingTools } from '@forgeax/engine-modeling/tools';
 import {
   type ArtifactRef,
   defineCommand,
   type JsonValue,
   operationCommandPath,
   type ToolContribution,
-  type ToolDomainFailure,
   type ToolExecutionContext,
   type ToolJsonSchema,
   type ToolRealm,
+  type ToolTerminal,
   toolJsonSchema,
 } from '@forgeax/engine-tool-runtime';
-import { animationPlayback, animationPlaybackSchema } from '../animation-playback.js';
-import { executionWorkers, executionWorkersSchema } from '../execution-workers.js';
+import { animationPlaybackSchema } from '../animation-playback.js';
+import { executionWorkersSchema } from '../execution-workers.js';
 import { createOperationHistoryTools } from '../operation-history.js';
 import { PLAY_CONTEXT_HELP } from '../play-context-reference.js';
 import { readProjectStartupTimeoutMs } from '../project.js';
-import { RHI_INSPECT_INPUT_SCHEMA, RHI_READ_INPUT_SCHEMA } from '../rhi-debug/operations.js';
-import { RHI_TIMING_OPTION_PROPERTIES } from '../rhi-debug/timing.js';
-import { createWorkspaceLiveTools } from '../workspace-live-tools.js';
 import {
-  assetInspectInputSchema,
-  assetListInputSchema,
-  assetResolveInputSchema,
-  assetVerifyInputSchema,
-} from './catalog.js';
-import { createModelRenderTool, createModelReplayTool } from './model-render.js';
+  discoverRhiDebugOperations,
+  type RhiDebugOperationDescriptor,
+} from '../rhi-debug/operations.js';
+import { type AssetAddOptions, completeCommand, failCommand } from '../types.js';
+import { createWorkspaceLiveTools, liveExecutionOptions } from '../workspace-live-tools.js';
+import { modelingContributions } from '../workspace-modeling-tools.js';
+import { createModelReplayTool } from './model-render.js';
 
 type CommandValue =
   | {
@@ -46,24 +43,7 @@ type CommandValue =
       readonly artifacts?: readonly ArtifactRef[];
     };
 
-type CommandError = Extract<CommandValue, { readonly ok: false }>['error'];
-
-type LiveOperation =
-  | 'status'
-  | 'reload'
-  | 'stop'
-  | 'capture'
-  | 'look'
-  | 'verify'
-  | 'rhi/capture'
-  | 'profile/capture'
-  | 'eval'
-  | 'camera/get'
-  | 'camera/set'
-  | 'camera/release'
-  | 'find'
-  | 'pick'
-  | 'focus';
+type LiveControlOperation = Parameters<typeof import('../live-dev.js').liveDevControl>[1];
 
 const string = { type: 'string' } satisfies ToolJsonSchema;
 const captureBackend = {
@@ -73,6 +53,7 @@ const captureBackend = {
 const boolean = { type: 'boolean' } satisfies ToolJsonSchema;
 const number = { type: 'number' } satisfies ToolJsonSchema;
 const integer = { type: 'integer' } satisfies ToolJsonSchema;
+const positiveInteger = { ...integer, minimum: 1 } as const;
 const port = { type: 'integer', minimum: 0, maximum: 65_535 } satisfies ToolJsonSchema;
 const liveIdentity = { revision: string };
 const liveReady = {
@@ -95,8 +76,11 @@ const schema = (
 });
 
 const root = { root: string };
+const readyLive = { ...root, ...liveIdentity, ...liveReady };
+const cameraVector = { type: 'array', items: number, minItems: 3 } as const;
 const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'backend.start': schema({ ...root, hostPack: string }),
+  'project.view': schema(root),
   'backend.status': schema(root),
   'backend.stop': schema(root),
   'project.new': schema({
@@ -116,8 +100,20 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'project.package': schema({
     ...root,
     output: string,
-    format: { type: 'string', enum: ['web-zip', 'single-html', 'tauri'] },
+    format: { type: 'string', enum: ['web-zip', 'single-html', 'tauri', 'native'] },
     platform: { type: 'string', enum: ['windows', 'macos', 'linux', 'android', 'ios'] },
+    arch: { type: 'string', enum: ['x64', 'arm64'] },
+    publisher: string,
+    version: string,
+    channel: string,
+    nodeDist: string,
+    vcRuntime: string,
+    signThumbprint: string,
+    signStore: { type: 'string', enum: ['user', 'machine'] },
+    timestampUrl: string,
+    bundleId: string,
+    signIdentity: string,
+    notaryKeychainProfile: string,
     prepareOnly: boolean,
     compress: boolean,
     json: boolean,
@@ -153,7 +149,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
             'WxH[,WxH...] (default 1280x720,1280x600); the script runs in the first, later ones get a screenshot under the final-frame gate.',
         },
         requireUi: boolean,
-        timeoutMs: { type: 'integer', minimum: 1 },
+        timeoutMs: positiveInteger,
         from: {
           type: 'string',
           description:
@@ -213,10 +209,6 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'project.skill.install': schema({ ...root, json: boolean }),
   'project.skill.verify': schema({ ...root, json: boolean }),
   'asset.import': schema({ ...root, path: string, dryRun: boolean, json: boolean }, ['path']),
-  'asset.list': assetListInputSchema,
-  'asset.inspect': assetInspectInputSchema,
-  'asset.resolve': assetResolveInputSchema,
-  'asset.verify': assetVerifyInputSchema,
   'asset.guid': schema({ packageId: string, key: string, json: boolean }, ['packageId', 'key']),
   'asset.shader.check': schema({ ...root, path: string, json: boolean }),
   'asset.preview': schema(
@@ -246,42 +238,6 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   ),
   'sdk.install': schema({ ...root, version: string }),
   'preview.analyze': schema({ ...root, artifact: string, json: boolean }),
-  'rhi.capture': schema({ ...root, ...liveReady, output: string, json: boolean }),
-  'rhi.summary': schema(
-    { ...root, artifact: string, digest: string, passes: boolean, label: string, json: boolean },
-    ['artifact'],
-  ),
-  'rhi.timing': schema(
-    {
-      ...root,
-      ...RHI_TIMING_OPTION_PROPERTIES,
-      artifact: string,
-      digest: string,
-      compare: string,
-      json: boolean,
-    },
-    ['artifact'],
-  ),
-  'rhi.inspect': schema(
-    {
-      ...root,
-      ...RHI_INSPECT_INPUT_SCHEMA.properties,
-      artifact: string,
-      digest: string,
-      json: boolean,
-    },
-    RHI_INSPECT_INPUT_SCHEMA.required,
-  ),
-  'rhi.read': schema(
-    {
-      ...root,
-      ...RHI_READ_INPUT_SCHEMA.properties,
-      artifact: string,
-      digest: string,
-      json: boolean,
-    },
-    RHI_READ_INPUT_SCHEMA.required,
-  ),
   'profile.capture': schema({
     ...root,
     ...liveReady,
@@ -314,13 +270,11 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   }),
   'dev.status': schema({ ...root }),
   'dev.verify': schema({
-    ...root,
-    ...liveIdentity,
-    ...liveReady,
+    ...readyLive,
     output: string,
     checkpoint: string,
     requireUi: boolean,
-    timeoutMs: { type: 'integer', minimum: 1 },
+    timeoutMs: positiveInteger,
   }),
   'dev.pipelines.export': schema(
     {
@@ -328,9 +282,9 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
       ...liveIdentity,
       output: string,
       limits: schema({
-        outputBytes: { type: 'integer', minimum: 1 },
-        temporaryBytes: { type: 'integer', minimum: 1 },
-        entries: { type: 'integer', minimum: 1 },
+        outputBytes: positiveInteger,
+        temporaryBytes: positiveInteger,
+        entries: positiveInteger,
       }),
       requestedOnly: boolean,
     },
@@ -338,22 +292,18 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   ),
   'dev.reload': schema({ ...root }),
   'dev.stop': schema({ ...root }),
-  'dev.eval': schema(
-    { ...root, ...liveIdentity, ...liveReady, code: string, timeoutMs: integer, lease: boolean },
-    ['code', 'revision'],
-  ),
+  'dev.eval': schema({ ...readyLive, code: string, timeoutMs: integer, lease: boolean }, [
+    'code',
+    'revision',
+  ]),
   'dev.find': schema({
-    ...root,
-    ...liveIdentity,
-    ...liveReady,
+    ...readyLive,
     name: string,
     limit: { type: 'integer', minimum: 1, maximum: 100 },
   }),
   'dev.pick': schema(
     {
-      ...root,
-      ...liveIdentity,
-      ...liveReady,
+      ...readyLive,
       x: {
         type: 'number',
         description: 'Pixel column of the presented frame (0 = left), as in dev look PNGs.',
@@ -365,33 +315,27 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     },
     ['x', 'y'],
   ),
-  'dev.camera.release': schema({ ...root, ...liveIdentity, ...liveReady }),
-  'dev.camera.get': schema({ ...root, ...liveIdentity, ...liveReady }),
+  'dev.camera.release': schema({ ...readyLive }),
+  'dev.camera.get': schema({ ...readyLive }),
   'dev.camera.set': schema({
-    ...root,
-    ...liveIdentity,
-    ...liveReady,
-    position: { type: 'array', items: number, minItems: 3 },
-    target: { type: 'array', items: number, minItems: 3 },
-    up: { type: 'array', items: number, minItems: 3 },
+    ...readyLive,
+    position: cameraVector,
+    target: cameraVector,
+    up: cameraVector,
     lens: { type: 'object' },
     exposure: { type: 'object' },
   }),
   'dev.focus': schema({
-    ...root,
-    ...liveIdentity,
-    ...liveReady,
+    ...readyLive,
     name: string,
     ref: string,
     distance: number,
-    target: { type: 'array', items: number, minItems: 3 },
-    position: { type: 'array', items: number, minItems: 3 },
-    up: { type: 'array', items: number, minItems: 3 },
+    target: cameraVector,
+    position: cameraVector,
+    up: cameraVector,
   }),
   'dev.capture': schema({
-    ...root,
-    ...liveIdentity,
-    ...liveReady,
+    ...readyLive,
     output: string,
     checkpoint: {
       type: 'string',
@@ -400,9 +344,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     },
   }),
   'dev.look': schema({
-    ...root,
-    ...liveIdentity,
-    ...liveReady,
+    ...readyLive,
     output: { type: 'string', description: 'Directory for the view PNGs.' },
     cameras: {
       type: 'array',
@@ -433,25 +375,25 @@ function commandSchema(id: string): ToolJsonSchema {
   return commandSchemas[id] ?? schema({ ...root });
 }
 
-function result(
-  value: CommandValue,
-): unknown | { readonly ok: false; readonly error: ToolDomainFailure } {
+function commandResult(value: CommandValue) {
   if (value.ok)
     return {
       ok: true,
       value: value.value,
       ...(value.artifacts === undefined ? {} : { artifacts: value.artifacts }),
     };
+  const { code, expected, hint, detail } = value.error;
   return {
-    ok: false,
-    error: {
-      code: value.error.code,
-      expected: value.error.expected,
-      hint: value.error.hint,
-      detail: value.error.detail as JsonValue,
-    },
+    ok: false as const,
+    error: { code, expected, hint, detail: detail as JsonValue },
     ...(value.artifacts === undefined ? {} : { artifacts: value.artifacts }),
   };
+}
+
+function commandTerminal(terminal: ToolTerminal<unknown>): CommandValue {
+  return terminal.outcome === 'succeeded'
+    ? { ok: true, value: terminal.result, artifacts: terminal.artifacts }
+    : { ok: false, error: terminal.failure, artifacts: terminal.artifacts };
 }
 
 export function command<TArgs extends Record<string, unknown>>(
@@ -483,7 +425,7 @@ export function command<TArgs extends Record<string, unknown>>(
       ...(options.example === undefined ? {} : { example: options.example }),
       inputSchema: argsSchema as unknown as JsonValue,
     },
-    async (args, context) => result(await execute(args, context)),
+    async (args, context) => commandResult(await execute(args, context)),
   );
 }
 
@@ -491,39 +433,26 @@ function rootArgs<T extends Record<string, unknown>>(root: string, args: T): T &
   return { ...args, root: typeof args.root === 'string' ? args.root : root };
 }
 
+type CommandExports = typeof import('../commands.js');
+type ProjectCommand = {
+  [Method in keyof CommandExports]: CommandExports[Method] extends (
+    options: Record<string, unknown> & { root: string },
+  ) => Promise<CommandValue>
+    ? Method
+    : never;
+}[keyof CommandExports];
+
 export function createUnifiedCommandContributions(
   projectRoot = process.cwd(),
 ): readonly ToolContribution[] {
-  const project = (
-    id: string,
-    title: string,
-    summary: string,
-    method: string,
-    loadOwner: () => Promise<unknown> = () =>
-      method === 'sdkInstallCommand' ? import('../sdk-install.js') : import('../commands.js'),
-  ) =>
-    command(id, title, summary, async (args) => {
-      const commands = (await loadOwner()) as Record<
-        string,
-        (value: unknown) => Promise<CommandValue>
-      >;
-      const handler = commands[method];
-      if (handler === undefined) {
-        return {
-          ok: false,
-          error: {
-            code: 'command-unavailable',
-            expected: method,
-            hint: 'Install the matching DevKit command owner.',
-          },
-        };
-      }
-      return handler(rootArgs(projectRoot, args));
-    });
+  const project = (id: string, title: string, summary: string, method: ProjectCommand) =>
+    command(id, title, summary, async (args) =>
+      (await import('../commands.js'))[method](rootArgs(projectRoot, args)),
+    );
 
-  const live = (id: string, title: string, summary: string, operation: LiveOperation) =>
+  const live = (operation: LiveControlOperation | 'status', title: string, summary: string) =>
     command(
-      id,
+      `dev.${operation.replaceAll('/', '.')}`,
       title,
       summary,
       async (args) => {
@@ -569,11 +498,7 @@ export function createUnifiedCommandContributions(
         await import('../live-dev.js')
       ).startLiveDev(projectRoot, {
         ...(typeof args.headless === 'boolean' ? { headless: args.headless } : {}),
-        ...(args.backend === 'auto' || args.backend === 'hardware' || args.backend === 'software'
-          ? { backend: args.backend }
-          : {}),
-        ...(args.workers === undefined ? {} : { workers: executionWorkers(args.workers) }),
-        ...(args.animation === undefined ? {} : { animation: animationPlayback(args.animation) }),
+        ...liveExecutionOptions(args),
         ...(typeof args.rhiCapture === 'boolean' ? { rhiCapture: args.rhiCapture } : {}),
       })) as CommandValue,
     'host',
@@ -587,49 +512,44 @@ export function createUnifiedCommandContributions(
       const artifact =
         typeof args.artifact === 'string' ? resolve(projectRoot, args.artifact) : undefined;
       if (artifact === undefined) {
-        return {
-          ok: false,
-          error: {
-            code: 'tool-invalid-args',
-            expected: '--artifact to point to a preview manifest or report',
-            hint: 'Pass the retained .forgeax/tool-runs/.../manifest.json or report.json path.',
-            detail: {},
-          },
-        };
+        return failCommand(
+          'tool-invalid-args',
+          '--artifact to point to a preview manifest or report',
+          'Pass the retained .forgeax/tool-runs/.../manifest.json or report.json path.',
+          {},
+        );
       }
+      const failure = (
+        code: string,
+        expected: string,
+        hint: string,
+        cause: unknown,
+      ): CommandValue =>
+        failCommand(code, expected, hint, {
+          path: artifact,
+          reason: cause instanceof Error ? cause.message : String(cause),
+        });
       let raw: string;
       try {
         raw = await readFile(artifact, 'utf8');
       } catch (cause) {
-        return {
-          ok: false,
-          error: {
-            code: 'preview-artifact-read-failed',
-            expected: 'the preview artifact file to be readable',
-            hint: 'Pass a retained preview manifest or report path, then retry.',
-            detail: {
-              path: artifact,
-              reason: cause instanceof Error ? cause.message : String(cause),
-            },
-          },
-        };
+        return failure(
+          'preview-artifact-read-failed',
+          'the preview artifact file to be readable',
+          'Pass a retained preview manifest or report path, then retry.',
+          cause,
+        );
       }
       let value: unknown;
       try {
         value = JSON.parse(raw) as unknown;
       } catch (cause) {
-        return {
-          ok: false,
-          error: {
-            code: 'preview-artifact-invalid',
-            expected: 'the preview artifact file to contain JSON',
-            hint: 'Regenerate the preview artifacts and pass manifest.json or report.json.',
-            detail: {
-              path: artifact,
-              reason: cause instanceof Error ? cause.message : String(cause),
-            },
-          },
-        };
+        return failure(
+          'preview-artifact-invalid',
+          'the preview artifact file to contain JSON',
+          'Regenerate the preview artifacts and pass manifest.json or report.json.',
+          cause,
+        );
       }
       const isManifest = (
         candidate: unknown,
@@ -653,15 +573,12 @@ export function createUnifiedCommandContributions(
         try {
           manifest = JSON.parse(await readFile(sibling, 'utf8')) as unknown;
         } catch {
-          return {
-            ok: false,
-            error: {
-              code: 'preview-artifact-manifest-missing',
-              expected: 'the artifact or its sibling manifest.json to contain a preview manifest',
-              hint: 'Pass the retained manifest.json from the same ToolRun directory.',
-              detail: { artifact, manifest: sibling },
-            },
-          };
+          return failCommand(
+            'preview-artifact-manifest-missing',
+            'the artifact or its sibling manifest.json to contain a preview manifest',
+            'Pass the retained manifest.json from the same ToolRun directory.',
+            { artifact, manifest: sibling },
+          );
         }
       }
       const analyzed = analyzePreviewArtifacts({ manifest: manifest as never });
@@ -678,30 +595,22 @@ export function createUnifiedCommandContributions(
       const kind = typeof args.kind === 'string' ? args.kind : 'mesh';
       if (kind === 'scene') {
         const { runScenePreviewTool } = await import('./scene-preview.js');
-        const terminal = await runScenePreviewTool(args, projectRoot);
-        return terminal.outcome === 'succeeded'
-          ? { ok: true, value: terminal.result, artifacts: terminal.artifacts }
-          : { ok: false, error: terminal.failure, artifacts: terminal.artifacts };
+        return commandTerminal(await runScenePreviewTool(args, projectRoot));
       }
       const nativePreview = await import('./native-preview.js');
       const catalog = await import('./preview-catalog.js');
-      const contribution = catalog.nativePreviewTools.find(
-        (candidate) => candidate.descriptor.id === `asset.${kind}.preview`,
-      );
-      if (contribution === undefined) {
-        return {
-          ok: false,
-          error: {
-            code: 'asset-preview-kind-unavailable',
-            expected: 'kind to select scene, material, mesh, texture, or vfx',
-            hint: 'Pass { kind, guid } and retry with one of the admitted preview owners.',
-            detail: { kind },
-          },
-        };
+      const owner = catalog.nativePreviewOwner(`asset.${kind}.preview`);
+      if (owner === undefined) {
+        return failCommand(
+          'asset-preview-kind-unavailable',
+          'kind to select scene, material, mesh, texture, or vfx',
+          'Pass { kind, guid } and retry with one of the admitted preview owners.',
+          { kind },
+        );
       }
       const request = { guid: args.guid };
       const terminal = await nativePreview.runNativePreviewTool(
-        contribution as ToolContribution<unknown, unknown>,
+        owner[2] as ToolContribution<unknown, unknown>,
         request,
         {
           signal: context.signal,
@@ -718,9 +627,7 @@ export function createUnifiedCommandContributions(
           ...(typeof args.output === 'string' ? { output: args.output } : {}),
         },
       );
-      return terminal.outcome === 'succeeded'
-        ? { ok: true, value: terminal.result, artifacts: terminal.artifacts }
-        : { ok: false, error: terminal.failure, artifacts: terminal.artifacts };
+      return commandTerminal(terminal);
     },
     'host',
     { example: { kind: 'scene', guid: '<scene guid from asset list --type scene>' } },
@@ -729,64 +636,32 @@ export function createUnifiedCommandContributions(
     'asset.atlas',
     'Build asset atlas',
     'Builds a deterministic PNG atlas and sidecar through the Pack producer.',
-    async (args) => ({
-      ...(await (async () => {
-        const input = typeof args.input === 'string' ? args.input : undefined;
-        const name = typeof args.name === 'string' ? args.name : undefined;
-        if (input === undefined || name === undefined) {
-          return {
-            ok: false as const,
-            error: {
-              code: 'tool-invalid-args',
-              expected: '--input <glob> and --name <prefix>',
-              hint: 'Pass the image glob and output prefix, then retry.',
-              detail: {},
-            },
-          };
-        }
-        const { runAtlas } = await import('@forgeax/engine-pack/cli-asset');
-        const stdout: string[] = [];
-        const stderr: string[] = [];
-        const rest = ['--input', input, '--name', name];
-        if (typeof args.output === 'string') rest.push('--output', args.output);
-        if (typeof args.maxAtlasSize === 'number')
-          rest.push('--max-atlas-size', String(args.maxAtlasSize));
-        const exitCode = await runAtlas(rest, {
-          cwd: projectRoot,
-          stdoutWrite: (line: string) => stdout.push(line),
-          stderrWrite: (line: string) => stderr.push(line),
-        });
-        if (exitCode !== 0) {
-          let error: CommandError = {
-            code: 'asset-atlas-failed',
-            expected: 'the Pack atlas producer to complete',
-            hint: stderr.at(-1) ?? 'Inspect the atlas inputs and retry.',
-            detail: { exitCode },
-          };
-          const raw = stderr.at(-1);
-          if (raw !== undefined) {
-            try {
-              const parsed = JSON.parse(raw) as Partial<CommandError>;
-              if (typeof parsed.code === 'string') error = { ...error, ...parsed };
-            } catch {
-              // Keep the producer failure in the structured fallback envelope.
-            }
-          }
-          return { ok: false as const, error };
-        }
-        const output = typeof args.output === 'string' ? args.output : projectRoot;
+    async (args) => {
+      const input = typeof args.input === 'string' ? args.input : undefined;
+      const name = typeof args.name === 'string' ? args.name : undefined;
+      if (input === undefined || name === undefined) {
         return {
-          ok: true as const,
-          value: {
-            root: projectRoot,
-            name,
-            output,
-            artifacts: [`${name}.atlas.png`, `${name}.atlas.meta.json`],
-            ...(stdout.length === 0 ? {} : { producer: stdout.join('\n') }),
+          ok: false as const,
+          error: {
+            code: 'tool-invalid-args',
+            expected: '--input <glob> and --name <prefix>',
+            hint: 'Pass the image glob and output prefix, then retry.',
+            detail: {},
           },
         };
-      })()),
-    }),
+      }
+      const { runAtlasCommand } = await import('@forgeax/engine-pack/cli-asset');
+      const result = await runAtlasCommand(
+        {
+          input,
+          name,
+          ...(typeof args.output === 'string' ? { output: args.output } : {}),
+          ...(typeof args.maxAtlasSize === 'number' ? { maxAtlasSize: args.maxAtlasSize } : {}),
+        },
+        projectRoot,
+      );
+      return result.ok ? completeCommand({ root: projectRoot, ...result.value }) : result;
+    },
     'build',
     {
       capabilities: ['asset-atlas-producer'],
@@ -794,26 +669,39 @@ export function createUnifiedCommandContributions(
       example: { input: 'assets/frames/*.png', name: 'walk', output: 'dist/assets' },
     },
   );
-  const rhi = (
-    operation: 'rhi.capture' | 'rhi.summary' | 'rhi.inspect' | 'rhi.read' | 'rhi.timing',
-    summary: string,
-  ) =>
+  const rhi = ({ name, summary, inputSchema }: RhiDebugOperationDescriptor) =>
     command(
-      operation,
-      operation,
+      name,
+      name,
       summary,
       async (args) => {
-        if (operation === 'rhi.capture') {
+        if (name === 'rhi.capture') {
           const liveDev = await import('../live-dev.js');
           return (await liveDev.liveDevControl(projectRoot, 'rhi/capture', args)) as CommandValue;
         }
         const { runCliRhiDebugOperation } = await import('../rhi-debug/cli-context.js');
-        const outcome = await runCliRhiDebugOperation(operation, args as never);
+        const outcome = await runCliRhiDebugOperation(name, args as never);
         return outcome.ok
           ? { ok: true, value: JSON.parse(JSON.stringify(outcome.value)) }
           : { ok: false, error: outcome.error };
       },
       'host',
+      {
+        schema:
+          name === 'rhi.capture'
+            ? schema({ ...root, ...liveReady, output: string, json: boolean })
+            : schema(
+                {
+                  ...inputSchema.properties,
+                  ...root,
+                  artifact: string,
+                  digest: string,
+                  ...('compare' in (inputSchema.properties ?? {}) ? { compare: string } : {}),
+                  json: boolean,
+                },
+                inputSchema.required,
+              ),
+      },
     );
   const profile = (
     operation: 'capture' | 'summary' | 'frame' | 'phase' | 'compare',
@@ -832,71 +720,15 @@ export function createUnifiedCommandContributions(
             args,
           )) as CommandValue;
         }
-        const { runProfilerCli } = await import('@forgeax/engine-profiler/cli');
-        const input =
-          operation === 'compare'
-            ? ''
-            : JSON.stringify((args.capture ?? args.artifact ?? args.input ?? args) as JsonValue);
-        const cliArgs: string[] = [operation];
-        if (operation !== 'compare' && typeof args.artifact === 'string') {
-          cliArgs.push('--file', args.artifact);
-        }
-        if (operation === 'compare') {
-          if (typeof args.leftFile === 'string') cliArgs.push('--left-file', args.leftFile);
-          if (typeof args.rightFile === 'string') cliArgs.push('--right-file', args.rightFile);
-        }
-        if (operation === 'frame' && typeof args.frameId === 'number') {
-          cliArgs.push('--frame-id', String(args.frameId));
-        }
-        if (operation === 'phase') {
-          if (typeof args.source === 'string') cliArgs.push('--source', args.source);
-          if (typeof args.phase === 'string') cliArgs.push('--phase', args.phase);
-        }
-        const result = runProfilerCli(cliArgs, input);
-        const raw = result.exitCode === 0 ? result.stdout : result.stderr;
-        let parsed: unknown = raw.trim();
-        try {
-          parsed = JSON.parse(raw) as unknown;
-        } catch {
-          // Preserve the owning CLI's plain diagnostic when it is not JSON.
-        }
-        if (result.exitCode === 0) return { ok: true, value: parsed };
-        const failure =
-          typeof parsed === 'object' && parsed !== null && 'error' in parsed
-            ? (parsed as { readonly error: Extract<CommandValue, { readonly ok: false }>['error'] })
-                .error
-            : undefined;
-        return {
-          ok: false,
-          error: failure ?? {
-            code: 'profile-command-failed',
-            expected: 'the profiler command to return a structured result',
-            hint: 'Inspect the profile artifact and retry the same operation.',
-            detail: { output: parsed },
-          },
-        };
+        const { runProfilerToolQuery } = await import('@forgeax/engine-profiler/cli');
+        // The ToolClient exposes the same JSON projection as the standalone CLI.
+        return JSON.parse(JSON.stringify(runProfilerToolQuery(operation, args))) as CommandValue;
       },
       operation === 'capture' ? 'host' : 'build',
     );
   const debugContributions = [
     offlinePreviewAnalysis,
-    rhi('rhi.capture', 'Captures one live frame into an ArtifactRef.'),
-    rhi(
-      'rhi.summary',
-      'Lists passes (labels, targets, draw and dispatch counts, pipeline labels; --passes, --label REGEX), work indices and missing initial contents. Needs no GPU.',
-    ),
-    rhi(
-      'rhi.inspect',
-      'Inspects one RHI work item: pipeline and bindings from the tape, pixels and outputs on a fresh replay backend.',
-    ),
-    rhi(
-      'rhi.read',
-      'Batch-reads resources or bindings at work indices as records, image stats, atlas tiles and PNGs.',
-    ),
-    rhi(
-      'rhi.timing',
-      'Replays a tape (positional or --artifact) with steady GPU restore and pipelined timestamps; prints frame union p50 with a 95% interval, drift, top passes and a preflight (GPU idle, raw timestamps) table, --json for everything. --skip for a paired cost delta, --compare BASELINE for an interleaved A/B.',
-    ),
+    ...discoverRhiDebugOperations().map(rhi),
     profile('capture', 'Captures one bounded CPU profile from a live App host.'),
     profile('summary', 'Projects a profile ArtifactRef into an offline summary.'),
     profile('frame', 'Selects one frame from a profile ArtifactRef.'),
@@ -905,8 +737,7 @@ export function createUnifiedCommandContributions(
   ];
   return [
     ...createOperationHistoryTools(projectRoot),
-    ...createModelingTools({ projectRoot }),
-    createModelRenderTool(projectRoot),
+    ...modelingContributions(projectRoot),
     createModelReplayTool(projectRoot),
     ...(['list', 'import', 'browse'] as const).map((operation) =>
       command(
@@ -914,11 +745,9 @@ export function createUnifiedCommandContributions(
         `Project ${operation}`,
         'Read or register Node-visible project metadata without preparing a runtime.',
         async (args) => {
-          const owner = await import('../known-projects.js');
-          if (operation === 'list') return owner.listKnownProjects();
-          if (operation === 'import') return owner.registerKnownProject(String(args.path));
-          return owner.browseProjectDirectories(
-            typeof args.path === 'string' ? args.path : undefined,
+          const { projectCatalogueOperations } = await import('../project-catalogue-tools.js');
+          return projectCatalogueOperations[operation === 'import' ? 'register' : operation](
+            args.path,
           );
         },
         'host',
@@ -937,21 +766,18 @@ export function createUnifiedCommandContributions(
           if (operation === 'start') {
             const startup = await readProjectStartupTimeoutMs(selectedRoot);
             if (!startup.ok) return startup;
-            return {
-              ok: true,
-              value: await backend.startDevKitBackend(selectedRoot, {
+            return completeCommand(
+              await backend.startDevKitBackend(selectedRoot, {
                 ...(typeof hostPack === 'string' ? { hostPack } : {}),
                 ...(startup.value === undefined ? {} : { startupTimeoutMs: startup.value }),
               }),
-            };
+            );
           }
-          return {
-            ok: true,
-            value:
-              operation === 'status'
-                ? await backend.devKitBackendStatus(selectedRoot)
-                : await backend.stopDevKitBackend(selectedRoot),
-          };
+          return completeCommand(
+            operation === 'status'
+              ? await backend.devKitBackendStatus(selectedRoot)
+              : await backend.stopDevKitBackend(selectedRoot),
+          );
         },
       ),
     ),
@@ -959,7 +785,7 @@ export function createUnifiedCommandContributions(
     project(
       'project.new',
       'Create project',
-      'Creates a project from an SDK template.',
+      'Creates a project from an Engine template.',
       'newCommand',
     ),
     project(
@@ -986,6 +812,30 @@ export function createUnifiedCommandContributions(
       'Preview project',
       'Serves the built project for inspection.',
       'previewCommand',
+    ),
+    command(
+      'project.view',
+      'Open project in View',
+      'Starts the installed Engine View and opens the selected project.',
+      async (args, context) => {
+        const hostPack = await (await import('../sdk.js')).findBundledViewHost();
+        if (hostPack === undefined)
+          return failCommand(
+            'tool-capability-unavailable',
+            'an Engine installation containing View',
+            'Install the complete Engine package and rerun forgeax project view.',
+            {},
+          );
+        const root = rootArgs(projectRoot, args).root;
+        const startup = await readProjectStartupTimeoutMs(root);
+        if (!startup.ok) return startup;
+        return (await import('../backend-process.js')).ensureDevKitView(root, {
+          hostPack,
+          project: root,
+          signal: context.signal,
+          ...(startup.value === undefined ? {} : { startupTimeoutMs: startup.value }),
+        });
+      },
     ),
     project(
       'project.capture',
@@ -1052,11 +902,11 @@ export function createUnifiedCommandContributions(
       'skillVerifyCommand',
     ),
 
-    project(
+    command<AssetAddOptions & Record<string, unknown>>(
       'asset.import',
       'Import asset',
       'Imports a source asset through the project asset authority.',
-      'assetAddCommand',
+      async (args) => (await import('../assets.js')).assetAddCommand(rootArgs(projectRoot, args)),
     ),
     project(
       'asset.guid',
@@ -1070,33 +920,31 @@ export function createUnifiedCommandContributions(
       'Checks authored shader sources.',
       'shaderCheckCommand',
     ),
-    project(
+    command(
       'sdk.install',
       'Install SDK',
       'Installs an SDK into a project directory.',
-      'sdkInstallCommand',
+      async (args) =>
+        (await import('../sdk-install.js')).sdkInstallCommand(rootArgs(projectRoot, args)),
     ),
     assetPreview,
     assetAtlas,
     ...debugContributions,
     start,
     live(
-      'dev.status',
+      'status',
       'Live status',
       'Reports the current project phase, revision, frame, and unfinished evaluation.',
-      'status',
     ),
     live(
-      'dev.reload',
+      'reload',
       'Reload live project',
       'Replaces the project execution environment and invalidates its old identity.',
-      'reload',
     ),
     live(
-      'dev.stop',
+      'stop',
       'Stop live project',
       'Destroys the persistent page and project execution environment.',
-      'stop',
     ),
     command(
       'dev.pipelines.export',
@@ -1121,64 +969,50 @@ export function createUnifiedCommandContributions(
       { capabilities: ['live-instance', 'world-observation'] },
     ),
     live(
-      'dev.eval',
+      'eval',
       'Evaluate live project',
       'Evaluates through the project live inspection capability.',
-      'eval',
     ),
     live(
-      'dev.camera.get',
+      'camera/get',
       'Get observation camera',
       'Reads transient observation camera state from the actual App realm.',
-      'camera/get',
     ),
     live(
-      'dev.camera.set',
+      'camera/set',
       'Set observation camera',
       'Updates transient observation camera state in the actual App realm.',
-      'camera/set',
     ),
     live(
-      'dev.find',
+      'find',
       'Find scene entities',
       'Finds names and revision-bound references in the current World.',
-      'find',
     ),
     live(
-      'dev.pick',
+      'pick',
       'Pick at a pixel',
       'Reports the HDR sample and the frontmost surface (entity, mesh, material, world hit; transparent surfaces included) under one canvas pixel without changing the World.',
-      'pick',
     ),
+    live('camera/release', 'Release observation camera', 'Returns control to the game camera.'),
     live(
-      'dev.camera.release',
-      'Release observation camera',
-      'Returns control to the game camera.',
-      'camera/release',
-    ),
-    live(
-      'dev.focus',
+      'focus',
       'Focus observation camera',
       'Focuses an exact name or revision-bound reference; ambiguous names fail without moving.',
-      'focus',
     ),
     live(
-      'dev.verify',
+      'verify',
       'Verify live runtime',
       'Validates the exact live execution and publishes strict runtime evidence; blocked checks fail.',
-      'verify',
     ),
     live(
-      'dev.capture',
+      'capture',
       'Capture live project',
       'Captures the held Page after a confirmed submitted frame.',
-      'capture',
     ),
     live(
-      'dev.look',
+      'look',
       'Look at live project',
       'Waits for the edited revision, captures fresh frames and flags a renderer error or a flat frame.',
-      'look',
     ),
   ] as readonly ToolContribution[];
 }

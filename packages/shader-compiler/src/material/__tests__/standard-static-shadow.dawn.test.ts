@@ -110,13 +110,15 @@ async function depth(
   try {
     const module = device.createShaderModule({ code: compiled.wgsl });
     await validModule(module);
-    const layouts = compiled.bindings.map((layout) =>
-      device.createBindGroupLayout({
-        entries: layout.entries.filter(
-          (entry) => entry.visibility !== 0,
-        ) as GPUBindGroupLayoutEntry[],
-      }),
-    );
+    const groupCount =
+      Math.max(-1, ...compiled.reflection.boundGlobals.map(({ group }) => group)) + 1;
+    const layouts = Array.from({ length: groupCount }, (_, group) => {
+      const reflected = compiled.bindings.find(({ label }) => label === `@group(${group})`);
+      return device.createBindGroupLayout({
+        entries: (reflected?.entries.filter((entry) => entry.visibility !== 0) ??
+          []) as GPUBindGroupLayoutEntry[],
+      });
+    });
     const entryPoint = (scene ? 'vs_scene_index' : 'vs_main') + (packed ? '_packed' : '');
     const inputs = materialVertexInputs(compiled.wgsl, entryPoint);
     const vertices = [-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1];

@@ -79,6 +79,7 @@ describe('shadow_caster shared Surface schema', () => {
     const registry = {
       loadManifest: async () => ({ ok: true, value: undefined }),
       materialShaderManifestEntries: () => [entry][Symbol.iterator](),
+      isSourceBackedMaterialArtifact: () => false,
       findMaterialArtifact: () => ({ ok: false }),
       installMaterialArtifact,
     } as unknown as ShaderCatalog;

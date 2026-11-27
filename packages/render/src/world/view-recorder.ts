@@ -1,5 +1,4 @@
 import type { World } from '@forgeax/engine-ecs';
-import type { Texture } from '@forgeax/engine-rhi';
 import { createViewCompositor } from '../assembly/view-compositor';
 import type { StereoEye } from '../components/stereo-camera';
 import type { RenderSystemInternals } from '../record/render-context';
@@ -45,6 +44,7 @@ export function createViewRecorder(
       base,
       capture,
       target,
+      primaryOwner,
     );
     if (renderWorld.hasComponent(entity, ViewRecordContext))
       renderWorld.removeComponent(entity, ViewRecordContext).unwrap();
@@ -55,6 +55,9 @@ export function createViewRecorder(
       viewEntity: entity,
       viewContext: context,
       observationGraphGeneration: undefined,
+    });
+    Object.defineProperty(recordInternals, 'standardProfile', {
+      get: () => context.standardProfile,
     });
     const viewOwner = createRenderViewOwner(recordInternals);
     seedViewConfiguration(primaryOwner, viewOwner);
@@ -73,7 +76,7 @@ export function createViewRecorder(
       target,
       output: undefined,
       picture: {
-        texture: undefined as unknown as Texture,
+        source: undefined,
         viewport,
         channels: viewChannels(facts.channels),
       },

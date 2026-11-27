@@ -11,7 +11,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
+import { buildEngineShaderTemplateManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { observeReplaySubmissions } from './native-replay-work.fixture';
@@ -23,7 +23,7 @@ import {
 } from './renderer-irradiance-field.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifest = shaderManifestUrl(await buildEngineShaderManifest());
+const manifest = shaderManifestUrl(await buildEngineShaderTemplateManifest());
 const directory = 'artifacts/radiance-cache/dawn';
 mkdirSync(directory, { recursive: true });
 const save = (name: string, value: unknown) =>
@@ -110,9 +110,7 @@ const relative = (a: readonly number[], b: readonly number[]) => {
 };
 const mean = (values: readonly number[]) => values.reduce((s, v) => s + v, 0) / values.length;
 
-it('serves Lite reflections from the directional radiance cache under field gathers', {
-  timeout: 1_800_000,
-}, async () => {
+const captureRadianceCache = async (result: Record<string, unknown>) => {
   const recorder = attachRecorder(webgpu).unwrap();
   const h = await createIrradianceFieldHarness({
     rhi: recorder.backend.rhi,
@@ -125,7 +123,6 @@ it('serves Lite reflections from the directional radiance cache under field gath
       ) => ok(recorder.backend.unwrapDeviceForSurface(device).unwrap()),
     },
   });
-  const result: Record<string, unknown> = {};
   const metal = (roughness: number) =>
     h.publish(Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 1, roughness }));
   /** Mean linear HDR red over `frames` ordinary frames. */
@@ -256,110 +253,6 @@ it('serves Lite reflections from the directional radiance cache under field gath
     (await recorder.frameBoundary()).unwrap();
     const encoded = (await pending).unwrap();
     save('renderer.rhitape', encoded.bytes);
-    const tape = decodeTape(encoded.bytes).unwrap();
-    const model = buildFrameModel(tape);
-    const composite = model.works.find((work) =>
-      work.pipeline.shaders.some(
-        (shader) => shader.stage === 'fragment' && shader.entryPoint === 'fs_ray_reflection_field',
-      ),
-    );
-    assert(composite, 'frame contains the field reflection composite');
-    const diffuseComposite = model.works.find((work) =>
-      work.pipeline.shaders.some(
-        (shader) =>
-          shader.stage === 'fragment' &&
-          shader.entryPoint === 'fs_ray_diffuse_reconstructed_reflections',
-      ),
-    );
-    assert(diffuseComposite, 'frame contains the broad multiple-scattering composite');
-    expect(
-      model.works.flatMap((work) =>
-        work.pipeline.shaders.filter((s) => s.stage === 'compute').map((s) => s.entryPoint),
-      ),
-    ).toEqual(expect.arrayContaining(['generateFieldReflections', 'traceReflections']));
-    const [sceneHandle, fallbackHandle] = composite.attachments?.colorViewHandleIds ?? [];
-    assert(sceneHandle && fallbackHandle);
-    const replayOf = async (frameTape: typeof tape) => {
-      const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
-      const device = (
-        await adapter.requestDevice(
-          replayDeviceRequest(frameTape, adapter.features, adapter.limits),
-        )
-      ).unwrap();
-      const replay = (
-        await openReplay(frameTape, { device, createShaderModule: webgpu.createShaderModule })
-      ).unwrap();
-      return {
-        replay,
-        submissions: observeReplaySubmissions(device),
-        dispose: async () => {
-          (await replay.dispose()).unwrap();
-          webgpu._internal_getRawDevice(device)?.destroy();
-        },
-      };
-    };
-    const exactReplay = await replayOf(tape);
-    try {
-      const output = workOutputs(composite).find((row) => row.role === 'color');
-      assert(output);
-      const reads = (
-        await exactReplay.replay.readAtWorks([
-          { resourceId: sceneHandle, workIndex: diffuseComposite.workIndex },
-          { resourceId: fallbackHandle, workIndex: composite.workIndex },
-          { ...output.request, workIndex: composite.workIndex },
-        ])
-      ).unwrap();
-      const composed = reads[2]?.unwrap();
-      assert(composed);
-      expect(composed.provenance.selectedWorkIndex).toBe(composite.workIndex);
-      expect(equalBytes(composed.bytes, captured.bytes)).toBe(true);
-      const broad = reads[0]?.unwrap();
-      const directional = reads[1]?.unwrap();
-      assert(broad && directional);
-      expect(broad.provenance.selectedWorkIndex).toBe(diffuseComposite.workIndex);
-      expect(directional.provenance.selectedWorkIndex).toBe(composite.workIndex);
-      const channel = (bytes: Uint8Array, i: number) =>
-        halfFloat.f16ToF32(
-          new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(i * 8, true),
-        );
-      let multiMean = 0;
-      for (let i = 0; i < SIZE * SIZE; i++) {
-        multiMean += channel(broad.bytes, i) / (SIZE * SIZE);
-        expect(
-          Math.abs(
-            channel(captured.bytes, i) - channel(broad.bytes, i) - channel(directional.bytes, i),
-          ),
-        ).toBeLessThan(0.002);
-      }
-      exactReplay.submissions.assertMaximum(12);
-      expect(multiMean).toBeGreaterThan(0.01);
-      result.multipleScattering = { mean: multiMean, ssrFallbackContainsOnlyDirectional: true };
-    } finally {
-      exactReplay.submissions.restore();
-      await exactReplay.dispose();
-    }
-    const omitted = {
-      ...tape,
-      events: tape.events.filter(
-        (_, index) => index !== composite.eventIndex && index !== diffuseComposite.eventIndex,
-      ),
-    };
-    const omittedModel = buildFrameModel(omitted);
-    const falsifier = await replayOf(omitted);
-    try {
-      const last = omittedModel.works.at(-1);
-      assert(last);
-      const without = (
-        await falsifier.replay.readResourceAtWork(sceneHandle, last.workIndex)
-      ).unwrap();
-      expect(equalBytes(without.bytes, unreflected.bytes)).toBe(true);
-      expect(equalBytes(without.bytes, captured.bytes)).toBe(false);
-    } finally {
-      falsifier.submissions.restore();
-      await falsifier.dispose();
-    }
-    result.replay = { digest: encoded.digest, works: model.works.length, exact: true };
-
     // Memory: every live irradiance-field buffer, by label.
     const memory = Object.fromEntries(
       [...new Set(h.liveBuffers())].map((buffer) => [buffer.label, buffer.size]),
@@ -406,10 +299,120 @@ it('serves Lite reflections from the directional radiance cache under field gath
     }
     h.world.despawn(hidden).unwrap();
     expect(h.errors).toEqual([]);
-    save('result.json', result);
+    return { captured, unreflected, encoded };
   } finally {
     save('latest-state.json', { result, errors: h.errors, inspection: h.renderer.inspect() });
     await h.dispose();
     (await recorder.dispose()).unwrap();
   }
+};
+
+it('serves Lite reflections from the directional radiance cache under field gathers', {
+  timeout: 1_800_000,
+}, async () => {
+  const result: Record<string, unknown> = {};
+  // Replay starts after the live renderer and recorder release the native device.
+  const { captured, unreflected, encoded } = await captureRadianceCache(result);
+  const tape = decodeTape(encoded.bytes).unwrap();
+  const model = buildFrameModel(tape);
+  const composite = model.works.find((work) =>
+    work.pipeline.shaders.some(
+      (shader) => shader.stage === 'fragment' && shader.entryPoint === 'fs_ray_reflection_field',
+    ),
+  );
+  assert(composite, 'frame contains the field reflection composite');
+  const diffuseComposite = model.works.find((work) =>
+    work.pipeline.shaders.some(
+      (shader) =>
+        shader.stage === 'fragment' && shader.entryPoint === 'fs_ray_diffuse_reconstructed_replace',
+    ),
+  );
+  assert(diffuseComposite, 'frame contains the broad multiple-scattering composite');
+  expect(
+    model.works.flatMap((work) =>
+      work.pipeline.shaders.filter((s) => s.stage === 'compute').map((s) => s.entryPoint),
+    ),
+  ).toEqual(expect.arrayContaining(['generateFieldReflections', 'traceReflections']));
+  const [sceneHandle, fallbackHandle] = composite.attachments?.colorViewHandleIds ?? [];
+  assert(sceneHandle && fallbackHandle);
+  const replayOf = async (frameTape: typeof tape) => {
+    const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
+    const device = (
+      await adapter.requestDevice(replayDeviceRequest(frameTape, adapter.features, adapter.limits))
+    ).unwrap();
+    const replay = (
+      await openReplay(frameTape, { device, createShaderModule: webgpu.createShaderModule })
+    ).unwrap();
+    return {
+      replay,
+      submissions: observeReplaySubmissions(device),
+      dispose: async () => {
+        (await replay.dispose()).unwrap();
+        webgpu._internal_getRawDevice(device)?.destroy();
+      },
+    };
+  };
+  const exactReplay = await replayOf(tape);
+  try {
+    const output = workOutputs(composite).find((row) => row.role === 'color');
+    assert(output);
+    const reads = (
+      await exactReplay.replay.readAtWorks([
+        { resourceId: sceneHandle, workIndex: diffuseComposite.workIndex },
+        { resourceId: fallbackHandle, workIndex: composite.workIndex },
+        { ...output.request, workIndex: composite.workIndex },
+      ])
+    ).unwrap();
+    const composed = reads[2]?.unwrap();
+    assert(composed);
+    expect(composed.provenance.selectedWorkIndex).toBe(composite.workIndex);
+    expect(equalBytes(composed.bytes, captured.bytes)).toBe(true);
+    const broad = reads[0]?.unwrap();
+    const directional = reads[1]?.unwrap();
+    assert(broad && directional);
+    expect(broad.provenance.selectedWorkIndex).toBe(diffuseComposite.workIndex);
+    expect(directional.provenance.selectedWorkIndex).toBe(composite.workIndex);
+    const channel = (bytes: Uint8Array, i: number) =>
+      halfFloat.f16ToF32(
+        new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(i * 8, true),
+      );
+    let multiMean = 0;
+    for (let i = 0; i < SIZE * SIZE; i++) {
+      multiMean += channel(broad.bytes, i) / (SIZE * SIZE);
+      expect(
+        Math.abs(
+          channel(captured.bytes, i) - channel(broad.bytes, i) - channel(directional.bytes, i),
+        ),
+      ).toBeLessThan(0.002);
+    }
+    exactReplay.submissions.assertMaximum(12);
+    expect(multiMean).toBeGreaterThan(0.01);
+    result.multipleScattering = { mean: multiMean, ssrFallbackContainsOnlyDirectional: true };
+  } finally {
+    exactReplay.submissions.restore();
+    await exactReplay.dispose();
+  }
+  const omitted = {
+    ...tape,
+    events: tape.events.filter(
+      (_, index) => index !== composite.eventIndex && index !== diffuseComposite.eventIndex,
+    ),
+  };
+  const omittedModel = buildFrameModel(omitted);
+  const falsifier = await replayOf(omitted);
+  try {
+    const last = omittedModel.works.at(-1);
+    assert(last);
+    const without = (
+      await falsifier.replay.readResourceAtWork(sceneHandle, last.workIndex)
+    ).unwrap();
+    expect(equalBytes(without.bytes, unreflected.bytes)).toBe(true);
+    expect(equalBytes(without.bytes, captured.bytes)).toBe(false);
+  } finally {
+    falsifier.submissions.restore();
+    await falsifier.dispose();
+  }
+  result.replay = { digest: encoded.digest, works: model.works.length, exact: true };
+
+  save('result.json', result);
 });

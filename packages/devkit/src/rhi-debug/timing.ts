@@ -7,6 +7,7 @@ import type {
   ReplaySkip,
 } from '@forgeax/engine-rhi-debug';
 import type { CommandResult } from '../types.js';
+import { failCommand } from '../types.js';
 import type { ArtifactRef } from './operations.js';
 import type { TimingEnvironment, TimingPreflight } from './timing-environment.js';
 
@@ -131,15 +132,14 @@ export async function withTimingTimeout<T>(
   const timeout = new Promise<CommandResult<T>>((resolveTimeout) => {
     timer = setTimeout(() => {
       controller.abort();
-      resolveTimeout({
-        ok: false,
-        error: {
-          code: 'timing-timeout',
-          expected: `rhi.timing to finish within ${timeoutMs} ms`,
-          hint: 'Lower repeat/maxRepeat or ciMs, check that no other process holds the GPU, or raise --timeout-ms.',
-          detail: { timeoutMs, elapsedMs: Date.now() - started, stage: stage() },
-        },
-      });
+      resolveTimeout(
+        failCommand(
+          'timing-timeout',
+          `rhi.timing to finish within ${timeoutMs} ms`,
+          'Lower repeat/maxRepeat or ciMs, check that no other process holds the GPU, or raise --timeout-ms.',
+          { timeoutMs, elapsedMs: Date.now() - started, stage: stage() },
+        ),
+      );
     }, timeoutMs);
   });
   try {

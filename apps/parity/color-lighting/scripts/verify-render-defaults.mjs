@@ -17,6 +17,6 @@ try {
   const result = await page.evaluate(() => ({ report: globalThis.__renderDefaultsComparison, error: globalThis.__renderDefaultsComparisonError }));
   await page.screenshot({ path: resolve(output, 'comparison.png'), fullPage: true });
   await writeFile(resolve(output, 'comparison.json'), `${JSON.stringify({ url, ...result, errors }, null, 2)}\n`);
-  if (result.error || errors.length) throw new Error(JSON.stringify({ ...result, errors }));
+  if (result.error || result.report?.referenceRevision !== 'r187' || errors.length) throw new Error(JSON.stringify({ ...result, errors }));
   console.log(JSON.stringify(result.report));
 } finally { await browser.close(); }

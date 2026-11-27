@@ -52,7 +52,7 @@
         "apps/**/dist/shaders/manifest.json",
         "apps/**/dist/pack-index.json",
         "apps/**/dist/assets/*-body.bin",
-        "apps/**/dist/assets/*.pack*.json"
+        "apps/**/dist/assets/*.runtime-pack*.json"
       ],
       "producer": "app-shard-0",
       "transferArtifact": "app-dist-0"
@@ -63,7 +63,7 @@
         "apps/**/dist/shaders/manifest.json",
         "apps/**/dist/pack-index.json",
         "apps/**/dist/assets/*-body.bin",
-        "apps/**/dist/assets/*.pack*.json"
+        "apps/**/dist/assets/*.runtime-pack*.json"
       ],
       "producer": "app-shard-1",
       "transferArtifact": "app-dist-1"
@@ -74,7 +74,7 @@
         "apps/**/dist/shaders/manifest.json",
         "apps/**/dist/pack-index.json",
         "apps/**/dist/assets/*-body.bin",
-        "apps/**/dist/assets/*.pack*.json"
+        "apps/**/dist/assets/*.runtime-pack*.json"
       ],
       "producer": "app-shard-2",
       "transferArtifact": "app-dist-2"

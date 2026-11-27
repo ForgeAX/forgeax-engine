@@ -4,7 +4,7 @@
   "private": false,
   "type": "module",
   "license": "MIT",
-  "description": "Engine-owned Node Dawn carrier; pinned source with Metal timestamp correction and Windows DXC.",
+  "description": "ForgeAX entrypoint for the optional upstream Node WebGPU provider.",
   "exports": {
     ".": {
       "types": "./src/index.d.ts",
@@ -18,7 +18,6 @@
   "files": [
     "dist",
     "scripts",
-    "patches",
     "src",
     "!src/**/__tests__/**",
     "LICENSE",
@@ -27,14 +26,13 @@
     "licenses"
   ],
   "scripts": {
-    "build": "node scripts/build.mjs",
-    "build:native": "node scripts/prepare-native.mjs"
+    "build": "node scripts/build.mjs"
   },
   "dependencies": {
     "@webgpu/types": "0.1.71"
   },
   "peerDependencies": {
-    "upstream-webgpu": "npm:webgpu@0.4.0"
+    "upstream-webgpu": "npm:webgpu@0.6.2"
   },
   "peerDependenciesMeta": {
     "upstream-webgpu": {
@@ -42,7 +40,7 @@
     }
   },
   "devDependencies": {
-    "upstream-webgpu": "npm:webgpu@0.4.0"
+    "upstream-webgpu": "npm:webgpu@0.6.2"
   },
   "forgeax": {
     "metrics": {

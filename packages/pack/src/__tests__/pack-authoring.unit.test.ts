@@ -13,6 +13,7 @@ import {
   resolvePackParameterValues,
   validatePackDefinition,
 } from '../pack-authoring.js';
+import { directPackFixture } from './support/direct-pack-fixture.js';
 
 const NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 
@@ -48,6 +49,37 @@ describe('ScriptablePack and Pack authoring', () => {
     for (const plugins of [false, 'true', 1, null])
       expect(validatePackDefinition({ ...definition, plugins }).ok).toBe(false);
   });
+  it('projects ordinary runtime outputs and the named Task Worker export', () => {
+    const outputs = { 'mesh/sphere': 'mesh' } as const;
+    const definition = definePack({
+      schemaVersion: '2.0.0',
+      packageId: definePackageId('01900000-0000-7000-8000-000000000075'),
+      runtime: { export: 'generateSphere', outputs, dependencies: [] },
+      build: () => ok({}),
+    });
+    expect(definition.runtime?.outputs).not.toBe(outputs);
+    expect(Object.isFrozen(definition.runtime?.outputs)).toBe(true);
+    expect(projectScriptablePackMeta(definition, 'geometry.pack.ts').runtime).toEqual({
+      export: 'generateSphere',
+      outputs,
+      dependencies: [],
+    });
+    for (const runtime of [
+      { export: 'generateSphere', dependencies: [] },
+      { outputs, dependencies: [] },
+      { export: 'default', outputs, dependencies: [] },
+      { export: 'generateSphere', outputs, dependencies: [], fallback: 'build' },
+      { export: 'generateSphere', outputs: {}, dependencies: [] },
+      { export: 'generateSphere', outputs: { '../sphere': 'mesh' }, dependencies: [] },
+      { export: 'generateSphere', outputs: { 'plugin/main': 'plugin' }, dependencies: [] },
+    ]) {
+      expect(validatePackDefinition({ ...definition, runtime })).toMatchObject({
+        ok: false,
+        error: { code: 'pack-parameter-invalid' },
+      });
+    }
+  });
+
   it('preserves explicit runtime capability without evaluating its build', () => {
     const dependency = '01900000-0000-7000-8000-000000000033';
     const dependencies = [dependency];
@@ -230,13 +262,11 @@ describe('ScriptablePack and Pack authoring', () => {
   });
 
   it('parses direct and instance JSON without accepting GUID fields', () => {
-    const direct = parsePackSourceJson({
-      schemaVersion: '3.0.0',
-      packageId: '01900000-0000-7000-8000-000000000010',
-      assets: {
+    const direct = parsePackSourceJson(
+      directPackFixture('01900000-0000-7000-8000-000000000010', {
         'scene/main': { kind: 'scene', payload: {}, refs: [] },
-      },
-    });
+      }),
+    );
     expect(direct.ok).toBe(true);
     if (direct.ok && direct.value.format === 'direct') {
       const projected = projectDirectPackJson(direct.value);
@@ -246,11 +276,11 @@ describe('ScriptablePack and Pack authoring', () => {
       });
     }
     expect(
-      parsePackSourceJson({
-        schemaVersion: '3.0.0',
-        packageId: '01900000-0000-7000-8000-000000000010',
-        assets: { 'scene/main': { guid: NAMESPACE, kind: 'scene', payload: {}, refs: [] } },
-      }),
+      parsePackSourceJson(
+        directPackFixture('01900000-0000-7000-8000-000000000010', {
+          'scene/main': { guid: NAMESPACE, kind: 'scene', payload: {}, refs: [] },
+        }),
+      ),
     ).toMatchObject({ ok: false, error: { code: 'pack-parameter-invalid' } });
     expect(
       parsePackSourceJson({

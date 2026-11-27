@@ -1,42 +1,34 @@
 import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
 import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
 import { pluginPack, reloadAssetHost } from '@forgeax/engine-vite-plugin-pack';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
+import wasm from '../../../packages/wgpu-wasm/pkg/provenance.json' with { type: 'json' };
 
 const here = dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = resolve(here, '..', '..', '..');
-const semanticPackPath = process.env.FORGEAX_CUSTOM_SHADER_SEMANTIC_PACK_PATH;
-const semanticFixturePath = process.env.FORGEAX_CUSTOM_SHADER_SEMANTIC_FIXTURE_PATH;
+const materialCooker = createMaterialPackCooker([resolve(here, 'src')]);
 
-// hello-custom-shader vite config: compile the shader and serve the authored
-// pack through the same catalog path used by a shipped app.
 export default defineConfig({
   plugins: [
-    ...(semanticPackPath === undefined
-      ? []
-      : [
-          {
-            name: 'forgeax-semantic-pack-import',
-            enforce: 'pre' as const,
-            resolveId(source: string) {
-              if (source.startsWith('../assets/pulse-material.pack.json')) {
-                return `${semanticPackPath}?url`;
-              }
-              return undefined;
-            },
-          },
-        ]),
-    forgeaxShader({ materialPackages: [resolve(here, 'src/pulse-material.shader.pack.json')] }) as never,
+    forgeaxShader(),
     pluginPack({
       runtimeBinding: createStandaloneRuntimeAssetBinding('hello-custom-shader'),
-      roots: [
-        resolve(here, 'assets'),
-        ...(semanticFixturePath === undefined ? [] : [semanticFixturePath]),
-      ],
+      roots: [resolve(here, 'src/pulse-material.pack.json')],
+      cookers: [{
+        ...materialCooker,
+        // This demo compares the complete portable records and their receipts.
+        cacheIdentity: async () =>
+          `pulse-material/record:${wasm.compilerFingerprint}:${await materialCooker.cacheIdentity?.()}`,
+        cook(input) {
+          const { publication: _template, ...record } = input as Record<string, unknown>;
+          return materialCooker.cook({ ...record, wasm, compilerFingerprint: wasm.compilerFingerprint });
+        },
+      }],
       refresh: reloadAssetHost(),
-    }) as never,
+    }),
   ],
   server: {
     fs: {
@@ -51,19 +43,4 @@ export default defineConfig({
       },
     },
   },
-  resolve:
-    semanticPackPath === undefined
-      ? undefined
-      : {
-          alias: [
-            {
-              find: '../assets/pulse-material.pack.json',
-              replacement: semanticPackPath,
-            },
-            {
-              find: resolve(here, 'assets/pulse-material.pack.json'),
-              replacement: semanticPackPath,
-            },
-          ],
-        },
 });

@@ -39,6 +39,7 @@ import {
   validateComponentFieldValues,
   validateEnumFieldValues,
 } from './component-input';
+import { Disabled } from './entity';
 import {
   ENTITY_MAX_INDEX,
   ENTITY_NULL_RAW,
@@ -117,7 +118,9 @@ import {
 } from './schedule';
 import {
   observeScheduleRuns as observeWorldScheduleRuns,
+  type ScheduleObservers,
   type ScheduleRunObserver,
+  scheduleObservers,
 } from './schedule-observation';
 import { FixedUpdate, isDomainSchedule, type ScheduleToken, Update } from './schedule-token';
 import {
@@ -150,6 +153,7 @@ import {
   borrowColumnArray,
   type Column,
   columnArrayElement,
+  columnArrayEquals,
   columnArrayLength,
   copyColumnArray,
   type FieldView,
@@ -300,6 +304,7 @@ const NO_LINKED_CHILDREN: readonly EntityHandle[] = Object.freeze([]);
  * and recyclable free-list.
  */
 export class World {
+  [scheduleObservers]: ScheduleObservers | undefined;
   readonly [worldRead]: WorldRead = {
     hasRelationshipEdge: (component, source, target) => {
       const role = relationshipRole(component);
@@ -322,9 +327,19 @@ export class World {
     getMutationEpoch: () => this.mutationEpoch,
     readRemoved: (component, cursor, visit) =>
       this.removedEventsFor(componentId(component)).read(cursor, visit),
+    changedFields: this.changedFields.bind(this),
     getFieldValue: this.internalgetFieldValue.bind(this),
     getArrayLength: this.internalgetArrayLength.bind(this),
     getArrayElement: this.internalgetArrayElement.bind(this),
+    arrayEquals: (entity, component, fieldName, values) => {
+      const slot = this.liveSlot(entity);
+      if (slot < 0) return false;
+      const column = this.fieldColumn(slot, component, fieldName);
+      return (
+        column !== undefined &&
+        columnArrayEquals(this.arrayStore, column, this.tableRow(slot), values)
+      );
+    },
     copyArray: (entity, component, fieldName, target) =>
       this.copyArrayTo(entity, component, fieldName, target),
   };
@@ -399,6 +414,8 @@ export class World {
     this.resources.set(Time, this.clock.time);
     this.resources.set(FixedTime, this.clock.fixed);
     this[worldInternal] = {
+      setDisabledBatch: this.setDisabledBatch.bind(this),
+      releaseUnadoptedUniqueRef: (handle) => this.uniqueRefs.release(handle),
       allocatePendingEntity: this.allocatePendingEntity.bind(this),
       cancelPendingEntity: this.cancelPendingEntity.bind(this),
       getArrayRangesChangedSince: this.internalgetArrayRangesChangedSince.bind(this),
@@ -2260,6 +2277,53 @@ export class World {
     return archetype?.table.storage.get(componentId(component))?.fields.get(fieldName);
   }
 
+  private changedFields<S extends ComponentSchema>(
+    entity: EntityHandle,
+    component: Component<string, S>,
+    input: Partial<InputShapeOf<S>>,
+  ): Partial<InputShapeOf<S>> | undefined {
+    const slot = this.liveSlot(entity);
+    if (slot < 0) return input;
+    const id = componentId(component);
+    const arch = this.graph.archetypes[this.records.archetypeId[slot] as number];
+    if (arch === undefined || !archetypeHasComponent(arch, id)) return input;
+    const fields = arch.table.storage.get(id)?.fields;
+    const row = this.tableRow(slot);
+    let result: Partial<InputShapeOf<S>> | undefined;
+    for (const name in input) {
+      if (!Object.hasOwn(input, name)) continue;
+      const column = fields?.get(name);
+      if (column === undefined) return input;
+      const value = input[name];
+      const plan = column.layout;
+      if (plan.array !== undefined) {
+        if (
+          (Array.isArray(value) || isNumericArray(value)) &&
+          columnArrayEquals(this.arrayStore, column, row, value)
+        )
+          continue;
+      } else {
+        const stored = this.scalarValue(plan, column.view[row] as number);
+        const comparable =
+          plan.storage === 'f32' && typeof value === 'number' ? Math.fround(value) : value;
+        if (Object.is(stored, comparable)) continue;
+      }
+      result ??= {};
+      (result as Record<string, unknown>)[name] = value;
+    }
+    return result;
+  }
+
+  private scalarValue(plan: FieldPlan, raw: number): unknown {
+    if (plan.kind === 'bool') return raw === 1;
+    if (plan.kind === 'entity') return raw === ENTITY_NULL_RAW ? null : raw;
+    if (plan.kind === 'string') {
+      const resolved = this.uniqueRefs.resolve<'String'>(toUnique<'String'>(raw));
+      return resolved.ok ? resolved.value : '';
+    }
+    return raw;
+  }
+
   /** Read one scalar column without constructing a component snapshot. */
   private internalgetFieldValue(
     entity: EntityHandle,
@@ -2321,37 +2385,16 @@ export class World {
         continue;
       }
       const plan = col.layout;
-      const kind = plan.kind;
-      const raw = col.view[row];
-      if (kind === 'number') {
-        (out as Record<string, unknown>)[fieldName] = raw;
-      } else if (kind === 'bool') {
-        (out as Record<string, unknown>)[fieldName] = raw === 1;
-      } else if (kind === 'entity') {
-        // Entity field: decode the stored raw u32 verbatim back to Entity
-        // (or null when the slot carries the ENTITY_NULL_RAW sentinel). No
-        // liveness validation happens here -- a slot referencing a despawned
-        // target returns its original raw encoding unchanged; the consumer is
-        // responsible for checking liveness (e.g. `world.get(ref, Entity)`).
-        (out as Record<string, unknown>)[fieldName] = raw === ENTITY_NULL_RAW ? null : raw;
-      } else if (kind === 'string') {
-        // Empty or released string handles read as the total string default.
-        const resolveR = this.uniqueRefs.resolve<'String'>(toUnique<'String'>(raw as number));
-        (out as Record<string, unknown>)[fieldName] = resolveR.ok ? resolveR.value : '';
+      if (plan.array === undefined) {
+        (out as Record<string, unknown>)[fieldName] = this.scalarValue(
+          plan,
+          col.view[row] as number,
+        );
       } else {
-        if (plan.array !== undefined) {
-          // Numeric arrays borrow transient storage; protected projections detach below.
-          const materialized = borrowColumnArray(this.arrayStore, col, row, plan);
-          // Relationship target arrays are a read-only projection. Keep the
-          // public component snapshot detached so mutating the returned view
-          // cannot bypass the World-owned mirror/index path.
-          (out as Record<string, unknown>)[fieldName] =
-            isRelationshipTarget(component) || plan.reference === 'asset'
-              ? materialized.slice()
-              : materialized;
-        } else {
-          (out as Record<string, unknown>)[fieldName] = raw;
-        }
+        // Protected mirror and asset arrays cannot expose mutable World storage.
+        const values = borrowColumnArray(this.arrayStore, col, row, plan);
+        (out as Record<string, unknown>)[fieldName] =
+          isRelationshipTarget(component) || plan.reference === 'asset' ? values.slice() : values;
       }
     }
     return out;
@@ -2702,6 +2745,62 @@ export class World {
         }
       }
     }
+  }
+
+  /** Qualify every member before mutating and borrow one resolved edge per source archetype. */
+  private setDisabledBatch(
+    entities: ReadonlySet<EntityHandle>,
+    disabled: boolean,
+  ): Result<void, EcsError> {
+    const poisoned = worldPoisonedError(this.executionState);
+    if (poisoned !== undefined) return err(poisoned);
+    const id = componentId(Disabled);
+    const edges = new Map<Archetype, Archetype>();
+    for (const entity of entities) {
+      const slot = this.liveSlot(entity);
+      const source = this.graph.archetypes[this.records.archetypeId[slot] as number];
+      if (slot < 0 || source === undefined)
+        return this.staleEntityFailure(entity, 'setDisabledBatch', Disabled.name);
+      const hasDisabled = archetypeHasComponent(source, id);
+      if (hasDisabled === disabled)
+        return err(
+          disabled
+            ? new ComponentAlreadyPresentError(entity as number, Disabled.name)
+            : new ComponentNotPresentError(entity as number, Disabled.name),
+        );
+      if (!edges.has(source))
+        edges.set(
+          source,
+          disabled
+            ? getAddEdge(this.graph, source, id, Disabled)
+            : getRemoveEdge(this.graph, source, id),
+        );
+    }
+    try {
+      for (const entity of entities) {
+        const slot = entityIndex(entity);
+        const source = this.graph.archetypes[this.records.archetypeId[slot] as number];
+        const target = source === undefined ? undefined : edges.get(source);
+        if (source === undefined || target === undefined)
+          throw Error('Disabled batch edge changed');
+        // Earlier swap-removes can move this slot. migrateEntity resolves its current row.
+        this.migrateEntity(slot, source, target);
+        this.publishDisabledChange(entity, id, disabled);
+      }
+      return ok(undefined);
+    } catch (cause) {
+      this.poisonAfterEntityMutation('World.setDisabledBatch', cause);
+      throw cause;
+    }
+  }
+
+  private publishDisabledChange(entity: EntityHandle, id: number, disabled: boolean): void {
+    if (disabled) {
+      this.addedScratch[0] = id;
+      this.internalmarkComponentsAdded(entity, this.addedScratch);
+    } else this.internalnextMutationEpoch();
+    this.advanceStructureEpoch(entity);
+    if (!disabled) this.notifyComponentRemoved(entity, id);
   }
 
   /**

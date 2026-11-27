@@ -29,7 +29,7 @@ it('recovers from more than seventeen profiles and preserves shared profile refe
     selected.add({ material: resource, materials: [resource], materialBindingSources: [] }, frame);
   }
   selected.adopt(frame);
-  expect(selected.demand).toBe(32);
+  expect(selected.demand).toHaveLength(32);
   for (let index = 0; index < 17; index++) {
     const resource = resources[index];
     assertResource(resource);
@@ -41,7 +41,7 @@ it('recovers from more than seventeen profiles and preserves shared profile refe
   }
   selected.adopt(frame);
   // The duplicated first RGB tuple survives through its second resource.
-  expect(selected.demand).toBe(16);
+  expect(selected.demand).toHaveLength(16);
   expect(subsurfaceDemand(selected.demand)).toBe(true);
   const duplicate = resources[32];
   assertResource(duplicate);
@@ -50,7 +50,7 @@ it('recovers from more than seventeen profiles and preserves shared profile refe
     paramSnapshot: { ...duplicate.snapshot.paramSnapshot, subsurfaceWeight: 0 },
   });
   selected.adopt(frame.with(duplicate));
-  expect(selected.demand).toBe(15);
+  expect(selected.demand).toHaveLength(15);
 });
 
 function assertResource(value: MaterialResource | undefined): asserts value is MaterialResource {

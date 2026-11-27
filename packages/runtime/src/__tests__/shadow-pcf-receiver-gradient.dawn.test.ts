@@ -74,7 +74,7 @@ it.each([
         }),
       ),
     );
-    const receiver = shaderFunction('_sampleShadowForCascade').replace(
+    const receiver = shaderFunction('sampleDirectionalShadowClip').replace(
       /#ifdef DIRECTIONAL_PCSS_AVAILABLE[\s\S]*?#endif/g,
       '',
     );
@@ -102,8 +102,10 @@ it.each([
       ${projectShaderConditionals(shaderFunction('_directionalPointCompare'), { DIRECTIONAL_PCSS_AVAILABLE: rawDepth }, 'all')}
       ${projectShaderConditionals(shaderFunction('_directionalPlaneCompare'), { DIRECTIONAL_PCSS_AVAILABLE: rawDepth }, 'all')}
       ${shaderFunction('_directionalVogel')}
-      ${shaderFunction('_directionalSoft')}
+      ${shaderFunction('sampleDirectionalSoftPcf')}
+      ${shaderFunction('sampleDirectionalSizedPcf')}
       ${receiver}
+      ${shaderFunction('_sampleShadowForCascade')}
       @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let normals = array<vec3<f32>,4>(vec3(-0.4,0.0,1.0),vec3(0.4,0.0,1.0),vec3(0.0,0.0,1.0),vec3(-0.4,0.0,1.0));
         let p = vec3(select(0.0,-0.6875,id.x==3u),0.0,0.5);
@@ -112,12 +114,7 @@ it.each([
         let layer = select(id.x,0u,id.x==3u);
         result[id.x] = vec4(_sampleShadowForCascade(p,layer,n,l,0u,vec2(0.0)), _directionalReceiverPlaneGradient(layer,n,l), 0.0);
       }`,
-        {
-          'forgeax_view::common': readFileSync(
-            new URL('../../../shader/src/common.wgsl', import.meta.url),
-            'utf8',
-          ),
-        },
+        {},
         { STORAGE_BUFFER_AVAILABLE: true, DIRECTIONAL_PCSS_AVAILABLE: rawDepth },
       ),
     });

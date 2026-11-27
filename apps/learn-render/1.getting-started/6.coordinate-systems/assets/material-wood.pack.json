@@ -1,9 +1,8 @@
 {
-  "schemaVersion": "1.0.0",
-  "kind": "internal-text-package",
-  "assets": [
-    {
-      "guid": "019e4906-23e9-771c-afd1-1896daeaa11e",
+  "schemaVersion": "3.0.0",
+  "packageId": "3a27e440-ea89-5455-a3f9-e50b5e7d2d7e",
+  "assets": {
+    "material/material-wood": {
       "kind": "material",
       "payload": {
         "passes": [
@@ -34,5 +33,5 @@
         "019e3969-1d46-773e-988c-a10e305ff2a4"
       ]
     }
-  ]
+  }
 }
